@@ -1,0 +1,23 @@
+[package]
+name = "whisper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Graphics
+vulkano = "0.35"
+vulkano-shaders = "0.35"
+winit = "0.30"
+
+# Git
+git2 = "0.20"
+
+# Text rendering
+ab_glyph = "0.2"
+
+# Screenshot/image output
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Utilities
+bytemuck = { version = "1.21", features = ["derive"] }
+anyhow = "1.0"
