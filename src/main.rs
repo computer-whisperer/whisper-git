@@ -1,4 +1,8 @@
+// Allow dead code for APIs intended for future phases
+#![allow(dead_code)]
+
 mod git;
+mod input;
 mod renderer;
 mod ui;
 mod views;
@@ -21,9 +25,11 @@ use winit::{
 };
 
 use crate::git::{CommitInfo, GitRepo};
+use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, SurfaceManager, VulkanContext};
-use crate::ui::{Rect, SplineRenderer, TextRenderer};
-use crate::views::{CommitGraphView, CommitListView};
+use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
+use crate::ui::widgets::HeaderBar;
+use crate::views::{CommitGraphView, StagingWell, StagingAction};
 
 // ============================================================================
 // CLI
@@ -54,6 +60,30 @@ fn parse_args() -> CliArgs {
 }
 
 // ============================================================================
+// Application State
+// ============================================================================
+
+/// Which panel currently has focus
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FocusedPanel {
+    #[default]
+    Graph,
+    Staging,
+}
+
+/// Application-level messages for state changes
+#[derive(Clone, Debug)]
+enum AppMessage {
+    StageFile(String),
+    UnstageFile(String),
+    StageAll,
+    UnstageAll,
+    Commit(String),
+    Fetch,
+    Push,
+}
+
+// ============================================================================
 // Application
 // ============================================================================
 
@@ -72,44 +102,49 @@ fn main() -> Result<()> {
 
 struct App {
     cli_args: CliArgs,
+    repo: Option<GitRepo>,
     commits: Vec<CommitInfo>,
-    state: Option<AppState>,
+    state: Option<RenderState>,
 }
 
 /// Initialized state (after window creation)
-struct AppState {
+struct RenderState {
     window: Arc<Window>,
     ctx: VulkanContext,
     surface: SurfaceManager,
     text_renderer: TextRenderer,
     spline_renderer: SplineRenderer,
-    commit_view: CommitListView,
-    commit_graph_view: CommitGraphView,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
+    // UI components
+    input_state: InputState,
+    focused_panel: FocusedPanel,
+    header_bar: HeaderBar,
+    commit_graph_view: CommitGraphView,
+    staging_well: StagingWell,
+    // Pending messages
+    pending_messages: Vec<AppMessage>,
 }
 
 impl App {
     fn new(cli_args: CliArgs) -> Result<Self> {
         // Load commits from repo
         let repo_path = cli_args.repo.as_deref().unwrap_or(".".as_ref());
-        let commits = match GitRepo::open(repo_path) {
+        let (repo, commits) = match GitRepo::open(repo_path) {
             Ok(repo) => {
-                let commits = repo.recent_commits(20).unwrap_or_default();
+                let commits = repo.recent_commits(50).unwrap_or_default();
                 println!("Loaded {} commits from {:?}", commits.len(), repo.workdir());
-                for commit in &commits {
-                    println!("  {} {}", commit.short_id, commit.summary);
-                }
-                commits
+                (Some(repo), commits)
             }
             Err(e) => {
                 eprintln!("Warning: Could not open repository: {e}");
-                Vec::new()
+                (None, Vec::new())
             }
         };
 
         Ok(Self {
             cli_args,
+            repo,
             commits,
             state: None,
         })
@@ -122,7 +157,7 @@ impl App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("Whisper Git")
-                        .with_inner_size(winit::dpi::LogicalSize::new(1280, 720)),
+                        .with_inner_size(winit::dpi::LogicalSize::new(1600, 900)),
                 )
                 .context("Failed to create window")?,
         );
@@ -201,23 +236,141 @@ impl App {
 
         let previous_frame_end = Some(sync::now(ctx.device.clone()).boxed());
 
-        // Create commit graph view and initialize layout
+        // Initialize UI components
+        let mut header_bar = HeaderBar::new();
         let mut commit_graph_view = CommitGraphView::new();
+        let staging_well = StagingWell::new();
+
+        // Set up graph view with repo data
         commit_graph_view.update_layout(&self.commits);
 
-        self.state = Some(AppState {
+        if let Some(ref repo) = self.repo {
+            // Set repo info in header
+            let repo_name = repo.repo_name();
+            let branch = repo.current_branch().unwrap_or_else(|_| "unknown".to_string());
+            let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
+            header_bar.set_repo_info(repo_name, branch, ahead, behind);
+
+            // Set HEAD and branch info in graph
+            commit_graph_view.head_oid = repo.head_oid().ok();
+            commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
+            commit_graph_view.tags = repo.tags().unwrap_or_default();
+            commit_graph_view.working_dir_status = repo.status().ok();
+
+            // Set staging status
+            header_bar.has_staged = repo.status()
+                .map(|s| !s.staged.is_empty())
+                .unwrap_or(false);
+        }
+
+        self.state = Some(RenderState {
             window,
             ctx,
             surface: surface_mgr,
             text_renderer,
             spline_renderer,
-            commit_view: CommitListView::new(),
             commit_graph_view,
             previous_frame_end,
             frame_count: 0,
+            input_state: InputState::new(),
+            focused_panel: FocusedPanel::Graph,
+            header_bar,
+            staging_well,
+            pending_messages: Vec::new(),
         });
 
+        // Initial status refresh
+        self.refresh_status();
+
         Ok(())
+    }
+
+    fn refresh_status(&mut self) {
+        let Some(state) = &mut self.state else { return };
+        let Some(ref repo) = self.repo else { return };
+
+        // Update working directory status
+        if let Ok(status) = repo.status() {
+            state.commit_graph_view.working_dir_status = Some(status.clone());
+            state.staging_well.update_status(&status);
+            state.header_bar.has_staged = !status.staged.is_empty();
+        }
+
+        // Update ahead/behind
+        if let Ok((ahead, behind)) = repo.ahead_behind() {
+            state.header_bar.ahead = ahead;
+            state.header_bar.behind = behind;
+        }
+    }
+
+    fn process_messages(&mut self) {
+        // Extract messages to avoid borrow conflicts
+        let messages: Vec<_> = if let Some(state) = &mut self.state {
+            state.pending_messages.drain(..).collect()
+        } else {
+            return;
+        };
+
+        if messages.is_empty() {
+            return;
+        }
+
+        let Some(ref repo) = self.repo else { return };
+
+        for msg in messages {
+            match msg {
+                AppMessage::StageFile(path) => {
+                    if let Err(e) = repo.stage_file(&path) {
+                        eprintln!("Failed to stage {}: {}", path, e);
+                    }
+                }
+                AppMessage::UnstageFile(path) => {
+                    if let Err(e) = repo.unstage_file(&path) {
+                        eprintln!("Failed to unstage {}: {}", path, e);
+                    }
+                }
+                AppMessage::StageAll => {
+                    if let Ok(status) = repo.status() {
+                        for file in &status.unstaged {
+                            let _ = repo.stage_file(&file.path);
+                        }
+                    }
+                }
+                AppMessage::UnstageAll => {
+                    if let Ok(status) = repo.status() {
+                        for file in &status.staged {
+                            let _ = repo.unstage_file(&file.path);
+                        }
+                    }
+                }
+                AppMessage::Commit(message) => {
+                    match repo.commit(&message) {
+                        Ok(oid) => {
+                            println!("Created commit: {}", oid);
+                            // Refresh commits
+                            self.commits = repo.recent_commits(50).unwrap_or_default();
+                            if let Some(state) = &mut self.state {
+                                state.commit_graph_view.update_layout(&self.commits);
+                                state.commit_graph_view.head_oid = repo.head_oid().ok();
+                                state.staging_well.clear_message();
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to commit: {}", e);
+                        }
+                    }
+                }
+                AppMessage::Fetch => {
+                    eprintln!("Fetch not yet implemented");
+                }
+                AppMessage::Push => {
+                    eprintln!("Push not yet implemented");
+                }
+            }
+        }
+
+        // Refresh status after processing all messages
+        self.refresh_status();
     }
 }
 
@@ -247,11 +400,15 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
-                if let Err(e) = draw_frame(state, &self.commits) {
+                // Process any pending messages
+                self.process_messages();
+
+                if let Err(e) = draw_frame(&mut self.state, &self.commits) {
                     eprintln!("Draw error: {e:?}");
                 }
 
                 // Screenshot mode
+                let Some(state) = &mut self.state else { return };
                 if let Some(ref path) = self.cli_args.screenshot {
                     if state.frame_count == 3 {
                         match capture_screenshot(state, &self.commits) {
@@ -272,7 +429,100 @@ impl ApplicationHandler for App {
                 state.window.request_redraw();
             }
 
-            _ => {}
+            // Handle input events
+            ref win_event => {
+                // Convert winit event to our InputEvent
+                if let Some(input_event) = state.input_state.handle_window_event(win_event) {
+                    // Calculate layout
+                    let extent = state.surface.extent();
+                    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+                    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+
+                    // Handle global keys first
+                    if let InputEvent::KeyDown { key, .. } = &input_event {
+                        match key {
+                            Key::Escape => {
+                                event_loop.exit();
+                                return;
+                            }
+                            Key::Tab => {
+                                // Cycle focus between panels
+                                state.focused_panel = match state.focused_panel {
+                                    FocusedPanel::Graph => FocusedPanel::Staging,
+                                    FocusedPanel::Staging => FocusedPanel::Graph,
+                                };
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Route to header bar
+                    if state.header_bar.handle_event(&input_event, layout.header).is_consumed() {
+                        // Check for header actions
+                        if let Some(action) = state.header_bar.take_action() {
+                            use crate::ui::widgets::HeaderAction;
+                            match action {
+                                HeaderAction::Fetch => {
+                                    state.pending_messages.push(AppMessage::Fetch);
+                                }
+                                HeaderAction::Push => {
+                                    state.pending_messages.push(AppMessage::Push);
+                                }
+                                HeaderAction::Commit => {
+                                    // Focus staging well for commit
+                                    state.focused_panel = FocusedPanel::Staging;
+                                }
+                                HeaderAction::Help => {
+                                    println!("Help: Tab to switch panels, j/k to navigate, Space to stage/unstage");
+                                }
+                                HeaderAction::Settings => {
+                                    println!("Settings not yet implemented");
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    // Route to focused panel
+                    match state.focused_panel {
+                        FocusedPanel::Graph => {
+                            state.commit_graph_view.handle_event(&input_event, &self.commits, layout.graph);
+                        }
+                        FocusedPanel::Staging => {
+                            state.staging_well.handle_event(&input_event, layout.staging);
+
+                            // Check for staging actions
+                            if let Some(action) = state.staging_well.take_action() {
+                                match action {
+                                    StagingAction::StageFile(path) => {
+                                        state.pending_messages.push(AppMessage::StageFile(path));
+                                    }
+                                    StagingAction::UnstageFile(path) => {
+                                        state.pending_messages.push(AppMessage::UnstageFile(path));
+                                    }
+                                    StagingAction::StageAll => {
+                                        state.pending_messages.push(AppMessage::StageAll);
+                                    }
+                                    StagingAction::UnstageAll => {
+                                        state.pending_messages.push(AppMessage::UnstageAll);
+                                    }
+                                    StagingAction::Commit(message) => {
+                                        state.pending_messages.push(AppMessage::Commit(message));
+                                    }
+                                    StagingAction::ViewDiff(path) => {
+                                        println!("Would show diff for: {}", path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Update hover states
+                    if let InputEvent::MouseMove { x, y, .. } = &input_event {
+                        state.header_bar.update_hover(*x, *y, layout.header);
+                    }
+                }
+            }
         }
     }
 
@@ -287,7 +537,8 @@ impl ApplicationHandler for App {
 // Rendering
 // ============================================================================
 
-fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
+fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Result<()> {
+    let state = state_opt.as_mut().unwrap();
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
     // Recreate swapchain if needed
@@ -312,12 +563,42 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
 
     // Build UI
     let extent = state.surface.extent();
-    let bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
 
-    // Generate spline vertices for commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(commits, bounds);
-    // Generate text vertices for commit graph
-    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, bounds);
+    // Collect all vertices
+    let mut output = WidgetOutput::new();
+
+    // Header bar
+    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
+
+    // Commit graph (in graph area)
+    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    output.spline_vertices.extend(spline_vertices);
+    output.text_vertices.extend(text_vertices);
+
+    // Staging well
+    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
+
+    // Secondary repos placeholder (just draw border for now)
+    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
+    output.spline_vertices.extend(create_rect_vertices(
+        &layout.secondary_repos,
+        theme::BACKGROUND.to_array(),
+    ));
+    output.spline_vertices.extend(create_rect_outline_vertices(
+        &layout.secondary_repos,
+        theme::BORDER.to_array(),
+        1.0,
+    ));
+    // Title for secondary repos placeholder
+    output.text_vertices.extend(state.text_renderer.layout_text(
+        "Secondary Repos (Coming Soon)",
+        layout.secondary_repos.x + 8.0,
+        layout.secondary_repos.y + 8.0,
+        theme::TEXT_MUTED.to_array(),
+    ));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -333,10 +614,13 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
     )
     .context("Failed to create command buffer")?;
 
+    // Dark background color from UX spec
+    let bg_color = [0.059f32, 0.090, 0.165, 1.0]; // #0F172A
+
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some([0.02, 0.02, 0.05, 1.0].into())],
+                clear_values: vec![Some(bg_color.into())],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -346,14 +630,14 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
         .context("Failed to begin render pass")?;
 
     // Draw splines first (background)
-    if !spline_vertices.is_empty() {
-        let spline_buffer = state.spline_renderer.create_vertex_buffer(spline_vertices)?;
+    if !output.spline_vertices.is_empty() {
+        let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
         state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
     }
 
     // Draw text on top
-    if !text_vertices.is_empty() {
-        let vertex_buffer = state.text_renderer.create_vertex_buffer(text_vertices)?;
+    if !output.text_vertices.is_empty() {
+        let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
     }
 
@@ -396,17 +680,40 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
     Ok(())
 }
 
-fn capture_screenshot(state: &mut AppState, commits: &[CommitInfo]) -> Result<image::RgbaImage> {
+fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result<image::RgbaImage> {
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
     // Build UI
     let extent = state.surface.extent();
-    let bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
 
-    // Generate spline vertices for commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(commits, bounds);
-    // Generate text vertices for commit graph
-    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, bounds);
+    // Collect all vertices
+    let mut output = WidgetOutput::new();
+
+    // Header bar
+    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
+
+    // Commit graph
+    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    output.spline_vertices.extend(spline_vertices);
+    output.text_vertices.extend(text_vertices);
+
+    // Staging well
+    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
+
+    // Secondary repos placeholder
+    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
+    output.spline_vertices.extend(create_rect_vertices(
+        &layout.secondary_repos,
+        theme::BACKGROUND.to_array(),
+    ));
+    output.spline_vertices.extend(create_rect_outline_vertices(
+        &layout.secondary_repos,
+        theme::BORDER.to_array(),
+        1.0,
+    ));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -427,10 +734,12 @@ fn capture_screenshot(state: &mut AppState, commits: &[CommitInfo]) -> Result<im
     )
     .context("Failed to create command buffer")?;
 
+    let bg_color = [0.059f32, 0.090, 0.165, 1.0];
+
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some([0.02, 0.02, 0.05, 1.0].into())],
+                clear_values: vec![Some(bg_color.into())],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -440,14 +749,14 @@ fn capture_screenshot(state: &mut AppState, commits: &[CommitInfo]) -> Result<im
         .context("Failed to begin render pass")?;
 
     // Draw splines first (background)
-    if !spline_vertices.is_empty() {
-        let spline_buffer = state.spline_renderer.create_vertex_buffer(spline_vertices)?;
+    if !output.spline_vertices.is_empty() {
+        let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
         state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
     }
 
     // Draw text on top
-    if !text_vertices.is_empty() {
-        let vertex_buffer = state.text_renderer.create_vertex_buffer(text_vertices)?;
+    if !output.text_vertices.is_empty() {
+        let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
     }
 

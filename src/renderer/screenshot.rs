@@ -5,7 +5,6 @@ use vulkano::{
     format::Format,
     image::Image,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    sync::GpuFuture,
 };
 use std::sync::Arc;
 

@@ -2,19 +2,23 @@ use std::collections::HashMap;
 
 use git2::Oid;
 
-use crate::git::CommitInfo;
-use crate::ui::{Color, Rect, SplinePoint, SplineRenderer, SplineVertex, Spline, TextRenderer, TextVertex};
+use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus};
+use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::widget::{
+    create_dashed_rect_outline_vertices, create_rect_vertices, theme,
+};
+use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
 
-/// Lane colors for visual distinction
-const LANE_COLORS: &[[f32; 4]] = &[
-    [0.4, 0.7, 1.0, 1.0],   // Blue
-    [0.5, 0.9, 0.5, 1.0],   // Green
-    [1.0, 0.6, 0.4, 1.0],   // Orange
-    [0.9, 0.5, 0.9, 1.0],   // Purple
-    [1.0, 0.9, 0.4, 1.0],   // Yellow
-    [0.4, 0.9, 0.9, 1.0],   // Cyan
-    [1.0, 0.5, 0.5, 1.0],   // Red
-    [0.7, 0.7, 0.9, 1.0],   // Lavender
+/// Lane colors for visual distinction (from UX spec)
+const LANE_COLORS: &[Color] = &[
+    Color::rgba(0.231, 0.510, 0.965, 1.0), // Blue - primary branch
+    Color::rgba(0.133, 0.773, 0.369, 1.0), // Green - feature branches
+    Color::rgba(0.961, 0.620, 0.043, 1.0), // Amber - release branches
+    Color::rgba(0.659, 0.333, 0.969, 1.0), // Purple - hotfix branches
+    Color::rgba(0.392, 0.455, 0.545, 1.0), // Slate - remote tracking
+    Color::rgba(0.4, 0.9, 0.9, 1.0),       // Cyan
+    Color::rgba(1.0, 0.5, 0.5, 1.0),       // Red
+    Color::rgba(0.7, 0.7, 0.9, 1.0),       // Lavender
 ];
 
 /// Layout information for a single commit
@@ -22,7 +26,7 @@ const LANE_COLORS: &[[f32; 4]] = &[
 pub struct CommitLayout {
     pub lane: usize,
     pub row: usize,
-    pub color: [f32; 4],
+    pub color: Color,
 }
 
 /// Graph layout algorithm that assigns lanes to commits
@@ -62,17 +66,18 @@ impl GraphLayout {
             let lane = self.find_or_assign_lane(commit, &commit_indices);
             let color = LANE_COLORS[lane % LANE_COLORS.len()];
 
-            self.layouts.insert(
-                commit.id,
-                CommitLayout { lane, row, color },
-            );
+            self.layouts.insert(commit.id, CommitLayout { lane, row, color });
 
             // Update active lanes based on parents
             self.update_lanes_for_parents(commit, lane, &commit_indices);
         }
     }
 
-    fn find_or_assign_lane(&mut self, commit: &CommitInfo, commit_indices: &HashMap<Oid, usize>) -> usize {
+    fn find_or_assign_lane(
+        &mut self,
+        commit: &CommitInfo,
+        commit_indices: &HashMap<Oid, usize>,
+    ) -> usize {
         // Check if any active lane is waiting for this commit (as a parent)
         for (lane, occupant) in self.active_lanes.iter().enumerate() {
             if *occupant == Some(commit.id) {
@@ -137,7 +142,7 @@ impl GraphLayout {
                 if commit_indices.contains_key(&parent_id) {
                     // Find or create a lane for this parent
                     let mut found = false;
-                    for (lane, occupant) in self.active_lanes.iter().enumerate() {
+                    for occupant in self.active_lanes.iter() {
                         if *occupant == Some(parent_id) {
                             found = true;
                             break;
@@ -193,6 +198,20 @@ pub struct CommitGraphView {
     row_height: f32,
     node_radius: f32,
     segments_per_curve: usize,
+    /// Currently selected commit
+    pub selected_commit: Option<Oid>,
+    /// Currently hovered commit
+    pub hovered_commit: Option<Oid>,
+    /// Working directory status
+    pub working_dir_status: Option<WorkingDirStatus>,
+    /// HEAD commit OID
+    pub head_oid: Option<Oid>,
+    /// Branch tips for labels
+    pub branch_tips: Vec<BranchTip>,
+    /// Tags
+    pub tags: Vec<TagInfo>,
+    /// Scroll offset
+    pub scroll_offset: f32,
 }
 
 impl Default for CommitGraphView {
@@ -206,6 +225,13 @@ impl Default for CommitGraphView {
             row_height: 28.0,
             node_radius: 4.0,
             segments_per_curve: 16,
+            selected_commit: None,
+            hovered_commit: None,
+            working_dir_status: None,
+            head_oid: None,
+            branch_tips: Vec::new(),
+            tags: Vec::new(),
+            scroll_offset: 0.0,
         }
     }
 }
@@ -231,15 +257,141 @@ impl CommitGraphView {
         bounds.x + 20.0 + lane as f32 * self.lane_width + self.lane_width / 2.0
     }
 
-    /// Get y position for a row
+    /// Get y position for a row (adjusted for scroll and optional working dir node)
     fn row_y(&self, row: usize, bounds: &Rect, header_offset: f32) -> f32 {
-        bounds.y + header_offset + row as f32 * self.row_height + self.row_height / 2.0
+        let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
+            self.row_height + 8.0 // Extra space for working dir node
+        } else {
+            0.0
+        };
+        bounds.y + header_offset + working_dir_offset + row as f32 * self.row_height
+            + self.row_height / 2.0
+            - self.scroll_offset
+    }
+
+    /// Handle input events
+    pub fn handle_event(
+        &mut self,
+        event: &InputEvent,
+        commits: &[CommitInfo],
+        bounds: Rect,
+    ) -> EventResponse {
+        let header_offset = 10.0;
+
+        match event {
+            InputEvent::KeyDown { key, .. } => match key {
+                Key::J | Key::Down => {
+                    // Move selection down
+                    self.move_selection(1, commits);
+                    EventResponse::Consumed
+                }
+                Key::K | Key::Up => {
+                    // Move selection up
+                    self.move_selection(-1, commits);
+                    EventResponse::Consumed
+                }
+                Key::G => {
+                    // Go to HEAD
+                    if let Some(head) = self.head_oid {
+                        self.selected_commit = Some(head);
+                        self.scroll_to_selection(commits, bounds);
+                    }
+                    EventResponse::Consumed
+                }
+                Key::Home => {
+                    // Go to first commit
+                    if let Some(commit) = commits.first() {
+                        self.selected_commit = Some(commit.id);
+                        self.scroll_offset = 0.0;
+                    }
+                    EventResponse::Consumed
+                }
+                Key::End => {
+                    // Go to last commit
+                    if let Some(commit) = commits.last() {
+                        self.selected_commit = Some(commit.id);
+                        self.scroll_to_selection(commits, bounds);
+                    }
+                    EventResponse::Consumed
+                }
+                _ => EventResponse::Ignored,
+            },
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
+                // Check for click on a commit
+                if bounds.contains(*x, *y) {
+                    for (row, commit) in commits.iter().enumerate() {
+                        let commit_y = self.row_y(row, &bounds, header_offset);
+                        if (*y - commit_y).abs() < self.row_height / 2.0 {
+                            self.selected_commit = Some(commit.id);
+                            return EventResponse::Consumed;
+                        }
+                    }
+                }
+                EventResponse::Ignored
+            }
+            InputEvent::MouseMove { x, y, .. } => {
+                // Update hover state
+                self.hovered_commit = None;
+                if bounds.contains(*x, *y) {
+                    for (row, commit) in commits.iter().enumerate() {
+                        let commit_y = self.row_y(row, &bounds, header_offset);
+                        if (*y - commit_y).abs() < self.row_height / 2.0 {
+                            self.hovered_commit = Some(commit.id);
+                            break;
+                        }
+                    }
+                }
+                EventResponse::Ignored // Don't consume move events
+            }
+            InputEvent::Scroll { delta_y, .. } => {
+                self.scroll_offset = (self.scroll_offset - delta_y).max(0.0);
+                EventResponse::Consumed
+            }
+            _ => EventResponse::Ignored,
+        }
+    }
+
+    fn move_selection(&mut self, delta: i32, commits: &[CommitInfo]) {
+        let current_idx = self
+            .selected_commit
+            .and_then(|id| commits.iter().position(|c| c.id == id))
+            .unwrap_or(0);
+
+        let new_idx = if delta > 0 {
+            (current_idx + delta as usize).min(commits.len().saturating_sub(1))
+        } else {
+            current_idx.saturating_sub((-delta) as usize)
+        };
+
+        if let Some(commit) = commits.get(new_idx) {
+            self.selected_commit = Some(commit.id);
+        }
+    }
+
+    fn scroll_to_selection(&mut self, commits: &[CommitInfo], bounds: Rect) {
+        if let Some(id) = self.selected_commit {
+            if let Some(idx) = commits.iter().position(|c| c.id == id) {
+                let target_y = idx as f32 * self.row_height;
+                let visible_height = bounds.height - 60.0;
+
+                if target_y < self.scroll_offset {
+                    self.scroll_offset = target_y;
+                } else if target_y > self.scroll_offset + visible_height {
+                    self.scroll_offset = target_y - visible_height + self.row_height;
+                }
+            }
+        }
     }
 
     /// Generate spline vertices for branch lines and nodes
     pub fn layout_splines(&self, commits: &[CommitInfo], bounds: Rect) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
-        let header_offset = 50.0; // Space for title
+        let header_offset = 10.0;
 
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
@@ -247,6 +399,44 @@ impl CommitGraphView {
             .enumerate()
             .map(|(i, c)| (c.id, i))
             .collect();
+
+        // Draw working directory node if dirty
+        if let Some(ref status) = self.working_dir_status {
+            if !status.is_clean() {
+                let wd_x = self.lane_x(0, &bounds);
+                let wd_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
+                let wd_width = 100.0;
+                let wd_height = 24.0;
+
+                let wd_rect = Rect::new(wd_x - 8.0, wd_y - wd_height / 2.0, wd_width, wd_height);
+
+                // Dashed border for working directory node
+                vertices.extend(create_dashed_rect_outline_vertices(
+                    &wd_rect,
+                    theme::STATUS_DIRTY.to_array(),
+                    1.5,
+                    6.0,
+                    4.0,
+                ));
+
+                // Dashed line to HEAD
+                if !commits.is_empty() {
+                    let head_y = self.row_y(0, &bounds, header_offset);
+                    // Simple dashed vertical line
+                    let num_dashes = ((head_y - wd_y - wd_height / 2.0) / 10.0) as i32;
+                    for i in 0..num_dashes {
+                        let y_start = wd_y + wd_height / 2.0 + i as f32 * 10.0;
+                        let y_end = y_start + 6.0;
+                        if y_end < head_y {
+                            vertices.extend(create_rect_vertices(
+                                &Rect::new(wd_x - 1.0, y_start, 2.0, 6.0),
+                                theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(layout) = self.layout.get(&commit.id) else {
@@ -256,15 +446,20 @@ impl CommitGraphView {
             let x = self.lane_x(layout.lane, &bounds);
             let y = self.row_y(row, &bounds, header_offset);
 
+            // Skip if outside visible area
+            if y < bounds.y - self.row_height || y > bounds.bottom() + self.row_height {
+                continue;
+            }
+
             // Draw connections to parents
-            for (parent_idx, &parent_id) in commit.parent_ids.iter().enumerate() {
+            for &parent_id in commit.parent_ids.iter() {
                 if let Some(&parent_row) = commit_indices.get(&parent_id) {
                     if let Some(parent_layout) = self.layout.get(&parent_id) {
                         let parent_x = self.lane_x(parent_layout.lane, &bounds);
                         let parent_y = self.row_y(parent_row, &bounds, header_offset);
 
                         // Use the child's color for the connection
-                        let color = layout.color;
+                        let color = layout.color.to_array();
 
                         if layout.lane == parent_layout.lane {
                             // Vertical line - same lane
@@ -273,7 +468,10 @@ impl CommitGraphView {
                                 color,
                                 self.line_width,
                             );
-                            spline.line_to(SplinePoint::new(parent_x, parent_y - self.node_radius));
+                            spline.line_to(SplinePoint::new(
+                                parent_x,
+                                parent_y - self.node_radius,
+                            ));
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         } else {
                             // Bezier curve - different lanes (merge/fork)
@@ -288,22 +486,91 @@ impl CommitGraphView {
                             let ctrl1 = SplinePoint::new(x, mid_y);
                             let ctrl2 = SplinePoint::new(parent_x, mid_y);
 
-                            spline.cubic_to(ctrl1, ctrl2, SplinePoint::new(parent_x, parent_y - self.node_radius));
+                            spline.cubic_to(
+                                ctrl1,
+                                ctrl2,
+                                SplinePoint::new(parent_x, parent_y - self.node_radius),
+                            );
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         }
                     }
                 }
             }
 
-            // Draw commit node (small filled circle approximated as a polygon)
-            vertices.extend(self.create_circle_vertices(x, y, self.node_radius, layout.color));
+            // Draw commit node
+            let is_merge = commit.parent_ids.len() > 1;
+            let is_selected = self.selected_commit == Some(commit.id);
+            let is_hovered = self.hovered_commit == Some(commit.id);
+            let is_head = self.head_oid == Some(commit.id);
+
+            // Selection/hover highlight
+            if is_selected || is_hovered {
+                let highlight_color = if is_selected {
+                    theme::STATUS_AHEAD.with_alpha(0.3)
+                } else {
+                    theme::TEXT.with_alpha(0.1)
+                };
+                let highlight_rect = Rect::new(
+                    bounds.x,
+                    y - self.row_height / 2.0,
+                    bounds.width,
+                    self.row_height,
+                );
+                vertices.extend(create_rect_vertices(
+                    &highlight_rect,
+                    highlight_color.to_array(),
+                ));
+            }
+
+            // Commit node (filled circle, or double ring for merge)
+            if is_merge {
+                // Outer ring
+                vertices.extend(self.create_ring_vertices(
+                    x,
+                    y,
+                    self.node_radius + 2.0,
+                    1.5,
+                    layout.color.to_array(),
+                ));
+                // Inner filled circle
+                vertices.extend(self.create_circle_vertices(
+                    x,
+                    y,
+                    self.node_radius,
+                    layout.color.to_array(),
+                ));
+            } else {
+                vertices.extend(self.create_circle_vertices(
+                    x,
+                    y,
+                    self.node_radius,
+                    layout.color.to_array(),
+                ));
+            }
+
+            // HEAD indicator (larger circle behind)
+            if is_head {
+                vertices.extend(self.create_ring_vertices(
+                    x,
+                    y,
+                    self.node_radius + 4.0,
+                    2.0,
+                    theme::STATUS_AHEAD.to_array(),
+                ));
+            }
         }
 
         vertices
     }
 
     /// Create vertices for a filled circle (approximated as triangles)
-    fn create_circle_vertices(&self, cx: f32, cy: f32, radius: f32, color: [f32; 4]) -> Vec<SplineVertex> {
+    fn create_circle_vertices(
+        &self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: [f32; 4],
+    ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
         let segments = 12;
 
@@ -331,6 +598,65 @@ impl CommitGraphView {
         vertices
     }
 
+    /// Create vertices for a ring (hollow circle)
+    fn create_ring_vertices(
+        &self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        thickness: f32,
+        color: [f32; 4],
+    ) -> Vec<SplineVertex> {
+        let mut vertices = Vec::new();
+        let segments = 16;
+        let inner_radius = radius - thickness;
+
+        for i in 0..segments {
+            let angle1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            let angle2 = ((i + 1) as f32 / segments as f32) * std::f32::consts::TAU;
+
+            let outer1 = [cx + radius * angle1.cos(), cy + radius * angle1.sin()];
+            let outer2 = [cx + radius * angle2.cos(), cy + radius * angle2.sin()];
+            let inner1 = [
+                cx + inner_radius * angle1.cos(),
+                cy + inner_radius * angle1.sin(),
+            ];
+            let inner2 = [
+                cx + inner_radius * angle2.cos(),
+                cy + inner_radius * angle2.sin(),
+            ];
+
+            // Two triangles for the segment
+            vertices.push(SplineVertex {
+                position: outer1,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: outer2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner1,
+                color,
+            });
+
+            vertices.push(SplineVertex {
+                position: outer2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner1,
+                color,
+            });
+        }
+
+        vertices
+    }
+
     /// Generate text vertices for commit info
     pub fn layout_text(
         &self,
@@ -339,19 +665,44 @@ impl CommitGraphView {
         bounds: Rect,
     ) -> Vec<TextVertex> {
         let mut vertices = Vec::new();
-        let header_offset = 50.0;
+        let header_offset = 10.0;
         let line_height = text_renderer.line_height();
-
-        // Title
-        vertices.extend(text_renderer.layout_text(
-            "Commit Graph",
-            bounds.x + 20.0,
-            bounds.y + 20.0,
-            self.title_color.to_array(),
-        ));
 
         // Graph offset for text
         let text_x = bounds.x + 20.0 + self.graph_width() + 10.0;
+
+        // Working directory node text
+        if let Some(ref status) = self.working_dir_status {
+            if !status.is_clean() {
+                let wd_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset
+                    - line_height / 3.0;
+                let file_count = status.total_files();
+                let wd_text = format!("Working ({})", file_count);
+
+                vertices.extend(text_renderer.layout_text(
+                    &wd_text,
+                    self.lane_x(0, &bounds) + 8.0,
+                    wd_y,
+                    theme::STATUS_DIRTY.to_array(),
+                ));
+            }
+        }
+
+        // Branch tip lookup
+        let branch_tips_by_oid: HashMap<Oid, Vec<&BranchTip>> = self
+            .branch_tips
+            .iter()
+            .fold(HashMap::new(), |mut acc, tip| {
+                acc.entry(tip.oid).or_default().push(tip);
+                acc
+            });
+
+        // Tag lookup
+        let tags_by_oid: HashMap<Oid, Vec<&TagInfo>> =
+            self.tags.iter().fold(HashMap::new(), |mut acc, tag| {
+                acc.entry(tag.oid).or_default().push(tag);
+                acc
+            });
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(layout) = self.layout.get(&commit.id) else {
@@ -360,30 +711,93 @@ impl CommitGraphView {
 
             let y = self.row_y(row, &bounds, header_offset) - line_height / 3.0;
 
-            // Skip if outside bounds
-            if y > bounds.bottom() - line_height {
-                break;
+            // Skip if outside visible bounds
+            if y < bounds.y - line_height || y > bounds.bottom() {
+                continue;
             }
 
-            // Format: short_id summary
-            let text = format!("{} {}", commit.short_id, commit.summary);
+            let is_head = self.head_oid == Some(commit.id);
 
-            // Truncate if too long
-            let available_width = bounds.right() - text_x - 20.0;
-            let max_chars = (available_width / 10.0) as usize; // Rough estimate
-            let text = if text.len() > max_chars && max_chars > 3 {
-                format!("{}...", &text[..max_chars.saturating_sub(3)])
+            // Format: short_id summary [branch labels] [tags]
+            let mut current_x = text_x;
+
+            // Short ID
+            vertices.extend(text_renderer.layout_text(
+                &commit.short_id,
+                current_x,
+                y,
+                layout.color.to_array(),
+            ));
+            current_x += (commit.short_id.len() + 1) as f32 * 10.0;
+
+            // Summary (truncated)
+            let available_width = bounds.right() - current_x - 200.0; // Leave room for labels
+            let max_chars = (available_width / 10.0) as usize;
+            let summary = if commit.summary.len() > max_chars && max_chars > 3 {
+                format!("{}...", &commit.summary[..max_chars.saturating_sub(3)])
             } else {
-                text
+                commit.summary.clone()
             };
 
-            // Use lane color for the commit ID portion, lighter for message
             vertices.extend(text_renderer.layout_text(
-                &text,
-                text_x,
+                &summary,
+                current_x,
                 y,
                 self.text_color.to_array(),
             ));
+            current_x += (summary.len() + 1) as f32 * 10.0;
+
+            // Branch labels
+            if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
+                for tip in tips {
+                    let label_color = if tip.is_remote {
+                        theme::BRANCH_REMOTE
+                    } else if tip.is_head {
+                        theme::STATUS_AHEAD
+                    } else {
+                        theme::BRANCH_FEATURE
+                    };
+
+                    let label = if tip.is_remote {
+                        format!(" ← {}", tip.name)
+                    } else {
+                        format!(" [{}]", tip.name)
+                    };
+
+                    vertices.extend(text_renderer.layout_text(
+                        &label,
+                        current_x,
+                        y,
+                        label_color.to_array(),
+                    ));
+                    current_x += label.len() as f32 * 10.0;
+                }
+            }
+
+            // HEAD indicator
+            if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
+                vertices.extend(text_renderer.layout_text(
+                    " HEAD",
+                    current_x,
+                    y,
+                    theme::STATUS_AHEAD.to_array(),
+                ));
+                current_x += 50.0;
+            }
+
+            // Tags (diamond markers shown as text for now)
+            if let Some(tags) = tags_by_oid.get(&commit.id) {
+                for tag in tags {
+                    let tag_label = format!(" ◆{}", tag.name);
+                    vertices.extend(text_renderer.layout_text(
+                        &tag_label,
+                        current_x,
+                        y,
+                        theme::BRANCH_RELEASE.to_array(),
+                    ));
+                    current_x += tag_label.len() as f32 * 10.0;
+                }
+            }
         }
 
         vertices

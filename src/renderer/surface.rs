@@ -102,7 +102,7 @@ impl SurfaceManager {
     }
 
     /// Recreate the swapchain (e.g., after resize)
-    pub fn recreate(&mut self, ctx: &VulkanContext, size: winit::dpi::PhysicalSize<u32>) -> Result<()> {
+    pub fn recreate(&mut self, _ctx: &VulkanContext, size: winit::dpi::PhysicalSize<u32>) -> Result<()> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }

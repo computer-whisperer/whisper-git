@@ -43,7 +43,7 @@ impl VulkanContext {
     }
 
     /// Create context with an existing instance (for when we need surface first)
-    pub fn with_instance(instance: Arc<Instance>) -> Result<Self> {
+    pub fn with_instance(_instance: Arc<Instance>) -> Result<Self> {
         // We need a temporary surface to check device compatibility
         // This will be called after we have a window
         // For now, just store instance - device creation deferred
