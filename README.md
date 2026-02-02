@@ -43,14 +43,17 @@ A GPU-accelerated Git client built with Vulkano. Designed for power users who wa
 - **Views**
   - `CommitGraphView` - commit history visualization
   - `StagingWell` - commit message editor with staged/unstaged file lists
+  - `SecondaryReposView` - submodule and worktree cards with status
 
 - **Git Integration**
   - Repository loading via git2
   - Commit info, branch refs, working directory status
+  - Submodule discovery with branch and dirty status
+  - Worktree listing with current worktree detection
 
 ### Planned
 - LLM-generated commit message suggestions
-- Secondary repos panel (submodules/worktrees)
+- Secondary repos panel interactivity (click to expand, focus)
 - Commit detail view
 - Context menus and command palette
 - Worktree management
@@ -119,6 +122,7 @@ src/
 └── views/
     ├── commit_graph.rs     # Commit graph with spline branches
     ├── commit_list.rs      # Simple commit list (legacy)
+    ├── secondary_repos.rs  # Submodule and worktree cards
     └── staging_well.rs     # Staging panel with commit message
 ```
 

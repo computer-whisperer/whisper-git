@@ -349,14 +349,24 @@ impl GitRepo {
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         let worktrees = self.repo.worktrees().context("Failed to get worktrees")?;
 
+        // Get the current working directory for comparison
+        let current_workdir = self.repo.workdir().map(|p| p.to_path_buf());
+
         let mut infos = Vec::new();
         for name in worktrees.iter() {
             if let Some(name) = name {
                 if let Ok(wt) = self.repo.find_worktree(name) {
-                    let path = wt.path().to_string_lossy().to_string();
+                    let wt_path = wt.path();
+                    let path = wt_path.to_string_lossy().to_string();
+
+                    // Check if this is the current worktree
+                    let is_current = current_workdir
+                        .as_ref()
+                        .map(|cwd| cwd == wt_path)
+                        .unwrap_or(false);
 
                     // Try to get branch info
-                    let branch = if let Ok(wt_repo) = Repository::open(wt.path()) {
+                    let branch = if let Ok(wt_repo) = Repository::open(wt_path) {
                         wt_repo
                             .head()
                             .ok()
@@ -370,6 +380,7 @@ impl GitRepo {
                         name: name.to_string(),
                         path,
                         branch,
+                        is_current,
                     });
                 }
             }
@@ -524,6 +535,7 @@ pub struct WorktreeInfo {
     pub name: String,
     pub path: String,
     pub branch: String,
+    pub is_current: bool,
 }
 
 /// Branch tip for graph labels

@@ -29,7 +29,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
-use crate::views::{CommitGraphView, StagingWell, StagingAction};
+use crate::views::{CommitGraphView, SecondaryReposView, StagingWell, StagingAction};
 
 // ============================================================================
 // CLI
@@ -133,6 +133,7 @@ struct RenderState {
     header_bar: HeaderBar,
     commit_graph_view: CommitGraphView,
     staging_well: StagingWell,
+    secondary_repos_view: SecondaryReposView,
     // Pending messages
     pending_messages: Vec<AppMessage>,
 }
@@ -251,6 +252,7 @@ impl App {
         let mut header_bar = HeaderBar::new();
         let mut commit_graph_view = CommitGraphView::new();
         let staging_well = StagingWell::new();
+        let mut secondary_repos_view = SecondaryReposView::new();
 
         // Set up graph view with repo data
         commit_graph_view.update_layout(&self.commits);
@@ -272,6 +274,14 @@ impl App {
             header_bar.has_staged = repo.status()
                 .map(|s| !s.staged.is_empty())
                 .unwrap_or(false);
+
+            // Load submodules and worktrees
+            if let Ok(submodules) = repo.submodules() {
+                secondary_repos_view.set_submodules(submodules);
+            }
+            if let Ok(worktrees) = repo.worktrees() {
+                secondary_repos_view.set_worktrees(worktrees);
+            }
         }
 
         self.state = Some(RenderState {
@@ -287,6 +297,7 @@ impl App {
             focused_panel: FocusedPanel::Graph,
             header_bar,
             staging_well,
+            secondary_repos_view,
             pending_messages: Vec::new(),
         });
 
@@ -597,24 +608,8 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos placeholder
-    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
-    output.spline_vertices.extend(create_rect_vertices(
-        &layout.secondary_repos,
-        theme::SURFACE.to_array(),
-    ));
-    output.spline_vertices.extend(create_rect_outline_vertices(
-        &layout.secondary_repos,
-        theme::BORDER.to_array(),
-        1.0,
-    ));
-    // Title for secondary repos placeholder
-    output.text_vertices.extend(state.text_renderer.layout_text(
-        "Secondary Repos (Coming Soon)",
-        layout.secondary_repos.x + 12.0,
-        layout.secondary_repos.y + 12.0,
-        theme::TEXT_MUTED.to_array(),
-    ));
+    // Secondary repos view
+    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -719,17 +714,8 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos placeholder
-    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
-    output.spline_vertices.extend(create_rect_vertices(
-        &layout.secondary_repos,
-        theme::BACKGROUND.to_array(),
-    ));
-    output.spline_vertices.extend(create_rect_outline_vertices(
-        &layout.secondary_repos,
-        theme::BORDER.to_array(),
-        1.0,
-    ));
+    // Secondary repos view
+    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -846,17 +832,8 @@ fn capture_screenshot_offscreen(
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos placeholder
-    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
-    output.spline_vertices.extend(create_rect_vertices(
-        &layout.secondary_repos,
-        theme::BACKGROUND.to_array(),
-    ));
-    output.spline_vertices.extend(create_rect_outline_vertices(
-        &layout.secondary_repos,
-        theme::BORDER.to_array(),
-        1.0,
-    ));
+    // Secondary repos view
+    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],

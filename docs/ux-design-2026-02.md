@@ -1,6 +1,6 @@
 # Whisper-Git UX Design
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** February 2026
 
 ---
@@ -19,7 +19,7 @@
 | **File List** | ✓ Done | Staged/unstaged with toggle, change counts |
 | **Staging Well** | ✓ Done | Full layout with subject, body, file lists |
 | **Commit Graph** | ✓ Done | Spline-rendered branch topology |
-| **Secondary Repos Panel** | Planned | Submodule/worktree cards |
+| **Secondary Repos Panel** | ◐ Partial | Cards with accent borders, branch info; no interactivity yet |
 | **LLM Suggestions** | Planned | Auto-generated commit messages |
 | **Command Palette** | Planned | Fuzzy command search |
 | **Context Menus** | Planned | Right-click actions |
@@ -565,6 +565,33 @@ These features require separate design efforts:
 ---
 
 ## Changelog
+
+### Version 1.3 (2026-02-02)
+
+**Secondary Repos Panel — Initial Implementation:**
+- Added `SecondaryReposView` displaying submodules and worktrees
+- Card-based layout with colored left accent borders:
+  - Green (#4CAF50) for submodules
+  - Orange (#FF9800) for worktrees
+- Section headers with count badges (e.g., "SUBMODULES 5")
+- Each card displays:
+  - Repository/worktree name
+  - Current branch (prefixed with `@`)
+  - Path (right-aligned, truncated intelligently)
+  - Status indicators: "modified" for dirty submodules, "(current)" for active worktree
+- Empty state with centered message
+- Overflow handling with "..." indicator
+- Smart text truncation preserving path leaf components
+
+**Git integration enhancements:**
+- `WorktreeInfo` now includes `is_current` flag
+- Submodule dirty status detection
+
+**Not yet implemented:**
+- Click to expand card
+- Double-click to focus in primary graph
+- Problem repos sorting to top
+- Miniature graph preview in cards
 
 ### Version 1.2 (2026-02-02)
 
