@@ -12,6 +12,7 @@ A GPU-accelerated Git client built with Vulkano. Designed for power users who wa
   - Font atlas generation from system fonts (DejaVu Sans Mono)
   - Spline-based line rendering with consistent thickness
   - Screenshot capture for CI/testing (`--screenshot`)
+  - Offscreen rendering at arbitrary resolutions (`--size WxH`)
 
 - **Commit Graph**
   - Branch topology visualization with GPU-accelerated splines
@@ -78,6 +79,10 @@ cargo run
 
 # Screenshot mode (for CI/LLM agents)
 cargo run -- --repo /path/to/repo --screenshot output.png
+
+# Screenshot at specific resolution (bypasses window manager)
+cargo run -- --screenshot output.png --size 1920x1080
+cargo run -- --screenshot output.png --size 3840x2160  # 4K
 ```
 
 ## Project Structure
@@ -93,7 +98,8 @@ src/
 ├── renderer/
 │   ├── context.rs          # VulkanContext: device, queue, allocators
 │   ├── surface.rs          # Swapchain and framebuffer management
-│   └── screenshot.rs       # Screenshot capture to PNG
+│   ├── screenshot.rs       # Screenshot capture to PNG
+│   └── offscreen.rs        # Offscreen render target for controlled-size captures
 ├── ui/
 │   ├── text.rs             # Font atlas text renderer
 │   ├── spline.rs           # Bezier curve and line renderer

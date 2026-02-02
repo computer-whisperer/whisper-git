@@ -26,7 +26,7 @@ use winit::{
 
 use crate::git::{CommitInfo, GitRepo};
 use crate::input::{InputEvent, InputState, Key};
-use crate::renderer::{capture_to_buffer, SurfaceManager, VulkanContext};
+use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
 use crate::views::{CommitGraphView, StagingWell, StagingAction};
@@ -38,6 +38,7 @@ use crate::views::{CommitGraphView, StagingWell, StagingAction};
 #[derive(Default)]
 struct CliArgs {
     screenshot: Option<PathBuf>,
+    screenshot_size: Option<(u32, u32)>,
     view: Option<String>,
     repo: Option<PathBuf>,
 }
@@ -49,6 +50,16 @@ fn parse_args() -> CliArgs {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--screenshot" => args.screenshot = iter.next().map(PathBuf::from),
+            "--size" => {
+                // Parse WxH format (e.g., "1920x1080")
+                if let Some(size_str) = iter.next() {
+                    if let Some((w, h)) = size_str.split_once('x') {
+                        if let (Ok(width), Ok(height)) = (w.parse(), h.parse()) {
+                            args.screenshot_size = Some((width, height));
+                        }
+                    }
+                }
+            }
             "--view" => args.view = iter.next(),
             "--repo" => args.repo = iter.next().map(PathBuf::from),
             other if !other.starts_with('-') => args.repo = Some(PathBuf::from(other)),
@@ -411,7 +422,12 @@ impl ApplicationHandler for App {
                 let Some(state) = &mut self.state else { return };
                 if let Some(ref path) = self.cli_args.screenshot {
                     if state.frame_count == 3 {
-                        match capture_screenshot(state, &self.commits) {
+                        let result = if let Some((width, height)) = self.cli_args.screenshot_size {
+                            capture_screenshot_offscreen(state, &self.commits, width, height)
+                        } else {
+                            capture_screenshot(state, &self.commits)
+                        };
+                        match result {
                             Ok(img) => {
                                 if let Err(e) = img.save(path) {
                                     eprintln!("Failed to save screenshot: {e}");
@@ -780,6 +796,125 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
         .take()
         .unwrap()
         .join(acquire_future)
+        .then_execute(state.ctx.queue.clone(), command_buffer)
+        .context("Failed to execute")?
+        .then_signal_fence_and_flush()
+        .map_err(Validated::unwrap)
+        .context("Failed to flush")?;
+
+    future.wait(None).context("Failed to wait")?;
+    state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
+
+    capture.to_image()
+}
+
+/// Capture a screenshot at a specific resolution using offscreen rendering
+fn capture_screenshot_offscreen(
+    state: &mut RenderState,
+    commits: &[CommitInfo],
+    width: u32,
+    height: u32,
+) -> Result<image::RgbaImage> {
+    state.previous_frame_end.as_mut().unwrap().cleanup_finished();
+
+    // Create offscreen render target with specified dimensions
+    let offscreen = OffscreenTarget::new(
+        &state.ctx,
+        state.surface.render_pass.clone(),
+        width,
+        height,
+        state.surface.image_format(),
+    )?;
+
+    // Build UI at the specified dimensions
+    let extent = offscreen.extent();
+    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+
+    // Collect all vertices
+    let mut output = WidgetOutput::new();
+
+    // Header bar
+    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
+
+    // Commit graph
+    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    output.spline_vertices.extend(spline_vertices);
+    output.text_vertices.extend(text_vertices);
+
+    // Staging well
+    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
+
+    // Secondary repos placeholder
+    use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
+    output.spline_vertices.extend(create_rect_vertices(
+        &layout.secondary_repos,
+        theme::BACKGROUND.to_array(),
+    ));
+    output.spline_vertices.extend(create_rect_outline_vertices(
+        &layout.secondary_repos,
+        theme::BORDER.to_array(),
+        1.0,
+    ));
+
+    let viewport = Viewport {
+        offset: [0.0, 0.0],
+        extent: [extent[0] as f32, extent[1] as f32],
+        depth_range: 0.0..=1.0,
+    };
+
+    // Build command buffer - no swapchain acquire needed for offscreen
+    let mut builder = AutoCommandBufferBuilder::primary(
+        state.ctx.command_buffer_allocator.clone(),
+        state.ctx.queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .context("Failed to create command buffer")?;
+
+    let bg_color = [0.059f32, 0.090, 0.165, 1.0];
+
+    builder
+        .begin_render_pass(
+            RenderPassBeginInfo {
+                clear_values: vec![Some(bg_color.into())],
+                ..RenderPassBeginInfo::framebuffer(offscreen.framebuffer.clone())
+            },
+            Default::default(),
+        )
+        .context("Failed to begin render pass")?;
+
+    // Draw splines first (background)
+    if !output.spline_vertices.is_empty() {
+        let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
+        state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
+    }
+
+    // Draw text on top
+    if !output.text_vertices.is_empty() {
+        let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
+        state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
+    }
+
+    builder
+        .end_render_pass(Default::default())
+        .context("Failed to end render pass")?;
+
+    // Capture to buffer from offscreen image
+    let capture = capture_to_buffer(
+        &mut builder,
+        state.ctx.memory_allocator.clone(),
+        offscreen.image.clone(),
+        offscreen.format,
+    )?;
+
+    let command_buffer = builder.build().context("Failed to build command buffer")?;
+
+    // Execute and wait - simpler than swapchain path, no acquire future needed
+    let future = state
+        .previous_frame_end
+        .take()
+        .unwrap()
         .then_execute(state.ctx.queue.clone(), command_buffer)
         .context("Failed to execute")?
         .then_signal_fence_and_flush()
