@@ -97,8 +97,8 @@ impl FileList {
     }
 
     fn visible_lines(&self, bounds: &Rect) -> usize {
-        let header_height = 24.0;
-        let line_height = 24.0;
+        let header_height = 28.0; // Match layout header height
+        let line_height = 22.0;   // Slightly tighter line height
         ((bounds.height - header_height) / line_height).max(1.0) as usize
     }
 
@@ -220,45 +220,61 @@ impl Widget for FileList {
             theme::SURFACE.to_array(),
         ));
 
-        // Border
+        // Border - accent color when focused, thicker
         let border_color = if self.state.focused {
-            theme::STATUS_AHEAD
+            theme::ACCENT
         } else {
             theme::BORDER
         };
+        let border_thickness = if self.state.focused { 2.0 } else { 1.0 };
         output.spline_vertices.extend(create_rect_outline_vertices(
             &bounds,
             border_color.to_array(),
-            1.0,
+            border_thickness,
         ));
 
         let line_height = text_renderer.line_height();
-        let header_height = line_height + 8.0;
+        let header_height = line_height + 12.0;
 
-        // Header with title and totals
-        let (total_add, total_del) = self.totals();
-        let header_text = if total_add > 0 || total_del > 0 {
-            format!("{} ({} files)  +{} -{}", self.title, self.files.len(), total_add, total_del)
-        } else {
-            format!("{} ({} files)", self.title, self.files.len())
-        };
-
-        output.text_vertices.extend(text_renderer.layout_text(
-            &header_text,
-            bounds.x + 8.0,
-            bounds.y + 4.0,
-            theme::TEXT.to_array(),
+        // Header background - slightly elevated
+        let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
+        output.spline_vertices.extend(create_rect_vertices(
+            &header_rect,
+            theme::SURFACE_RAISED.to_array(),
         ));
+
+        // Header with title and file count
+        let title_text = format!("{} ({} files)", self.title, self.files.len());
+        output.text_vertices.extend(text_renderer.layout_text(
+            &title_text,
+            bounds.x + 10.0,
+            bounds.y + 6.0,
+            theme::TEXT_BRIGHT.to_array(),
+        ));
+
+        // Totals on the right side of header
+        let (total_add, total_del) = self.totals();
+        if total_add > 0 || total_del > 0 {
+            let stats_text = format!("+{} -{}", total_add, total_del);
+            let stats_x = bounds.right() - text_renderer.measure_text(&stats_text) - 10.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &stats_text,
+                stats_x,
+                bounds.y + 6.0,
+                theme::TEXT_MUTED.to_array(),
+            ));
+        }
 
         // Separator line
         let sep_y = bounds.y + header_height;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x, sep_y, bounds.width, 1.0),
+            &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
             theme::BORDER.to_array(),
         ));
 
         // File entries
-        let content_y = sep_y + 4.0;
+        let content_y = sep_y + 6.0;
+        let entry_height = 22.0;
         let visible_lines = self.visible_lines(&bounds);
 
         for (i, file_idx) in (self.scroll_offset..self.files.len())
@@ -266,19 +282,19 @@ impl Widget for FileList {
             .enumerate()
         {
             let file = &self.files[file_idx];
-            let y = content_y + i as f32 * line_height;
+            let y = content_y + i as f32 * entry_height;
             let is_selected = self.selected == Some(file_idx);
 
             // Selection highlight
             if is_selected {
-                let highlight_rect = Rect::new(bounds.x + 1.0, y - 2.0, bounds.width - 2.0, line_height);
+                let highlight_rect = Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
                 output.spline_vertices.extend(create_rect_vertices(
                     &highlight_rect,
-                    theme::STATUS_AHEAD.with_alpha(0.3).to_array(),
+                    theme::ACCENT_MUTED.to_array(),
                 ));
             }
 
-            // Status indicator
+            // Status indicator with background
             let status_color = match file.status {
                 FileStatusKind::New => theme::STATUS_CLEAN,
                 FileStatusKind::Modified => theme::STATUS_BEHIND,
@@ -290,44 +306,56 @@ impl Widget for FileList {
             let status_char = file.status.symbol().to_string();
             output.text_vertices.extend(text_renderer.layout_text(
                 &status_char,
-                bounds.x + 8.0,
-                y,
+                bounds.x + 10.0,
+                y + 2.0,
                 status_color.to_array(),
             ));
 
-            // File path
-            let path = if file.path.len() > 40 {
-                format!("...{}", &file.path[file.path.len() - 37..])
+            // File path - use brighter text when selected
+            let max_path_width = bounds.width - 60.0;
+            let char_width = text_renderer.char_width();
+            let max_chars = (max_path_width / char_width) as usize;
+            let path = if file.path.len() > max_chars && max_chars > 3 {
+                format!("...{}", &file.path[file.path.len().saturating_sub(max_chars - 3)..])
             } else {
                 file.path.clone()
             };
+
+            let path_color = if is_selected {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT
+            };
             output.text_vertices.extend(text_renderer.layout_text(
                 &path,
-                bounds.x + 24.0,
-                y,
-                theme::TEXT.to_array(),
+                bounds.x + 28.0,
+                y + 2.0,
+                path_color.to_array(),
             ));
 
-            // +/- counts
+            // +/- counts on the right
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
-                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 8.0;
+                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 10.0;
                 output.text_vertices.extend(text_renderer.layout_text(
                     &stats,
                     stats_x,
-                    y,
+                    y + 2.0,
                     theme::TEXT_MUTED.to_array(),
                 ));
             }
         }
 
-        // Empty state
+        // Empty state - centered and styled
         if self.files.is_empty() {
-            let empty_text = if self.is_staged { "No staged changes" } else { "No unstaged changes" };
+            let empty_text = if self.is_staged { "No staged changes" } else { "No changes" };
+            let text_width = text_renderer.measure_text(empty_text);
+            let center_x = bounds.x + (bounds.width - text_width) / 2.0;
+            let center_y = content_y + entry_height * 2.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 empty_text,
-                bounds.x + 8.0,
-                content_y + line_height,
+                center_x,
+                center_y,
                 theme::TEXT_MUTED.to_array(),
             ));
         }

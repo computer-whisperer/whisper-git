@@ -283,10 +283,10 @@ impl StagingWell {
     pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
-        // Background
+        // Background - elevated surface for panel
         output.spline_vertices.extend(create_rect_vertices(
             &bounds,
-            theme::BACKGROUND.to_array(),
+            theme::SURFACE.to_array(),
         ));
 
         // Border

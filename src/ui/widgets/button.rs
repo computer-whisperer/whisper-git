@@ -36,9 +36,9 @@ impl Button {
             label: label.into(),
             badge: None,
             clicked: false,
-            background: theme::SURFACE,
-            hover_background: Color::rgba(0.15, 0.20, 0.30, 1.0),
-            pressed_background: Color::rgba(0.10, 0.15, 0.25, 1.0),
+            background: theme::SURFACE_RAISED,
+            hover_background: theme::SURFACE_HOVER,
+            pressed_background: theme::SURFACE,
             text_color: theme::TEXT,
             border_color: Some(theme::BORDER),
             padding: 8.0,
@@ -68,9 +68,10 @@ impl Button {
 
     /// Make this a primary action button
     pub fn primary(mut self) -> Self {
-        self.background = theme::STATUS_AHEAD; // Blue
-        self.hover_background = Color::rgba(0.35, 0.60, 0.98, 1.0);
-        self.pressed_background = Color::rgba(0.18, 0.45, 0.90, 1.0);
+        self.background = theme::ACCENT;
+        self.hover_background = Color::rgba(0.35, 0.70, 1.0, 1.0);  // Lighter blue on hover
+        self.pressed_background = Color::rgba(0.20, 0.55, 0.85, 1.0); // Darker blue on press
+        self.text_color = theme::TEXT_BRIGHT;
         self.border_color = None;
         self
     }
@@ -136,16 +137,30 @@ impl Widget for Button {
         let bg_color = self.current_background();
         output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color.to_array()));
 
-        // Draw border
+        // Draw border - brighter on hover
         if let Some(border) = self.border_color {
+            let border_color = if self.state.hovered {
+                theme::BORDER_LIGHT
+            } else {
+                border
+            };
             output.spline_vertices.extend(create_rect_outline_vertices(
                 &bounds,
-                border.to_array(),
+                border_color.to_array(),
                 1.0,
             ));
         }
 
-        // Draw label text
+        // Top highlight line when hovered (subtle depth effect)
+        if self.state.hovered && self.border_color.is_some() {
+            let highlight_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, 1.0);
+            output.spline_vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                theme::BORDER_LIGHT.with_alpha(0.5).to_array(),
+            ));
+        }
+
+        // Draw label text - brighter on hover
         let line_height = text_renderer.line_height();
         let display_text = if let Some(ref badge) = self.badge {
             format!("{} ({})", self.label, badge)
@@ -157,11 +172,17 @@ impl Widget for Button {
         let text_x = bounds.x + (bounds.width - text_width) / 2.0;
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
+        let text_color = if self.state.hovered || self.state.pressed {
+            theme::TEXT_BRIGHT
+        } else {
+            self.text_color
+        };
+
         output.text_vertices.extend(text_renderer.layout_text(
             &display_text,
             text_x,
             text_y,
-            self.text_color.to_array(),
+            text_color.to_array(),
         ));
 
         output

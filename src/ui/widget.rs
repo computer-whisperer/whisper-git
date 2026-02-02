@@ -219,27 +219,35 @@ pub fn create_dashed_rect_outline_vertices(
     vertices
 }
 
-/// Theme colors from UX spec
+/// Theme colors - Classic dark mode
 pub mod theme {
     use crate::ui::Color;
 
-    // Dark theme (default)
-    pub const BACKGROUND: Color = Color::rgba(0.059, 0.090, 0.165, 1.0);      // #0F172A
-    pub const SURFACE: Color = Color::rgba(0.118, 0.161, 0.231, 1.0);         // #1E293B
-    pub const BORDER: Color = Color::rgba(0.200, 0.255, 0.333, 1.0);          // #334155
-    pub const TEXT: Color = Color::rgba(0.973, 0.980, 0.988, 1.0);            // #F8FAFC
-    pub const TEXT_MUTED: Color = Color::rgba(0.580, 0.639, 0.722, 1.0);      // #94A3B8
+    // Classic dark theme - neutral grays, no blue tint
+    pub const BACKGROUND: Color = Color::rgba(0.051, 0.051, 0.051, 1.0);      // #0d0d0d - near black
+    pub const SURFACE: Color = Color::rgba(0.102, 0.102, 0.102, 1.0);         // #1a1a1a - panels
+    pub const SURFACE_RAISED: Color = Color::rgba(0.145, 0.145, 0.145, 1.0);  // #252525 - elevated elements
+    pub const SURFACE_HOVER: Color = Color::rgba(0.180, 0.180, 0.180, 1.0);   // #2e2e2e - hover states
+    pub const BORDER: Color = Color::rgba(0.200, 0.200, 0.200, 1.0);          // #333333 - subtle borders
+    pub const BORDER_LIGHT: Color = Color::rgba(0.250, 0.250, 0.250, 1.0);    // #404040 - emphasized borders
+    pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0);            // #e0e0e0 - primary text
+    pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0);     // #f0f0f0 - emphasized text
+    pub const TEXT_MUTED: Color = Color::rgba(0.502, 0.502, 0.502, 1.0);      // #808080 - secondary text
 
-    // Status colors
-    pub const STATUS_CLEAN: Color = Color::rgba(0.133, 0.773, 0.369, 1.0);    // #22C55E (Green)
-    pub const STATUS_BEHIND: Color = Color::rgba(0.961, 0.620, 0.043, 1.0);   // #F59E0B (Amber)
-    pub const STATUS_DIRTY: Color = Color::rgba(0.937, 0.267, 0.267, 1.0);    // #EF4444 (Red)
-    pub const STATUS_AHEAD: Color = Color::rgba(0.231, 0.510, 0.965, 1.0);    // #3B82F6 (Blue)
+    // Status colors - slightly desaturated for dark theme
+    pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);    // #4CAF50 (Green)
+    pub const STATUS_BEHIND: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);   // #FF9800 (Orange)
+    pub const STATUS_DIRTY: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);    // #EF5350 (Red)
+    pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);    // #42A5F5 (Blue)
 
-    // Branch colors
-    pub const BRANCH_PRIMARY: Color = Color::rgba(0.231, 0.510, 0.965, 1.0);  // #3B82F6 (Blue)
-    pub const BRANCH_FEATURE: Color = Color::rgba(0.133, 0.773, 0.369, 1.0);  // #22C55E (Green)
-    pub const BRANCH_RELEASE: Color = Color::rgba(0.961, 0.620, 0.043, 1.0);  // #F59E0B (Amber)
-    pub const BRANCH_HOTFIX: Color = Color::rgba(0.659, 0.333, 0.969, 1.0);   // #A855F7 (Purple)
-    pub const BRANCH_REMOTE: Color = Color::rgba(0.392, 0.455, 0.545, 1.0);   // #64748B (Slate)
+    // Branch colors - vibrant but balanced
+    pub const BRANCH_PRIMARY: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);  // #42A5F5 (Blue)
+    pub const BRANCH_FEATURE: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);  // #4CAF50 (Green)
+    pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);  // #FF9800 (Orange)
+    pub const BRANCH_HOTFIX: Color = Color::rgba(0.671, 0.396, 0.859, 1.0);   // #AB65DB (Purple)
+    pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0);   // #9e9e9e (Gray)
+
+    // Accent color for selections and focus
+    pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);          // #42A5F5 (Blue)
+    pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.3);    // Blue at 30% opacity
 }

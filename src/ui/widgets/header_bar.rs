@@ -163,10 +163,10 @@ impl Widget for HeaderBar {
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
-        // Background
+        // Background - elevated surface for header prominence
         output.spline_vertices.extend(create_rect_vertices(
             &bounds,
-            theme::SURFACE.to_array(),
+            theme::SURFACE_RAISED.to_array(),
         ));
 
         let line_height = text_renderer.line_height();
@@ -226,28 +226,39 @@ impl Widget for HeaderBar {
         };
         output.extend(commit_btn.layout(text_renderer, commit_bounds));
 
-        // Help button
+        // Help button - icon style
         let help_y = help_bounds.y + (help_bounds.height - line_height) / 2.0;
         output.spline_vertices.extend(create_rect_vertices(
             &help_bounds,
             theme::SURFACE.to_array(),
         ));
+        use crate::ui::widget::create_rect_outline_vertices;
+        output.spline_vertices.extend(create_rect_outline_vertices(
+            &help_bounds,
+            theme::BORDER.to_array(),
+            1.0,
+        ));
         output.text_vertices.extend(text_renderer.layout_text(
             "?",
-            help_bounds.x + (help_bounds.width - 10.0) / 2.0,
+            help_bounds.x + (help_bounds.width - text_renderer.char_width()) / 2.0,
             help_y,
             theme::TEXT_MUTED.to_array(),
         ));
 
-        // Settings button
+        // Settings button - icon style
         let settings_y = settings_bounds.y + (settings_bounds.height - line_height) / 2.0;
         output.spline_vertices.extend(create_rect_vertices(
             &settings_bounds,
             theme::SURFACE.to_array(),
         ));
+        output.spline_vertices.extend(create_rect_outline_vertices(
+            &settings_bounds,
+            theme::BORDER.to_array(),
+            1.0,
+        ));
         output.text_vertices.extend(text_renderer.layout_text(
             "=",
-            settings_bounds.x + (settings_bounds.width - 10.0) / 2.0,
+            settings_bounds.x + (settings_bounds.width - text_renderer.char_width()) / 2.0,
             settings_y,
             theme::TEXT_MUTED.to_array(),
         ));

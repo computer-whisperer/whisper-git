@@ -597,11 +597,11 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos placeholder (just draw border for now)
+    // Secondary repos placeholder
     use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme};
     output.spline_vertices.extend(create_rect_vertices(
         &layout.secondary_repos,
-        theme::BACKGROUND.to_array(),
+        theme::SURFACE.to_array(),
     ));
     output.spline_vertices.extend(create_rect_outline_vertices(
         &layout.secondary_repos,
@@ -611,8 +611,8 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Title for secondary repos placeholder
     output.text_vertices.extend(state.text_renderer.layout_text(
         "Secondary Repos (Coming Soon)",
-        layout.secondary_repos.x + 8.0,
-        layout.secondary_repos.y + 8.0,
+        layout.secondary_repos.x + 12.0,
+        layout.secondary_repos.y + 12.0,
         theme::TEXT_MUTED.to_array(),
     ));
 
@@ -630,8 +630,8 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     )
     .context("Failed to create command buffer")?;
 
-    // Dark background color from UX spec
-    let bg_color = [0.059f32, 0.090, 0.165, 1.0]; // #0F172A
+    // Classic dark mode background
+    let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
 
     builder
         .begin_render_pass(

@@ -1,6 +1,6 @@
 # Whisper-Git UX Design
 
-**Version:** 1.1
+**Version:** 1.2
 **Date:** February 2026
 
 ---
@@ -128,13 +128,13 @@ Merge commits use a double-ring indicator to distinguish them visually.
 
 | Color | Hex | Usage |
 |-------|-----|-------|
-| Blue | #3B82F6 | Primary branch (main/master) |
-| Green | #22C55E | Feature branches |
-| Amber | #F59E0B | Release branches |
-| Purple | #A855F7 | Hotfix branches |
-| Slate | #64748B | Remote tracking refs |
+| Blue | #42A5F5 | Primary branch (main/master) |
+| Green | #4CAF50 | Feature branches |
+| Orange | #FF9800 | Release branches |
+| Purple | #AB65DB | Hotfix branches |
+| Gray | #9E9E9E | Remote tracking refs |
 
-Branch lines use 3px stroke for the main branch, 2px for others.
+Branch lines use 3px stroke width. Commit nodes are 7px radius (14px diameter).
 
 ### The Working Directory Node
 
@@ -373,10 +373,10 @@ Vim-style keys are the primary navigation method, but arrow keys work everywhere
 
 | Status | Color | Hex | Badge |
 |--------|-------|-----|-------|
-| Clean | Green | #22C55E | `[OK]` |
-| Behind | Amber | #F59E0B | `[-N]` |
-| Dirty | Red | #EF4444 | `[!!]` |
-| Ahead | Blue | #3B82F6 | `[+N]` |
+| Clean | Green | #4CAF50 | `[OK]` |
+| Behind | Orange | #FF9800 | `[-N]` |
+| Dirty | Red | #EF5350 | `[!!]` |
+| Ahead | Blue | #42A5F5 | `[+N]` |
 
 ### Attention Levels
 
@@ -387,16 +387,21 @@ Vim-style keys are the primary navigation method, but arrow keys work everywhere
 
 ### Themes
 
-**Dark (default):**
+**Dark (default) — Classic dark mode with neutral grays:**
 ```
-Background:    #0F172A
-Surface:       #1E293B
-Border:        #334155
-Text:          #F8FAFC
-Text muted:    #94A3B8
+Background:      #0D0D0D    Near black base
+Surface:         #1A1A1A    Panel backgrounds
+Surface Raised:  #252525    Elevated elements (header, list headers)
+Surface Hover:   #2E2E2E    Hover states
+Border:          #333333    Subtle borders
+Border Light:    #404040    Emphasized borders
+Text:            #E0E0E0    Primary text
+Text Bright:     #F0F0F0    Emphasized text
+Text Muted:      #808080    Secondary text
+Accent:          #42A5F5    Focus states, primary actions
 ```
 
-**Light:**
+**Light (planned):**
 ```
 Background:    #F8FAFC
 Surface:       #FFFFFF
@@ -404,6 +409,13 @@ Border:        #E2E8F0
 Text:          #0F172A
 Text muted:    #64748B
 ```
+
+### Typography Hierarchy
+
+- **Commit SHA**: Muted gray (#808080) — de-emphasized
+- **Commit message**: Primary text (#E0E0E0), bright when selected (#F0F0F0)
+- **Branch labels**: Colored by branch type
+- **Section headers**: Bright text (#F0F0F0) on elevated surface
 
 ---
 
@@ -549,3 +561,45 @@ These features require separate design efforts:
 | See staging work | Dedicated panel with LLM suggestions |
 | Navigate by keyboard | Vim-style keys, command palette |
 | Navigate by mouse | Click, right-click menus, drag |
+
+---
+
+## Changelog
+
+### Version 1.2 (2026-02-02)
+
+**Theme overhaul — Classic dark mode:**
+- Replaced slate blue palette with neutral grays
+- Background changed from #0F172A to #0D0D0D (near black)
+- Added surface elevation levels: Surface, Surface Raised, Surface Hover
+- Updated all status and branch colors for better contrast on neutral background
+
+**Commit graph improvements:**
+- Increased node radius from 6px to 7px
+- Increased line width from 2.5px to 3px
+- Increased lane width from 36px to 40px
+- Increased row height from 32px to 34px
+- SHA now renders in muted gray for de-emphasis
+- Commit message uses bright text when selected
+
+**Working directory node:**
+- Added subtle red background fill
+- Thicker dashed border (2px)
+- Improved dashed connection line to HEAD
+
+**Widget improvements:**
+- Text input: Thicker focus border, accent-colored cursor, elevated background when focused
+- File list: Header has elevated background, centered empty state, better entry spacing
+- Buttons: Brighter border and text on hover, subtle top highlight effect
+- Header bar: Help/Settings buttons now have visible borders
+
+**Typography hierarchy:**
+- Defined levels: muted (SHA), normal (messages), bright (selected/headers)
+- Section headers use bright text on elevated surface
+
+### Version 1.1
+
+- Initial implementation of UX phases 1-6
+- Input system, widget framework, layout system
+- Header bar, text input, text area, file list
+- Staging well, commit graph with spline rendering

@@ -229,30 +229,32 @@ impl Widget for TextInput {
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+        let padding = 12.0;
 
-        // Background
+        // Background - slightly raised when focused
         let bg_color = if self.state.focused {
-            theme::SURFACE.lighten(0.02)
+            theme::SURFACE_RAISED
         } else {
             theme::SURFACE
         };
         output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color.to_array()));
 
-        // Border
+        // Border - accent color when focused, thicker
         let border_color = if self.state.focused {
-            theme::STATUS_AHEAD
+            theme::ACCENT
         } else {
             theme::BORDER
         };
+        let border_thickness = if self.state.focused { 2.0 } else { 1.0 };
         output.spline_vertices.extend(create_rect_outline_vertices(
             &bounds,
             border_color.to_array(),
-            1.0,
+            border_thickness,
         ));
 
         let line_height = text_renderer.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
-        let text_x = bounds.x + 8.0;
+        let text_x = bounds.x + padding;
 
         // Text content or placeholder
         if self.text.is_empty() {
@@ -263,29 +265,35 @@ impl Widget for TextInput {
                 theme::TEXT_MUTED.to_array(),
             ));
         } else {
+            // Use bright text when focused
+            let text_color = if self.state.focused {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT
+            };
             output.text_vertices.extend(text_renderer.layout_text(
                 &self.text,
                 text_x,
                 text_y,
-                theme::TEXT.to_array(),
+                text_color.to_array(),
             ));
         }
 
-        // Cursor (when focused)
+        // Cursor (when focused) - blinking would be nice but requires animation
         if self.state.focused {
             let char_width = text_renderer.char_width();
             let cursor_x = text_x + self.cursor as f32 * char_width;
-            let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
+            let cursor_rect = Rect::new(cursor_x, bounds.y + 6.0, 2.0, bounds.height - 12.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &cursor_rect,
-                theme::TEXT.to_array(),
+                theme::ACCENT.to_array(),
             ));
         }
 
-        // Character count (for max_length)
+        // Character count (for max_length) - show in corner
         if self.max_length > 0 {
             let count_text = format!("{}", self.text.len());
-            let count_x = bounds.right() - text_renderer.measure_text(&count_text) - 8.0;
+            let count_x = bounds.right() - text_renderer.measure_text(&count_text) - padding;
             output.text_vertices.extend(text_renderer.layout_text(
                 &count_text,
                 count_x,
