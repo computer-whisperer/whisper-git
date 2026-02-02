@@ -1,6 +1,12 @@
+mod git;
+mod text;
+
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use crate::git::{CommitInfo, GitRepo};
+use crate::text::TextRenderer;
 
 /// Convert linear color value to sRGB
 fn linear_to_srgb(linear: f32) -> f32 {
@@ -92,6 +98,8 @@ struct App {
     instance: Arc<Instance>,
     cli_args: CliArgs,
     renderer: Option<Renderer>,
+    repo: Option<GitRepo>,
+    commits: Vec<CommitInfo>,
 }
 
 struct Renderer {
@@ -107,6 +115,7 @@ struct Renderer {
     recreate_swapchain: bool,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
+    text_renderer: TextRenderer,
 }
 
 impl App {
@@ -125,10 +134,29 @@ impl App {
         )
         .context("Failed to create Vulkan instance")?;
 
+        // Try to open the repository
+        let repo_path = cli_args.repo.as_deref().unwrap_or(".".as_ref());
+        let (repo, commits) = match GitRepo::open(repo_path) {
+            Ok(repo) => {
+                let commits = repo.recent_commits(20).unwrap_or_default();
+                println!("Loaded {} commits from {:?}", commits.len(), repo.workdir());
+                for commit in &commits {
+                    println!("  {} {}", commit.short_id, commit.summary);
+                }
+                (Some(repo), commits)
+            }
+            Err(e) => {
+                eprintln!("Warning: Could not open repository: {e}");
+                (None, Vec::new())
+            }
+        };
+
         Ok(Self {
             instance,
             cli_args,
             renderer: None,
+            repo,
+            commits,
         })
     }
 
@@ -252,6 +280,33 @@ impl App {
         .context("Failed to create render pass")?;
 
         let framebuffers = create_framebuffers(&images, &render_pass)?;
+
+        // Create text renderer (uploads font atlas)
+        let mut upload_builder = AutoCommandBufferBuilder::primary(
+            command_buffer_allocator.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .context("Failed to create upload command buffer")?;
+
+        let text_renderer = TextRenderer::new(
+            memory_allocator.clone(),
+            render_pass.clone(),
+            &mut upload_builder,
+        )
+        .context("Failed to create text renderer")?;
+
+        // Submit font atlas upload
+        let upload_buffer = upload_builder.build().context("Failed to build upload buffer")?;
+        let upload_future = sync::now(device.clone())
+            .then_execute(queue.clone(), upload_buffer)
+            .context("Failed to execute upload")?
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)
+            .context("Failed to flush upload")?;
+
+        upload_future.wait(None).context("Failed to wait for upload")?;
+
         let previous_frame_end = Some(sync::now(device.clone()).boxed());
 
         self.renderer = Some(Renderer {
@@ -267,6 +322,7 @@ impl App {
             recreate_swapchain: false,
             previous_frame_end,
             frame_count: 0,
+            text_renderer,
         });
 
         Ok(())
@@ -322,14 +378,14 @@ impl ApplicationHandler for App {
                 renderer.recreate_swapchain = true;
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = renderer.draw() {
+                if let Err(e) = renderer.draw(&self.commits) {
                     eprintln!("Draw error: {e:?}");
                 }
 
                 // Screenshot mode: capture after a few frames for stability
                 if let Some(ref screenshot_path) = self.cli_args.screenshot {
                     if renderer.frame_count == 3 {
-                        match renderer.capture_screenshot() {
+                        match renderer.capture_screenshot(&self.commits) {
                             Ok(img) => {
                                 if let Err(e) = img.save(screenshot_path) {
                                     eprintln!("Failed to save screenshot: {e}");
@@ -358,7 +414,9 @@ impl ApplicationHandler for App {
 }
 
 impl Renderer {
-    fn draw(&mut self) -> Result<()> {
+    fn draw(&mut self, commits: &[CommitInfo]) -> Result<()> {
+        use vulkano::pipeline::graphics::viewport::Viewport;
+
         self.previous_frame_end
             .as_mut()
             .unwrap()
@@ -382,6 +440,46 @@ impl Renderer {
             self.recreate_swapchain = true;
         }
 
+        // Build text vertices for commits
+        let mut all_vertices = Vec::new();
+        let line_height = self.text_renderer.line_height();
+        let mut y = 40.0; // Start with some padding
+
+        // Title
+        all_vertices.extend(self.text_renderer.layout_text(
+            "Recent Commits",
+            20.0,
+            y,
+            [0.9, 0.9, 0.95, 1.0],
+        ));
+        y += line_height * 1.5;
+
+        // Commits
+        for commit in commits.iter().take(15) {
+            let text = format!("{} {}", commit.short_id, commit.summary);
+            // Truncate long lines
+            let text = if text.len() > 80 {
+                format!("{}...", &text[..77])
+            } else {
+                text
+            };
+
+            all_vertices.extend(self.text_renderer.layout_text(
+                &text,
+                20.0,
+                y,
+                [0.7, 0.75, 0.8, 1.0],
+            ));
+            y += line_height;
+        }
+
+        let extent = self.swapchain.image_extent();
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: [extent[0] as f32, extent[1] as f32],
+            depth_range: 0.0..=1.0,
+        };
+
         let mut builder = AutoCommandBufferBuilder::primary(
             self.command_buffer_allocator.clone(),
             self.queue.queue_family_index(),
@@ -399,7 +497,15 @@ impl Renderer {
                 },
                 Default::default(),
             )
-            .context("Failed to begin render pass")?
+            .context("Failed to begin render pass")?;
+
+        // Draw text if we have vertices
+        if !all_vertices.is_empty() {
+            let vertex_buffer = self.text_renderer.create_vertex_buffer(all_vertices)?;
+            self.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
+        }
+
+        builder
             .end_render_pass(Default::default())
             .context("Failed to end render pass")?;
 
@@ -436,7 +542,9 @@ impl Renderer {
         Ok(())
     }
 
-    fn capture_screenshot(&mut self) -> Result<image::RgbaImage> {
+    fn capture_screenshot(&mut self, commits: &[CommitInfo]) -> Result<image::RgbaImage> {
+        use vulkano::pipeline::graphics::viewport::Viewport;
+
         // Wait for previous frame to complete
         self.previous_frame_end
             .as_mut()
@@ -467,6 +575,41 @@ impl Renderer {
         )
         .context("Failed to create screenshot buffer")?;
 
+        // Build text vertices (same as draw)
+        let mut all_vertices = Vec::new();
+        let line_height = self.text_renderer.line_height();
+        let mut y = 40.0;
+
+        all_vertices.extend(self.text_renderer.layout_text(
+            "Recent Commits",
+            20.0,
+            y,
+            [0.9, 0.9, 0.95, 1.0],
+        ));
+        y += line_height * 1.5;
+
+        for commit in commits.iter().take(15) {
+            let text = format!("{} {}", commit.short_id, commit.summary);
+            let text = if text.len() > 80 {
+                format!("{}...", &text[..77])
+            } else {
+                text
+            };
+            all_vertices.extend(self.text_renderer.layout_text(
+                &text,
+                20.0,
+                y,
+                [0.7, 0.75, 0.8, 1.0],
+            ));
+            y += line_height;
+        }
+
+        let viewport = Viewport {
+            offset: [0.0, 0.0],
+            extent: [width as f32, height as f32],
+            depth_range: 0.0..=1.0,
+        };
+
         // Acquire an image and render, then copy to buffer
         let (image_index, _suboptimal, acquire_future) =
             acquire_next_image(self.swapchain.clone(), None)
@@ -480,7 +623,7 @@ impl Renderer {
         )
         .context("Failed to create command buffer")?;
 
-        // Render the frame
+        // Render the frame with text
         builder
             .begin_render_pass(
                 RenderPassBeginInfo {
@@ -491,7 +634,14 @@ impl Renderer {
                 },
                 Default::default(),
             )
-            .context("Failed to begin render pass")?
+            .context("Failed to begin render pass")?;
+
+        if !all_vertices.is_empty() {
+            let vertex_buffer = self.text_renderer.create_vertex_buffer(all_vertices)?;
+            self.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
+        }
+
+        builder
             .end_render_pass(Default::default())
             .context("Failed to end render pass")?;
 
