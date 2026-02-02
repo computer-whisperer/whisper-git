@@ -70,6 +70,7 @@ pub struct TextRenderer {
     atlas_width: f32,
     atlas_height: f32,
     line_height: f32,
+    ascent: f32,
 }
 
 mod vs {
@@ -137,6 +138,7 @@ impl TextRenderer {
         let scale = PxScale::from(24.0);
         let scaled_font = font.as_scaled(scale);
         let line_height = scaled_font.height();
+        let ascent = scaled_font.ascent();
 
         // Characters to include in atlas
         let chars: Vec<char> = (32u8..127u8).map(|c| c as char).collect();
@@ -333,10 +335,15 @@ impl TextRenderer {
             atlas_width: atlas_width as f32,
             atlas_height: atlas_height as f32,
             line_height,
+            ascent,
         })
     }
 
     /// Create vertices for a text string
+    ///
+    /// The y parameter is the TOP of the text line. Text is positioned using
+    /// the font's ascent to compute the baseline, ensuring proper alignment
+    /// of characters with different heights.
     pub fn layout_text(
         &self,
         text: &str,
@@ -346,14 +353,15 @@ impl TextRenderer {
     ) -> Vec<TextVertex> {
         let mut vertices = Vec::new();
         let mut cursor_x = x;
-        let cursor_y = y;
+        // Compute baseline from top of line: baseline = top + ascent
+        let baseline_y = y + self.ascent;
 
         for c in text.chars() {
             if let Some(glyph) = self.glyphs.get(&c) {
                 if glyph.width > 0.0 {
-                    // Quad positions
+                    // Quad positions: bearing_y is relative to baseline (negative = above)
                     let x0 = cursor_x + glyph.bearing_x;
-                    let y0 = cursor_y + glyph.bearing_y;
+                    let y0 = baseline_y + glyph.bearing_y;
                     let x1 = x0 + glyph.width;
                     let y1 = y0 + glyph.height;
 
@@ -383,6 +391,25 @@ impl TextRenderer {
     /// Get line height for text layout
     pub fn line_height(&self) -> f32 {
         self.line_height
+    }
+
+    /// Get character width (advance) for a monospace font
+    ///
+    /// For a monospace font, all characters have the same advance.
+    /// Returns the advance of 'M' as a representative character.
+    pub fn char_width(&self) -> f32 {
+        self.glyphs
+            .get(&'M')
+            .map(|g| g.advance)
+            .unwrap_or(14.0) // Fallback for 24px font
+    }
+
+    /// Measure the width of a text string in pixels
+    pub fn measure_text(&self, text: &str) -> f32 {
+        text.chars()
+            .filter_map(|c| self.glyphs.get(&c))
+            .map(|g| g.advance)
+            .sum()
     }
 
     /// Create a vertex buffer from vertices

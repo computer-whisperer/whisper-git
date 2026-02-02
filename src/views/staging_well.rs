@@ -268,15 +268,15 @@ impl StagingWell {
     }
 
     fn stage_all_button_bounds(&self, buttons: Rect) -> Rect {
-        Rect::new(buttons.x, buttons.y + 8.0, 100.0, 28.0)
+        Rect::new(buttons.x, buttons.y + 8.0, 130.0, 28.0)
     }
 
     fn unstage_all_button_bounds(&self, buttons: Rect) -> Rect {
-        Rect::new(buttons.x + 108.0, buttons.y + 8.0, 100.0, 28.0)
+        Rect::new(buttons.x + 138.0, buttons.y + 8.0, 150.0, 28.0)
     }
 
     fn commit_button_bounds(&self, buttons: Rect) -> Rect {
-        Rect::new(buttons.right() - 100.0, buttons.y + 8.0, 100.0, 28.0)
+        Rect::new(buttons.right() - 110.0, buttons.y + 8.0, 110.0, 28.0)
     }
 
     /// Layout the staging well
@@ -312,7 +312,7 @@ impl StagingWell {
         let char_count = format!("{}/72", self.subject_input.text().len());
         output.text_vertices.extend(text_renderer.layout_text(
             &char_count,
-            bounds.right() - char_count.len() as f32 * 10.0 - 8.0,
+            bounds.right() - text_renderer.measure_text(&char_count) - 8.0,
             title_y,
             theme::TEXT_MUTED.to_array(),
         ));

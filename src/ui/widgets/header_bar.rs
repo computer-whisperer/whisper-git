@@ -75,7 +75,7 @@ impl HeaderBar {
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let button_height = bounds.height - 8.0;
         let button_y = bounds.y + 4.0;
-        let button_width = 80.0;
+        let button_width = 110.0; // Wide enough for "Push (+99)" at 14px/char
         let icon_button_width = 32.0;
         let gap = 8.0;
 
@@ -182,7 +182,7 @@ impl Widget for HeaderBar {
         ));
 
         // Separator
-        let sep_x = repo_x + self.repo_name.len() as f32 * 10.0 + 16.0;
+        let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 16.0;
         output.text_vertices.extend(text_renderer.layout_text(
             "|",
             sep_x,

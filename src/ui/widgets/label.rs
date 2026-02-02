@@ -81,8 +81,7 @@ impl Widget for Label {
         let line_height = text_renderer.line_height();
 
         // Calculate text width for alignment
-        // Rough estimate: ~10px per character (monospace font)
-        let text_width = self.text.len() as f32 * 10.0;
+        let text_width = text_renderer.measure_text(&self.text);
 
         let x = match self.align {
             TextAlign::Left => bounds.x,
@@ -108,7 +107,7 @@ impl Widget for Label {
 
     fn preferred_size(&self, text_renderer: &TextRenderer) -> (f32, f32) {
         let line_height = text_renderer.line_height();
-        let text_width = self.text.len() as f32 * 10.0; // Rough estimate
+        let text_width = text_renderer.measure_text(&self.text);
         (text_width, line_height)
     }
 }

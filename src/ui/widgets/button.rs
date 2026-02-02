@@ -153,7 +153,7 @@ impl Widget for Button {
             self.label.clone()
         };
 
-        let text_width = display_text.len() as f32 * 10.0;
+        let text_width = text_renderer.measure_text(&display_text);
         let text_x = bounds.x + (bounds.width - text_width) / 2.0;
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
@@ -182,7 +182,7 @@ impl Widget for Button {
         } else {
             self.label.clone()
         };
-        let text_width = text.len() as f32 * 10.0;
+        let text_width = text_renderer.measure_text(&text);
         (text_width + self.padding * 2.0, line_height + self.padding * 2.0)
     }
 }

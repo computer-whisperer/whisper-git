@@ -318,7 +318,7 @@ impl Widget for TextArea {
 
             // Draw cursor on this line
             if self.state.focused && line_idx == self.cursor_line {
-                let cursor_x = text_x + self.cursor_col as f32 * 10.0;
+                let cursor_x = text_x + self.cursor_col as f32 * text_renderer.char_width();
                 let cursor_rect = Rect::new(cursor_x, y, 2.0, line_height);
                 output.spline_vertices.extend(create_rect_vertices(
                     &cursor_rect,

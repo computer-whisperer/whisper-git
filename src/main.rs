@@ -589,7 +589,7 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
 
     // Commit graph (in graph area)
-    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
     let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
     output.text_vertices.extend(text_vertices);
@@ -711,7 +711,7 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
 
     // Commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
     let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
     output.text_vertices.extend(text_vertices);
@@ -838,7 +838,7 @@ fn capture_screenshot_offscreen(
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
 
     // Commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(commits, layout.graph);
+    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
     let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
     output.text_vertices.extend(text_vertices);

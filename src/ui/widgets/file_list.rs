@@ -311,7 +311,7 @@ impl Widget for FileList {
             // +/- counts
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
-                let stats_x = bounds.right() - stats.len() as f32 * 10.0 - 8.0;
+                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 8.0;
                 output.text_vertices.extend(text_renderer.layout_text(
                     &stats,
                     stats_x,

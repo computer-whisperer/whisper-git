@@ -273,7 +273,8 @@ impl Widget for TextInput {
 
         // Cursor (when focused)
         if self.state.focused {
-            let cursor_x = text_x + self.cursor as f32 * 10.0; // Rough estimate
+            let char_width = text_renderer.char_width();
+            let cursor_x = text_x + self.cursor as f32 * char_width;
             let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &cursor_rect,
@@ -284,7 +285,7 @@ impl Widget for TextInput {
         // Character count (for max_length)
         if self.max_length > 0 {
             let count_text = format!("{}", self.text.len());
-            let count_x = bounds.right() - count_text.len() as f32 * 10.0 - 8.0;
+            let count_x = bounds.right() - text_renderer.measure_text(&count_text) - 8.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 &count_text,
                 count_x,
