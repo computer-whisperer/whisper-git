@@ -10,11 +10,14 @@ A GPU-accelerated Git client built with Vulkano. Designed for power users who wa
 - Vulkano rendering pipeline with custom text rendering (no egui)
 - Font atlas generation from system fonts (DejaVu Sans Mono)
 - Git repository loading via git2
-- Recent commit display
+- Commit graph visualization with branch topology
+  - Lane assignment algorithm for parallel branches
+  - Bezier curves for merge/fork connections
+  - Colored lanes for visual distinction
+- Spline-based line rendering with consistent thickness
 - Screenshot capture for CI/testing (`--screenshot`)
 
 ### In Progress
-- Commit graph visualization
 - UI widget system
 
 ### Planned
@@ -60,10 +63,12 @@ src/
 │   └── screenshot.rs    # Screenshot capture to PNG
 ├── ui/
 │   ├── text.rs          # Font atlas text renderer
+│   ├── spline.rs        # Bezier curve and line renderer
 │   ├── layout.rs        # Rect, Color primitives
 │   └── widgets/         # UI components (planned)
 └── views/
-    └── commit_list.rs   # Commit list view
+    ├── commit_graph.rs  # Commit graph with branch visualization
+    └── commit_list.rs   # Simple commit list view
 ```
 
 ## Architecture
