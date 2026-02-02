@@ -1,7 +1,29 @@
 # Whisper-Git UX Design
 
-**Version:** 1.0
+**Version:** 1.1
 **Date:** February 2026
+
+---
+
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Input System** | ✓ Done | Unified keyboard/mouse events, modifier tracking |
+| **Widget Framework** | ✓ Done | Widget trait, state tracking, WidgetOutput |
+| **Layout System** | ✓ Done | Rect primitives, ScreenLayout, flex foundation |
+| **Theme System** | ✓ Done | Dark theme colors defined in `ui/widget.rs` |
+| **Header Bar** | ✓ Done | Repo name, branch, Fetch/Push/Commit buttons |
+| **Text Input** | ✓ Done | Single-line with placeholder, selection |
+| **Text Area** | ✓ Done | Multi-line for commit body |
+| **File List** | ✓ Done | Staged/unstaged with toggle, change counts |
+| **Staging Well** | ✓ Done | Full layout with subject, body, file lists |
+| **Commit Graph** | ✓ Done | Spline-rendered branch topology |
+| **Secondary Repos Panel** | Planned | Submodule/worktree cards |
+| **LLM Suggestions** | Planned | Auto-generated commit messages |
+| **Command Palette** | Planned | Fuzzy command search |
+| **Context Menus** | Planned | Right-click actions |
+| **Commit Detail View** | Planned | Full message, diff, metadata |
 
 ---
 

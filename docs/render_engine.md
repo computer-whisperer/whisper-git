@@ -8,10 +8,18 @@ Whisper Git uses Vulkano (Rust Vulkan bindings) for GPU-accelerated rendering. T
 ┌─────────────────────────────────────────────────────────────┐
 │                        Application                          │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐                     │
-│  │  Views  │  │   UI    │  │   Git   │                     │
-│  └────┬────┘  └────┬────┘  └─────────┘                     │
-│       │            │                                        │
-│       ▼            ▼                                        │
+│  │   Git   │  │  Input  │  │  Views  │                     │
+│  └─────────┘  └────┬────┘  └────┬────┘                     │
+│                    │            │                           │
+│                    ▼            ▼                           │
+│  ┌─────────────────────────────────────┐                   │
+│  │              Widgets                 │                   │
+│  │  ┌────────────┐  ┌───────────────┐  │                   │
+│  │  │ WidgetState│  │ handle_event  │  │                   │
+│  │  └────────────┘  └───────────────┘  │                   │
+│  └────────────────┬────────────────────┘                   │
+│                   │  layout() → WidgetOutput                │
+│                   ▼                                         │
 │  ┌─────────────────────────────────────┐                   │
 │  │          Vertex Generation          │                   │
 │  │     (TextVertex, SplineVertex)      │                   │
@@ -162,23 +170,73 @@ spline.cubic_to(ctrl1, ctrl2, SplinePoint::new(100.0, 100.0));
 let vertices = spline.to_vertices(16);
 ```
 
+### Widget System (`ui/widget.rs`)
+
+The widget system provides the abstraction layer between UI components and rendering:
+
+```rust
+pub trait Widget {
+    fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> bool;
+    fn update_hover(&mut self, mouse_pos: Option<(f32, f32)>, bounds: Rect);
+    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput;
+}
+
+pub struct WidgetOutput {
+    pub spline_vertices: Vec<SplineVertex>,  // Shapes, borders, backgrounds
+    pub text_vertices: Vec<TextVertex>,       // Text content
+}
+```
+
+**How widgets integrate with rendering:**
+
+1. **Event handling**: Widgets receive `InputEvent` (keyboard, mouse) and update their internal state
+2. **Hover updates**: Mouse position updates widget hover/focus states
+3. **Layout**: Widgets generate `WidgetOutput` containing both spline vertices (for shapes) and text vertices (for text)
+4. **Rendering**: Outputs are collected and rendered in order (splines first as background, text on top)
+
+**Widget State:**
+```rust
+pub struct WidgetState {
+    pub hovered: bool,
+    pub focused: bool,
+    pub pressed: bool,
+    pub enabled: bool,
+}
+```
+
+**Theme Colors** (`ui/widget.rs::theme`):
+```rust
+background: #0F172A   // Dark blue background
+surface:    #1E293B   // Lighter surface
+border:     #334155   // Slate borders
+text:       #F8FAFC   // Near-white text
+text_muted: #94A3B8   // Muted text
+primary:    #3B82F6   // Blue primary color
+```
+
 ## Render Loop
 
 Each frame follows this sequence:
 
 ```
-1. Cleanup finished GPU work
-2. Recreate swapchain if needed (resize)
-3. Acquire next swapchain image
-4. Build UI vertices:
-   - Views generate spline vertices (lines, curves)
-   - Views generate text vertices (labels)
-5. Begin render pass (clear to background color)
-6. Draw splines (background layer)
-7. Draw text (foreground layer)
-8. End render pass
-9. Submit command buffer
-10. Present swapchain image
+ 1. Cleanup finished GPU work
+ 2. Recreate swapchain if needed (resize)
+ 3. Acquire next swapchain image
+ 4. Process input events:
+    - Route InputEvent to focused widgets via handle_event()
+    - Update hover states via update_hover()
+ 5. Build layout:
+    - ScreenLayout divides screen into regions
+    - Each view/widget calls layout() with its bounds
+ 6. Collect vertices:
+    - Widgets return WidgetOutput (spline + text vertices)
+    - Views generate additional vertices (commit graph, etc.)
+ 7. Begin render pass (clear to background color)
+ 8. Draw splines (background layer - shapes, borders)
+ 9. Draw text (foreground layer - labels, content)
+10. End render pass
+11. Submit command buffer
+12. Present swapchain image
 ```
 
 ## Adding New Rendering Features
@@ -202,16 +260,50 @@ Each frame follows this sequence:
 
 4. **Integrate** into the render loop in `main.rs`
 
+### Adding a New Widget
+
+1. Create `ui/widgets/my_widget.rs`
+2. Implement the `Widget` trait:
+   ```rust
+   impl Widget for MyWidget {
+       fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> bool {
+           // Handle input, return true if consumed
+       }
+
+       fn update_hover(&mut self, mouse_pos: Option<(f32, f32)>, bounds: Rect) {
+           // Update hover state
+       }
+
+       fn layout(&self, text: &TextRenderer, bounds: Rect) -> WidgetOutput {
+           // Generate vertices for rendering
+       }
+   }
+   ```
+3. Add to `ui/widgets/mod.rs`
+4. Use within a view or compose into larger widgets
+
 ### Adding a New View
 
 1. Create `views/my_view.rs`
-2. Implement layout functions:
+2. For simple views, implement layout functions:
    ```rust
    pub fn layout_splines(&self, data: &Data, bounds: Rect) -> Vec<SplineVertex>
    pub fn layout_text(&self, text: &TextRenderer, data: &Data, bounds: Rect) -> Vec<TextVertex>
    ```
-3. Add to `views/mod.rs`
-4. Use in `main.rs` draw_frame
+3. For interactive views, implement `Widget` or compose multiple widgets:
+   ```rust
+   pub struct MyView {
+       widgets: Vec<Box<dyn Widget>>,
+   }
+
+   impl Widget for MyView {
+       fn layout(&self, text: &TextRenderer, bounds: Rect) -> WidgetOutput {
+           // Combine outputs from child widgets
+       }
+   }
+   ```
+4. Add to `views/mod.rs`
+5. Integrate into `main.rs` layout and event handling
 
 ### CommitGraphView (`views/commit_graph.rs`)
 
