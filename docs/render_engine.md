@@ -1,6 +1,6 @@
 # Render Engine Architecture
 
-Whisper uses Vulkano (Rust Vulkan bindings) for GPU-accelerated rendering. This document describes the rendering architecture and how to extend it.
+Whisper Git uses Vulkano (Rust Vulkan bindings) for GPU-accelerated rendering. This document describes the rendering architecture and how to extend it.
 
 ## Overview
 

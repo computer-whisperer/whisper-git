@@ -1,4 +1,4 @@
-# Whisper
+# Whisper Git
 
 A GPU-accelerated Git client built with Vulkano. Designed for power users who want visualization of advanced Git features like worktrees and submodules.
 

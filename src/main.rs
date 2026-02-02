@@ -22,8 +22,8 @@ use winit::{
 
 use crate::git::{CommitInfo, GitRepo};
 use crate::renderer::{capture_to_buffer, SurfaceManager, VulkanContext};
-use crate::ui::{Rect, TextRenderer};
-use crate::views::CommitListView;
+use crate::ui::{Rect, SplineRenderer, TextRenderer};
+use crate::views::{CommitGraphView, CommitListView};
 
 // ============================================================================
 // CLI
@@ -82,7 +82,9 @@ struct AppState {
     ctx: VulkanContext,
     surface: SurfaceManager,
     text_renderer: TextRenderer,
+    spline_renderer: SplineRenderer,
     commit_view: CommitListView,
+    commit_graph_view: CommitGraphView,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
 }
@@ -119,7 +121,7 @@ impl App {
             event_loop
                 .create_window(
                     Window::default_attributes()
-                        .with_title("Whisper - Git Client")
+                        .with_title("Whisper Git")
                         .with_inner_size(winit::dpi::LogicalSize::new(1280, 720)),
                 )
                 .context("Failed to create window")?,
@@ -181,6 +183,12 @@ impl App {
         )
         .context("Failed to create text renderer")?;
 
+        let spline_renderer = SplineRenderer::new(
+            ctx.memory_allocator.clone(),
+            render_pass.clone(),
+        )
+        .context("Failed to create spline renderer")?;
+
         // Submit font atlas upload
         let upload_buffer = upload_builder.build().context("Failed to build upload buffer")?;
         let upload_future = sync::now(ctx.device.clone())
@@ -193,12 +201,18 @@ impl App {
 
         let previous_frame_end = Some(sync::now(ctx.device.clone()).boxed());
 
+        // Create commit graph view and initialize layout
+        let mut commit_graph_view = CommitGraphView::new();
+        commit_graph_view.update_layout(&self.commits);
+
         self.state = Some(AppState {
             window,
             ctx,
             surface: surface_mgr,
             text_renderer,
+            spline_renderer,
             commit_view: CommitListView::new(),
+            commit_graph_view,
             previous_frame_end,
             frame_count: 0,
         });
@@ -299,7 +313,11 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
     // Build UI
     let extent = state.surface.extent();
     let bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let vertices = state.commit_view.layout(&state.text_renderer, commits, bounds);
+
+    // Generate spline vertices for commit graph
+    let spline_vertices = state.commit_graph_view.layout_splines(commits, bounds);
+    // Generate text vertices for commit graph
+    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, bounds);
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -327,9 +345,15 @@ fn draw_frame(state: &mut AppState, commits: &[CommitInfo]) -> Result<()> {
         )
         .context("Failed to begin render pass")?;
 
-    // Draw text
-    if !vertices.is_empty() {
-        let vertex_buffer = state.text_renderer.create_vertex_buffer(vertices)?;
+    // Draw splines first (background)
+    if !spline_vertices.is_empty() {
+        let spline_buffer = state.spline_renderer.create_vertex_buffer(spline_vertices)?;
+        state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
+    }
+
+    // Draw text on top
+    if !text_vertices.is_empty() {
+        let vertex_buffer = state.text_renderer.create_vertex_buffer(text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
     }
 
@@ -378,7 +402,11 @@ fn capture_screenshot(state: &mut AppState, commits: &[CommitInfo]) -> Result<im
     // Build UI
     let extent = state.surface.extent();
     let bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let vertices = state.commit_view.layout(&state.text_renderer, commits, bounds);
+
+    // Generate spline vertices for commit graph
+    let spline_vertices = state.commit_graph_view.layout_splines(commits, bounds);
+    // Generate text vertices for commit graph
+    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, bounds);
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -411,8 +439,15 @@ fn capture_screenshot(state: &mut AppState, commits: &[CommitInfo]) -> Result<im
         )
         .context("Failed to begin render pass")?;
 
-    if !vertices.is_empty() {
-        let vertex_buffer = state.text_renderer.create_vertex_buffer(vertices)?;
+    // Draw splines first (background)
+    if !spline_vertices.is_empty() {
+        let spline_buffer = state.spline_renderer.create_vertex_buffer(spline_vertices)?;
+        state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
+    }
+
+    // Draw text on top
+    if !text_vertices.is_empty() {
+        let vertex_buffer = state.text_renderer.create_vertex_buffer(text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
     }
 
