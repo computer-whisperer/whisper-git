@@ -8,6 +8,8 @@ Existing git visualization tools fall into two camps: terminal tools that show t
 
 Most git GUIs treat the commit graph as a decoration next to a commit list. We flip that relationship. The graph is primary—a navigable, zoomable landscape where commits are places you can visit, not rows you scroll past.
 
+**This is not just a viewer—it's an editor.** You can stage files, write commits, and push to remotes without leaving the graph interface. The working directory state is always visible, not hidden in a separate panel.
+
 ### Core Metaphor: The Frayed Rope
 
 Most repositories aren't sprawling networks—they're **frayed ropes**. A main strand runs through history, with occasional parallel strands that split off and rejoin. The interesting questions aren't "what's the shape?" but:
@@ -206,6 +208,293 @@ When viewing a commit that changed submodule references:
 - Show old→new SHA transition
 - One-click to see what commits that represents
 - Warning if the update skipped commits (non-fast-forward)
+
+---
+
+## Working Directory & Editing
+
+Whisper-git is an editor, not just a viewer. **The working directory is the primary view when you have uncommitted changes.**
+
+### Layout Philosophy: Work First, History Second
+
+When your working directory is clean, the commit graph dominates. But when you have changes, the layout shifts:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│                     Working Directory (60%)                         │
+│                                                                     │
+│   Staged / Modified / Untracked files                              │
+│   Diff view for selected file                                       │
+│                                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│                     Commit Graph (40%)                              │
+│                                                                     │
+│   Recent commits, current position                                  │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**The Principle:** What you're doing now is more important than what you did before. History provides context, but your current work is the focus.
+
+**Automatic Layout Switching:**
+- **Clean working directory**: Graph takes full space, minimal status indicator
+- **Changes present**: Split view, working directory on top (or left, configurable)
+- **Commit dialog open**: Commit interface takes focus, graph fades to context
+
+**Manual Override:**
+- `Tab`: Toggle between working directory focus and graph focus
+- `1`: Force graph-only view (history mode)
+- `2`: Force split view (working mode)
+
+### Working Directory Panel (Primary)
+
+When changes exist, this is the main interface—a two-pane view with file list and live diff:
+
+```
+┌─ Working Directory ──────────────────────────────────────────────────────────┐
+│                                                                              │
+│  Staged (2)                               │ ┌─ src/auth/login.rs ──────────┐│
+│    ✓ src/auth/login.rs    +45 -12  ←      │ │ @@ -15,6 +15,14 @@           ││
+│    ✓ src/auth/mod.rs      +3  -0          │ │   fn authenticate() {        ││
+│                                           │ │ +     validate_token()?;     ││
+│  Modified (3)                             │ │ +     refresh_session();     ││
+│    ● src/main.rs          +8  -2          │ │       load_user_data()       ││
+│    ● src/config.rs        +15 -5          │ │   }                          ││
+│    ● tests/auth_test.rs   +30 -0          │ │                              ││
+│                                           │ │ @@ -45,3 +53,12 @@           ││
+│  Untracked (2)                            │ │   fn logout() {              ││
+│    ? src/auth/oauth.rs                    │ │ +     clear_session();       ││
+│    ? notes.txt                            │ │ +     invalidate_token();    ││
+│                                           │ │   }                          ││
+│                                           │ └────────────────────────────────┘│
+│  ─────────────────────────────────────────┴──────────────────────────────────│
+│  [a] Stage All   [c] Commit   [z] Stash   [d] Discard                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Two-Pane Design:**
+- Left (40%): File list grouped by status
+- Right (60%): Diff for selected file, updates as you navigate
+- Bottom: Action bar with keyboard hints
+
+**File Status Indicators:**
+- `✓` Staged (green) — ready to commit
+- `●` Modified, unstaged (yellow) — changes not yet staged
+- `?` Untracked (gray) — new file, not tracked
+- `!` Conflicted (red) — merge conflict, needs resolution
+- `D` Deleted — file removed
+- `R` Renamed — file moved/renamed (shows old → new)
+
+**Navigation:**
+| Key | Action |
+|-----|--------|
+| `j`/`k` | Move through files |
+| `Space` or `s` | Toggle staged/unstaged for selected file |
+| `a` | Stage all files |
+| `u` | Unstage all files |
+| `d` | Discard changes (with confirmation) |
+| `c` | Open commit dialog |
+| `z` | Stash changes |
+| `Tab` | Switch focus between file list and diff pane |
+| `Esc` | Back to graph (if clean) or minimize working directory |
+
+**Diff Pane Features:**
+- Syntax highlighting for known file types
+- Hunk-level staging: `s` on a hunk stages just that hunk
+- Line-level staging: Select lines, then `s` to stage selection
+- `n`/`p`: Jump to next/previous hunk
+- `e`: Open file in external editor at current line
+
+### Commit Interface
+
+Press `c` (with staged changes) to replace the diff pane with the commit interface:
+
+```
+┌─ Working Directory ──────────────────────────────────────────────────────────┐
+│                                                                              │
+│  Staged (2)                               │ ┌─ New Commit ─────────────────┐│
+│    ✓ src/auth/login.rs    +45 -12         │ │                              ││
+│    ✓ src/auth/mod.rs      +3  -0          │ │ Subject:                     ││
+│                                           │ │ Fix authentication timeout_  ││
+│  Modified (1)                             │ │                              ││
+│    ● src/config.rs        +2  -0          │ │ ──────────────────────────── ││
+│                                           │ │ Body (optional):             ││
+│                                           │ │                              ││
+│                                           │ │ The token refresh was race   ││
+│                                           │ │ condition when multiple reqs ││
+│                                           │ │ arrived simultaneously.      ││
+│                                           │ │                              ││
+│                                           │ │ ──────────────────────────── ││
+│                                           │ │ 47 chars ✓   [Commit] [Push] ││
+│                                           │ └────────────────────────────────┘│
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**The commit interface appears in context**, not as a modal dialog. You can still see and modify what's staged while writing your message.
+
+**Commit Workflow:**
+| Key | Action |
+|-----|--------|
+| `c` | Open commit interface (cursor in subject line) |
+| `Tab` | Move between subject → body → staged files |
+| `Ctrl+Enter` | Commit |
+| `Ctrl+Shift+Enter` | Commit and push |
+| `Esc` | Cancel (confirms if text entered) |
+
+**Subject Line Helpers:**
+- Character count: Green (<50), Yellow (50-72), Red (>72)
+- If repo uses conventional commits: `feat:`, `fix:`, etc. suggested
+- Ghost text shows similar recent commit subjects
+
+**Amend Mode:**
+- `ca` opens commit interface pre-filled with last commit message
+- Staged files added to previous commit's changes
+- Warning banner: "Amending will rewrite abc1234"
+- Stronger warning if commit already pushed
+
+### Push Interface
+
+Press `p` to open push interface (replaces diff pane, like commit):
+
+```
+┌─ Push ───────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│  Branch: feature/auth                                                        │
+│  Status: 3 commits ahead of origin/feature/auth                             │
+│                                                                              │
+│  ┌─ Commits to push ─────────────────────────────────────────────────────┐  │
+│  │  ● abc1234 Fix authentication timeout — you, 5 min ago                │  │
+│  │  ● def5678 Add token refresh logic — you, 1 hour ago                  │  │
+│  │  ● ghi9012 Refactor auth module — you, 2 hours ago                    │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│  Push to:                                                                    │
+│    [✓] origin     → origin/feature/auth                                     │
+│    [ ] upstream   → (will create upstream/feature/auth)                     │
+│    [ ] personal   → personal/feature/auth (diverged ⚠)                      │
+│                                                                              │
+│  [ ] Force push (--force-with-lease)                                         │
+│                                                                              │
+│  [Push to 1 remote]  [Cancel]                                                │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Push Interface Features:**
+- Shows exactly which commits will be pushed
+- Multiple remote selection with checkboxes
+- Clear indication of what will happen to each remote
+- Divergence warnings (remote has commits you don't have)
+- Force push requires explicit checkbox, shows strong warning
+
+**Remote Status Indicators:**
+- `→ origin/branch` — will fast-forward
+- `(will create)` — branch doesn't exist on remote yet
+- `(diverged ⚠)` — remote has commits not in local, force required
+- `(up to date)` — nothing to push (disabled)
+
+**Quick Actions:**
+| Key | Action |
+|-----|--------|
+| `p` | Open push interface |
+| `P` | Quick push to default remote (no dialog, if safe) |
+| `Space` | Toggle remote selection |
+| `Enter` | Execute push |
+| `Esc` | Cancel |
+
+### Fetch & Pull
+
+**Fetch** (`f`): Updates remote tracking branches without modifying working directory.
+
+```
+┌─ Fetch Results ─────────────────────────────────────────────┐
+│                                                             │
+│  origin:                                                    │
+│    main         abc1234 → def5678  (+3 commits)            │
+│    feature/x    (new branch)                                │
+│                                                             │
+│  upstream:                                                  │
+│    main         (up to date)                                │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Pull** (`F`): Fetch + merge/rebase. Shows preview before executing:
+
+```
+┌─ Pull Preview ──────────────────────────────────────────────┐
+│                                                             │
+│  Pulling origin/main into main                              │
+│  Strategy: rebase (configured)                              │
+│                                                             │
+│  Incoming commits (3):                                      │
+│    ● def5678 Feature X — alice, 1 hour ago                 │
+│    ● cba9876 Fix bug — bob, 2 hours ago                    │
+│    ● xyz1234 Update deps — alice, 3 hours ago              │
+│                                                             │
+│  Your local commits (1) will be rebased on top:            │
+│    ● abc1234 My local work — you, 30 min ago               │
+│                                                             │
+│  [Pull]  [Cancel]                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Multi-Repository Support
+
+Whisper-git can track multiple working directories simultaneously.
+
+**Use Cases:**
+- Monorepo with multiple checkouts
+- Main repo + submodule working directories
+- Comparing two clones of same repo
+
+**Repository Tabs:**
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  [whisper-git]  [lib-crypto ●]  [lib-network]  [+]                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+- Each tab is a separate repository
+- Dot indicator shows repos with uncommitted changes
+- `Ctrl+Tab` / `Ctrl+Shift+Tab`: Cycle repositories
+- `Ctrl+1` through `Ctrl+9`: Jump to repository by position
+- `+` or `Ctrl+O`: Open additional repository
+
+**Cross-Repository View (Optional):**
+For related repositories (e.g., main + submodules), option to view timelines aligned:
+
+```
+whisper-git    ●───●───●───●───●───●
+                       ↓ updated lib-crypto
+lib-crypto         ●───●───●───●
+```
+
+Shows when parent updated submodule reference relative to submodule's own history.
+
+### Working Directory in Graph Context
+
+The working directory appears as a special node above HEAD:
+
+```
+    ◐─ Working (3 files)     ← uncommitted changes
+    │
+    ●─ abc1234 Last commit — you, just now
+    │
+    ●─ def5678 Previous commit — alice, 2h ago
+```
+
+**Working Directory Node:**
+- `◐` Half-filled circle (changes present) or `○` empty (clean)
+- Shows file count
+- Clicking it opens working directory panel
+- Visually connected to HEAD (it's "where you are")
+
+**Why Show It in the Graph:**
+- Reinforces that uncommitted work is part of your position
+- Makes it obvious when you have pending changes
+- Natural place to click to start committing
 
 ---
 
@@ -859,3 +1148,4 @@ It's a small amount of screen space for a large reduction in "why doesn't this b
 | 0.1 | 2025-02 | Initial UX design document |
 | 0.2 | 2025-02 | Replace "Galaxy" with "Frayed Rope" metaphor; emphasize marker positions, submodule strip visibility, remote/local divergence |
 | 0.3 | 2025-02 | Replace continuous pan/zoom with snap navigation; discrete zoom levels; instant selection feedback |
+| 0.4 | 2025-02 | Add editing capabilities: working directory as primary view, two-pane file/diff layout, commit/push/pull interfaces, multi-repository support |
