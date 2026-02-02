@@ -21,3 +21,4 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Utilities
 bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"
+half = "2.4"

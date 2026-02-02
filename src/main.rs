@@ -1,6 +1,15 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Convert linear color value to sRGB
+fn linear_to_srgb(linear: f32) -> f32 {
+    if linear <= 0.0031308 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
@@ -437,7 +446,7 @@ impl Renderer {
         let extent = self.swapchain.image_extent();
         let (width, height) = (extent[0], extent[1]);
 
-        // Get bytes per pixel based on format (most formats are 4 bytes)
+        // Get bytes per pixel based on format
         let format = self.swapchain.image_format();
         let bytes_per_pixel = format.block_size() as u32;
 
@@ -511,20 +520,39 @@ impl Renderer {
         future.wait(None).context("Failed to wait for GPU")?;
         self.previous_frame_end = Some(sync::now(self.device.clone()).boxed());
 
-        // Read buffer contents and convert to RGBA
+        // Read buffer contents and convert to RGBA based on format
         let buffer_content = buf.read().context("Failed to read buffer")?;
 
-        // Handle different swapchain formats (commonly B8G8R8A8)
-        let rgba_data: Vec<u8> = if format == Format::B8G8R8A8_SRGB
-            || format == Format::B8G8R8A8_UNORM
-        {
-            // Swap R and B channels
-            buffer_content
-                .chunks(4)
-                .flat_map(|bgra| [bgra[2], bgra[1], bgra[0], bgra[3]])
-                .collect()
-        } else {
-            buffer_content.to_vec()
+        let rgba_data: Vec<u8> = match format {
+            // 16-bit float formats (common on AMD)
+            Format::R16G16B16A16_SFLOAT => {
+                use half::f16;
+                buffer_content
+                    .chunks(8) // 4 channels x 2 bytes each
+                    .flat_map(|pixel| {
+                        let r = f16::from_le_bytes([pixel[0], pixel[1]]).to_f32();
+                        let g = f16::from_le_bytes([pixel[2], pixel[3]]).to_f32();
+                        let b = f16::from_le_bytes([pixel[4], pixel[5]]).to_f32();
+                        let a = f16::from_le_bytes([pixel[6], pixel[7]]).to_f32();
+                        // Convert linear to sRGB and then to 8-bit
+                        [
+                            (linear_to_srgb(r) * 255.0) as u8,
+                            (linear_to_srgb(g) * 255.0) as u8,
+                            (linear_to_srgb(b) * 255.0) as u8,
+                            (a * 255.0) as u8,
+                        ]
+                    })
+                    .collect()
+            }
+            // BGRA 8-bit formats
+            Format::B8G8R8A8_SRGB | Format::B8G8R8A8_UNORM => {
+                buffer_content
+                    .chunks(4)
+                    .flat_map(|bgra| [bgra[2], bgra[1], bgra[0], bgra[3]])
+                    .collect()
+            }
+            // RGBA 8-bit formats
+            _ => buffer_content.to_vec(),
         };
 
         let img = image::RgbaImage::from_raw(width, height, rgba_data)

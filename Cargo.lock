@@ -2114,6 +2114,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "git2",
+ "half",
  "image",
  "vulkano",
  "vulkano-shaders",
