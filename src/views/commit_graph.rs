@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use git2::Oid;
 
@@ -7,6 +8,8 @@ use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
     create_dashed_rect_outline_vertices, create_rect_vertices, theme,
 };
+use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
+use crate::ui::widgets::search_bar::{SearchBar, SearchAction};
 use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
 
 /// Lane colors for visual distinction (from UX spec)
@@ -212,6 +215,12 @@ pub struct CommitGraphView {
     pub tags: Vec<TagInfo>,
     /// Scroll offset
     pub scroll_offset: f32,
+    /// Scrollbar widget
+    pub scrollbar: Scrollbar,
+    /// Search bar widget
+    pub search_bar: SearchBar,
+    /// Set of commit OIDs that match the current search query
+    search_matches: HashSet<Oid>,
 }
 
 impl Default for CommitGraphView {
@@ -232,6 +241,9 @@ impl Default for CommitGraphView {
             branch_tips: Vec::new(),
             tags: Vec::new(),
             scroll_offset: 0.0,
+            scrollbar: Scrollbar::new(),
+            search_bar: SearchBar::new(),
+            search_matches: HashSet::new(),
         }
     }
 }
@@ -291,17 +303,67 @@ impl CommitGraphView {
         bounds: Rect,
     ) -> EventResponse {
         let header_offset = 10.0;
+        let scrollbar_width = 10.0;
+
+        // Calculate scrollbar bounds (right edge of graph area)
+        let (content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+
+        // Search bar bounds (overlay at top of graph area)
+        let search_bar_height = 30.0;
+        let search_bounds = Rect::new(
+            bounds.x + 40.0,
+            bounds.y + 4.0,
+            bounds.width - 80.0 - scrollbar_width,
+            search_bar_height,
+        );
+
+        // Handle search bar activation via Ctrl+F or /
+        if let InputEvent::KeyDown { key, modifiers } = event {
+            if (*key == Key::F && modifiers.only_ctrl()) || (*key == Key::Slash && !modifiers.any() && !self.search_bar.is_active()) {
+                self.search_bar.activate();
+                return EventResponse::Consumed;
+            }
+        }
+
+        // Route events to search bar first when active
+        if self.search_bar.is_active() {
+            if self.search_bar.handle_event(event, search_bounds).is_consumed() {
+                // Process search actions
+                if let Some(action) = self.search_bar.take_action() {
+                    match action {
+                        SearchAction::QueryChanged(query) => {
+                            self.update_search_matches(&query, commits);
+                        }
+                        SearchAction::Closed => {
+                            self.search_matches.clear();
+                        }
+                    }
+                }
+                return EventResponse::Consumed;
+            }
+        }
+
+        // Route events to scrollbar
+        if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
+            if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
+                let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
+                self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
+            }
+            return EventResponse::Consumed;
+        }
 
         match event {
             InputEvent::KeyDown { key, .. } => match key {
                 Key::J | Key::Down => {
                     // Move selection down
                     self.move_selection(1, commits);
+                    self.scroll_to_selection(commits, bounds);
                     EventResponse::Consumed
                 }
                 Key::K | Key::Up => {
                     // Move selection up
                     self.move_selection(-1, commits);
+                    self.scroll_to_selection(commits, bounds);
                     EventResponse::Consumed
                 }
                 Key::G => {
@@ -337,7 +399,7 @@ impl CommitGraphView {
                 ..
             } => {
                 // Check for click on a commit
-                if bounds.contains(*x, *y) {
+                if content_bounds.contains(*x, *y) {
                     for (row, commit) in commits.iter().enumerate() {
                         let commit_y = self.row_y(row, &bounds, header_offset);
                         if (*y - commit_y).abs() < self.row_height / 2.0 {
@@ -351,7 +413,7 @@ impl CommitGraphView {
             InputEvent::MouseMove { x, y, .. } => {
                 // Update hover state
                 self.hovered_commit = None;
-                if bounds.contains(*x, *y) {
+                if content_bounds.contains(*x, *y) {
                     for (row, commit) in commits.iter().enumerate() {
                         let commit_y = self.row_y(row, &bounds, header_offset);
                         if (*y - commit_y).abs() < self.row_height / 2.0 {
@@ -360,6 +422,8 @@ impl CommitGraphView {
                         }
                     }
                 }
+                // Also update scrollbar hover
+                self.scrollbar.handle_event(event, scrollbar_bounds);
                 EventResponse::Ignored // Don't consume move events
             }
             InputEvent::Scroll { delta_y, x, y, .. } => {
@@ -373,6 +437,35 @@ impl CommitGraphView {
             }
             _ => EventResponse::Ignored,
         }
+    }
+
+    /// Update search matches based on query
+    fn update_search_matches(&mut self, query: &str, commits: &[CommitInfo]) {
+        self.search_matches.clear();
+        if query.is_empty() {
+            self.search_bar.set_match_count(0);
+            return;
+        }
+
+        let query_lower = query.to_lowercase();
+        for commit in commits {
+            if commit.summary.to_lowercase().contains(&query_lower)
+                || commit.author.to_lowercase().contains(&query_lower)
+                || commit.short_id.to_lowercase().contains(&query_lower)
+                || commit.id.to_string().to_lowercase().starts_with(&query_lower)
+            {
+                self.search_matches.insert(commit.id);
+            }
+        }
+        self.search_bar.set_match_count(self.search_matches.len());
+    }
+
+    /// Check if a commit matches the current search filter
+    fn is_search_match(&self, oid: &Oid) -> bool {
+        if !self.search_bar.is_active() || self.search_bar.query().is_empty() {
+            return true; // No filter active, everything matches
+        }
+        self.search_matches.contains(oid)
     }
 
     fn move_selection(&mut self, delta: i32, commits: &[CommitInfo]) {
@@ -407,15 +500,21 @@ impl CommitGraphView {
         }
     }
 
-    /// Generate spline vertices for branch lines and nodes
+    /// Generate spline vertices for branch lines and nodes, plus scrollbar and search bar
     pub fn layout_splines(
-        &self,
+        &mut self,
         text_renderer: &TextRenderer,
         commits: &[CommitInfo],
         bounds: Rect,
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
         let header_offset = 10.0;
+        let scrollbar_width = 10.0;
+
+        // Update scrollbar state
+        let visible_rows = (bounds.height / self.row_height).max(1.0) as usize;
+        let scroll_offset_items = (self.scroll_offset / self.row_height).round() as usize;
+        self.scrollbar.set_content(commits.len(), visible_rows, scroll_offset_items);
 
         // Background strip for graph column - subtle elevation
         let graph_bg_width = self.graph_width() + 24.0;
@@ -555,6 +654,10 @@ impl CommitGraphView {
             let is_selected = self.selected_commit == Some(commit.id);
             let is_hovered = self.hovered_commit == Some(commit.id);
             let is_head = self.head_oid == Some(commit.id);
+            let is_match = self.is_search_match(&commit.id);
+
+            // Dim factor for non-matching commits during search
+            let dim_alpha = if is_match { 1.0 } else { 0.2 };
 
             // Selection/hover highlight (full row)
             if is_selected || is_hovered {
@@ -598,10 +701,11 @@ impl CommitGraphView {
                 x,
                 y,
                 self.node_radius + 1.5,
-                theme::BACKGROUND.to_array(),
+                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
             ));
 
             // Commit node (filled circle, or double ring for merge)
+            let node_color = layout.color.with_alpha(dim_alpha);
             if is_merge {
                 // Outer ring for merge indicator
                 vertices.extend(self.create_ring_vertices(
@@ -609,14 +713,14 @@ impl CommitGraphView {
                     y,
                     self.node_radius + 3.5,
                     2.5,
-                    layout.color.to_array(),
+                    node_color.to_array(),
                 ));
                 // Inner filled circle
                 vertices.extend(self.create_circle_vertices(
                     x,
                     y,
                     self.node_radius,
-                    layout.color.to_array(),
+                    node_color.to_array(),
                 ));
             } else {
                 // Regular commit: filled circle
@@ -624,9 +728,40 @@ impl CommitGraphView {
                     x,
                     y,
                     self.node_radius,
-                    layout.color.to_array(),
+                    node_color.to_array(),
                 ));
             }
+
+            // Highlight background for search matches
+            if self.search_bar.is_active() && !self.search_bar.query().is_empty() && is_match {
+                let highlight_rect = Rect::new(
+                    bounds.x,
+                    y - self.row_height / 2.0,
+                    bounds.width - scrollbar_width,
+                    self.row_height,
+                );
+                vertices.extend(create_rect_vertices(
+                    &highlight_rect,
+                    theme::STATUS_CLEAN.with_alpha(0.08).to_array(),
+                ));
+            }
+        }
+
+        // Render scrollbar
+        let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+        let scrollbar_output = self.scrollbar.layout(scrollbar_bounds);
+        vertices.extend(scrollbar_output.spline_vertices);
+
+        // Render search bar overlay
+        if self.search_bar.is_active() {
+            let search_bounds = Rect::new(
+                bounds.x + 40.0,
+                bounds.y + 4.0,
+                bounds.width - 80.0 - scrollbar_width,
+                30.0,
+            );
+            let search_output = self.search_bar.layout(text_renderer, search_bounds);
+            vertices.extend(search_output.spline_vertices);
         }
 
         vertices
@@ -741,6 +876,7 @@ impl CommitGraphView {
         let mut pill_vertices = Vec::new();
         let header_offset = 10.0;
         let line_height = text_renderer.line_height();
+        let scrollbar_width = 10.0;
 
         // Graph offset for text - right after the graph column
         let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
@@ -809,6 +945,8 @@ impl CommitGraphView {
 
             let is_head = self.head_oid == Some(commit.id);
             let is_selected = self.selected_commit == Some(commit.id);
+            let is_match = self.is_search_match(&commit.id);
+            let dim_alpha = if is_match { 1.0 } else { 0.2 };
 
             // === Right-aligned time column ===
             let time_str = commit.relative_time();
@@ -818,7 +956,7 @@ impl CommitGraphView {
                 &time_str,
                 time_x,
                 y,
-                theme::TEXT_MUTED.to_array(),
+                theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
             ));
 
             // === Right-aligned author column (fixed-width zone) ===
@@ -834,7 +972,7 @@ impl CommitGraphView {
                 &author_display,
                 author_x,
                 y,
-                author_color.to_array(),
+                author_color.with_alpha(dim_alpha).to_array(),
             ));
 
             // === Subject line (primary content, bright text) ===
@@ -853,9 +991,9 @@ impl CommitGraphView {
             let summary_color = if is_selected {
                 theme::TEXT_BRIGHT
             } else if is_head {
-                theme::TEXT_BRIGHT
+                theme::TEXT_BRIGHT.with_alpha(dim_alpha)
             } else {
-                theme::TEXT
+                theme::TEXT.with_alpha(dim_alpha)
             };
             vertices.extend(text_renderer.layout_text(
                 &summary,
@@ -971,6 +1109,18 @@ impl CommitGraphView {
                     current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
                 }
             }
+        }
+
+        // Render search bar text overlay
+        if self.search_bar.is_active() {
+            let search_bounds = Rect::new(
+                bounds.x + 40.0,
+                bounds.y + 4.0,
+                bounds.width - 80.0 - scrollbar_width,
+                30.0,
+            );
+            let search_output = self.search_bar.layout(text_renderer, search_bounds);
+            vertices.extend(search_output.text_vertices);
         }
 
         (vertices, pill_vertices)
