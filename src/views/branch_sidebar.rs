@@ -1,11 +1,30 @@
 //! Branch sidebar view - displays local branches, remote branches, and tags
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::git::{BranchTip, TagInfo};
-use crate::input::{EventResponse, InputEvent};
+use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::{Rect, TextRenderer};
+
+/// Actions that can be triggered from the sidebar
+#[derive(Clone, Debug)]
+pub enum SidebarAction {
+    CheckoutBranch(String),
+    CheckoutRemoteBranch(String, String), // (remote, branch)
+    DeleteBranch(String),
+}
+
+/// Represents a single navigable item in the flattened sidebar list
+#[derive(Clone, Debug)]
+enum SidebarItem {
+    SectionHeader(&'static str),
+    LocalBranch(String),
+    RemoteHeader(String),         // remote name like "origin"
+    RemoteBranch(String, String), // (remote, branch)
+    Tag(String),
+}
 
 /// A sidebar showing local branches, remote branches, and tags
 pub struct BranchSidebar {
@@ -31,6 +50,18 @@ pub struct BranchSidebar {
     line_height: f32,
     /// Cached section header height
     section_header_height: f32,
+    /// Pending action to be consumed by main
+    pending_action: Option<SidebarAction>,
+    /// Whether the sidebar has keyboard focus
+    pub focused: bool,
+    /// Index of the focused/highlighted item in visible_items
+    focused_index: Option<usize>,
+    /// Flattened list of visible items (rebuilt during layout)
+    visible_items: Vec<SidebarItem>,
+    /// Last click time for double-click detection
+    last_click_time: Option<Instant>,
+    /// Last clicked item index for double-click detection
+    last_click_item: Option<usize>,
 }
 
 impl BranchSidebar {
@@ -47,6 +78,12 @@ impl BranchSidebar {
             content_height: 0.0,
             line_height: 18.0,
             section_header_height: 24.0,
+            pending_action: None,
+            focused: false,
+            focused_index: None,
+            visible_items: Vec::new(),
+            last_click_time: None,
+            last_click_item: None,
         }
     }
 
@@ -93,7 +130,106 @@ impl BranchSidebar {
         self.tags.sort();
     }
 
-    /// Handle input events (scrolling, clicking section headers)
+    /// Take the pending action (consume it)
+    pub fn take_action(&mut self) -> Option<SidebarAction> {
+        self.pending_action.take()
+    }
+
+    /// Set focus state
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+        if focused && self.focused_index.is_none() && !self.visible_items.is_empty() {
+            // Find the first branch item (skip section headers)
+            self.focused_index = self.visible_items.iter().position(|item| {
+                matches!(item, SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_))
+            });
+        }
+    }
+
+    /// Build the flattened visible_items list based on collapsed state
+    fn build_visible_items(&mut self) {
+        self.visible_items.clear();
+
+        // LOCAL section
+        self.visible_items.push(SidebarItem::SectionHeader("LOCAL"));
+        if !self.local_collapsed {
+            for branch in &self.local_branches {
+                self.visible_items.push(SidebarItem::LocalBranch(branch.clone()));
+            }
+        }
+
+        // REMOTE section
+        self.visible_items.push(SidebarItem::SectionHeader("REMOTE"));
+        if !self.remote_collapsed {
+            let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
+            remote_names.sort();
+            for remote_name in remote_names {
+                self.visible_items.push(SidebarItem::RemoteHeader(remote_name.clone()));
+                for branch in &self.remote_branches[remote_name] {
+                    self.visible_items.push(SidebarItem::RemoteBranch(remote_name.clone(), branch.clone()));
+                }
+            }
+        }
+
+        // TAGS section
+        self.visible_items.push(SidebarItem::SectionHeader("TAGS"));
+        if !self.tags_collapsed {
+            for tag in &self.tags {
+                self.visible_items.push(SidebarItem::Tag(tag.clone()));
+            }
+        }
+    }
+
+    /// Move focus to next/previous navigable item
+    fn move_focus(&mut self, delta: i32) {
+        if self.visible_items.is_empty() { return; }
+
+        let current = self.focused_index.unwrap_or(0);
+        let len = self.visible_items.len();
+
+        // Search in the given direction for a navigable item (skip section headers)
+        let mut idx = current as i32 + delta;
+        while idx >= 0 && (idx as usize) < len {
+            match &self.visible_items[idx as usize] {
+                SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_) | SidebarItem::RemoteHeader(_) => {
+                    self.focused_index = Some(idx as usize);
+                    return;
+                }
+                SidebarItem::SectionHeader(_) => {
+                    // Skip section headers, continue searching
+                    idx += delta;
+                }
+            }
+        }
+    }
+
+    /// Activate the currently focused item (checkout or toggle)
+    fn activate_focused(&mut self) {
+        if let Some(idx) = self.focused_index {
+            if let Some(item) = self.visible_items.get(idx) {
+                match item {
+                    SidebarItem::LocalBranch(name) => {
+                        self.pending_action = Some(SidebarAction::CheckoutBranch(name.clone()));
+                    }
+                    SidebarItem::RemoteBranch(remote, branch) => {
+                        self.pending_action = Some(SidebarAction::CheckoutRemoteBranch(remote.clone(), branch.clone()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Delete the currently focused branch (only local branches)
+    fn delete_focused(&mut self) {
+        if let Some(idx) = self.focused_index {
+            if let Some(SidebarItem::LocalBranch(name)) = self.visible_items.get(idx) {
+                self.pending_action = Some(SidebarAction::DeleteBranch(name.clone()));
+            }
+        }
+    }
+
+    /// Handle input events (scrolling, clicking section headers, keyboard nav)
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
@@ -104,48 +240,88 @@ impl BranchSidebar {
                     return EventResponse::Consumed;
                 }
             }
+            InputEvent::KeyDown { key, .. } if self.focused => {
+                match key {
+                    Key::J | Key::Down => {
+                        self.move_focus(1);
+                        return EventResponse::Consumed;
+                    }
+                    Key::K | Key::Up => {
+                        self.move_focus(-1);
+                        return EventResponse::Consumed;
+                    }
+                    Key::Enter => {
+                        self.activate_focused();
+                        return EventResponse::Consumed;
+                    }
+                    Key::D => {
+                        self.delete_focused();
+                        return EventResponse::Consumed;
+                    }
+                    _ => {}
+                }
+            }
             InputEvent::MouseDown { x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    // Check if click is on a section header
                     let padding = 8.0;
                     let inner = bounds.inset(padding);
                     let line_height = self.line_height;
                     let section_header_height = self.section_header_height;
+                    let section_gap = 8.0;
 
-                    let mut header_y = inner.y - self.scroll_offset;
+                    // Find which item was clicked
+                    let mut item_y = inner.y - self.scroll_offset;
+                    for (idx, item) in self.visible_items.iter().enumerate() {
+                        let h = match item {
+                            SidebarItem::SectionHeader(_) => section_header_height,
+                            _ => line_height,
+                        };
 
-                    // LOCAL header
-                    if *y >= header_y && *y < header_y + section_header_height {
-                        self.local_collapsed = !self.local_collapsed;
-                        return EventResponse::Consumed;
-                    }
-                    header_y += section_header_height;
-                    if !self.local_collapsed {
-                        header_y += self.local_branches.len() as f32 * line_height;
-                    }
-                    header_y += 8.0; // gap between sections
+                        if *y >= item_y && *y < item_y + h {
+                            match item {
+                                SidebarItem::SectionHeader(name) => {
+                                    // Toggle collapse
+                                    match *name {
+                                        "LOCAL" => self.local_collapsed = !self.local_collapsed,
+                                        "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
+                                        "TAGS" => self.tags_collapsed = !self.tags_collapsed,
+                                        _ => {}
+                                    }
+                                    self.build_visible_items();
+                                    return EventResponse::Consumed;
+                                }
+                                SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_) | SidebarItem::RemoteHeader(_) => {
+                                    // Check for double-click
+                                    let now = Instant::now();
+                                    let is_double_click = self.last_click_time
+                                        .map(|t| now.duration_since(t).as_millis() < 400)
+                                        .unwrap_or(false)
+                                        && self.last_click_item == Some(idx);
 
-                    // REMOTE header
-                    if *y >= header_y && *y < header_y + section_header_height {
-                        self.remote_collapsed = !self.remote_collapsed;
-                        return EventResponse::Consumed;
-                    }
-                    header_y += section_header_height;
-                    if !self.remote_collapsed {
-                        let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
-                        remote_names.sort();
-                        for remote_name in &remote_names {
-                            let branches = &self.remote_branches[*remote_name];
-                            header_y += line_height; // remote name sub-header
-                            header_y += branches.len() as f32 * line_height;
+                                    self.focused_index = Some(idx);
+                                    self.last_click_time = Some(now);
+                                    self.last_click_item = Some(idx);
+
+                                    if is_double_click {
+                                        self.activate_focused();
+                                    }
+
+                                    return EventResponse::Consumed;
+                                }
+                            }
                         }
-                    }
-                    header_y += 8.0;
 
-                    // TAGS header
-                    if *y >= header_y && *y < header_y + section_header_height {
-                        self.tags_collapsed = !self.tags_collapsed;
-                        return EventResponse::Consumed;
+                        item_y += h;
+
+                        // Add section gaps after the last item before the next section header
+                        // We detect this by checking if the next item is a section header
+                        if let SidebarItem::SectionHeader(_) = item {
+                            // No extra gap right after header
+                        } else if idx + 1 < self.visible_items.len() {
+                            if let SidebarItem::SectionHeader(_) = &self.visible_items[idx + 1] {
+                                item_y += section_gap;
+                            }
+                        }
                     }
 
                     return EventResponse::Consumed;
@@ -159,6 +335,8 @@ impl BranchSidebar {
     /// Layout the sidebar and produce rendering output
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+
+        self.build_visible_items();
 
         // Panel background
         output.spline_vertices.extend(create_rect_vertices(
@@ -181,8 +359,10 @@ impl BranchSidebar {
         let section_gap = 8.0;
 
         let mut y = inner.y - self.scroll_offset;
+        let mut item_idx: usize = 0;
 
         // --- LOCAL section ---
+        // Section header
         y = self.layout_section_header(
             text_renderer,
             &mut output,
@@ -193,14 +373,31 @@ impl BranchSidebar {
             self.local_collapsed,
             section_header_height,
         );
+        item_idx += 1; // SectionHeader("LOCAL")
 
         if !self.local_collapsed {
             for branch in &self.local_branches {
                 if y >= bounds.bottom() {
-                    break;
+                    item_idx += 1;
+                    continue;
                 }
                 if y + line_height > bounds.y {
                     let is_current = *branch == self.current_branch;
+                    let is_focused = self.focused && self.focused_index == Some(item_idx);
+
+                    // Focus highlight (drawn before current-branch highlight so current still shows)
+                    if is_focused {
+                        let highlight_rect = Rect::new(
+                            inner.x,
+                            y,
+                            inner.width,
+                            line_height,
+                        );
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.to_array(),
+                        ));
+                    }
 
                     if is_current {
                         // Highlight background for current branch
@@ -231,6 +428,7 @@ impl BranchSidebar {
                     ));
                 }
                 y += line_height;
+                item_idx += 1;
             }
         }
 
@@ -248,6 +446,7 @@ impl BranchSidebar {
             self.remote_collapsed,
             section_header_height,
         );
+        item_idx += 1; // SectionHeader("REMOTE")
 
         if !self.remote_collapsed {
             // Sort remote names for consistent order
@@ -257,11 +456,21 @@ impl BranchSidebar {
             for remote_name in remote_names {
                 let branches = &self.remote_branches[remote_name];
                 if y >= bounds.bottom() {
-                    break;
+                    item_idx += 1; // RemoteHeader
+                    item_idx += branches.len(); // RemoteBranch items
+                    continue;
                 }
 
                 // Remote name sub-header
+                let is_focused = self.focused && self.focused_index == Some(item_idx);
                 if y + line_height > bounds.y {
+                    if is_focused {
+                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.to_array(),
+                        ));
+                    }
                     output.text_vertices.extend(text_renderer.layout_text(
                         remote_name,
                         inner.x + indent,
@@ -270,13 +479,23 @@ impl BranchSidebar {
                     ));
                 }
                 y += line_height;
+                item_idx += 1; // RemoteHeader
 
                 // Branches under this remote
                 for branch in branches {
                     if y >= bounds.bottom() {
-                        break;
+                        item_idx += 1;
+                        continue;
                     }
                     if y + line_height > bounds.y {
+                        let is_focused = self.focused && self.focused_index == Some(item_idx);
+                        if is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.to_array(),
+                            ));
+                        }
                         let display_name = truncate_to_width(branch, text_renderer, inner.width - indent * 2.0);
                         output.text_vertices.extend(text_renderer.layout_text(
                             &display_name,
@@ -286,6 +505,7 @@ impl BranchSidebar {
                         ));
                     }
                     y += line_height;
+                    item_idx += 1;
                 }
             }
         }
@@ -303,13 +523,23 @@ impl BranchSidebar {
             self.tags_collapsed,
             section_header_height,
         );
+        item_idx += 1; // SectionHeader("TAGS")
 
         if !self.tags_collapsed {
             for tag in &self.tags {
                 if y >= bounds.bottom() {
-                    break;
+                    item_idx += 1;
+                    continue;
                 }
                 if y + line_height > bounds.y {
+                    let is_focused = self.focused && self.focused_index == Some(item_idx);
+                    if is_focused {
+                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.to_array(),
+                        ));
+                    }
                     let display_name = truncate_to_width(tag, text_renderer, inner.width - indent);
                     output.text_vertices.extend(text_renderer.layout_text(
                         &display_name,
@@ -319,6 +549,7 @@ impl BranchSidebar {
                     ));
                 }
                 y += line_height;
+                item_idx += 1;
             }
         }
 
@@ -345,6 +576,9 @@ impl BranchSidebar {
             total_h += self.tags.len() as f32 * line_height;
         }
         self.content_height = total_h;
+
+        // Suppress unused variable warning
+        let _ = item_idx;
 
         output
     }
