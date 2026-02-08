@@ -161,66 +161,7 @@ impl StagingWell {
             }
         }
 
-        // Route to focused section
-        match self.focus_section {
-            0 => {
-                let response = self.subject_input.handle_event(event, subject_bounds);
-                if response.is_consumed() {
-                    return response;
-                }
-            }
-            1 => {
-                let response = self.body_area.handle_event(event, body_bounds);
-                if response.is_consumed() {
-                    return response;
-                }
-            }
-            2 => {
-                let response = self.staged_list.handle_event(event, staged_bounds);
-                if response.is_consumed() {
-                    // Check for file list actions
-                    if let Some(action) = self.staged_list.take_action() {
-                        match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::UnstageFile(path));
-                            }
-                            FileListAction::ViewDiff(path) => {
-                                self.pending_action = Some(StagingAction::ViewDiff(path));
-                            }
-                            FileListAction::UnstageAll => {
-                                self.pending_action = Some(StagingAction::UnstageAll);
-                            }
-                            _ => {}
-                        }
-                    }
-                    return response;
-                }
-            }
-            3 => {
-                let response = self.unstaged_list.handle_event(event, unstaged_bounds);
-                if response.is_consumed() {
-                    // Check for file list actions
-                    if let Some(action) = self.unstaged_list.take_action() {
-                        match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::StageFile(path));
-                            }
-                            FileListAction::ViewDiff(path) => {
-                                self.pending_action = Some(StagingAction::ViewDiff(path));
-                            }
-                            FileListAction::StageAll => {
-                                self.pending_action = Some(StagingAction::StageAll);
-                            }
-                            _ => {}
-                        }
-                    }
-                    return response;
-                }
-            }
-            _ => {}
-        }
-
-        // Handle button clicks
+        // Handle button clicks first (they sit outside the focus sections)
         if self.stage_all_btn.handle_event(event, self.stage_all_button_bounds(buttons_bounds)).is_consumed() {
             if self.stage_all_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::StageAll);
@@ -242,25 +183,78 @@ impl StagingWell {
             return EventResponse::Consumed;
         }
 
-        // Click to focus
+        // For MouseDown, determine focus section before routing
         if let InputEvent::MouseDown { x, y, .. } = event {
             if subject_bounds.contains(*x, *y) {
                 self.focus_section = 0;
                 self.update_focus_state();
-                return self.subject_input.handle_event(event, subject_bounds);
             } else if body_bounds.contains(*x, *y) {
                 self.focus_section = 1;
                 self.update_focus_state();
-                return self.body_area.handle_event(event, body_bounds);
             } else if staged_bounds.contains(*x, *y) {
                 self.focus_section = 2;
                 self.update_focus_state();
-                return self.staged_list.handle_event(event, staged_bounds);
             } else if unstaged_bounds.contains(*x, *y) {
                 self.focus_section = 3;
                 self.update_focus_state();
-                return self.unstaged_list.handle_event(event, unstaged_bounds);
             }
+        }
+
+        // Route to focused section
+        match self.focus_section {
+            0 => {
+                let response = self.subject_input.handle_event(event, subject_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            }
+            1 => {
+                let response = self.body_area.handle_event(event, body_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            }
+            2 => {
+                let response = self.staged_list.handle_event(event, staged_bounds);
+                if response.is_consumed() {
+                    if let Some(action) = self.staged_list.take_action() {
+                        match action {
+                            FileListAction::ToggleStage(path) => {
+                                self.pending_action = Some(StagingAction::UnstageFile(path));
+                            }
+                            FileListAction::ViewDiff(path) => {
+                                self.pending_action = Some(StagingAction::ViewDiff(path));
+                            }
+                            FileListAction::UnstageAll => {
+                                self.pending_action = Some(StagingAction::UnstageAll);
+                            }
+                            _ => {}
+                        }
+                    }
+                    return response;
+                }
+            }
+            3 => {
+                let response = self.unstaged_list.handle_event(event, unstaged_bounds);
+                if response.is_consumed() {
+                    if let Some(action) = self.unstaged_list.take_action() {
+                        match action {
+                            FileListAction::ToggleStage(path) => {
+                                self.pending_action = Some(StagingAction::StageFile(path));
+                            }
+                            FileListAction::ViewDiff(path) => {
+                                self.pending_action = Some(StagingAction::ViewDiff(path));
+                            }
+                            FileListAction::StageAll => {
+                                self.pending_action = Some(StagingAction::StageAll);
+                            }
+                            _ => {}
+                        }
+                    }
+                    return response;
+                }
+            }
+            _ => {}
         }
 
         EventResponse::Ignored

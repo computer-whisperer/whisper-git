@@ -212,6 +212,16 @@ impl InputState {
                 })
             }
 
+            WindowEvent::Ime(ime) => {
+                use winit::event::Ime;
+                match ime {
+                    Ime::Commit(text) => {
+                        Some(InputEvent::TextInput(text.clone()))
+                    }
+                    _ => None,
+                }
+            }
+
             _ => None,
         }
     }

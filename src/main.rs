@@ -211,6 +211,9 @@ impl App {
                 .context("Failed to create window")?,
         );
 
+        // Enable IME so we receive Ime::Commit events for text input
+        window.set_ime_allowed(true);
+
         // Create Vulkan context (needs surface for device selection)
         let library = vulkano::VulkanLibrary::new().context("No Vulkan library")?;
         let required_extensions = vulkano::swapchain::Surface::required_extensions(event_loop)
@@ -1112,7 +1115,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         FocusedPanel::Staging => {
-                            state.staging_well.handle_event(&input_event, layout.staging);
+                            let response = state.staging_well.handle_event(&input_event, layout.staging);
 
                             // Check for staging actions
                             if let Some(action) = state.staging_well.take_action() {
@@ -1139,6 +1142,9 @@ impl ApplicationHandler for App {
                                         state.pending_messages.push(AppMessage::ViewDiff(path, staged));
                                     }
                                 }
+                            }
+                            if response.is_consumed() {
+                                return;
                             }
                         }
                         FocusedPanel::Sidebar => {
