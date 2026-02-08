@@ -241,10 +241,10 @@ impl CommitGraphView {
     /// Call this when the display scale changes or at startup.
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         let lh = text_renderer.line_height();
-        self.row_height = (lh * 1.5).max(16.0);
+        self.row_height = (lh * 1.8).max(20.0);
         self.lane_width = (lh * 1.4).max(12.0);
-        self.node_radius = (lh * 0.3).max(3.0);
-        self.line_width = (lh * 0.12).max(1.5);
+        self.node_radius = (lh * 0.38).max(4.0);
+        self.line_width = (lh * 0.14).max(1.5);
     }
 }
 
@@ -425,6 +425,13 @@ impl CommitGraphView {
             theme::SURFACE.to_array(),
         ));
 
+        // Subtle separator line between graph and text columns
+        let sep_x = bounds.x + graph_bg_width;
+        vertices.extend(create_rect_vertices(
+            &Rect::new(sep_x, bounds.y, 1.0, bounds.height),
+            theme::BORDER.with_alpha(0.3).to_array(),
+        ));
+
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
             .iter()
@@ -517,21 +524,25 @@ impl CommitGraphView {
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         } else {
                             // Bezier curve - different lanes (merge/fork)
+                            let start_y = y + self.node_radius;
+                            let end_y = parent_y - self.node_radius;
+                            let dy = end_y - start_y;
+
                             let mut spline = Spline::new(
-                                SplinePoint::new(x, y + self.node_radius),
+                                SplinePoint::new(x, start_y),
                                 color,
                                 self.line_width,
                             );
 
-                            // Control points for smooth curve
-                            let mid_y = (y + parent_y) / 2.0;
-                            let ctrl1 = SplinePoint::new(x, mid_y);
-                            let ctrl2 = SplinePoint::new(parent_x, mid_y);
+                            // S-curve: drop vertically for 30%, curve across lanes,
+                            // then continue vertically to parent
+                            let ctrl1 = SplinePoint::new(x, start_y + dy * 0.4);
+                            let ctrl2 = SplinePoint::new(parent_x, end_y - dy * 0.4);
 
                             spline.cubic_to(
                                 ctrl1,
                                 ctrl2,
-                                SplinePoint::new(parent_x, parent_y - self.node_radius),
+                                SplinePoint::new(parent_x, end_y),
                             );
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         }
@@ -596,8 +607,8 @@ impl CommitGraphView {
                 vertices.extend(self.create_ring_vertices(
                     x,
                     y,
-                    self.node_radius + 3.0,
-                    2.0,
+                    self.node_radius + 3.5,
+                    2.5,
                     layout.color.to_array(),
                 ));
                 // Inner filled circle
@@ -630,7 +641,7 @@ impl CommitGraphView {
         color: [f32; 4],
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
-        let segments = 16;
+        let segments = 24;
 
         for i in 0..segments {
             let angle1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
@@ -666,7 +677,7 @@ impl CommitGraphView {
         color: [f32; 4],
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
-        let segments = 16;
+        let segments = 24;
         let inner_radius = radius - thickness;
 
         for i in 0..segments {
@@ -715,7 +726,11 @@ impl CommitGraphView {
         vertices
     }
 
-    /// Generate text vertices for commit info, and spline vertices for label pill backgrounds
+    /// Generate text vertices for commit info, and spline vertices for label pill backgrounds.
+    ///
+    /// Row layout: graph lanes | subject line | branch/tag labels | author (dimmer) | time (dimmer, right-aligned)
+    /// The subject line is the most prominent element (bright text), while author
+    /// and time are rendered in muted colors as secondary information.
     pub fn layout_text(
         &self,
         text_renderer: &TextRenderer,
@@ -727,14 +742,15 @@ impl CommitGraphView {
         let header_offset = 10.0;
         let line_height = text_renderer.line_height();
 
-        // Graph offset for text
+        // Graph offset for text - right after the graph column
         let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
 
         // Column layout: fixed-width columns from the right edge
         let time_col_width: f32 = 80.0;
         let right_margin: f32 = 8.0;
+        let col_gap: f32 = 12.0;
         let time_col_right = bounds.right() - right_margin;
-        let author_col_right = time_col_right - time_col_width;
+        let author_col_right = time_col_right - time_col_width - col_gap;
 
         // Working directory node text
         if let Some(ref status) = self.working_dir_status {
@@ -770,8 +786,9 @@ impl CommitGraphView {
             });
 
         let char_width = text_renderer.char_width();
-        let pill_pad_h: f32 = 4.0;
+        let pill_pad_h: f32 = 6.0;
         let pill_pad_v: f32 = 2.0;
+        let pill_radius: f32 = 3.0;
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(_layout) = self.layout.get(&commit.id) else {
@@ -801,42 +818,38 @@ impl CommitGraphView {
             ));
 
             // === Right-aligned author column ===
-            let author_display = truncate_author(&commit.author, 12);
+            let author_display = truncate_author(&commit.author, 14);
             let author_width = text_renderer.measure_text(&author_display);
             let author_x = author_col_right - author_width;
+            let author_color = if is_selected {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            };
             vertices.extend(text_renderer.layout_text(
                 &author_display,
                 author_x,
                 y,
-                theme::TEXT_MUTED.to_array(),
+                author_color.to_array(),
             ));
 
-            // === SHA column (fixed width) ===
+            // === Subject line (primary content, bright text) ===
             let mut current_x = text_x;
-            let sha_col_end = text_x + 7.0 * char_width + char_width;
-
-            vertices.extend(text_renderer.layout_text(
-                &commit.short_id,
-                current_x,
-                y,
-                theme::TEXT_MUTED.to_array(),
-            ));
-            current_x = sha_col_end;
-
-            // === Message column (flexible, up to author column) ===
-            // Reserve space for labels between message and author
-            let message_end = author_x - char_width * 2.0;
-            let available_width = message_end - current_x;
+            // The subject occupies the space between graph and the label/author area
+            let labels_budget = author_x - col_gap;
+            let available_width = labels_budget - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
             let char_count = commit.summary.chars().count();
             let summary = if char_count > max_chars && max_chars > 3 {
-                let truncated: String = commit.summary.chars().take(max_chars.saturating_sub(3)).collect();
-                format!("{}...", truncated)
+                let truncated: String = commit.summary.chars().take(max_chars.saturating_sub(1)).collect();
+                format!("{}\u{2026}", truncated)
             } else {
                 commit.summary.clone()
             };
 
             let summary_color = if is_selected {
+                theme::TEXT_BRIGHT
+            } else if is_head {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT
@@ -877,15 +890,16 @@ impl CommitGraphView {
                         break;
                     }
 
-                    // Pill background
+                    // Pill background (rounded rect approximation)
                     let pill_rect = Rect::new(
                         current_x,
                         y - pill_pad_v,
                         label_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
-                    pill_vertices.extend(create_rect_vertices(
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
                         &pill_rect,
+                        pill_radius,
                         pill_bg.to_array(),
                     ));
 
@@ -911,8 +925,9 @@ impl CommitGraphView {
                         head_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
-                    pill_vertices.extend(create_rect_vertices(
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
                         &pill_rect,
+                        pill_radius,
                         Color::rgba(0.231, 0.510, 0.965, 0.2).to_array(),
                     ));
                     vertices.extend(text_renderer.layout_text(
@@ -928,7 +943,7 @@ impl CommitGraphView {
             // Tags with pill backgrounds
             if let Some(tags) = tags_by_oid.get(&commit.id) {
                 for tag in tags {
-                    let tag_label = format!("{}  {}", '\u{25C6}', tag.name);
+                    let tag_label = format!("\u{25C6} {}", tag.name);
                     let tag_width = text_renderer.measure_text(&tag_label);
                     if current_x + tag_width + pill_pad_h * 2.0 + char_width > author_x - char_width {
                         break;
@@ -939,8 +954,9 @@ impl CommitGraphView {
                         tag_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
-                    pill_vertices.extend(create_rect_vertices(
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
                         &pill_rect,
+                        pill_radius,
                         Color::rgba(0.961, 0.620, 0.043, 0.2).to_array(),
                     ));
                     vertices.extend(text_renderer.layout_text(
@@ -955,6 +971,54 @@ impl CommitGraphView {
         }
 
         (vertices, pill_vertices)
+    }
+
+    /// Create vertices for a rounded rectangle (pill shape)
+    fn create_rounded_rect_vertices(
+        &self,
+        rect: &Rect,
+        radius: f32,
+        color: [f32; 4],
+    ) -> Vec<SplineVertex> {
+        let mut vertices = Vec::new();
+        let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
+
+        // Central rectangle (excluding corners)
+        vertices.extend(create_rect_vertices(
+            &Rect::new(rect.x + r, rect.y, rect.width - 2.0 * r, rect.height),
+            color,
+        ));
+        // Left strip
+        vertices.extend(create_rect_vertices(
+            &Rect::new(rect.x, rect.y + r, r, rect.height - 2.0 * r),
+            color,
+        ));
+        // Right strip
+        vertices.extend(create_rect_vertices(
+            &Rect::new(rect.right() - r, rect.y + r, r, rect.height - 2.0 * r),
+            color,
+        ));
+
+        // Corner arcs (quarter circles)
+        let corners = [
+            (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),           // top-left
+            (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),    // top-right
+            (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),                      // bottom-right
+            (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),           // bottom-left
+        ];
+
+        let segments = 6;
+        for (cx, cy, start_angle, end_angle) in corners {
+            for i in 0..segments {
+                let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
+                let a2 = start_angle + (end_angle - start_angle) * ((i + 1) as f32 / segments as f32);
+                vertices.push(SplineVertex { position: [cx, cy], color });
+                vertices.push(SplineVertex { position: [cx + r * a1.cos(), cy + r * a1.sin()], color });
+                vertices.push(SplineVertex { position: [cx + r * a2.cos(), cy + r * a2.sin()], color });
+            }
+        }
+
+        vertices
     }
 }
 
