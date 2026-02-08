@@ -25,6 +25,8 @@ pub struct BranchSidebar {
     pub tags_collapsed: bool,
     /// Scroll offset for the sidebar content
     pub scroll_offset: f32,
+    /// Total content height (tracked during layout)
+    pub content_height: f32,
 }
 
 impl BranchSidebar {
@@ -38,6 +40,7 @@ impl BranchSidebar {
             remote_collapsed: false,
             tags_collapsed: false,
             scroll_offset: 0.0,
+            content_height: 0.0,
         }
     }
 
@@ -83,7 +86,9 @@ impl BranchSidebar {
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    self.scroll_offset = (self.scroll_offset - delta_y).max(0.0);
+                    self.scroll_offset = (self.scroll_offset - delta_y)
+                        .max(0.0)
+                        .min((self.content_height - bounds.height).max(0.0));
                     return EventResponse::Consumed;
                 }
             }
@@ -140,7 +145,7 @@ impl BranchSidebar {
     }
 
     /// Layout the sidebar and produce rendering output
-    pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         // Panel background
@@ -304,6 +309,30 @@ impl BranchSidebar {
                 y += line_height;
             }
         }
+
+        // Compute total content height for scroll clamping (independent of early-break rendering)
+        let mut total_h: f32 = 0.0;
+        // LOCAL section
+        total_h += section_header_height;
+        if !self.local_collapsed {
+            total_h += self.local_branches.len() as f32 * line_height;
+        }
+        total_h += section_gap;
+        // REMOTE section
+        total_h += section_header_height;
+        if !self.remote_collapsed {
+            for (_remote, branches) in &self.remote_branches {
+                total_h += line_height; // remote name sub-header
+                total_h += branches.len() as f32 * line_height;
+            }
+        }
+        total_h += section_gap;
+        // TAGS section
+        total_h += section_header_height;
+        if !self.tags_collapsed {
+            total_h += self.tags.len() as f32 * line_height;
+        }
+        self.content_height = total_h;
 
         output
     }

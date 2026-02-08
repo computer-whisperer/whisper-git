@@ -350,9 +350,14 @@ impl CommitGraphView {
                 }
                 EventResponse::Ignored // Don't consume move events
             }
-            InputEvent::Scroll { delta_y, .. } => {
-                self.scroll_offset = (self.scroll_offset - delta_y).max(0.0);
-                EventResponse::Consumed
+            InputEvent::Scroll { delta_y, x, y, .. } => {
+                if bounds.contains(*x, *y) {
+                    let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
+                    self.scroll_offset = (self.scroll_offset - delta_y).max(0.0).min(max_scroll);
+                    EventResponse::Consumed
+                } else {
+                    EventResponse::Ignored
+                }
             }
             _ => EventResponse::Ignored,
         }

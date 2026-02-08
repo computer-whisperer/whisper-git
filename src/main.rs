@@ -590,13 +590,7 @@ impl ApplicationHandler for App {
 
                     // Route scroll events to diff view if it has content and cursor is in its area
                     if state.diff_view.has_content() {
-                        let diff_bounds = if state.diff_view.has_content() {
-                            // Diff replaces secondary repos area
-                            layout.secondary_repos
-                        } else {
-                            Rect::default()
-                        };
-                        if state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
+                        if state.diff_view.handle_event(&input_event, layout.secondary_repos).is_consumed() {
                             return;
                         }
                     }
@@ -605,14 +599,18 @@ impl ApplicationHandler for App {
                     match state.focused_panel {
                         FocusedPanel::Graph => {
                             let prev_selected = state.commit_graph_view.selected_commit;
-                            state.commit_graph_view.handle_event(&input_event, &self.commits, layout.graph);
-                            // If selection changed, load the diff
+                            let response = state.commit_graph_view.handle_event(&input_event, &self.commits, layout.graph);
+                            // Check selection change regardless of consumed state
                             if state.commit_graph_view.selected_commit != prev_selected {
                                 if let Some(oid) = state.commit_graph_view.selected_commit {
                                     if state.last_diff_commit != Some(oid) {
                                         state.pending_messages.push(AppMessage::SelectedCommit(oid));
                                     }
                                 }
+                            }
+                            // But only skip further processing if consumed
+                            if response.is_consumed() {
+                                return;
                             }
                         }
                         FocusedPanel::Staging => {
