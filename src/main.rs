@@ -144,8 +144,11 @@ impl App {
         let repo_path = cli_args.repo.as_deref().unwrap_or(".".as_ref());
         let (repo, commits) = match GitRepo::open(repo_path) {
             Ok(repo) => {
-                let commits = repo.recent_commits(50).unwrap_or_default();
-                println!("Loaded {} commits from {:?}", commits.len(), repo.workdir());
+                let commits = repo.commit_graph(50).unwrap_or_default();
+                let location: String = repo.workdir()
+                    .map(|p| format!("{:?}", p))
+                    .unwrap_or_else(|| format!("{:?} (bare)", repo.repo_name()));
+                println!("Loaded {} commits from {}", commits.len(), location);
                 (Some(repo), commits)
             }
             Err(e) => {
@@ -370,7 +373,7 @@ impl App {
                         Ok(oid) => {
                             println!("Created commit: {}", oid);
                             // Refresh commits
-                            self.commits = repo.recent_commits(50).unwrap_or_default();
+                            self.commits = repo.commit_graph(50).unwrap_or_default();
                             if let Some(state) = &mut self.state {
                                 state.commit_graph_view.update_layout(&self.commits);
                                 state.commit_graph_view.head_oid = repo.head_oid().ok();

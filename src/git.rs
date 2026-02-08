@@ -44,10 +44,32 @@ impl GitRepo {
         self.repo.workdir()
     }
 
-    /// Get recent commits from HEAD
+    /// Whether this is a bare repository
+    pub fn is_bare(&self) -> bool {
+        self.repo.is_bare()
+    }
+
+    /// Get recent commits from HEAD, falling back to branch tips if HEAD is invalid
     pub fn recent_commits(&self, count: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
-        revwalk.push_head().context("Failed to push HEAD to revwalk")?;
+
+        // Try push_head first; if it fails (e.g. bare repo with stale HEAD), fall back to branches
+        if revwalk.push_head().is_err() {
+            let mut found_any = false;
+            for branch in self.repo.branches(Some(git2::BranchType::Local))? {
+                if let Ok((branch, _)) = branch {
+                    if let Ok(reference) = branch.get().resolve() {
+                        if let Some(oid) = reference.target() {
+                            let _ = revwalk.push(oid);
+                            found_any = true;
+                        }
+                    }
+                }
+            }
+            if !found_any {
+                return Ok(Vec::new());
+            }
+        }
 
         let commits: Vec<CommitInfo> = revwalk
             .take(count)
@@ -105,41 +127,85 @@ impl GitRepo {
 
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {
-        self.repo
-            .workdir()
-            .or_else(|| self.repo.path().parent())
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string()
+        if let Some(workdir) = self.repo.workdir() {
+            return workdir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+        }
+
+        // Bare repo: path() returns e.g. "/project/.bare/" -- walk up to find a
+        // non-hidden directory name that represents the project.
+        let mut dir = self.repo.path();
+        loop {
+            match dir.file_name().and_then(|n| n.to_str()) {
+                Some(name) if !name.starts_with('.') => return name.to_string(),
+                _ => match dir.parent() {
+                    Some(parent) if parent != dir => dir = parent,
+                    _ => return "unknown".to_string(),
+                },
+            }
+        }
     }
 
     /// Get the current branch name
     pub fn current_branch(&self) -> Result<String> {
-        let head = self.repo.head().context("Failed to get HEAD")?;
-        if head.is_branch() {
-            Ok(head
-                .shorthand()
-                .unwrap_or("HEAD")
-                .to_string())
-        } else {
-            // Detached HEAD - show short commit id
-            Ok(head
-                .target()
-                .map(|oid| oid.to_string()[..7].to_string())
-                .unwrap_or_else(|| "HEAD".to_string()))
+        match self.repo.head() {
+            Ok(head) => {
+                if head.is_branch() {
+                    Ok(head.shorthand().unwrap_or("HEAD").to_string())
+                } else {
+                    // Detached HEAD - show short commit id
+                    Ok(head
+                        .target()
+                        .map(|oid| oid.to_string()[..7].to_string())
+                        .unwrap_or_else(|| "HEAD".to_string()))
+                }
+            }
+            Err(_) => {
+                // HEAD points to a non-existent branch (common in bare repos).
+                // Fall back to the first local branch we can find.
+                if let Ok(branches) = self.repo.branches(Some(git2::BranchType::Local)) {
+                    for branch in branches {
+                        if let Ok((branch, _)) = branch {
+                            if let Ok(Some(name)) = branch.name() {
+                                return Ok(name.to_string());
+                            }
+                        }
+                    }
+                }
+                Ok("HEAD".to_string())
+            }
         }
     }
 
-    /// Get the head commit OID
+    /// Get the head commit OID (falls back to first local branch tip for bare repos)
     pub fn head_oid(&self) -> Result<Oid> {
-        let head = self.repo.head().context("Failed to get HEAD")?;
-        head.target().context("HEAD has no target")
+        if let Ok(head) = self.repo.head() {
+            if let Some(oid) = head.target() {
+                return Ok(oid);
+            }
+        }
+        // Fallback: first local branch tip
+        for branch in self.repo.branches(Some(git2::BranchType::Local))? {
+            if let Ok((branch, _)) = branch {
+                if let Ok(reference) = branch.get().resolve() {
+                    if let Some(oid) = reference.target() {
+                        return Ok(oid);
+                    }
+                }
+            }
+        }
+        anyhow::bail!("No HEAD or branch tips found")
     }
 
     /// Get ahead/behind count relative to upstream
     pub fn ahead_behind(&self) -> Result<(usize, usize)> {
-        let head = self.repo.head().context("Failed to get HEAD")?;
+        let head = match self.repo.head() {
+            Ok(h) => h,
+            Err(_) => return Ok((0, 0)), // Bare repo with stale HEAD
+        };
         if !head.is_branch() {
             return Ok((0, 0));
         }
@@ -168,6 +234,9 @@ impl GitRepo {
 
     /// Get working directory status
     pub fn status(&self) -> Result<WorkingDirStatus> {
+        if self.repo.is_bare() {
+            return Ok(WorkingDirStatus::default());
+        }
         let mut opts = StatusOptions::new();
         opts.include_untracked(true)
             .recurse_untracked_dirs(true);
