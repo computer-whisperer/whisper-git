@@ -814,6 +814,84 @@ impl GitRepo {
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("No remotes configured"))
     }
+
+    /// Checkout a local branch by name
+    pub fn checkout_branch(&self, name: &str) -> Result<()> {
+        let branch = self.repo.find_branch(name, git2::BranchType::Local)
+            .with_context(|| format!("Branch '{}' not found", name))?;
+        let reference = branch.get().resolve()
+            .context("Failed to resolve branch reference")?;
+        let commit = reference.peel_to_commit()
+            .context("Failed to peel to commit")?;
+        let tree = commit.tree().context("Failed to get tree")?;
+
+        self.repo.checkout_tree(tree.as_object(), Some(
+            git2::build::CheckoutBuilder::new().safe()
+        )).context("Failed to checkout tree")?;
+
+        let refname = format!("refs/heads/{}", name);
+        self.repo.set_head(&refname)
+            .with_context(|| format!("Failed to set HEAD to {}", name))?;
+
+        Ok(())
+    }
+
+    /// Checkout a remote branch, creating a local tracking branch
+    pub fn checkout_remote_branch(&self, remote: &str, branch: &str) -> Result<()> {
+        // Check if local branch already exists
+        if self.repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+            // Just checkout the existing local branch
+            return self.checkout_branch(branch);
+        }
+
+        // Find the remote branch
+        let remote_branch_name = format!("{}/{}", remote, branch);
+        let remote_ref = self.repo.find_branch(&remote_branch_name, git2::BranchType::Remote)
+            .with_context(|| format!("Remote branch '{}' not found", remote_branch_name))?;
+        let commit = remote_ref.get().peel_to_commit()
+            .context("Failed to peel remote branch to commit")?;
+
+        // Create local tracking branch
+        let mut local_branch = self.repo.branch(branch, &commit, false)
+            .with_context(|| format!("Failed to create local branch '{}'", branch))?;
+
+        // Set upstream
+        local_branch.set_upstream(Some(&remote_branch_name))
+            .context("Failed to set upstream")?;
+
+        // Checkout
+        let tree = commit.tree().context("Failed to get tree")?;
+        self.repo.checkout_tree(tree.as_object(), Some(
+            git2::build::CheckoutBuilder::new().safe()
+        )).context("Failed to checkout tree")?;
+
+        let refname = format!("refs/heads/{}", branch);
+        self.repo.set_head(&refname)?;
+
+        Ok(())
+    }
+
+    /// Create a new branch at HEAD
+    pub fn create_branch(&self, name: &str) -> Result<()> {
+        let head = self.repo.head().context("Failed to get HEAD")?;
+        let commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
+        self.repo.branch(name, &commit, false)
+            .with_context(|| format!("Failed to create branch '{}'", name))?;
+        Ok(())
+    }
+
+    /// Delete a local branch (refuses to delete the current branch)
+    pub fn delete_branch(&self, name: &str) -> Result<()> {
+        let current = self.current_branch()?;
+        if current == name {
+            anyhow::bail!("Cannot delete the currently checked-out branch '{}'", name);
+        }
+        let mut branch = self.repo.find_branch(name, git2::BranchType::Local)
+            .with_context(|| format!("Branch '{}' not found", name))?;
+        branch.delete()
+            .with_context(|| format!("Failed to delete branch '{}'", name))?;
+        Ok(())
+    }
 }
 
 /// Spawn a background thread to run `git fetch --prune`

@@ -4,7 +4,7 @@ mod diff_view;
 mod secondary_repos;
 mod staging_well;
 
-pub use branch_sidebar::BranchSidebar;
+pub use branch_sidebar::{BranchSidebar, SidebarAction};
 pub use commit_graph::CommitGraphView;
 pub use diff_view::DiffView;
 pub use secondary_repos::SecondaryReposView;

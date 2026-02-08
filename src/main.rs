@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
-use crate::views::{BranchSidebar, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction};
+use crate::views::{BranchSidebar, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 // ============================================================================
 // CLI
@@ -90,6 +90,7 @@ enum FocusedPanel {
     #[default]
     Graph,
     Staging,
+    Sidebar,
 }
 
 /// Application-level messages for state changes
@@ -104,6 +105,9 @@ enum AppMessage {
     Push,
     SelectedCommit(Oid),
     ViewDiff(String, bool), // (path, staged)
+    CheckoutBranch(String),
+    CheckoutRemoteBranch(String, String),
+    DeleteBranch(String),
 }
 
 // ============================================================================
@@ -519,6 +523,79 @@ impl App {
                         }
                     }
                 }
+                AppMessage::CheckoutBranch(name) => {
+                    match repo.checkout_branch(&name) {
+                        Ok(()) => {
+                            println!("Checked out branch: {}", name);
+                            // Full refresh
+                            self.commits = repo.commit_graph(50).unwrap_or_default();
+                            if let Some(state) = &mut self.state {
+                                state.commit_graph_view.update_layout(&self.commits);
+                                state.commit_graph_view.head_oid = repo.head_oid().ok();
+                                let branch_tips = repo.branch_tips().unwrap_or_default();
+                                let tags = repo.tags().unwrap_or_default();
+                                let current = repo.current_branch().unwrap_or_default();
+                                state.commit_graph_view.branch_tips = branch_tips.clone();
+                                state.commit_graph_view.tags = tags.clone();
+                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+                                state.header_bar.set_repo_info(
+                                    state.header_bar.repo_name.clone(),
+                                    current,
+                                    repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
+                                    repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to checkout branch '{}': {}", name, e);
+                        }
+                    }
+                }
+                AppMessage::CheckoutRemoteBranch(remote, branch) => {
+                    match repo.checkout_remote_branch(&remote, &branch) {
+                        Ok(()) => {
+                            println!("Checked out remote branch: {}/{}", remote, branch);
+                            // Full refresh (same as CheckoutBranch)
+                            self.commits = repo.commit_graph(50).unwrap_or_default();
+                            if let Some(state) = &mut self.state {
+                                state.commit_graph_view.update_layout(&self.commits);
+                                state.commit_graph_view.head_oid = repo.head_oid().ok();
+                                let branch_tips = repo.branch_tips().unwrap_or_default();
+                                let tags = repo.tags().unwrap_or_default();
+                                let current = repo.current_branch().unwrap_or_default();
+                                state.commit_graph_view.branch_tips = branch_tips.clone();
+                                state.commit_graph_view.tags = tags.clone();
+                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+                                state.header_bar.set_repo_info(
+                                    state.header_bar.repo_name.clone(),
+                                    current,
+                                    repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
+                                    repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to checkout remote branch '{}/{}': {}", remote, branch, e);
+                        }
+                    }
+                }
+                AppMessage::DeleteBranch(name) => {
+                    match repo.delete_branch(&name) {
+                        Ok(()) => {
+                            println!("Deleted branch: {}", name);
+                            // Refresh branch data
+                            if let Some(state) = &mut self.state {
+                                let branch_tips = repo.branch_tips().unwrap_or_default();
+                                let tags = repo.tags().unwrap_or_default();
+                                let current = repo.current_branch().unwrap_or_default();
+                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to delete branch '{}': {}", name, e);
+                        }
+                    }
+                }
             }
         }
 
@@ -687,8 +764,11 @@ impl ApplicationHandler for App {
                                 // Cycle focus between panels
                                 state.focused_panel = match state.focused_panel {
                                     FocusedPanel::Graph => FocusedPanel::Staging,
-                                    FocusedPanel::Staging => FocusedPanel::Graph,
+                                    FocusedPanel::Staging => FocusedPanel::Sidebar,
+                                    FocusedPanel::Sidebar => FocusedPanel::Graph,
                                 };
+                                // Update focus states
+                                state.branch_sidebar.set_focused(state.focused_panel == FocusedPanel::Sidebar);
                             }
                             _ => {}
                         }
@@ -696,6 +776,20 @@ impl ApplicationHandler for App {
 
                     // Route to branch sidebar
                     if state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
+                        // Check for sidebar actions
+                        if let Some(action) = state.branch_sidebar.take_action() {
+                            match action {
+                                SidebarAction::CheckoutBranch(name) => {
+                                    state.pending_messages.push(AppMessage::CheckoutBranch(name));
+                                }
+                                SidebarAction::CheckoutRemoteBranch(remote, branch) => {
+                                    state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
+                                }
+                                SidebarAction::DeleteBranch(name) => {
+                                    state.pending_messages.push(AppMessage::DeleteBranch(name));
+                                }
+                            }
+                        }
                         return;
                     }
 
@@ -780,6 +874,9 @@ impl ApplicationHandler for App {
                                     }
                                 }
                             }
+                        }
+                        FocusedPanel::Sidebar => {
+                            // Keyboard events handled by branch_sidebar.handle_event above
                         }
                     }
 
