@@ -115,7 +115,10 @@ impl BranchSidebar {
                     }
                     header_y += section_header_height;
                     if !self.remote_collapsed {
-                        for (_remote, branches) in &self.remote_branches {
+                        let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
+                        remote_names.sort();
+                        for remote_name in &remote_names {
+                            let branches = &self.remote_branches[*remote_name];
                             header_y += line_height; // remote name sub-header
                             header_y += branches.len() as f32 * line_height;
                         }
