@@ -49,7 +49,7 @@ impl SecondaryReposView {
 
         let padding = 12.0;
         let inner = bounds.inset(padding);
-        let line_height = 18.0;
+        let line_height = text_renderer.line_height() * 1.2;
         let section_gap = 12.0;
         let card_gap = 6.0;
         let card_padding = 8.0;
@@ -192,7 +192,7 @@ impl SecondaryReposView {
 
         let accent_width = 3.0;
         let card_padding = 8.0;
-        let line_height = 18.0;
+        let line_height = text_renderer.line_height() * 1.2;
 
         // Card background
         output.spline_vertices.extend(create_rect_vertices(
@@ -275,7 +275,7 @@ impl SecondaryReposView {
 
         let accent_width = 3.0;
         let card_padding = 8.0;
-        let line_height = 18.0;
+        let line_height = text_renderer.line_height() * 1.2;
 
         // Card background
         output.spline_vertices.extend(create_rect_vertices(

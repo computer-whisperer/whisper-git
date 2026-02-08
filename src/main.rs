@@ -41,6 +41,7 @@ use crate::views::{BranchSidebar, CommitGraphView, DiffView, SecondaryReposView,
 struct CliArgs {
     screenshot: Option<PathBuf>,
     screenshot_size: Option<(u32, u32)>,
+    screenshot_scale: Option<f64>,
     view: Option<String>,
     repo: Option<PathBuf>,
 }
@@ -60,6 +61,11 @@ fn parse_args() -> CliArgs {
                             args.screenshot_size = Some((width, height));
                         }
                     }
+                }
+            }
+            "--scale" => {
+                if let Some(s) = iter.next() {
+                    args.screenshot_scale = s.parse().ok();
                 }
             }
             "--view" => args.view = iter.next(),
@@ -131,6 +137,7 @@ struct RenderState {
     spline_renderer: SplineRenderer,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
+    scale_factor: f64,
     // UI components
     input_state: InputState,
     focused_panel: FocusedPanel,
@@ -234,12 +241,19 @@ impl App {
         )
         .context("Failed to create upload command buffer")?;
 
-        let scale_factor = window.scale_factor();
+        // Build font atlas at the max scale across all monitors for crisp text everywhere.
+        // CLI --scale overrides for deterministic screenshots.
+        let window_scale = window.scale_factor();
+        let max_scale = self.cli_args.screenshot_scale.unwrap_or_else(|| {
+            window.available_monitors()
+                .map(|m| m.scale_factor())
+                .fold(window_scale, f64::max)
+        });
         let text_renderer = TextRenderer::new(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
-            scale_factor,
+            max_scale,
         )
         .context("Failed to create text renderer")?;
 
@@ -267,6 +281,10 @@ impl App {
         let mut commit_graph_view = CommitGraphView::new();
         let staging_well = StagingWell::new();
         let mut secondary_repos_view = SecondaryReposView::new();
+
+        // Sync view metrics to the current text renderer scale
+        commit_graph_view.sync_metrics(&text_renderer);
+        branch_sidebar.sync_metrics(&text_renderer);
 
         // Set up graph view with repo data
         commit_graph_view.update_layout(&self.commits);
@@ -315,6 +333,7 @@ impl App {
             commit_graph_view,
             previous_frame_end,
             frame_count: 0,
+            scale_factor: window_scale,
             input_state: InputState::new(),
             focused_panel: FocusedPanel::Graph,
             header_bar,
@@ -489,6 +508,14 @@ impl ApplicationHandler for App {
                 state.surface.needs_recreate = true;
             }
 
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                state.scale_factor = scale_factor;
+                state.text_renderer.set_render_scale(scale_factor);
+                state.commit_graph_view.sync_metrics(&state.text_renderer);
+                state.branch_sidebar.sync_metrics(&state.text_renderer);
+                state.surface.needs_recreate = true;
+            }
+
             WindowEvent::RedrawRequested => {
                 // Process any pending messages
                 self.process_messages();
@@ -531,7 +558,7 @@ impl ApplicationHandler for App {
                     // Calculate layout
                     let extent = state.surface.extent();
                     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-                    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+                    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
 
                     // Handle global keys first
                     if let InputEvent::KeyDown { key, .. } = &input_event {
@@ -692,7 +719,7 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Build UI
     let extent = state.surface.extent();
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
 
     // Collect all vertices
     let mut output = WidgetOutput::new();
@@ -806,7 +833,7 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     // Build UI
     let extent = state.surface.extent();
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
 
     // Collect all vertices
     let mut output = WidgetOutput::new();
@@ -932,7 +959,7 @@ fn capture_screenshot_offscreen(
     // Build UI at the specified dimensions
     let extent = offscreen.extent();
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0);
+    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
 
     // Collect all vertices
     let mut output = WidgetOutput::new();

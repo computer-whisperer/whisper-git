@@ -60,6 +60,10 @@ struct GlyphInfo {
 }
 
 /// Simple text renderer using a font atlas
+///
+/// The atlas is built at `atlas_scale` (typically the highest DPI monitor).
+/// At runtime, `render_scale` can be changed (e.g. when moving between monitors).
+/// All public metrics and glyph positions are scaled by `render_scale / atlas_scale`.
 pub struct TextRenderer {
     pipeline: Arc<GraphicsPipeline>,
     font_texture: Arc<ImageView>,
@@ -69,8 +73,14 @@ pub struct TextRenderer {
     glyphs: HashMap<char, GlyphInfo>,
     atlas_width: f32,
     atlas_height: f32,
+    /// Line height in atlas pixels (physical pixels at atlas_scale)
     line_height: f32,
+    /// Ascent in atlas pixels
     ascent: f32,
+    /// Scale factor used when building the atlas
+    atlas_scale: f32,
+    /// Current display scale factor (updated on monitor changes)
+    render_scale: f32,
 }
 
 mod vs {
@@ -135,8 +145,10 @@ impl TextRenderer {
         let font_data = include_bytes!("/usr/share/fonts/TTF/DejaVuSansMono.ttf");
         let font = FontRef::try_from_slice(font_data).context("Failed to load font")?;
 
-        // Create font atlas - scale base font size by the display's DPI scale factor
-        let base_font_size = 24.0_f64;
+        // Build atlas at the given scale factor (should be the max across all monitors).
+        // Runtime scaling is handled by render_scale / atlas_scale ratio.
+        let base_font_size = 14.0_f64;
+        let atlas_scale = scale_factor as f32;
         let scale = PxScale::from((base_font_size * scale_factor) as f32);
         let scaled_font = font.as_scaled(scale);
         let line_height = scaled_font.height();
@@ -338,7 +350,21 @@ impl TextRenderer {
             atlas_height: atlas_height as f32,
             line_height,
             ascent,
+            atlas_scale,
+            render_scale: atlas_scale, // Initially matches atlas; updated on monitor change
         })
+    }
+
+    /// Ratio of current display scale to atlas scale.
+    /// Multiply atlas-pixel values by this to get current physical pixels.
+    fn scale_ratio(&self) -> f32 {
+        self.render_scale / self.atlas_scale
+    }
+
+    /// Update the render scale (call when moving between monitors).
+    /// The atlas stays the same; metrics and glyph positions adjust via the ratio.
+    pub fn set_render_scale(&mut self, scale: f64) {
+        self.render_scale = scale as f32;
     }
 
     /// Create vertices for a text string
@@ -353,21 +379,22 @@ impl TextRenderer {
         y: f32,
         color: [f32; 4],
     ) -> Vec<TextVertex> {
+        let ratio = self.scale_ratio();
         let mut vertices = Vec::new();
         let mut cursor_x = x;
-        // Compute baseline from top of line: baseline = top + ascent
-        let baseline_y = y + self.ascent;
+        // Compute baseline from top of line: baseline = top + ascent (scaled)
+        let baseline_y = y + self.ascent * ratio;
 
         for c in text.chars() {
             if let Some(glyph) = self.glyphs.get(&c) {
                 if glyph.width > 0.0 {
-                    // Quad positions: bearing_y is relative to baseline (negative = above)
-                    let x0 = cursor_x + glyph.bearing_x;
-                    let y0 = baseline_y + glyph.bearing_y;
-                    let x1 = x0 + glyph.width;
-                    let y1 = y0 + glyph.height;
+                    // Quad positions: scaled from atlas pixels to current physical pixels
+                    let x0 = cursor_x + glyph.bearing_x * ratio;
+                    let y0 = baseline_y + glyph.bearing_y * ratio;
+                    let x1 = x0 + glyph.width * ratio;
+                    let y1 = y0 + glyph.height * ratio;
 
-                    // Texture coordinates
+                    // Texture coordinates (unchanged - reference same atlas region)
                     let u0 = glyph.tex_x;
                     let v0 = glyph.tex_y;
                     let u1 = glyph.tex_x + glyph.tex_w;
@@ -383,34 +410,32 @@ impl TextRenderer {
                     vertices.push(TextVertex { position: [x0, y1], tex_coord: [u0, v1], color });
                 }
 
-                cursor_x += glyph.advance;
+                cursor_x += glyph.advance * ratio;
             }
         }
 
         vertices
     }
 
-    /// Get line height for text layout
+    /// Get line height for text layout (scaled to current display)
     pub fn line_height(&self) -> f32 {
-        self.line_height
+        self.line_height * self.scale_ratio()
     }
 
-    /// Get character width (advance) for a monospace font
-    ///
-    /// For a monospace font, all characters have the same advance.
-    /// Returns the advance of 'M' as a representative character.
+    /// Get character width (advance) for a monospace font (scaled to current display)
     pub fn char_width(&self) -> f32 {
         self.glyphs
             .get(&'M')
-            .map(|g| g.advance)
-            .unwrap_or(14.0) // Fallback (approx for 24px @ 1x scale)
+            .map(|g| g.advance * self.scale_ratio())
+            .unwrap_or(8.0 * self.render_scale)
     }
 
-    /// Measure the width of a text string in pixels
+    /// Measure the width of a text string in pixels (scaled to current display)
     pub fn measure_text(&self, text: &str) -> f32 {
+        let ratio = self.scale_ratio();
         text.chars()
             .filter_map(|c| self.glyphs.get(&c))
-            .map(|g| g.advance)
+            .map(|g| g.advance * ratio)
             .sum()
     }
 

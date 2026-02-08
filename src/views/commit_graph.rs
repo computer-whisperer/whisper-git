@@ -220,11 +220,11 @@ impl Default for CommitGraphView {
             layout: GraphLayout::new(),
             title_color: theme::TEXT_BRIGHT,
             text_color: theme::TEXT,
-            line_width: 2.0,        // Thinner lines for tighter density
-            lane_width: 22.0,       // Compact lanes (~GitKraken density)
-            row_height: 24.0,       // Tighter rows for more visible commits
-            node_radius: 5.0,       // Smaller nodes for compact layout
-            segments_per_curve: 20, // Smoother curves at smaller size
+            line_width: 2.0,
+            lane_width: 22.0,
+            row_height: 24.0,
+            node_radius: 5.0,
+            segments_per_curve: 20,
             selected_commit: None,
             hovered_commit: None,
             working_dir_status: None,
@@ -233,6 +233,18 @@ impl Default for CommitGraphView {
             tags: Vec::new(),
             scroll_offset: 0.0,
         }
+    }
+}
+
+impl CommitGraphView {
+    /// Update layout constants to match the current text renderer metrics.
+    /// Call this when the display scale changes or at startup.
+    pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
+        let lh = text_renderer.line_height();
+        self.row_height = (lh * 1.5).max(16.0);
+        self.lane_width = (lh * 1.4).max(12.0);
+        self.node_radius = (lh * 0.3).max(3.0);
+        self.line_width = (lh * 0.12).max(1.5);
     }
 }
 

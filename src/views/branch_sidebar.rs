@@ -27,6 +27,10 @@ pub struct BranchSidebar {
     pub scroll_offset: f32,
     /// Total content height (tracked during layout)
     pub content_height: f32,
+    /// Cached line height (from text renderer)
+    line_height: f32,
+    /// Cached section header height
+    section_header_height: f32,
 }
 
 impl BranchSidebar {
@@ -41,7 +45,15 @@ impl BranchSidebar {
             tags_collapsed: false,
             scroll_offset: 0.0,
             content_height: 0.0,
+            line_height: 18.0,
+            section_header_height: 24.0,
         }
+    }
+
+    /// Update cached metrics from the text renderer (call on scale change)
+    pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
+        self.line_height = text_renderer.line_height() * 1.2;
+        self.section_header_height = text_renderer.line_height() * 1.6;
     }
 
     /// Populate from branch tips and tags from the git repo
@@ -97,8 +109,8 @@ impl BranchSidebar {
                     // Check if click is on a section header
                     let padding = 8.0;
                     let inner = bounds.inset(padding);
-                    let line_height = 18.0;
-                    let section_header_height = 24.0;
+                    let line_height = self.line_height;
+                    let section_header_height = self.section_header_height;
 
                     let mut header_y = inner.y - self.scroll_offset;
 
@@ -163,8 +175,8 @@ impl BranchSidebar {
 
         let padding = 8.0;
         let inner = bounds.inset(padding);
-        let line_height = 18.0;
-        let section_header_height = 24.0;
+        let line_height = self.line_height;
+        let section_header_height = self.section_header_height;
         let indent = 12.0;
         let section_gap = 8.0;
 

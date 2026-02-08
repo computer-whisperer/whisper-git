@@ -71,13 +71,15 @@ impl HeaderBar {
         self.pending_action.take()
     }
 
-    /// Compute button bounds within the header
+    /// Compute button bounds within the header (scale-aware)
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
-        let button_height = bounds.height - 8.0;
-        let button_y = bounds.y + 4.0;
-        let button_width = 110.0; // Wide enough for "Push (+99)" at 14px/char
-        let icon_button_width = 32.0;
-        let gap = 8.0;
+        // Derive scale from header height (which is already scaled by ScreenLayout)
+        let scale = (bounds.height / 32.0).max(1.0);
+        let button_height = bounds.height - 8.0 * scale;
+        let button_y = bounds.y + 4.0 * scale;
+        let button_width = 110.0 * scale;
+        let icon_button_width = 32.0 * scale;
+        let gap = 8.0 * scale;
 
         // Right-aligned buttons: [?][=] at far right
         let settings_x = bounds.right() - icon_button_width - gap;

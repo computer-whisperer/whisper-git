@@ -71,6 +71,9 @@ impl CaptureBuffer {
 
         let rgba_data: Vec<u8> = match self.format {
             // 16-bit float formats (common on AMD)
+            // The application writes sRGB color values directly (all color constants
+            // are perceptual/sRGB), so the framebuffer already contains sRGB data.
+            // No linear-to-sRGB conversion needed - just clamp and quantize.
             Format::R16G16B16A16_SFLOAT => {
                 use half::f16;
                 buffer_content
@@ -81,10 +84,10 @@ impl CaptureBuffer {
                         let b = f16::from_le_bytes([pixel[4], pixel[5]]).to_f32();
                         let a = f16::from_le_bytes([pixel[6], pixel[7]]).to_f32();
                         [
-                            (linear_to_srgb(r) * 255.0) as u8,
-                            (linear_to_srgb(g) * 255.0) as u8,
-                            (linear_to_srgb(b) * 255.0) as u8,
-                            (a * 255.0) as u8,
+                            (r.clamp(0.0, 1.0) * 255.0) as u8,
+                            (g.clamp(0.0, 1.0) * 255.0) as u8,
+                            (b.clamp(0.0, 1.0) * 255.0) as u8,
+                            (a.clamp(0.0, 1.0) * 255.0) as u8,
                         ]
                     })
                     .collect()

@@ -35,12 +35,17 @@ impl ScreenLayout {
     /// +------+---------------------------------------------------+
     /// ```
     pub fn compute(bounds: Rect) -> Self {
+        Self::compute_scaled(bounds, 1.0)
+    }
+
+    /// Create the screen layout, with pixel constants scaled for HiDPI
+    pub fn compute_scaled(bounds: Rect, scale: f32) -> Self {
         // Split into header and main area
         let header_height = bounds.height * 0.04;
-        let (header, main) = bounds.take_top(header_height.max(32.0)); // Min 32px header
+        let (header, main) = bounds.take_top(header_height.max(32.0 * scale));
 
         // Split main area into sidebar and content
-        let sidebar_width = 180.0_f32.min(main.width * 0.15); // 180px or 15% max
+        let sidebar_width = (180.0 * scale).min(main.width * 0.15);
         let (sidebar, content) = main.take_left(sidebar_width);
 
         // Split content area into left (graph) and right (staging + secondary)
@@ -64,8 +69,8 @@ impl ScreenLayout {
     }
 
     /// Create a layout with a gap between sections
-    pub fn compute_with_gap(bounds: Rect, gap: f32) -> Self {
-        let base = Self::compute(bounds);
+    pub fn compute_with_gap(bounds: Rect, gap: f32, scale: f32) -> Self {
+        let base = Self::compute_scaled(bounds, scale);
 
         // Apply gap padding
         Self {
