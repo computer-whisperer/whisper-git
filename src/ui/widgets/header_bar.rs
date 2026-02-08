@@ -9,6 +9,7 @@ use crate::ui::widgets::Button;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeaderAction {
     Fetch,
+    Pull,
     Push,
     Commit,
     Help,
@@ -28,6 +29,8 @@ pub struct HeaderBar {
     pub behind: usize,
     /// Whether a fetch operation is in progress
     pub fetching: bool,
+    /// Whether a pull operation is in progress
+    pub pulling: bool,
     /// Whether a push operation is in progress
     pub pushing: bool,
     /// Whether there are staged changes (highlights commit button)
@@ -36,6 +39,7 @@ pub struct HeaderBar {
     pending_action: Option<HeaderAction>,
     /// Button states (for hover/press tracking)
     fetch_button: Button,
+    pull_button: Button,
     push_button: Button,
     commit_button: Button,
 }
@@ -49,10 +53,12 @@ impl HeaderBar {
             ahead: 0,
             behind: 0,
             fetching: false,
+            pulling: false,
             pushing: false,
             has_staged: false,
             pending_action: None,
             fetch_button: Button::new("Fetch"),
+            pull_button: Button::new("Pull"),
             push_button: Button::new("Push"),
             commit_button: Button::new("Commit"),
         }
@@ -72,7 +78,7 @@ impl HeaderBar {
     }
 
     /// Compute button bounds within the header (scale-aware)
-    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
         let scale = (bounds.height / 32.0).max(1.0);
         let button_height = bounds.height - 8.0 * scale;
@@ -85,13 +91,15 @@ impl HeaderBar {
         let settings_x = bounds.right() - icon_button_width - gap;
         let help_x = settings_x - icon_button_width - gap;
 
-        // Action buttons: [Fetch] [Push] [Commit] before help/settings
+        // Action buttons: [Fetch] [Pull] [Push] [Commit] before help/settings
         let commit_x = help_x - button_width - gap * 2.0;
         let push_x = commit_x - button_width - gap;
-        let fetch_x = push_x - button_width - gap;
+        let pull_x = push_x - button_width - gap;
+        let fetch_x = pull_x - button_width - gap;
 
         (
             Rect::new(fetch_x, button_y, button_width, button_height),
+            Rect::new(pull_x, button_y, button_width, button_height),
             Rect::new(push_x, button_y, button_width, button_height),
             Rect::new(commit_x, button_y, button_width, button_height),
             Rect::new(help_x, button_y, icon_button_width, button_height),
@@ -112,13 +120,20 @@ impl Widget for HeaderBar {
     }
 
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
-        let (fetch_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
         // Handle button events
         if self.fetch_button.handle_event(event, fetch_bounds).is_consumed() {
             if self.fetch_button.was_clicked() {
                 self.pending_action = Some(HeaderAction::Fetch);
+            }
+            return EventResponse::Consumed;
+        }
+
+        if self.pull_button.handle_event(event, pull_bounds).is_consumed() {
+            if self.pull_button.was_clicked() {
+                self.pending_action = Some(HeaderAction::Pull);
             }
             return EventResponse::Consumed;
         }
@@ -156,8 +171,9 @@ impl Widget for HeaderBar {
     }
 
     fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
-        let (fetch_bounds, push_bounds, commit_bounds, _, _) = self.button_bounds(bounds);
+        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, _, _) = self.button_bounds(bounds);
         self.fetch_button.update_hover(x, y, fetch_bounds);
+        self.pull_button.update_hover(x, y, pull_bounds);
         self.push_button.update_hover(x, y, push_bounds);
         self.commit_button.update_hover(x, y, commit_bounds);
     }
@@ -202,12 +218,23 @@ impl Widget for HeaderBar {
         ));
 
         // Button bounds
-        let (fetch_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
         // Fetch button
         let fetch_btn = Button::new(if self.fetching { "..." } else { "Fetch" });
         output.extend(fetch_btn.layout(text_renderer, fetch_bounds));
+
+        // Pull button with badge
+        let pull_label = if self.pulling {
+            "...".to_string()
+        } else if self.behind > 0 {
+            format!("Pull (-{})", self.behind)
+        } else {
+            "Pull".to_string()
+        };
+        let pull_btn = Button::new(pull_label);
+        output.extend(pull_btn.layout(text_renderer, pull_bounds));
 
         // Push button with badge
         let push_label = if self.pushing {

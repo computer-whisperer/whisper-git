@@ -102,6 +102,7 @@ enum AppMessage {
     UnstageAll,
     Commit(String),
     Fetch,
+    Pull,
     Push,
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
@@ -161,6 +162,8 @@ struct RenderState {
     pending_messages: Vec<AppMessage>,
     /// Receiver for background fetch operation
     fetch_receiver: Option<Receiver<RemoteOpResult>>,
+    /// Receiver for background pull operation
+    pull_receiver: Option<Receiver<RemoteOpResult>>,
     /// Receiver for background push operation
     push_receiver: Option<Receiver<RemoteOpResult>>,
     /// Status message to display (message, time set)
@@ -359,6 +362,7 @@ impl App {
             last_diff_commit: None,
             pending_messages: Vec::new(),
             fetch_receiver: None,
+            pull_receiver: None,
             push_receiver: None,
             status_message: None,
         });
@@ -461,6 +465,26 @@ impl App {
                         }
                     } else {
                         eprintln!("No working directory for fetch");
+                    }
+                }
+                AppMessage::Pull => {
+                    if let Some(state) = &self.state {
+                        if state.pull_receiver.is_some() {
+                            eprintln!("Pull already in progress");
+                            continue;
+                        }
+                    }
+                    if let Some(workdir) = repo.working_dir_path() {
+                        let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                        let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                        println!("Pulling {} from {}...", branch, remote);
+                        let rx = crate::git::pull_remote_async(workdir, remote, branch);
+                        if let Some(state) = &mut self.state {
+                            state.pull_receiver = Some(rx);
+                            state.header_bar.pulling = true;
+                        }
+                    } else {
+                        eprintln!("No working directory for pull");
                     }
                 }
                 AppMessage::Push => {
@@ -670,6 +694,41 @@ impl App {
             }
         }
 
+        // Poll pull
+        if let Some(ref rx) = state.pull_receiver {
+            if let Ok(result) = rx.try_recv() {
+                state.header_bar.pulling = false;
+                state.pull_receiver = None;
+                if result.success {
+                    println!("Pull completed successfully");
+                    if !result.error.is_empty() {
+                        println!("{}", result.error.trim());
+                    }
+                    state.status_message = Some(("Pull complete".to_string(), Instant::now()));
+                    // Full refresh after pull (commits, branches, ahead/behind)
+                    if let Some(ref repo) = self.repo {
+                        self.commits = repo.commit_graph(50).unwrap_or_default();
+                        state.commit_graph_view.update_layout(&self.commits);
+                        state.commit_graph_view.head_oid = repo.head_oid().ok();
+                        state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
+                        state.commit_graph_view.tags = repo.tags().unwrap_or_default();
+                        if let Ok((ahead, behind)) = repo.ahead_behind() {
+                            state.header_bar.ahead = ahead;
+                            state.header_bar.behind = behind;
+                        }
+                        // Refresh sidebar
+                        let branch_tips = repo.branch_tips().unwrap_or_default();
+                        let tags = repo.tags().unwrap_or_default();
+                        let current = repo.current_branch().unwrap_or_default();
+                        state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                    }
+                } else {
+                    eprintln!("Pull failed: {}", result.error);
+                    state.status_message = Some((format!("Pull failed: {}", result.error.lines().next().unwrap_or("unknown error")), Instant::now()));
+                }
+            }
+        }
+
         // Poll push
         if let Some(ref rx) = state.push_receiver {
             if let Ok(result) = rx.try_recv() {
@@ -831,6 +890,9 @@ impl ApplicationHandler for App {
                             match action {
                                 HeaderAction::Fetch => {
                                     state.pending_messages.push(AppMessage::Fetch);
+                                }
+                                HeaderAction::Pull => {
+                                    state.pending_messages.push(AppMessage::Pull);
                                 }
                                 HeaderAction::Push => {
                                     state.pending_messages.push(AppMessage::Push);
