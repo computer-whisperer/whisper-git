@@ -3,6 +3,7 @@
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
 
 /// A file entry in the list
@@ -56,6 +57,8 @@ pub struct FileList {
     pending_action: Option<FileListAction>,
     /// Index of the item under the mouse cursor
     hovered_index: Option<usize>,
+    /// Scrollbar widget
+    scrollbar: Scrollbar,
 }
 
 impl FileList {
@@ -70,6 +73,7 @@ impl FileList {
             is_staged,
             pending_action: None,
             hovered_index: None,
+            scrollbar: Scrollbar::new(),
         }
     }
 
@@ -148,6 +152,21 @@ impl Widget for FileList {
     }
 
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        // Update scrollbar state
+        let visible = self.visible_lines(&bounds);
+        self.scrollbar.set_content(self.files.len(), visible, self.scroll_offset);
+
+        // Scrollbar on right edge
+        let scrollbar_width = 8.0;
+        let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+        if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
+            if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
+                let max_scroll = self.files.len().saturating_sub(visible);
+                self.scroll_offset = (ratio * max_scroll as f32).round() as usize;
+            }
+            return EventResponse::Consumed;
+        }
+
         match event {
             InputEvent::MouseDown {
                 button: MouseButton::Left,
@@ -397,6 +416,19 @@ impl Widget for FileList {
                 theme::TEXT_MUTED.to_array(),
             ));
         }
+
+        // Render scrollbar on right edge
+        let scrollbar_width = 8.0;
+        let (_content_area, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+        // Offset scrollbar below the header
+        let scrollbar_area = Rect::new(
+            scrollbar_bounds.x,
+            scrollbar_bounds.y + header_height + 1.0,
+            scrollbar_bounds.width,
+            scrollbar_bounds.height - header_height - 1.0,
+        );
+        let scrollbar_output = self.scrollbar.layout(scrollbar_area);
+        output.spline_vertices.extend(scrollbar_output.spline_vertices);
 
         output
     }

@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::git::{BranchTip, TagInfo};
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
+use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions that can be triggered from the sidebar
@@ -64,6 +65,8 @@ pub struct BranchSidebar {
     last_click_item: Option<usize>,
     /// Index of the item under the mouse cursor
     hovered_index: Option<usize>,
+    /// Scrollbar widget
+    scrollbar: Scrollbar,
 }
 
 impl BranchSidebar {
@@ -87,6 +90,7 @@ impl BranchSidebar {
             last_click_time: None,
             last_click_item: None,
             hovered_index: None,
+            scrollbar: Scrollbar::new(),
         }
     }
 
@@ -151,6 +155,15 @@ impl BranchSidebar {
 
     /// Update hover state based on mouse position
     pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
+        // Update scrollbar hover
+        let scrollbar_width = 8.0;
+        let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+        let move_event = crate::input::InputEvent::MouseMove {
+            x, y,
+            modifiers: crate::input::Modifiers::empty(),
+        };
+        self.scrollbar.handle_event(&move_event, scrollbar_bounds);
+
         if !bounds.contains(x, y) {
             self.hovered_index = None;
             return;
@@ -282,6 +295,19 @@ impl BranchSidebar {
 
     /// Handle input events (scrolling, clicking section headers, keyboard nav)
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        // Scrollbar on right edge
+        let scrollbar_width = 8.0;
+        let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+
+        // Route to scrollbar first
+        if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
+            if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
+                let max_scroll = (self.content_height - bounds.height).max(0.0);
+                self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
+            }
+            return EventResponse::Consumed;
+        }
+
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
@@ -683,6 +709,20 @@ impl BranchSidebar {
             total_h += self.tags.len() as f32 * line_height;
         }
         self.content_height = total_h;
+
+        // Update and render scrollbar
+        let scrollbar_width = 8.0;
+        let total_items = self.visible_items.len();
+        let visible_items = (bounds.height / line_height).max(1.0) as usize;
+        let scroll_offset_items = if line_height > 0.0 {
+            (self.scroll_offset / line_height).round() as usize
+        } else {
+            0
+        };
+        self.scrollbar.set_content(total_items, visible_items, scroll_offset_items);
+        let (_content_area, scrollbar_bounds) = bounds.take_right(scrollbar_width);
+        let scrollbar_output = self.scrollbar.layout(scrollbar_bounds);
+        output.spline_vertices.extend(scrollbar_output.spline_vertices);
 
         // Suppress unused variable warning
         let _ = item_idx;
