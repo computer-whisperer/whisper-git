@@ -255,4 +255,16 @@ pub mod theme {
     pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.075, 0.075, 1.0);   // #131313 - sidebar (darker)
     pub const PANEL_GRAPH: Color = Color::rgba(0.051, 0.051, 0.051, 1.0);     // #0d0d0d - graph (matches bg)
     pub const PANEL_STAGING: Color = Color::rgba(0.065, 0.065, 0.065, 1.0);   // #101010 - staging (slightly lighter)
+
+    /// Lane colors for visual distinction in the commit graph
+    pub const LANE_COLORS: &[Color] = &[
+        Color::rgba(0.231, 0.510, 0.965, 1.0), // Blue - primary branch
+        Color::rgba(0.133, 0.773, 0.369, 1.0), // Green - feature branches
+        Color::rgba(0.961, 0.620, 0.043, 1.0), // Amber - release branches
+        Color::rgba(0.659, 0.333, 0.969, 1.0), // Purple - hotfix branches
+        Color::rgba(0.392, 0.455, 0.545, 1.0), // Slate - remote tracking
+        Color::rgba(0.4, 0.9, 0.9, 1.0),       // Cyan
+        Color::rgba(1.0, 0.5, 0.5, 1.0),       // Red
+        Color::rgba(0.7, 0.7, 0.9, 1.0),       // Lavender
+    ];
 }

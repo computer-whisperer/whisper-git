@@ -1176,12 +1176,13 @@ impl GitRepo {
     }
 }
 
-/// Spawn a background thread to run `git fetch --prune`
-pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOpResult> {
+/// Spawn a background thread to run a git CLI command and send the result over a channel.
+fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver<RemoteOpResult> {
+    let op_name = op_name.to_string();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = std::process::Command::new("git")
-            .args(["fetch", "--prune", &remote])
+            .args(&args)
             .current_dir(&workdir)
             .output();
         let op_result = match result {
@@ -1193,60 +1194,25 @@ pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOp
             Err(e) => RemoteOpResult {
                 success: false,
                 output: String::new(),
-                error: format!("Failed to run git fetch: {}", e),
+                error: format!("Failed to run git {}: {}", op_name, e),
             },
         };
         let _ = tx.send(op_result);
     });
     rx
+}
+
+/// Spawn a background thread to run `git fetch --prune`
+pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["fetch".into(), "--prune".into(), remote], workdir, "fetch")
 }
 
 /// Spawn a background thread to run `git push`
 pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = std::process::Command::new("git")
-            .args(["push", &remote, &branch])
-            .current_dir(&workdir)
-            .output();
-        let op_result = match result {
-            Ok(output) => RemoteOpResult {
-                success: output.status.success(),
-                output: String::from_utf8_lossy(&output.stdout).to_string(),
-                error: String::from_utf8_lossy(&output.stderr).to_string(),
-            },
-            Err(e) => RemoteOpResult {
-                success: false,
-                output: String::new(),
-                error: format!("Failed to run git push: {}", e),
-            },
-        };
-        let _ = tx.send(op_result);
-    });
-    rx
+    run_git_async(vec!["push".into(), remote, branch], workdir, "push")
 }
 
 /// Spawn a background thread to run `git pull`
 pub fn pull_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = std::process::Command::new("git")
-            .args(["pull", &remote, &branch])
-            .current_dir(&workdir)
-            .output();
-        let op_result = match result {
-            Ok(output) => RemoteOpResult {
-                success: output.status.success(),
-                output: String::from_utf8_lossy(&output.stdout).to_string(),
-                error: String::from_utf8_lossy(&output.stderr).to_string(),
-            },
-            Err(e) => RemoteOpResult {
-                success: false,
-                output: String::new(),
-                error: format!("Failed to run git pull: {}", e),
-            },
-        };
-        let _ = tx.send(op_result);
-    });
-    rx
+    run_git_async(vec!["pull".into(), remote, branch], workdir, "pull")
 }
