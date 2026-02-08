@@ -276,10 +276,15 @@ impl App {
             let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
             header_bar.set_repo_info(repo_name, branch, ahead, behind);
 
+            // Cache branch/tag data to avoid duplicate calls
+            let branch_tips = repo.branch_tips().unwrap_or_default();
+            let tags = repo.tags().unwrap_or_default();
+            let current = repo.current_branch().unwrap_or_default();
+
             // Set HEAD and branch info in graph
             commit_graph_view.head_oid = repo.head_oid().ok();
-            commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
-            commit_graph_view.tags = repo.tags().unwrap_or_default();
+            commit_graph_view.branch_tips = branch_tips.clone();
+            commit_graph_view.tags = tags.clone();
             commit_graph_view.working_dir_status = repo.status().ok();
 
             // Set staging status
@@ -296,9 +301,6 @@ impl App {
             }
 
             // Populate branch sidebar
-            let branch_tips = repo.branch_tips().unwrap_or_default();
-            let tags = repo.tags().unwrap_or_default();
-            let current = repo.current_branch().unwrap_or_default();
             branch_sidebar.set_branch_data(&branch_tips, &tags, current);
         }
 
@@ -429,11 +431,13 @@ impl App {
                 AppMessage::ViewDiff(path, staged) => {
                     match repo.diff_working_file(&path, staged) {
                         Ok(hunks) => {
+                            let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+                            let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
                             let diff_file = crate::git::DiffFile {
                                 path: path.clone(),
                                 hunks,
-                                additions: 0,
-                                deletions: 0,
+                                additions,
+                                deletions,
                             };
                             let title = if staged {
                                 format!("Staged: {}", path)

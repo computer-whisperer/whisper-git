@@ -28,9 +28,9 @@ impl CommitInfo {
     pub fn relative_time(&self) -> String {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
-        let diff = now - self.time;
+        let diff = (now - self.time).max(0);
         match diff {
             d if d < 60 => "just now".to_string(),
             d if d < 3600 => format!("{}m ago", d / 60),
@@ -302,6 +302,9 @@ impl GitRepo {
 
     /// Stage a file
     pub fn stage_file(&self, path: &str) -> Result<()> {
+        if self.repo.is_bare() {
+            anyhow::bail!("Cannot perform this operation on a bare repository");
+        }
         let mut index = self.repo.index().context("Failed to get index")?;
         index.add_path(Path::new(path)).context("Failed to stage file")?;
         index.write().context("Failed to write index")?;
@@ -310,6 +313,9 @@ impl GitRepo {
 
     /// Unstage a file
     pub fn unstage_file(&self, path: &str) -> Result<()> {
+        if self.repo.is_bare() {
+            anyhow::bail!("Cannot perform this operation on a bare repository");
+        }
         let head = self.repo.head().context("Failed to get HEAD")?;
         let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
         self.repo
@@ -321,6 +327,9 @@ impl GitRepo {
 
     /// Create a commit with the staged changes
     pub fn commit(&self, message: &str) -> Result<Oid> {
+        if self.repo.is_bare() {
+            anyhow::bail!("Cannot perform this operation on a bare repository");
+        }
         let mut index = self.repo.index().context("Failed to get index")?;
         let tree_oid = index.write_tree().context("Failed to write tree")?;
         let tree = self.repo.find_tree(tree_oid).context("Failed to find tree")?;
@@ -363,17 +372,8 @@ impl GitRepo {
 
         diff.foreach(
             &mut |delta, _| {
-                if let Some(p) = delta.new_file().path() {
-                    if p.to_str() == Some(path) {
-                        return true;
-                    }
-                }
-                if let Some(p) = delta.old_file().path() {
-                    if p.to_str() == Some(path) {
-                        return true;
-                    }
-                }
-                true
+                let check_path = |p: Option<&Path>| p.and_then(|p| p.to_str()) == Some(path);
+                check_path(delta.new_file().path()) || check_path(delta.old_file().path())
             },
             None,
             None,
@@ -477,6 +477,7 @@ impl GitRepo {
 
     /// Get branch tips (for graph labels)
     pub fn branch_tips(&self) -> Result<Vec<BranchTip>> {
+        let head_oid = self.repo.head().ok().and_then(|h| h.target());
         let mut tips = Vec::new();
 
         for branch in self.repo.branches(None)? {
@@ -485,10 +486,7 @@ impl GitRepo {
                     if let Some(oid) = reference.target() {
                         let name = branch.name().ok().flatten().unwrap_or("").to_string();
                         let is_remote = branch_type == git2::BranchType::Remote;
-                        let is_head = self.repo.head().ok()
-                            .and_then(|h| h.target())
-                            .map(|h| h == oid)
-                            .unwrap_or(false);
+                        let is_head = head_oid == Some(oid);
 
                         tips.push(BranchTip {
                             name,
