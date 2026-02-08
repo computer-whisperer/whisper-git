@@ -698,26 +698,31 @@ impl CommitGraphView {
         vertices
     }
 
-    /// Generate text vertices for commit info
+    /// Generate text vertices for commit info, and spline vertices for label pill backgrounds
     pub fn layout_text(
         &self,
         text_renderer: &TextRenderer,
         commits: &[CommitInfo],
         bounds: Rect,
-    ) -> Vec<TextVertex> {
+    ) -> (Vec<TextVertex>, Vec<SplineVertex>) {
         let mut vertices = Vec::new();
+        let mut pill_vertices = Vec::new();
         let header_offset = 10.0;
         let line_height = text_renderer.line_height();
 
         // Graph offset for text
         let text_x = bounds.x + 20.0 + self.graph_width() + 10.0;
 
+        // Column layout: fixed-width columns from the right edge
+        let time_col_width: f32 = 80.0;
+        let right_margin: f32 = 8.0;
+        let time_col_right = bounds.right() - right_margin;
+        let author_col_right = time_col_right - time_col_width;
+
         // Working directory node text
         if let Some(ref status) = self.working_dir_status {
             if !status.is_clean() {
-                // Center of the working dir row (matches box center in layout_splines)
                 let wd_center_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
-                // Text top position to vertically center text at wd_center_y
                 let text_y = wd_center_y - line_height / 2.0;
                 let file_count = status.total_files();
                 let wd_text = format!("Working ({})", file_count);
@@ -747,8 +752,12 @@ impl CommitGraphView {
                 acc
             });
 
+        let char_width = text_renderer.char_width();
+        let pill_pad_h: f32 = 4.0;
+        let pill_pad_v: f32 = 2.0;
+
         for (row, commit) in commits.iter().enumerate() {
-            let Some(layout) = self.layout.get(&commit.id) else {
+            let Some(_layout) = self.layout.get(&commit.id) else {
                 continue;
             };
 
@@ -761,34 +770,53 @@ impl CommitGraphView {
             }
 
             let is_head = self.head_oid == Some(commit.id);
-
-            // Check if this commit is selected
             let is_selected = self.selected_commit == Some(commit.id);
 
-            // Format: short_id summary [branch labels] [tags]
-            let mut current_x = text_x;
-            let char_width = text_renderer.char_width();
+            // === Right-aligned time column ===
+            let time_str = commit.relative_time();
+            let time_width = text_renderer.measure_text(&time_str);
+            let time_x = time_col_right - time_width;
+            vertices.extend(text_renderer.layout_text(
+                &time_str,
+                time_x,
+                y,
+                theme::TEXT_MUTED.to_array(),
+            ));
 
-            // Short ID - muted color for de-emphasis
+            // === Right-aligned author column ===
+            let author_display = truncate_author(&commit.author, 12);
+            let author_width = text_renderer.measure_text(&author_display);
+            let author_x = author_col_right - author_width;
+            vertices.extend(text_renderer.layout_text(
+                &author_display,
+                author_x,
+                y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+
+            // === SHA column (fixed width) ===
+            let mut current_x = text_x;
+            let sha_col_end = text_x + 7.0 * char_width + char_width;
+
             vertices.extend(text_renderer.layout_text(
                 &commit.short_id,
                 current_x,
                 y,
                 theme::TEXT_MUTED.to_array(),
             ));
-            current_x += text_renderer.measure_text(&commit.short_id) + char_width;
+            current_x = sha_col_end;
 
-            // Summary (truncated) - primary text color
-            let label_reserve = 150.0; // Space for branch/tag labels
-            let available_width = bounds.right() - current_x - label_reserve;
-            let max_chars = (available_width / char_width) as usize;
+            // === Message column (flexible, up to author column) ===
+            // Reserve space for labels between message and author
+            let message_end = author_x - char_width * 2.0;
+            let available_width = message_end - current_x;
+            let max_chars = ((available_width / char_width) as usize).max(4);
             let summary = if commit.summary.len() > max_chars && max_chars > 3 {
                 format!("{}...", &commit.summary[..max_chars.saturating_sub(3)])
             } else {
                 commit.summary.clone()
             };
 
-            // Use bright text for selected, normal for others
             let summary_color = if is_selected {
                 theme::TEXT_BRIGHT
             } else {
@@ -802,60 +830,122 @@ impl CommitGraphView {
             ));
             current_x += text_renderer.measure_text(&summary) + char_width;
 
-            // Branch labels
+            // === Branch labels with pill backgrounds ===
             if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
                 for tip in tips {
-                    let label_color = if tip.is_remote {
-                        theme::BRANCH_REMOTE
+                    let (label_color, pill_bg) = if tip.is_remote {
+                        (
+                            theme::BRANCH_REMOTE,
+                            Color::rgba(0.133, 0.773, 0.369, 0.15),
+                        )
                     } else if tip.is_head {
-                        theme::ACCENT
+                        (
+                            theme::ACCENT,
+                            Color::rgba(0.231, 0.510, 0.965, 0.2),
+                        )
                     } else {
-                        theme::BRANCH_FEATURE
+                        (
+                            theme::BRANCH_FEATURE,
+                            Color::rgba(0.231, 0.510, 0.965, 0.2),
+                        )
                     };
 
-                    let label = if tip.is_remote {
-                        format!(" ← {}", tip.name)
-                    } else {
-                        format!(" [{}]", tip.name)
-                    };
+                    let label = &tip.name;
+                    let label_width = text_renderer.measure_text(label);
 
-                    vertices.extend(text_renderer.layout_text(
-                        &label,
+                    // Don't render if it would overlap author column
+                    if current_x + label_width + pill_pad_h * 2.0 + char_width > author_x - char_width {
+                        break;
+                    }
+
+                    // Pill background
+                    let pill_rect = Rect::new(
                         current_x,
+                        y - pill_pad_v,
+                        label_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(create_rect_vertices(
+                        &pill_rect,
+                        pill_bg.to_array(),
+                    ));
+
+                    // Label text (centered in pill)
+                    vertices.extend(text_renderer.layout_text(
+                        label,
+                        current_x + pill_pad_h,
                         y,
                         label_color.to_array(),
                     ));
-                    current_x += text_renderer.measure_text(&label);
+                    current_x += label_width + pill_pad_h * 2.0 + char_width * 0.5;
                 }
             }
 
             // HEAD indicator
             if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
-                let head_label = " HEAD";
-                vertices.extend(text_renderer.layout_text(
-                    head_label,
-                    current_x,
-                    y,
-                    theme::ACCENT.to_array(),
-                ));
-                current_x += text_renderer.measure_text(head_label);
+                let head_label = "HEAD";
+                let head_width = text_renderer.measure_text(head_label);
+                if current_x + head_width + pill_pad_h * 2.0 < author_x - char_width {
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        head_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(create_rect_vertices(
+                        &pill_rect,
+                        Color::rgba(0.231, 0.510, 0.965, 0.2).to_array(),
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        head_label,
+                        current_x + pill_pad_h,
+                        y,
+                        theme::ACCENT.to_array(),
+                    ));
+                    current_x += head_width + pill_pad_h * 2.0 + char_width * 0.5;
+                }
             }
 
-            // Tags (diamond markers shown as text for now)
+            // Tags with pill backgrounds
             if let Some(tags) = tags_by_oid.get(&commit.id) {
                 for tag in tags {
-                    let tag_label = format!(" ◆{}", tag.name);
+                    let tag_label = format!("{}  {}", '\u{25C6}', tag.name);
+                    let tag_width = text_renderer.measure_text(&tag_label);
+                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > author_x - char_width {
+                        break;
+                    }
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        tag_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(create_rect_vertices(
+                        &pill_rect,
+                        Color::rgba(0.961, 0.620, 0.043, 0.2).to_array(),
+                    ));
                     vertices.extend(text_renderer.layout_text(
                         &tag_label,
-                        current_x,
+                        current_x + pill_pad_h,
                         y,
                         theme::BRANCH_RELEASE.to_array(),
                     ));
-                    current_x += text_renderer.measure_text(&tag_label);
+                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
                 }
             }
         }
 
-        vertices
+        (vertices, pill_vertices)
+    }
+}
+
+/// Truncate author name to first name or max characters
+fn truncate_author(author: &str, max_chars: usize) -> String {
+    // Try first name only
+    let first_name = author.split_whitespace().next().unwrap_or(author);
+    if first_name.len() <= max_chars {
+        first_name.to_string()
+    } else {
+        format!("{}...", &first_name[..max_chars.saturating_sub(3)])
     }
 }
