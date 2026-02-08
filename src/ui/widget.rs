@@ -250,4 +250,9 @@ pub mod theme {
     // Accent color for selections and focus
     pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);          // #42A5F5 (Blue)
     pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.3);    // Blue at 30% opacity
+
+    // Panel depth - slightly different backgrounds for visual hierarchy
+    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.075, 0.075, 1.0);   // #131313 - sidebar (darker)
+    pub const PANEL_GRAPH: Color = Color::rgba(0.051, 0.051, 0.051, 1.0);     // #0d0d0d - graph (matches bg)
+    pub const PANEL_STAGING: Color = Color::rgba(0.065, 0.065, 0.065, 1.0);   // #101010 - staging (slightly lighter)
 }
