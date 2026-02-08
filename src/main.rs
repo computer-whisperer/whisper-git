@@ -32,7 +32,7 @@ use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
-use crate::ui::widgets::HeaderBar;
+use crate::ui::widgets::{HeaderBar, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 // ============================================================================
@@ -163,8 +163,8 @@ struct RenderState {
     fetch_receiver: Option<Receiver<RemoteOpResult>>,
     /// Receiver for background push operation
     push_receiver: Option<Receiver<RemoteOpResult>>,
-    /// Status message to display (message, time set)
-    status_message: Option<(String, Instant)>,
+    /// Toast notification manager
+    toast_manager: ToastManager,
 }
 
 impl App {
@@ -360,7 +360,7 @@ impl App {
             pending_messages: Vec::new(),
             fetch_receiver: None,
             push_receiver: None,
-            status_message: None,
+            toast_manager: ToastManager::new(),
         });
 
         // Initial status refresh
@@ -406,11 +406,23 @@ impl App {
                 AppMessage::StageFile(path) => {
                     if let Err(e) = repo.stage_file(&path) {
                         eprintln!("Failed to stage {}: {}", path, e);
+                        if let Some(state) = &mut self.state {
+                            state.toast_manager.push(
+                                format!("Stage failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
                     }
                 }
                 AppMessage::UnstageFile(path) => {
                     if let Err(e) = repo.unstage_file(&path) {
                         eprintln!("Failed to unstage {}: {}", path, e);
+                        if let Some(state) = &mut self.state {
+                            state.toast_manager.push(
+                                format!("Unstage failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
                     }
                 }
                 AppMessage::StageAll => {
@@ -437,10 +449,20 @@ impl App {
                                 state.commit_graph_view.update_layout(&self.commits);
                                 state.commit_graph_view.head_oid = repo.head_oid().ok();
                                 state.staging_well.clear_message();
+                                state.toast_manager.push(
+                                    format!("Commit {}", &oid.to_string()[..7]),
+                                    ToastSeverity::Success,
+                                );
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to commit: {}", e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Commit failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
                         }
                     }
                 }
@@ -572,10 +594,20 @@ impl App {
                                     repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
                                     repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
                                 );
+                                state.toast_manager.push(
+                                    format!("Switched to {}", name),
+                                    ToastSeverity::Success,
+                                );
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to checkout branch '{}': {}", name, e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Checkout failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
                         }
                     }
                 }
@@ -600,10 +632,20 @@ impl App {
                                     repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
                                     repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
                                 );
+                                state.toast_manager.push(
+                                    format!("Switched to {}/{}", remote, branch),
+                                    ToastSeverity::Success,
+                                );
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to checkout remote branch '{}/{}': {}", remote, branch, e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Checkout failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
                         }
                     }
                 }
@@ -617,10 +659,20 @@ impl App {
                                 let tags = repo.tags().unwrap_or_default();
                                 let current = repo.current_branch().unwrap_or_default();
                                 state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                                state.toast_manager.push(
+                                    format!("Deleted branch {}", name),
+                                    ToastSeverity::Success,
+                                );
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to delete branch '{}': {}", name, e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Delete failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
                         }
                     }
                 }
@@ -645,7 +697,7 @@ impl App {
                         // git fetch writes progress to stderr even on success
                         println!("{}", result.error.trim());
                     }
-                    state.status_message = Some(("Fetch complete".to_string(), Instant::now()));
+                    state.toast_manager.push("Fetch complete", ToastSeverity::Success);
                     // Refresh repo data
                     if let Some(ref repo) = self.repo {
                         self.commits = repo.commit_graph(50).unwrap_or_default();
@@ -665,7 +717,10 @@ impl App {
                     }
                 } else {
                     eprintln!("Fetch failed: {}", result.error);
-                    state.status_message = Some((format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")), Instant::now()));
+                    state.toast_manager.push(
+                        format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -680,7 +735,7 @@ impl App {
                     if !result.error.is_empty() {
                         println!("{}", result.error.trim());
                     }
-                    state.status_message = Some(("Push complete".to_string(), Instant::now()));
+                    state.toast_manager.push("Push complete", ToastSeverity::Success);
                     // Refresh ahead/behind
                     if let Some(ref repo) = self.repo {
                         if let Ok((ahead, behind)) = repo.ahead_behind() {
@@ -690,7 +745,10 @@ impl App {
                     }
                 } else {
                     eprintln!("Push failed: {}", result.error);
-                    state.status_message = Some((format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")), Instant::now()));
+                    state.toast_manager.push(
+                        format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -1013,6 +1071,10 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     } else {
         output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
     }
+
+    // Toast notifications (rendered last, on top of everything)
+    state.toast_manager.update(Instant::now());
+    output.extend(state.toast_manager.layout(&state.text_renderer, screen_bounds));
 
     let viewport = Viewport {
         offset: [0.0, 0.0],

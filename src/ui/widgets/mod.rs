@@ -7,9 +7,11 @@ mod label;
 mod panel;
 mod text_area;
 mod text_input;
+mod toast;
 
 pub use button::Button;
 pub use file_list::{FileList, FileListAction};
 pub use header_bar::{HeaderBar, HeaderAction};
 pub use text_area::TextArea;
 pub use text_input::TextInput;
+pub use toast::{ToastManager, ToastSeverity};
