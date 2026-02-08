@@ -746,11 +746,15 @@ impl CommitGraphView {
         let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
 
         // Column layout: fixed-width columns from the right edge
-        let time_col_width: f32 = 80.0;
+        // Keep these compact to maximize subject line space
+        let time_col_width: f32 = 64.0;
+        let author_col_width: f32 = 80.0;
         let right_margin: f32 = 8.0;
-        let col_gap: f32 = 12.0;
+        let col_gap: f32 = 8.0;
         let time_col_right = bounds.right() - right_margin;
-        let author_col_right = time_col_right - time_col_width - col_gap;
+        let time_col_left = time_col_right - time_col_width;
+        let author_col_right = time_col_left - col_gap;
+        let author_col_left = author_col_right - author_col_width;
 
         // Working directory node text
         if let Some(ref status) = self.working_dir_status {
@@ -817,8 +821,8 @@ impl CommitGraphView {
                 theme::TEXT_MUTED.to_array(),
             ));
 
-            // === Right-aligned author column ===
-            let author_display = truncate_author(&commit.author, 14);
+            // === Right-aligned author column (fixed-width zone) ===
+            let author_display = truncate_author(&commit.author, 10);
             let author_width = text_renderer.measure_text(&author_display);
             let author_x = author_col_right - author_width;
             let author_color = if is_selected {
@@ -835,9 +839,8 @@ impl CommitGraphView {
 
             // === Subject line (primary content, bright text) ===
             let mut current_x = text_x;
-            // The subject occupies the space between graph and the label/author area
-            let labels_budget = author_x - col_gap;
-            let available_width = labels_budget - current_x;
+            // The subject occupies the space between graph and the fixed author column
+            let available_width = (author_col_left - col_gap) - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
             let char_count = commit.summary.chars().count();
             let summary = if char_count > max_chars && max_chars > 3 {
@@ -886,7 +889,7 @@ impl CommitGraphView {
                     let label_width = text_renderer.measure_text(label);
 
                     // Don't render if it would overlap author column
-                    if current_x + label_width + pill_pad_h * 2.0 + char_width > author_x - char_width {
+                    if current_x + label_width + pill_pad_h * 2.0 + char_width > author_col_left - col_gap {
                         break;
                     }
 
@@ -918,7 +921,7 @@ impl CommitGraphView {
             if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
                 let head_label = "HEAD";
                 let head_width = text_renderer.measure_text(head_label);
-                if current_x + head_width + pill_pad_h * 2.0 < author_x - char_width {
+                if current_x + head_width + pill_pad_h * 2.0 < author_col_left - col_gap {
                     let pill_rect = Rect::new(
                         current_x,
                         y - pill_pad_v,
@@ -945,7 +948,7 @@ impl CommitGraphView {
                 for tag in tags {
                     let tag_label = format!("\u{25C6} {}", tag.name);
                     let tag_width = text_renderer.measure_text(&tag_label);
-                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > author_x - char_width {
+                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > author_col_left - col_gap {
                         break;
                     }
                     let pill_rect = Rect::new(
