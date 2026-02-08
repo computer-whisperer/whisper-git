@@ -10,6 +10,8 @@ mod views;
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo},
     pipeline::graphics::viewport::Viewport,
@@ -26,7 +28,7 @@ use winit::{
 
 use git2::Oid;
 
-use crate::git::{CommitInfo, GitRepo};
+use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
@@ -151,6 +153,12 @@ struct RenderState {
     last_diff_commit: Option<Oid>,
     // Pending messages
     pending_messages: Vec<AppMessage>,
+    /// Receiver for background fetch operation
+    fetch_receiver: Option<Receiver<RemoteOpResult>>,
+    /// Receiver for background push operation
+    push_receiver: Option<Receiver<RemoteOpResult>>,
+    /// Status message to display (message, time set)
+    status_message: Option<(String, Instant)>,
 }
 
 impl App {
@@ -343,6 +351,9 @@ impl App {
             diff_view: DiffView::new(),
             last_diff_commit: None,
             pending_messages: Vec::new(),
+            fetch_receiver: None,
+            push_receiver: None,
+            status_message: None,
         });
 
         // Initial status refresh
@@ -427,10 +438,43 @@ impl App {
                     }
                 }
                 AppMessage::Fetch => {
-                    eprintln!("Fetch not yet implemented");
+                    if let Some(state) = &self.state {
+                        if state.fetch_receiver.is_some() {
+                            eprintln!("Fetch already in progress");
+                            continue;
+                        }
+                    }
+                    if let Some(workdir) = repo.working_dir_path() {
+                        let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                        println!("Fetching from {}...", remote);
+                        let rx = crate::git::fetch_remote_async(workdir, remote);
+                        if let Some(state) = &mut self.state {
+                            state.fetch_receiver = Some(rx);
+                            state.header_bar.fetching = true;
+                        }
+                    } else {
+                        eprintln!("No working directory for fetch");
+                    }
                 }
                 AppMessage::Push => {
-                    eprintln!("Push not yet implemented");
+                    if let Some(state) = &self.state {
+                        if state.push_receiver.is_some() {
+                            eprintln!("Push already in progress");
+                            continue;
+                        }
+                    }
+                    if let Some(workdir) = repo.working_dir_path() {
+                        let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                        let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                        println!("Pushing {} to {}...", branch, remote);
+                        let rx = crate::git::push_remote_async(workdir, remote, branch);
+                        if let Some(state) = &mut self.state {
+                            state.push_receiver = Some(rx);
+                            state.header_bar.pushing = true;
+                        }
+                    } else {
+                        eprintln!("No working directory for push");
+                    }
                 }
                 AppMessage::SelectedCommit(oid) => {
                     match repo.diff_for_commit(oid) {
@@ -481,6 +525,71 @@ impl App {
         // Refresh status after processing all messages
         self.refresh_status();
     }
+
+    fn poll_remote_ops(&mut self) {
+        let Some(state) = &mut self.state else { return };
+
+        // Poll fetch
+        if let Some(ref rx) = state.fetch_receiver {
+            if let Ok(result) = rx.try_recv() {
+                state.header_bar.fetching = false;
+                state.fetch_receiver = None;
+                if result.success {
+                    println!("Fetch completed successfully");
+                    if !result.error.is_empty() {
+                        // git fetch writes progress to stderr even on success
+                        println!("{}", result.error.trim());
+                    }
+                    state.status_message = Some(("Fetch complete".to_string(), Instant::now()));
+                    // Refresh repo data
+                    if let Some(ref repo) = self.repo {
+                        self.commits = repo.commit_graph(50).unwrap_or_default();
+                        state.commit_graph_view.update_layout(&self.commits);
+                        state.commit_graph_view.head_oid = repo.head_oid().ok();
+                        state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
+                        state.commit_graph_view.tags = repo.tags().unwrap_or_default();
+                        if let Ok((ahead, behind)) = repo.ahead_behind() {
+                            state.header_bar.ahead = ahead;
+                            state.header_bar.behind = behind;
+                        }
+                        // Refresh sidebar
+                        let branch_tips = repo.branch_tips().unwrap_or_default();
+                        let tags = repo.tags().unwrap_or_default();
+                        let current = repo.current_branch().unwrap_or_default();
+                        state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                    }
+                } else {
+                    eprintln!("Fetch failed: {}", result.error);
+                    state.status_message = Some((format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")), Instant::now()));
+                }
+            }
+        }
+
+        // Poll push
+        if let Some(ref rx) = state.push_receiver {
+            if let Ok(result) = rx.try_recv() {
+                state.header_bar.pushing = false;
+                state.push_receiver = None;
+                if result.success {
+                    println!("Push completed successfully");
+                    if !result.error.is_empty() {
+                        println!("{}", result.error.trim());
+                    }
+                    state.status_message = Some(("Push complete".to_string(), Instant::now()));
+                    // Refresh ahead/behind
+                    if let Some(ref repo) = self.repo {
+                        if let Ok((ahead, behind)) = repo.ahead_behind() {
+                            state.header_bar.ahead = ahead;
+                            state.header_bar.behind = behind;
+                        }
+                    }
+                } else {
+                    eprintln!("Push failed: {}", result.error);
+                    state.status_message = Some((format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")), Instant::now()));
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -517,6 +626,8 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Poll background remote operations
+                self.poll_remote_ops();
                 // Process any pending messages
                 self.process_messages();
 

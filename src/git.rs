@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use git2::{Diff, Repository, Commit, Oid, Status, StatusOptions};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 
 /// Information about a single commit
 #[derive(Debug, Clone)]
@@ -770,4 +771,122 @@ pub struct BranchTip {
 pub struct TagInfo {
     pub name: String,
     pub oid: Oid,
+}
+
+/// Result of a remote git operation (fetch, push, pull)
+#[derive(Debug, Clone)]
+pub struct RemoteOpResult {
+    pub success: bool,
+    pub output: String,
+    pub error: String,
+}
+
+impl GitRepo {
+    /// Get the working directory path as a PathBuf
+    pub fn working_dir_path(&self) -> Option<PathBuf> {
+        self.repo.workdir().map(|p| p.to_path_buf())
+    }
+
+    /// Find the default remote name (usually "origin")
+    pub fn default_remote(&self) -> Result<String> {
+        // Try to find the upstream remote for the current branch
+        if let Ok(head) = self.repo.head() {
+            if let Some(name) = head.shorthand() {
+                if let Ok(branch) = self.repo.find_branch(name, git2::BranchType::Local) {
+                    if let Ok(upstream) = branch.upstream() {
+                        if let Ok(Some(upstream_name)) = upstream.name() {
+                            // upstream name is like "origin/main", extract remote part
+                            if let Some(remote) = upstream_name.split('/').next() {
+                                return Ok(remote.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Fallback: try "origin"
+        if self.repo.find_remote("origin").is_ok() {
+            return Ok("origin".to_string());
+        }
+        // Fallback: first remote
+        let remotes = self.repo.remotes().context("No remotes configured")?;
+        remotes.get(0)
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("No remotes configured"))
+    }
+}
+
+/// Spawn a background thread to run `git fetch --prune`
+pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOpResult> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("git")
+            .args(["fetch", "--prune", &remote])
+            .current_dir(&workdir)
+            .output();
+        let op_result = match result {
+            Ok(output) => RemoteOpResult {
+                success: output.status.success(),
+                output: String::from_utf8_lossy(&output.stdout).to_string(),
+                error: String::from_utf8_lossy(&output.stderr).to_string(),
+            },
+            Err(e) => RemoteOpResult {
+                success: false,
+                output: String::new(),
+                error: format!("Failed to run git fetch: {}", e),
+            },
+        };
+        let _ = tx.send(op_result);
+    });
+    rx
+}
+
+/// Spawn a background thread to run `git push`
+pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("git")
+            .args(["push", &remote, &branch])
+            .current_dir(&workdir)
+            .output();
+        let op_result = match result {
+            Ok(output) => RemoteOpResult {
+                success: output.status.success(),
+                output: String::from_utf8_lossy(&output.stdout).to_string(),
+                error: String::from_utf8_lossy(&output.stderr).to_string(),
+            },
+            Err(e) => RemoteOpResult {
+                success: false,
+                output: String::new(),
+                error: format!("Failed to run git push: {}", e),
+            },
+        };
+        let _ = tx.send(op_result);
+    });
+    rx
+}
+
+/// Spawn a background thread to run `git pull`
+pub fn pull_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("git")
+            .args(["pull", &remote, &branch])
+            .current_dir(&workdir)
+            .output();
+        let op_result = match result {
+            Ok(output) => RemoteOpResult {
+                success: output.status.success(),
+                output: String::from_utf8_lossy(&output.stdout).to_string(),
+                error: String::from_utf8_lossy(&output.stderr).to_string(),
+            },
+            Err(e) => RemoteOpResult {
+                success: false,
+                output: String::new(),
+                error: format!("Failed to run git pull: {}", e),
+            },
+        };
+        let _ = tx.send(op_result);
+    });
+    rx
 }
