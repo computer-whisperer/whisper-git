@@ -231,8 +231,11 @@ impl DiffView {
                         let content = line.content.trim_end_matches('\n');
                         // Truncate if too wide
                         let available_chars = ((max_x - content_x) / char_width) as usize;
-                        let display_content = if content.len() > available_chars && available_chars > 3 {
-                            &content[..available_chars]
+                        let display_content = if content.chars().count() > available_chars && available_chars > 3 {
+                            match content.char_indices().nth(available_chars) {
+                                Some((byte_idx, _)) => &content[..byte_idx],
+                                None => content,
+                            }
                         } else {
                             content
                         };

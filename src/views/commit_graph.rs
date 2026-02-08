@@ -811,8 +811,10 @@ impl CommitGraphView {
             let message_end = author_x - char_width * 2.0;
             let available_width = message_end - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
-            let summary = if commit.summary.len() > max_chars && max_chars > 3 {
-                format!("{}...", &commit.summary[..max_chars.saturating_sub(3)])
+            let char_count = commit.summary.chars().count();
+            let summary = if char_count > max_chars && max_chars > 3 {
+                let truncated: String = commit.summary.chars().take(max_chars.saturating_sub(3)).collect();
+                format!("{}...", truncated)
             } else {
                 commit.summary.clone()
             };
@@ -943,9 +945,10 @@ impl CommitGraphView {
 fn truncate_author(author: &str, max_chars: usize) -> String {
     // Try first name only
     let first_name = author.split_whitespace().next().unwrap_or(author);
-    if first_name.len() <= max_chars {
+    if first_name.chars().count() <= max_chars {
         first_name.to_string()
     } else {
-        format!("{}...", &first_name[..max_chars.saturating_sub(3)])
+        let truncated: String = first_name.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{}...", truncated)
     }
 }

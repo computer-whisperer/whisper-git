@@ -17,7 +17,7 @@ impl CommitInfo {
     fn from_commit(commit: &Commit) -> Self {
         Self {
             id: commit.id(),
-            short_id: commit.id().to_string()[..7].to_string(),
+            short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
             summary: commit.summary().unwrap_or("").to_string(),
             author: commit.author().name().unwrap_or("Unknown").to_string(),
             time: commit.time().seconds(),
@@ -176,7 +176,7 @@ impl GitRepo {
                     // Detached HEAD - show short commit id
                     Ok(head
                         .target()
-                        .map(|oid| oid.to_string()[..7].to_string())
+                        .map(|oid| oid.to_string().get(..7).unwrap_or("").to_string())
                         .unwrap_or_else(|| "HEAD".to_string()))
                 }
             }
