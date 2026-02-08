@@ -62,6 +62,8 @@ pub struct BranchSidebar {
     last_click_time: Option<Instant>,
     /// Last clicked item index for double-click detection
     last_click_item: Option<usize>,
+    /// Index of the item under the mouse cursor
+    hovered_index: Option<usize>,
 }
 
 impl BranchSidebar {
@@ -84,6 +86,7 @@ impl BranchSidebar {
             visible_items: Vec::new(),
             last_click_time: None,
             last_click_item: None,
+            hovered_index: None,
         }
     }
 
@@ -144,6 +147,54 @@ impl BranchSidebar {
                 matches!(item, SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_))
             });
         }
+    }
+
+    /// Update hover state based on mouse position
+    pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
+        if !bounds.contains(x, y) {
+            self.hovered_index = None;
+            return;
+        }
+
+        let padding = 8.0;
+        let inner = bounds.inset(padding);
+        let line_height = self.line_height;
+        let section_header_height = self.section_header_height;
+        let section_gap = 8.0;
+
+        let mut item_y = inner.y - self.scroll_offset;
+        for (idx, item) in self.visible_items.iter().enumerate() {
+            let h = match item {
+                SidebarItem::SectionHeader(_) => section_header_height,
+                _ => line_height,
+            };
+
+            if y >= item_y && y < item_y + h {
+                // Only highlight navigable items, not section headers
+                match item {
+                    SidebarItem::SectionHeader(_) => {
+                        self.hovered_index = None;
+                    }
+                    _ => {
+                        self.hovered_index = Some(idx);
+                    }
+                }
+                return;
+            }
+
+            item_y += h;
+
+            // Section gaps
+            if !matches!(item, SidebarItem::SectionHeader(_)) {
+                if idx + 1 < self.visible_items.len() {
+                    if matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
+                        item_y += section_gap;
+                    }
+                }
+            }
+        }
+
+        self.hovered_index = None;
     }
 
     /// Build the flattened visible_items list based on collapsed state
@@ -384,6 +435,21 @@ impl BranchSidebar {
                 if y + line_height > bounds.y {
                     let is_current = *branch == self.current_branch;
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
+                    let is_hovered = self.hovered_index == Some(item_idx);
+
+                    // Hover highlight (drawn first, lowest layer)
+                    if is_hovered && !is_focused {
+                        let highlight_rect = Rect::new(
+                            inner.x,
+                            y,
+                            inner.width,
+                            line_height,
+                        );
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                        ));
+                    }
 
                     // Focus highlight (drawn before current-branch highlight so current still shows)
                     if is_focused {
@@ -415,6 +481,8 @@ impl BranchSidebar {
 
                     let color = if is_current {
                         theme::ACCENT.to_array()
+                    } else if is_hovered || is_focused {
+                        theme::TEXT_BRIGHT.to_array()
                     } else {
                         theme::TEXT.to_array()
                     };
@@ -463,7 +531,15 @@ impl BranchSidebar {
 
                 // Remote name sub-header
                 let is_focused = self.focused && self.focused_index == Some(item_idx);
+                let is_hovered = self.hovered_index == Some(item_idx);
                 if y + line_height > bounds.y {
+                    if is_hovered && !is_focused {
+                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                        ));
+                    }
                     if is_focused {
                         let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
                         output.spline_vertices.extend(create_rect_vertices(
@@ -471,11 +547,16 @@ impl BranchSidebar {
                             theme::SURFACE_HOVER.to_array(),
                         ));
                     }
+                    let remote_color = if is_hovered || is_focused {
+                        theme::TEXT.to_array()
+                    } else {
+                        theme::TEXT_MUTED.to_array()
+                    };
                     output.text_vertices.extend(text_renderer.layout_text(
                         remote_name,
                         inner.x + indent,
                         y + 2.0,
-                        theme::TEXT_MUTED.to_array(),
+                        remote_color,
                     ));
                 }
                 y += line_height;
@@ -489,6 +570,14 @@ impl BranchSidebar {
                     }
                     if y + line_height > bounds.y {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
+                        let is_hovered = self.hovered_index == Some(item_idx);
+                        if is_hovered && !is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                            ));
+                        }
                         if is_focused {
                             let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
                             output.spline_vertices.extend(create_rect_vertices(
@@ -496,12 +585,17 @@ impl BranchSidebar {
                                 theme::SURFACE_HOVER.to_array(),
                             ));
                         }
+                        let branch_color = if is_hovered || is_focused {
+                            theme::TEXT_BRIGHT.to_array()
+                        } else {
+                            theme::BRANCH_REMOTE.to_array()
+                        };
                         let display_name = truncate_to_width(branch, text_renderer, inner.width - indent * 2.0);
                         output.text_vertices.extend(text_renderer.layout_text(
                             &display_name,
                             inner.x + indent * 2.0,
                             y + 2.0,
-                            theme::BRANCH_REMOTE.to_array(),
+                            branch_color,
                         ));
                     }
                     y += line_height;
@@ -533,6 +627,14 @@ impl BranchSidebar {
                 }
                 if y + line_height > bounds.y {
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
+                    let is_hovered = self.hovered_index == Some(item_idx);
+                    if is_hovered && !is_focused {
+                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                        ));
+                    }
                     if is_focused {
                         let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
                         output.spline_vertices.extend(create_rect_vertices(
@@ -540,12 +642,17 @@ impl BranchSidebar {
                             theme::SURFACE_HOVER.to_array(),
                         ));
                     }
+                    let tag_color = if is_hovered || is_focused {
+                        theme::TEXT_BRIGHT.to_array()
+                    } else {
+                        theme::BRANCH_RELEASE.to_array()
+                    };
                     let display_name = truncate_to_width(tag, text_renderer, inner.width - indent);
                     output.text_vertices.extend(text_renderer.layout_text(
                         &display_name,
                         inner.x + indent,
                         y + 2.0,
-                        theme::BRANCH_RELEASE.to_array(),
+                        tag_color,
                     ));
                 }
                 y += line_height;

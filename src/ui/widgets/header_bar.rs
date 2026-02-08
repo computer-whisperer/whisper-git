@@ -71,6 +71,41 @@ impl HeaderBar {
         self.pending_action.take()
     }
 
+    /// Sync button labels and styles to current header state.
+    /// Call this before layout so the stored buttons render the correct text.
+    pub fn update_button_state(&mut self) {
+        // Fetch button label
+        self.fetch_button.label = if self.fetching {
+            "...".to_string()
+        } else {
+            "Fetch".to_string()
+        };
+
+        // Push button label with ahead badge
+        self.push_button.label = if self.pushing {
+            "...".to_string()
+        } else if self.ahead > 0 {
+            format!("Push (+{})", self.ahead)
+        } else {
+            "Push".to_string()
+        };
+
+        // Commit button: primary style when has staged changes
+        if self.has_staged {
+            self.commit_button.background = theme::ACCENT;
+            self.commit_button.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
+            self.commit_button.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+            self.commit_button.text_color = theme::TEXT_BRIGHT;
+            self.commit_button.border_color = None;
+        } else {
+            self.commit_button.background = theme::SURFACE_RAISED;
+            self.commit_button.hover_background = theme::SURFACE_HOVER;
+            self.commit_button.pressed_background = theme::SURFACE;
+            self.commit_button.text_color = theme::TEXT;
+            self.commit_button.border_color = Some(theme::BORDER);
+        }
+    }
+
     /// Compute button bounds within the header (scale-aware)
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
@@ -205,28 +240,10 @@ impl Widget for HeaderBar {
         let (fetch_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
-        // Fetch button
-        let fetch_btn = Button::new(if self.fetching { "..." } else { "Fetch" });
-        output.extend(fetch_btn.layout(text_renderer, fetch_bounds));
-
-        // Push button with badge
-        let push_label = if self.pushing {
-            "...".to_string()
-        } else if self.ahead > 0 {
-            format!("Push (+{})", self.ahead)
-        } else {
-            "Push".to_string()
-        };
-        let push_btn = Button::new(push_label);
-        output.extend(push_btn.layout(text_renderer, push_bounds));
-
-        // Commit button (highlighted when has staged changes)
-        let commit_btn = if self.has_staged {
-            Button::new("Commit").primary()
-        } else {
-            Button::new("Commit")
-        };
-        output.extend(commit_btn.layout(text_renderer, commit_bounds));
+        // Render stored buttons (preserves hover/press state from handle_event)
+        output.extend(self.fetch_button.layout(text_renderer, fetch_bounds));
+        output.extend(self.push_button.layout(text_renderer, push_bounds));
+        output.extend(self.commit_button.layout(text_renderer, commit_bounds));
 
         // Help button - icon style
         let help_y = help_bounds.y + (help_bounds.height - line_height) / 2.0;

@@ -112,6 +112,35 @@ impl StagingWell {
         self.unstaged_list.set_focused(self.focus_section == 3);
     }
 
+    /// Sync button styles based on current state. Call before layout.
+    pub fn update_button_state(&mut self) {
+        if self.can_commit() {
+            self.commit_btn.background = theme::ACCENT;
+            self.commit_btn.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
+            self.commit_btn.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+            self.commit_btn.text_color = theme::TEXT_BRIGHT;
+            self.commit_btn.border_color = None;
+        } else {
+            self.commit_btn.background = theme::SURFACE_RAISED;
+            self.commit_btn.hover_background = theme::SURFACE_HOVER;
+            self.commit_btn.pressed_background = theme::SURFACE;
+            self.commit_btn.text_color = theme::TEXT;
+            self.commit_btn.border_color = Some(theme::BORDER);
+        }
+    }
+
+    /// Update hover state for child widgets based on mouse position
+    pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
+        let (_, _, staged_bounds, unstaged_bounds, buttons_bounds) =
+            self.compute_regions(bounds);
+
+        self.staged_list.update_hover(x, y, staged_bounds);
+        self.unstaged_list.update_hover(x, y, unstaged_bounds);
+        self.stage_all_btn.update_hover(x, y, self.stage_all_button_bounds(buttons_bounds));
+        self.unstage_all_btn.update_hover(x, y, self.unstage_all_button_bounds(buttons_bounds));
+        self.commit_btn.update_hover(x, y, self.commit_button_bounds(buttons_bounds));
+    }
+
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         // Calculate sub-regions
@@ -333,15 +362,9 @@ impl StagingWell {
         output.extend(self.stage_all_btn.layout(text_renderer, self.stage_all_button_bounds(buttons_bounds)));
         output.extend(self.unstage_all_btn.layout(text_renderer, self.unstage_all_button_bounds(buttons_bounds)));
 
-        // Commit button (with visual state based on whether commit is possible)
+        // Commit button (uses stored instance to preserve hover state)
         let commit_bounds = self.commit_button_bounds(buttons_bounds);
-        if self.can_commit() {
-            let btn = Button::new("Commit").primary();
-            output.extend(btn.layout(text_renderer, commit_bounds));
-        } else {
-            let btn = Button::new("Commit");
-            output.extend(btn.layout(text_renderer, commit_bounds));
-        }
+        output.extend(self.commit_btn.layout(text_renderer, commit_bounds));
 
         output
     }

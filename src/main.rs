@@ -935,6 +935,8 @@ impl ApplicationHandler for App {
                     // Update hover states
                     if let InputEvent::MouseMove { x, y, .. } = &input_event {
                         state.header_bar.update_hover(*x, *y, layout.header);
+                        state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
+                        state.staging_well.update_hover(*x, *y, layout.staging);
                     }
                 }
             }
@@ -980,6 +982,10 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     let extent = state.surface.extent();
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
+
+    // Sync button state before layout (labels, styles based on current state)
+    state.header_bar.update_button_state();
+    state.staging_well.update_button_state();
 
     // Collect all vertices
     let mut output = WidgetOutput::new();

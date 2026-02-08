@@ -54,6 +54,8 @@ pub struct FileList {
     pub is_staged: bool,
     /// Pending action
     pending_action: Option<FileListAction>,
+    /// Index of the item under the mouse cursor
+    hovered_index: Option<usize>,
 }
 
 impl FileList {
@@ -67,6 +69,7 @@ impl FileList {
             scroll_offset: 0,
             is_staged,
             pending_action: None,
+            hovered_index: None,
         }
     }
 
@@ -100,6 +103,31 @@ impl FileList {
         let header_height = 28.0; // Match layout header height
         let line_height = 22.0;   // Slightly tighter line height
         ((bounds.height - header_height) / line_height).max(1.0) as usize
+    }
+
+    /// Update hover state based on mouse position
+    pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
+        if !bounds.contains(x, y) {
+            self.hovered_index = None;
+            return;
+        }
+
+        let header_height = 28.0;
+        let entry_height = 22.0;
+        let content_y = bounds.y + header_height + 6.0;
+
+        if y < content_y {
+            self.hovered_index = None;
+            return;
+        }
+
+        let hovered_line = ((y - content_y) / entry_height) as usize;
+        let file_idx = self.scroll_offset + hovered_line;
+        if file_idx < self.files.len() {
+            self.hovered_index = Some(file_idx);
+        } else {
+            self.hovered_index = None;
+        }
     }
 
     fn ensure_selection_visible(&mut self, bounds: &Rect) {
@@ -284,6 +312,16 @@ impl Widget for FileList {
             let file = &self.files[file_idx];
             let y = content_y + i as f32 * entry_height;
             let is_selected = self.selected == Some(file_idx);
+            let is_hovered = self.hovered_index == Some(file_idx);
+
+            // Hover highlight (subtle, below selection highlight)
+            if is_hovered && !is_selected {
+                let highlight_rect = Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
+                output.spline_vertices.extend(create_rect_vertices(
+                    &highlight_rect,
+                    theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                ));
+            }
 
             // Selection highlight
             if is_selected {
@@ -321,7 +359,7 @@ impl Widget for FileList {
                 file.path.clone()
             };
 
-            let path_color = if is_selected {
+            let path_color = if is_selected || is_hovered {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT
