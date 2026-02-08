@@ -24,12 +24,14 @@ use winit::{
     window::{Window, WindowId},
 };
 
+use git2::Oid;
+
 use crate::git::{CommitInfo, GitRepo};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
-use crate::views::{BranchSidebar, CommitGraphView, SecondaryReposView, StagingWell, StagingAction};
+use crate::views::{BranchSidebar, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction};
 
 // ============================================================================
 // CLI
@@ -92,6 +94,8 @@ enum AppMessage {
     Commit(String),
     Fetch,
     Push,
+    SelectedCommit(Oid),
+    ViewDiff(String, bool), // (path, staged)
 }
 
 // ============================================================================
@@ -135,6 +139,9 @@ struct RenderState {
     commit_graph_view: CommitGraphView,
     staging_well: StagingWell,
     secondary_repos_view: SecondaryReposView,
+    diff_view: DiffView,
+    /// Track which commit we last loaded a diff for
+    last_diff_commit: Option<Oid>,
     // Pending messages
     pending_messages: Vec<AppMessage>,
 }
@@ -310,6 +317,8 @@ impl App {
             branch_sidebar,
             staging_well,
             secondary_repos_view,
+            diff_view: DiffView::new(),
+            last_diff_commit: None,
             pending_messages: Vec::new(),
         });
 
@@ -400,6 +409,47 @@ impl App {
                 AppMessage::Push => {
                     eprintln!("Push not yet implemented");
                 }
+                AppMessage::SelectedCommit(oid) => {
+                    match repo.diff_for_commit(oid) {
+                        Ok(diff_files) => {
+                            let title = self.commits.iter()
+                                .find(|c| c.id == oid)
+                                .map(|c| format!("{} {}", c.short_id, c.summary))
+                                .unwrap_or_else(|| oid.to_string());
+                            if let Some(state) = &mut self.state {
+                                state.diff_view.set_diff(diff_files, title);
+                                state.last_diff_commit = Some(oid);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load diff for {}: {}", oid, e);
+                        }
+                    }
+                }
+                AppMessage::ViewDiff(path, staged) => {
+                    match repo.diff_working_file(&path, staged) {
+                        Ok(hunks) => {
+                            let diff_file = crate::git::DiffFile {
+                                path: path.clone(),
+                                hunks,
+                                additions: 0,
+                                deletions: 0,
+                            };
+                            let title = if staged {
+                                format!("Staged: {}", path)
+                            } else {
+                                format!("Unstaged: {}", path)
+                            };
+                            if let Some(state) = &mut self.state {
+                                state.diff_view.set_diff(vec![diff_file], title);
+                                state.last_diff_commit = None;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load diff for {}: {}", path, e);
+                        }
+                    }
+                }
             }
         }
 
@@ -481,7 +531,12 @@ impl ApplicationHandler for App {
                     if let InputEvent::KeyDown { key, .. } = &input_event {
                         match key {
                             Key::Escape => {
-                                event_loop.exit();
+                                if state.diff_view.has_content() {
+                                    state.diff_view.clear();
+                                    state.last_diff_commit = None;
+                                } else {
+                                    event_loop.exit();
+                                }
                                 return;
                             }
                             Key::Tab => {
@@ -527,10 +582,32 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Route scroll events to diff view if it has content and cursor is in its area
+                    if state.diff_view.has_content() {
+                        let diff_bounds = if state.diff_view.has_content() {
+                            // Diff replaces secondary repos area
+                            layout.secondary_repos
+                        } else {
+                            Rect::default()
+                        };
+                        if state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
+                            return;
+                        }
+                    }
+
                     // Route to focused panel
                     match state.focused_panel {
                         FocusedPanel::Graph => {
+                            let prev_selected = state.commit_graph_view.selected_commit;
                             state.commit_graph_view.handle_event(&input_event, &self.commits, layout.graph);
+                            // If selection changed, load the diff
+                            if state.commit_graph_view.selected_commit != prev_selected {
+                                if let Some(oid) = state.commit_graph_view.selected_commit {
+                                    if state.last_diff_commit != Some(oid) {
+                                        state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                                    }
+                                }
+                            }
                         }
                         FocusedPanel::Staging => {
                             state.staging_well.handle_event(&input_event, layout.staging);
@@ -554,7 +631,10 @@ impl ApplicationHandler for App {
                                         state.pending_messages.push(AppMessage::Commit(message));
                                     }
                                     StagingAction::ViewDiff(path) => {
-                                        println!("Would show diff for: {}", path);
+                                        // Determine if the file is staged or unstaged
+                                        let staged = state.staging_well.staged_list.files
+                                            .iter().any(|f| f.path == path);
+                                        state.pending_messages.push(AppMessage::ViewDiff(path, staged));
                                     }
                                 }
                             }
@@ -629,8 +709,12 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos view
-    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    // Diff view replaces secondary repos area when active
+    if state.diff_view.has_content() {
+        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
+    } else {
+        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    }
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -739,8 +823,12 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos view
-    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    // Diff view or secondary repos
+    if state.diff_view.has_content() {
+        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
+    } else {
+        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    }
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -861,8 +949,12 @@ fn capture_screenshot_offscreen(
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Secondary repos view
-    output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    // Diff view or secondary repos
+    if state.diff_view.has_content() {
+        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
+    } else {
+        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    }
 
     let viewport = Viewport {
         offset: [0.0, 0.0],

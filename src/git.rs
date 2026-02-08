@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use git2::{Repository, Commit, Oid, Status, StatusOptions};
+use git2::{Diff, Repository, Commit, Oid, Status, StatusOptions};
 use std::path::Path;
 
 /// Information about a single commit
@@ -530,6 +530,140 @@ impl GitRepo {
 
         Ok(tags)
     }
+
+    /// Get the diff for a commit compared to its first parent
+    pub fn diff_for_commit(&self, oid: Oid) -> Result<Vec<DiffFile>> {
+        let commit = self.repo.find_commit(oid)
+            .context("Failed to find commit")?;
+        let tree = commit.tree().context("Failed to get commit tree")?;
+
+        let parent_tree = if commit.parent_count() > 0 {
+            let parent = commit.parent(0).context("Failed to get parent commit")?;
+            Some(parent.tree().context("Failed to get parent tree")?)
+        } else {
+            None
+        };
+
+        let diff = self.repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            None,
+        ).context("Failed to compute diff")?;
+
+        Self::parse_diff(&diff)
+    }
+
+    /// Get the diff hunks for a working directory file (staged or unstaged)
+    pub fn diff_working_file(&self, path: &str, staged: bool) -> Result<Vec<DiffHunk>> {
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(path);
+
+        let diff = if staged {
+            let head = self.repo.head().context("Failed to get HEAD")?;
+            let head_tree = head.peel_to_tree().context("Failed to get HEAD tree")?;
+            self.repo.diff_tree_to_index(
+                Some(&head_tree),
+                Some(&self.repo.index()?),
+                Some(&mut opts),
+            )?
+        } else {
+            self.repo.diff_index_to_workdir(None, Some(&mut opts))?
+        };
+
+        let files = Self::parse_diff(&diff)?;
+        Ok(files.into_iter().flat_map(|f| f.hunks).collect())
+    }
+
+    fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
+        let mut files: Vec<DiffFile> = Vec::new();
+
+        diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
+            let path = delta.new_file().path()
+                .or_else(|| delta.old_file().path())
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Create a new file entry if the path changed
+            let need_new_file = files.last().map(|f: &DiffFile| f.path != path).unwrap_or(true);
+            if need_new_file {
+                files.push(DiffFile {
+                    path,
+                    hunks: Vec::new(),
+                    additions: 0,
+                    deletions: 0,
+                });
+            }
+
+            let file = files.last_mut().unwrap();
+            let origin = line.origin();
+
+            match origin {
+                'F' | 'H' => {
+                    // File header or hunk header
+                    if origin == 'H' {
+                        let header = hunk.map(|h| {
+                            String::from_utf8_lossy(h.header()).trim_end().to_string()
+                        }).unwrap_or_default();
+                        file.hunks.push(DiffHunk {
+                            header,
+                            lines: Vec::new(),
+                        });
+                    }
+                }
+                '+' | '-' | ' ' => {
+                    match origin {
+                        '+' => file.additions += 1,
+                        '-' => file.deletions += 1,
+                        _ => {}
+                    }
+                    // Create default hunk if none exists yet
+                    if file.hunks.is_empty() {
+                        file.hunks.push(DiffHunk {
+                            header: String::new(),
+                            lines: Vec::new(),
+                        });
+                    }
+                    if let Some(hunk) = file.hunks.last_mut() {
+                        hunk.lines.push(DiffLine {
+                            origin,
+                            content: String::from_utf8_lossy(line.content()).to_string(),
+                            old_lineno: line.old_lineno(),
+                            new_lineno: line.new_lineno(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            true
+        })?;
+
+        Ok(files)
+    }
+}
+
+/// A file changed in a diff, with its hunks
+#[derive(Clone, Debug)]
+pub struct DiffFile {
+    pub path: String,
+    pub hunks: Vec<DiffHunk>,
+    pub additions: usize,
+    pub deletions: usize,
+}
+
+/// A hunk within a diff file
+#[derive(Clone, Debug)]
+pub struct DiffHunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// A single line in a diff hunk
+#[derive(Clone, Debug)]
+pub struct DiffLine {
+    pub origin: char,
+    pub content: String,
+    pub old_lineno: Option<u32>,
+    pub new_lineno: Option<u32>,
 }
 
 /// Working directory status
