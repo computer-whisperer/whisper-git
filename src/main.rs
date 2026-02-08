@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::{HeaderBar, ToastManager, ToastSeverity};
-use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
+use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 // ============================================================================
 // CLI
@@ -110,6 +110,8 @@ enum AppMessage {
     CheckoutBranch(String),
     CheckoutRemoteBranch(String, String),
     DeleteBranch(String),
+    StageHunk(String, usize),    // (file_path, hunk_index)
+    UnstageHunk(String, usize),  // (file_path, hunk_index)
 }
 
 // ============================================================================
@@ -588,7 +590,11 @@ impl App {
                                 format!("Unstaged: {}", path)
                             };
                             if let Some(state) = &mut self.state {
-                                state.diff_view.set_diff(vec![diff_file], title);
+                                if staged {
+                                    state.diff_view.set_staged_diff(vec![diff_file], title);
+                                } else {
+                                    state.diff_view.set_diff(vec![diff_file], title);
+                                }
                                 state.last_diff_commit = None;
                             }
                         }
@@ -694,6 +700,80 @@ impl App {
                             if let Some(state) = &mut self.state {
                                 state.toast_manager.push(
                                     format!("Delete failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
+                        }
+                    }
+                }
+                AppMessage::StageHunk(path, hunk_idx) => {
+                    match repo.stage_hunk(&path, hunk_idx) {
+                        Ok(()) => {
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Staged hunk {} in {}", hunk_idx + 1, path),
+                                    ToastSeverity::Success,
+                                );
+                                // Re-open the diff to reflect the change
+                                if let Ok(hunks) = repo.diff_working_file(&path, false) {
+                                    if hunks.is_empty() {
+                                        state.diff_view.clear();
+                                    } else {
+                                        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+                                        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
+                                        let diff_file = crate::git::DiffFile {
+                                            path: path.clone(),
+                                            hunks,
+                                            additions,
+                                            deletions,
+                                        };
+                                        state.diff_view.set_diff(vec![diff_file], path);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to stage hunk: {}", e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Stage hunk failed: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
+                        }
+                    }
+                }
+                AppMessage::UnstageHunk(path, hunk_idx) => {
+                    match repo.unstage_hunk(&path, hunk_idx) {
+                        Ok(()) => {
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
+                                    ToastSeverity::Success,
+                                );
+                                // Re-open the staged diff to reflect the change
+                                if let Ok(hunks) = repo.diff_working_file(&path, true) {
+                                    if hunks.is_empty() {
+                                        state.diff_view.clear();
+                                    } else {
+                                        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+                                        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
+                                        let diff_file = crate::git::DiffFile {
+                                            path: path.clone(),
+                                            hunks,
+                                            additions,
+                                            deletions,
+                                        };
+                                        state.diff_view.set_staged_diff(vec![diff_file], path);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to unstage hunk: {}", e);
+                            if let Some(state) = &mut self.state {
+                                state.toast_manager.push(
+                                    format!("Unstage hunk failed: {}", e),
                                     ToastSeverity::Error,
                                 );
                             }
@@ -998,6 +1078,17 @@ impl ApplicationHandler for App {
                             layout.secondary_repos
                         };
                         if state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
+                            // Handle hunk staging actions
+                            if let Some(action) = state.diff_view.take_action() {
+                                match action {
+                                    DiffAction::StageHunk(path, hunk_idx) => {
+                                        state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
+                                    }
+                                    DiffAction::UnstageHunk(path, hunk_idx) => {
+                                        state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                                    }
+                                }
+                            }
                             return;
                         }
                     }
