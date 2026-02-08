@@ -7,11 +7,13 @@ use super::Rect;
 pub struct ScreenLayout {
     /// Header bar region (4% height)
     pub header: Rect,
-    /// Primary commit graph region (55% width, 96% height)
+    /// Branch sidebar region (180px wide, left side)
+    pub sidebar: Rect,
+    /// Primary commit graph region (55% of remaining width, 96% height)
     pub graph: Rect,
-    /// Staging well region (45% width, 45% of main height)
+    /// Staging well region (45% of remaining width, 45% of main height)
     pub staging: Rect,
-    /// Secondary repos region (45% width, 51% of main height)
+    /// Secondary repos region (45% of remaining width, 51% of main height)
     pub secondary_repos: Rect,
 }
 
@@ -22,23 +24,27 @@ impl ScreenLayout {
     /// ```text
     /// +----------------------------------------------------------+
     /// |                     HEADER (4%)                          |
-    /// +----------------------------------------------------------+
-    /// |                          |                               |
-    /// |    GRAPH (55% width)     |   STAGING (45% x 45%)         |
-    /// |                          |                               |
-    /// |                          +-------------------------------+
-    /// |                          |                               |
-    /// |                          |   SECONDARY (45% x 51%)       |
-    /// |                          |                               |
-    /// +----------------------------------------------------------+
+    /// +------+---------------------------------------------------+
+    /// |      |                       |                           |
+    /// | SIDE |   GRAPH (55% rem)     |   STAGING (45% x 45%)    |
+    /// | BAR  |                       |                           |
+    /// | 180  |                       +---------------------------+
+    /// | px   |                       |                           |
+    /// |      |                       |   SECONDARY (45% x 51%)  |
+    /// |      |                       |                           |
+    /// +------+---------------------------------------------------+
     /// ```
     pub fn compute(bounds: Rect) -> Self {
         // Split into header and main area
         let header_height = bounds.height * 0.04;
         let (header, main) = bounds.take_top(header_height.max(32.0)); // Min 32px header
 
-        // Split main area into left (graph) and right (staging + secondary)
-        let (graph, right_panel) = main.split_horizontal(0.55);
+        // Split main area into sidebar and content
+        let sidebar_width = 180.0_f32.min(main.width * 0.15); // 180px or 15% max
+        let (sidebar, content) = main.take_left(sidebar_width);
+
+        // Split content area into left (graph) and right (staging + secondary)
+        let (graph, right_panel) = content.split_horizontal(0.55);
 
         // Split right panel into staging (top 45%) and secondary (bottom 51%)
         // The remaining 4% is implicitly used for spacing/gaps
@@ -50,6 +56,7 @@ impl ScreenLayout {
 
         Self {
             header,
+            sidebar,
             graph,
             staging,
             secondary_repos,
@@ -63,7 +70,8 @@ impl ScreenLayout {
         // Apply gap padding
         Self {
             header: base.header.pad(gap, gap, gap, 0.0),
-            graph: base.graph.pad(gap, gap, gap / 2.0, gap),
+            sidebar: base.sidebar.pad(gap, gap, gap / 2.0, gap),
+            graph: base.graph.pad(gap / 2.0, gap, gap / 2.0, gap),
             staging: base.staging.pad(gap / 2.0, gap, gap, gap / 2.0),
             secondary_repos: base.secondary_repos.pad(gap / 2.0, gap / 2.0, gap, gap),
         }
@@ -83,10 +91,14 @@ mod tests {
         assert_eq!(layout.header.y, 0.0);
         assert!(layout.header.height >= 28.0); // 4% of 720 = 28.8
 
-        // Graph should take 55% width
-        assert!((layout.graph.width - 704.0).abs() < 1.0); // 1280 * 0.55 = 704
+        // Sidebar should be 180px wide
+        assert!((layout.sidebar.width - 180.0).abs() < 1.0);
 
-        // Staging should take 45% width
-        assert!((layout.staging.width - 576.0).abs() < 1.0); // 1280 * 0.45 = 576
+        // Remaining width after sidebar: 1280 - 180 = 1100
+        // Graph should take 55% of remaining
+        assert!((layout.graph.width - 605.0).abs() < 1.0); // 1100 * 0.55 = 605
+
+        // Staging should take 45% of remaining
+        assert!((layout.staging.width - 495.0).abs() < 1.0); // 1100 * 0.45 = 495
     }
 }

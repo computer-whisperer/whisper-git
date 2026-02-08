@@ -29,7 +29,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
-use crate::views::{CommitGraphView, SecondaryReposView, StagingWell, StagingAction};
+use crate::views::{BranchSidebar, CommitGraphView, SecondaryReposView, StagingWell, StagingAction};
 
 // ============================================================================
 // CLI
@@ -131,6 +131,7 @@ struct RenderState {
     input_state: InputState,
     focused_panel: FocusedPanel,
     header_bar: HeaderBar,
+    branch_sidebar: BranchSidebar,
     commit_graph_view: CommitGraphView,
     staging_well: StagingWell,
     secondary_repos_view: SecondaryReposView,
@@ -250,6 +251,7 @@ impl App {
 
         // Initialize UI components
         let mut header_bar = HeaderBar::new();
+        let mut branch_sidebar = BranchSidebar::new();
         let mut commit_graph_view = CommitGraphView::new();
         let staging_well = StagingWell::new();
         let mut secondary_repos_view = SecondaryReposView::new();
@@ -282,6 +284,12 @@ impl App {
             if let Ok(worktrees) = repo.worktrees() {
                 secondary_repos_view.set_worktrees(worktrees);
             }
+
+            // Populate branch sidebar
+            let branch_tips = repo.branch_tips().unwrap_or_default();
+            let tags = repo.tags().unwrap_or_default();
+            let current = repo.current_branch().unwrap_or_default();
+            branch_sidebar.set_branch_data(&branch_tips, &tags, current);
         }
 
         self.state = Some(RenderState {
@@ -296,6 +304,7 @@ impl App {
             input_state: InputState::new(),
             focused_panel: FocusedPanel::Graph,
             header_bar,
+            branch_sidebar,
             staging_well,
             secondary_repos_view,
             pending_messages: Vec::new(),
@@ -483,6 +492,11 @@ impl ApplicationHandler for App {
                         }
                     }
 
+                    // Route to branch sidebar
+                    if state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
+                        return;
+                    }
+
                     // Route to header bar
                     if state.header_bar.handle_event(&input_event, layout.header).is_consumed() {
                         // Check for header actions
@@ -599,6 +613,9 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
 
+    // Branch sidebar
+    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
+
     // Commit graph (in graph area)
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
     let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
@@ -704,6 +721,9 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
 
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
+
+    // Branch sidebar
+    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
 
     // Commit graph
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
@@ -822,6 +842,9 @@ fn capture_screenshot_offscreen(
 
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
+
+    // Branch sidebar
+    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
 
     // Commit graph
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
