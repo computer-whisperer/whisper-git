@@ -220,11 +220,11 @@ impl Default for CommitGraphView {
             layout: GraphLayout::new(),
             title_color: theme::TEXT_BRIGHT,
             text_color: theme::TEXT,
-            line_width: 3.0,        // Thicker lines for better visibility
-            lane_width: 40.0,       // Slightly wider lanes
-            row_height: 34.0,       // More breathing room
-            node_radius: 7.0,       // Larger nodes (spec says 8px, using 7 for balance)
-            segments_per_curve: 16,
+            line_width: 2.0,        // Thinner lines for tighter density
+            lane_width: 22.0,       // Compact lanes (~GitKraken density)
+            row_height: 24.0,       // Tighter rows for more visible commits
+            node_radius: 5.0,       // Smaller nodes for compact layout
+            segments_per_curve: 20, // Smoother curves at smaller size
             selected_commit: None,
             hovered_commit: None,
             working_dir_status: None,
@@ -249,14 +249,14 @@ impl CommitGraphView {
     /// Calculate the width needed for the graph portion
     fn graph_width(&self) -> f32 {
         let lanes = (self.layout.max_lane() + 1).max(1);
-        let computed = lanes as f32 * self.lane_width + self.lane_width;
-        // Minimum width for visual presence even with linear history
-        computed.max(self.lane_width * 2.0)
+        let computed = lanes as f32 * self.lane_width + self.lane_width * 0.5;
+        // Smaller minimum for compact layout
+        computed.max(self.lane_width * 1.5)
     }
 
     /// Get x position for a lane
     fn lane_x(&self, lane: usize, bounds: &Rect) -> f32 {
-        bounds.x + 20.0 + lane as f32 * self.lane_width + self.lane_width / 2.0
+        bounds.x + 12.0 + lane as f32 * self.lane_width + self.lane_width / 2.0
     }
 
     /// Get y position for a row (adjusted for scroll and optional working dir node)
@@ -613,7 +613,7 @@ impl CommitGraphView {
         color: [f32; 4],
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
-        let segments = 12;
+        let segments = 16;
 
         for i in 0..segments {
             let angle1 = (i as f32 / segments as f32) * std::f32::consts::TAU;
@@ -711,7 +711,7 @@ impl CommitGraphView {
         let line_height = text_renderer.line_height();
 
         // Graph offset for text
-        let text_x = bounds.x + 20.0 + self.graph_width() + 10.0;
+        let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
 
         // Column layout: fixed-width columns from the right edge
         let time_col_width: f32 = 80.0;
