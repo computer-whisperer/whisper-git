@@ -601,8 +601,9 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
 
     // Commit graph (in graph area)
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
+    output.spline_vertices.extend(pill_vertices);
     output.text_vertices.extend(text_vertices);
 
     // Staging well
@@ -707,8 +708,9 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
 
     // Commit graph
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
+    output.spline_vertices.extend(pill_vertices);
     output.text_vertices.extend(text_vertices);
 
     // Staging well
@@ -825,8 +827,9 @@ fn capture_screenshot_offscreen(
 
     // Commit graph
     let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let text_vertices = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
+    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
     output.spline_vertices.extend(spline_vertices);
+    output.spline_vertices.extend(pill_vertices);
     output.text_vertices.extend(text_vertices);
 
     // Staging well

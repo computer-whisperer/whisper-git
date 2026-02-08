@@ -24,6 +24,23 @@ impl CommitInfo {
             parent_ids: commit.parent_ids().collect(),
         }
     }
+
+    pub fn relative_time(&self) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let diff = now - self.time;
+        match diff {
+            d if d < 60 => "just now".to_string(),
+            d if d < 3600 => format!("{}m ago", d / 60),
+            d if d < 86400 => format!("{}h ago", d / 3600),
+            d if d < 604800 => format!("{}d ago", d / 86400),
+            d if d < 2592000 => format!("{}w ago", d / 604800),
+            d if d < 31536000 => format!("{}mo ago", d / 2592000),
+            d => format!("{}y ago", d / 31536000),
+        }
+    }
 }
 
 /// Repository wrapper for our git operations
