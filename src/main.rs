@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{HeaderBar, ToastManager, ToastSeverity};
+use crate::ui::widgets::{HeaderBar, RepoDialog, RepoDialogAction, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 // ============================================================================
@@ -46,7 +46,7 @@ struct CliArgs {
     screenshot_size: Option<(u32, u32)>,
     screenshot_scale: Option<f64>,
     view: Option<String>,
-    repo: Option<PathBuf>,
+    repos: Vec<PathBuf>,
 }
 
 fn parse_args() -> CliArgs {
@@ -72,8 +72,12 @@ fn parse_args() -> CliArgs {
                 }
             }
             "--view" => args.view = iter.next(),
-            "--repo" => args.repo = iter.next().map(PathBuf::from),
-            other if !other.starts_with('-') => args.repo = Some(PathBuf::from(other)),
+            "--repo" => {
+                if let Some(p) = iter.next() {
+                    args.repos.push(PathBuf::from(p));
+                }
+            }
+            other if !other.starts_with('-') => args.repos.push(PathBuf::from(other)),
             _ => {}
         }
     }
@@ -115,6 +119,51 @@ enum AppMessage {
     UnstageHunk(String, usize),  // (file_path, hunk_index)
 }
 
+/// Per-tab repository data
+struct RepoTab {
+    repo: Option<GitRepo>,
+    commits: Vec<CommitInfo>,
+    name: String,
+    path: PathBuf,
+}
+
+/// Per-tab UI view state
+struct TabViewState {
+    focused_panel: FocusedPanel,
+    header_bar: HeaderBar,
+    branch_sidebar: BranchSidebar,
+    commit_graph_view: CommitGraphView,
+    staging_well: StagingWell,
+    secondary_repos_view: SecondaryReposView,
+    diff_view: DiffView,
+    commit_detail_view: CommitDetailView,
+    last_diff_commit: Option<Oid>,
+    pending_messages: Vec<AppMessage>,
+    fetch_receiver: Option<Receiver<RemoteOpResult>>,
+    pull_receiver: Option<Receiver<RemoteOpResult>>,
+    push_receiver: Option<Receiver<RemoteOpResult>>,
+}
+
+impl TabViewState {
+    fn new() -> Self {
+        Self {
+            focused_panel: FocusedPanel::Graph,
+            header_bar: HeaderBar::new(),
+            branch_sidebar: BranchSidebar::new(),
+            commit_graph_view: CommitGraphView::new(),
+            staging_well: StagingWell::new(),
+            secondary_repos_view: SecondaryReposView::new(),
+            diff_view: DiffView::new(),
+            commit_detail_view: CommitDetailView::new(),
+            last_diff_commit: None,
+            pending_messages: Vec::new(),
+            fetch_receiver: None,
+            pull_receiver: None,
+            push_receiver: None,
+        }
+    }
+}
+
 // ============================================================================
 // Application
 // ============================================================================
@@ -134,12 +183,15 @@ fn main() -> Result<()> {
 
 struct App {
     cli_args: CliArgs,
-    repo: Option<GitRepo>,
-    commits: Vec<CommitInfo>,
+    tabs: Vec<(RepoTab, TabViewState)>,
+    active_tab: usize,
+    tab_bar: TabBar,
+    repo_dialog: RepoDialog,
+    toast_manager: ToastManager,
     state: Option<RenderState>,
 }
 
-/// Initialized state (after window creation)
+/// Initialized render state (after window creation) - shared across all tabs
 struct RenderState {
     window: Arc<Window>,
     ctx: VulkanContext,
@@ -149,53 +201,70 @@ struct RenderState {
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
     scale_factor: f64,
-    // UI components
     input_state: InputState,
-    focused_panel: FocusedPanel,
-    header_bar: HeaderBar,
-    branch_sidebar: BranchSidebar,
-    commit_graph_view: CommitGraphView,
-    staging_well: StagingWell,
-    secondary_repos_view: SecondaryReposView,
-    diff_view: DiffView,
-    commit_detail_view: CommitDetailView,
-    /// Track which commit we last loaded a diff for
-    last_diff_commit: Option<Oid>,
-    // Pending messages
-    pending_messages: Vec<AppMessage>,
-    /// Receiver for background fetch operation
-    fetch_receiver: Option<Receiver<RemoteOpResult>>,
-    /// Receiver for background pull operation
-    pull_receiver: Option<Receiver<RemoteOpResult>>,
-    /// Receiver for background push operation
-    push_receiver: Option<Receiver<RemoteOpResult>>,
-    /// Toast notification manager
-    toast_manager: ToastManager,
 }
 
 impl App {
     fn new(cli_args: CliArgs) -> Result<Self> {
-        // Load commits from repo
-        let repo_path = cli_args.repo.as_deref().unwrap_or(".".as_ref());
-        let (repo, commits) = match GitRepo::open(repo_path) {
-            Ok(repo) => {
-                let commits = repo.commit_graph(50).unwrap_or_default();
-                let location: String = repo.workdir()
-                    .map(|p| format!("{:?}", p))
-                    .unwrap_or_else(|| format!("{:?} (bare)", repo.repo_name()));
-                println!("Loaded {} commits from {}", commits.len(), location);
-                (Some(repo), commits)
-            }
-            Err(e) => {
-                eprintln!("Warning: Could not open repository: {e}");
-                (None, Vec::new())
-            }
+        let mut tabs = Vec::new();
+        let mut tab_bar = TabBar::new();
+
+        // Determine repo paths to open
+        let repo_paths: Vec<PathBuf> = if cli_args.repos.is_empty() {
+            vec![PathBuf::from(".")]
+        } else {
+            cli_args.repos.clone()
         };
+
+        for repo_path in &repo_paths {
+            match GitRepo::open(repo_path) {
+                Ok(repo) => {
+                    let commits = repo.commit_graph(50).unwrap_or_default();
+                    let name = repo.repo_name();
+                    let location: String = repo.workdir()
+                        .map(|p| format!("{:?}", p))
+                        .unwrap_or_else(|| format!("{:?} (bare)", repo.repo_name()));
+                    println!("Loaded {} commits from {}", commits.len(), location);
+
+                    tab_bar.add_tab(name.clone());
+                    tabs.push((
+                        RepoTab {
+                            repo: Some(repo),
+                            commits,
+                            name,
+                            path: repo_path.clone(),
+                        },
+                        TabViewState::new(),
+                    ));
+                }
+                Err(e) => {
+                    eprintln!("Warning: Could not open repository at {:?}: {e}", repo_path);
+                    // Still add a tab with no repo
+                    let name = repo_path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    tab_bar.add_tab(name.clone());
+                    tabs.push((
+                        RepoTab {
+                            repo: None,
+                            commits: Vec::new(),
+                            name,
+                            path: repo_path.clone(),
+                        },
+                        TabViewState::new(),
+                    ));
+                }
+            }
+        }
 
         Ok(Self {
             cli_args,
-            repo,
-            commits,
+            tabs,
+            active_tab: 0,
+            tab_bar,
+            repo_dialog: RepoDialog::new(),
+            toast_manager: ToastManager::new(),
             state: None,
         })
     }
@@ -298,53 +367,9 @@ impl App {
 
         let previous_frame_end = Some(sync::now(ctx.device.clone()).boxed());
 
-        // Initialize UI components
-        let mut header_bar = HeaderBar::new();
-        let mut branch_sidebar = BranchSidebar::new();
-        let mut commit_graph_view = CommitGraphView::new();
-        let staging_well = StagingWell::new();
-        let mut secondary_repos_view = SecondaryReposView::new();
-
-        // Sync view metrics to the current text renderer scale
-        commit_graph_view.sync_metrics(&text_renderer);
-        branch_sidebar.sync_metrics(&text_renderer);
-
-        // Set up graph view with repo data
-        commit_graph_view.update_layout(&self.commits);
-
-        if let Some(ref repo) = self.repo {
-            // Set repo info in header
-            let repo_name = repo.repo_name();
-            let branch = repo.current_branch().unwrap_or_else(|_| "unknown".to_string());
-            let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
-            header_bar.set_repo_info(repo_name, branch, ahead, behind);
-
-            // Cache branch/tag data to avoid duplicate calls
-            let branch_tips = repo.branch_tips().unwrap_or_default();
-            let tags = repo.tags().unwrap_or_default();
-            let current = repo.current_branch().unwrap_or_default();
-
-            // Set HEAD and branch info in graph
-            commit_graph_view.head_oid = repo.head_oid().ok();
-            commit_graph_view.branch_tips = branch_tips.clone();
-            commit_graph_view.tags = tags.clone();
-            commit_graph_view.working_dir_status = repo.status().ok();
-
-            // Set staging status
-            header_bar.has_staged = repo.status()
-                .map(|s| !s.staged.is_empty())
-                .unwrap_or(false);
-
-            // Load submodules and worktrees
-            if let Ok(submodules) = repo.submodules() {
-                secondary_repos_view.set_submodules(submodules);
-            }
-            if let Ok(worktrees) = repo.worktrees() {
-                secondary_repos_view.set_worktrees(worktrees);
-            }
-
-            // Populate branch sidebar
-            branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+        // Initialize all tab views
+        for (repo_tab, view_state) in &mut self.tabs {
+            init_tab_view(repo_tab, view_state, &text_renderer);
         }
 
         self.state = Some(RenderState {
@@ -353,86 +378,67 @@ impl App {
             surface: surface_mgr,
             text_renderer,
             spline_renderer,
-            commit_graph_view,
             previous_frame_end,
             frame_count: 0,
             scale_factor: window_scale,
             input_state: InputState::new(),
-            focused_panel: FocusedPanel::Graph,
-            header_bar,
-            branch_sidebar,
-            staging_well,
-            secondary_repos_view,
-            diff_view: DiffView::new(),
-            commit_detail_view: CommitDetailView::new(),
-            last_diff_commit: None,
-            pending_messages: Vec::new(),
-            fetch_receiver: None,
-            pull_receiver: None,
-            push_receiver: None,
-            toast_manager: ToastManager::new(),
         });
 
-        // Initial status refresh
+        // Initial status refresh for active tab
         self.refresh_status();
 
         Ok(())
     }
 
     fn refresh_status(&mut self) {
-        let Some(state) = &mut self.state else { return };
-        let Some(ref repo) = self.repo else { return };
+        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+            let Some(ref repo) = repo_tab.repo else { return };
 
-        // Update working directory status
-        if let Ok(status) = repo.status() {
-            state.commit_graph_view.working_dir_status = Some(status.clone());
-            state.staging_well.update_status(&status);
-            state.header_bar.has_staged = !status.staged.is_empty();
-        }
+            // Update working directory status
+            if let Ok(status) = repo.status() {
+                view_state.commit_graph_view.working_dir_status = Some(status.clone());
+                view_state.staging_well.update_status(&status);
+                view_state.header_bar.has_staged = !status.staged.is_empty();
+            }
 
-        // Update ahead/behind
-        if let Ok((ahead, behind)) = repo.ahead_behind() {
-            state.header_bar.ahead = ahead;
-            state.header_bar.behind = behind;
+            // Update ahead/behind
+            if let Ok((ahead, behind)) = repo.ahead_behind() {
+                view_state.header_bar.ahead = ahead;
+                view_state.header_bar.behind = behind;
+            }
         }
     }
 
     fn process_messages(&mut self) {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+
         // Extract messages to avoid borrow conflicts
-        let messages: Vec<_> = if let Some(state) = &mut self.state {
-            state.pending_messages.drain(..).collect()
-        } else {
-            return;
-        };
+        let messages: Vec<_> = view_state.pending_messages.drain(..).collect();
 
         if messages.is_empty() {
             return;
         }
 
-        let Some(ref repo) = self.repo else { return };
+        let Some(ref repo) = repo_tab.repo else { return };
 
         for msg in messages {
             match msg {
                 AppMessage::StageFile(path) => {
                     if let Err(e) = repo.stage_file(&path) {
                         eprintln!("Failed to stage {}: {}", path, e);
-                        if let Some(state) = &mut self.state {
-                            state.toast_manager.push(
-                                format!("Stage failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
+                        self.toast_manager.push(
+                            format!("Stage failed: {}", e),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
                 AppMessage::UnstageFile(path) => {
                     if let Err(e) = repo.unstage_file(&path) {
                         eprintln!("Failed to unstage {}: {}", path, e);
-                        if let Some(state) = &mut self.state {
-                            state.toast_manager.push(
-                                format!("Unstage failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
+                        self.toast_manager.push(
+                            format!("Unstage failed: {}", e),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
                 AppMessage::StageAll => {
@@ -453,112 +459,89 @@ impl App {
                     match repo.commit(&message) {
                         Ok(oid) => {
                             println!("Created commit: {}", oid);
-                            // Refresh commits
-                            self.commits = repo.commit_graph(50).unwrap_or_default();
-                            if let Some(state) = &mut self.state {
-                                state.commit_graph_view.update_layout(&self.commits);
-                                state.commit_graph_view.head_oid = repo.head_oid().ok();
-                                state.staging_well.clear_message();
-                                state.toast_manager.push(
-                                    format!("Commit {}", &oid.to_string()[..7]),
-                                    ToastSeverity::Success,
-                                );
-                            }
+                            repo_tab.commits = repo.commit_graph(50).unwrap_or_default();
+                            view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                            view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+                            view_state.staging_well.clear_message();
+                            self.toast_manager.push(
+                                format!("Commit {}", &oid.to_string()[..7]),
+                                ToastSeverity::Success,
+                            );
                         }
                         Err(e) => {
                             eprintln!("Failed to commit: {}", e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Commit failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Commit failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
                 AppMessage::Fetch => {
-                    if let Some(state) = &self.state {
-                        if state.fetch_receiver.is_some() {
-                            eprintln!("Fetch already in progress");
-                            continue;
-                        }
+                    if view_state.fetch_receiver.is_some() {
+                        eprintln!("Fetch already in progress");
+                        continue;
                     }
                     if let Some(workdir) = repo.working_dir_path() {
                         let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
                         println!("Fetching from {}...", remote);
                         let rx = crate::git::fetch_remote_async(workdir, remote);
-                        if let Some(state) = &mut self.state {
-                            state.fetch_receiver = Some(rx);
-                            state.header_bar.fetching = true;
-                        }
+                        view_state.fetch_receiver = Some(rx);
+                        view_state.header_bar.fetching = true;
                     } else {
                         eprintln!("No working directory for fetch");
                     }
                 }
                 AppMessage::Pull => {
-                    if let Some(state) = &self.state {
-                        if state.pull_receiver.is_some() {
-                            eprintln!("Pull already in progress");
-                            continue;
-                        }
+                    if view_state.pull_receiver.is_some() {
+                        eprintln!("Pull already in progress");
+                        continue;
                     }
                     if let Some(workdir) = repo.working_dir_path() {
                         let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
                         let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         println!("Pulling {} from {}...", branch, remote);
                         let rx = crate::git::pull_remote_async(workdir, remote, branch);
-                        if let Some(state) = &mut self.state {
-                            state.pull_receiver = Some(rx);
-                            state.header_bar.pulling = true;
-                        }
+                        view_state.pull_receiver = Some(rx);
+                        view_state.header_bar.pulling = true;
                     } else {
                         eprintln!("No working directory for pull");
                     }
                 }
                 AppMessage::Push => {
-                    if let Some(state) = &self.state {
-                        if state.push_receiver.is_some() {
-                            eprintln!("Push already in progress");
-                            continue;
-                        }
+                    if view_state.push_receiver.is_some() {
+                        eprintln!("Push already in progress");
+                        continue;
                     }
                     if let Some(workdir) = repo.working_dir_path() {
                         let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
                         let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         println!("Pushing {} to {}...", branch, remote);
                         let rx = crate::git::push_remote_async(workdir, remote, branch);
-                        if let Some(state) = &mut self.state {
-                            state.push_receiver = Some(rx);
-                            state.header_bar.pushing = true;
-                        }
+                        view_state.push_receiver = Some(rx);
+                        view_state.header_bar.pushing = true;
                     } else {
                         eprintln!("No working directory for push");
                     }
                 }
                 AppMessage::SelectedCommit(oid) => {
-                    // Load full commit info for the detail panel
                     let full_info = repo.full_commit_info(oid);
                     match repo.diff_for_commit(oid) {
                         Ok(diff_files) => {
-                            if let Some(state) = &mut self.state {
-                                // Populate commit detail panel
-                                if let Ok(info) = full_info {
-                                    state.commit_detail_view.set_commit(info, diff_files.clone());
-                                }
-
-                                // Show first file's diff by default, or full diff if no files
-                                if let Some(first_file) = diff_files.first() {
-                                    let title = first_file.path.clone();
-                                    state.diff_view.set_diff(vec![first_file.clone()], title);
-                                } else {
-                                    let title = self.commits.iter()
-                                        .find(|c| c.id == oid)
-                                        .map(|c| format!("{} {}", c.short_id, c.summary))
-                                        .unwrap_or_else(|| oid.to_string());
-                                    state.diff_view.set_diff(diff_files, title);
-                                }
-                                state.last_diff_commit = Some(oid);
+                            if let Ok(info) = full_info {
+                                view_state.commit_detail_view.set_commit(info, diff_files.clone());
                             }
+                            if let Some(first_file) = diff_files.first() {
+                                let title = first_file.path.clone();
+                                view_state.diff_view.set_diff(vec![first_file.clone()], title);
+                            } else {
+                                let title = repo_tab.commits.iter()
+                                    .find(|c| c.id == oid)
+                                    .map(|c| format!("{} {}", c.short_id, c.summary))
+                                    .unwrap_or_else(|| oid.to_string());
+                                view_state.diff_view.set_diff(diff_files, title);
+                            }
+                            view_state.last_diff_commit = Some(oid);
                         }
                         Err(e) => {
                             eprintln!("Failed to load diff for {}: {}", oid, e);
@@ -568,9 +551,7 @@ impl App {
                 AppMessage::ViewCommitFileDiff(oid, path) => {
                     match repo.diff_file_in_commit(oid, &path) {
                         Ok(diff_files) => {
-                            if let Some(state) = &mut self.state {
-                                state.diff_view.set_diff(diff_files, path);
-                            }
+                            view_state.diff_view.set_diff(diff_files, path);
                         }
                         Err(e) => {
                             eprintln!("Failed to load diff for file '{}': {}", path, e);
@@ -593,14 +574,12 @@ impl App {
                             } else {
                                 format!("Unstaged: {}", path)
                             };
-                            if let Some(state) = &mut self.state {
-                                if staged {
-                                    state.diff_view.set_staged_diff(vec![diff_file], title);
-                                } else {
-                                    state.diff_view.set_diff(vec![diff_file], title);
-                                }
-                                state.last_diff_commit = None;
+                            if staged {
+                                view_state.diff_view.set_staged_diff(vec![diff_file], title);
+                            } else {
+                                view_state.diff_view.set_diff(vec![diff_file], title);
                             }
+                            view_state.last_diff_commit = None;
                         }
                         Err(e) => {
                             eprintln!("Failed to load diff for {}: {}", path, e);
@@ -611,37 +590,32 @@ impl App {
                     match repo.checkout_branch(&name) {
                         Ok(()) => {
                             println!("Checked out branch: {}", name);
-                            // Full refresh
-                            self.commits = repo.commit_graph(50).unwrap_or_default();
-                            if let Some(state) = &mut self.state {
-                                state.commit_graph_view.update_layout(&self.commits);
-                                state.commit_graph_view.head_oid = repo.head_oid().ok();
-                                let branch_tips = repo.branch_tips().unwrap_or_default();
-                                let tags = repo.tags().unwrap_or_default();
-                                let current = repo.current_branch().unwrap_or_default();
-                                state.commit_graph_view.branch_tips = branch_tips.clone();
-                                state.commit_graph_view.tags = tags.clone();
-                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
-                                state.header_bar.set_repo_info(
-                                    state.header_bar.repo_name.clone(),
-                                    current,
-                                    repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
-                                    repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
-                                );
-                                state.toast_manager.push(
-                                    format!("Switched to {}", name),
-                                    ToastSeverity::Success,
-                                );
-                            }
+                            repo_tab.commits = repo.commit_graph(50).unwrap_or_default();
+                            view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                            view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+                            let branch_tips = repo.branch_tips().unwrap_or_default();
+                            let tags = repo.tags().unwrap_or_default();
+                            let current = repo.current_branch().unwrap_or_default();
+                            view_state.commit_graph_view.branch_tips = branch_tips.clone();
+                            view_state.commit_graph_view.tags = tags.clone();
+                            view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+                            view_state.header_bar.set_repo_info(
+                                view_state.header_bar.repo_name.clone(),
+                                current,
+                                repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
+                                repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
+                            );
+                            self.toast_manager.push(
+                                format!("Switched to {}", name),
+                                ToastSeverity::Success,
+                            );
                         }
                         Err(e) => {
                             eprintln!("Failed to checkout branch '{}': {}", name, e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Checkout failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Checkout failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
@@ -649,37 +623,32 @@ impl App {
                     match repo.checkout_remote_branch(&remote, &branch) {
                         Ok(()) => {
                             println!("Checked out remote branch: {}/{}", remote, branch);
-                            // Full refresh (same as CheckoutBranch)
-                            self.commits = repo.commit_graph(50).unwrap_or_default();
-                            if let Some(state) = &mut self.state {
-                                state.commit_graph_view.update_layout(&self.commits);
-                                state.commit_graph_view.head_oid = repo.head_oid().ok();
-                                let branch_tips = repo.branch_tips().unwrap_or_default();
-                                let tags = repo.tags().unwrap_or_default();
-                                let current = repo.current_branch().unwrap_or_default();
-                                state.commit_graph_view.branch_tips = branch_tips.clone();
-                                state.commit_graph_view.tags = tags.clone();
-                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
-                                state.header_bar.set_repo_info(
-                                    state.header_bar.repo_name.clone(),
-                                    current,
-                                    repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
-                                    repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
-                                );
-                                state.toast_manager.push(
-                                    format!("Switched to {}/{}", remote, branch),
-                                    ToastSeverity::Success,
-                                );
-                            }
+                            repo_tab.commits = repo.commit_graph(50).unwrap_or_default();
+                            view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                            view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+                            let branch_tips = repo.branch_tips().unwrap_or_default();
+                            let tags = repo.tags().unwrap_or_default();
+                            let current = repo.current_branch().unwrap_or_default();
+                            view_state.commit_graph_view.branch_tips = branch_tips.clone();
+                            view_state.commit_graph_view.tags = tags.clone();
+                            view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+                            view_state.header_bar.set_repo_info(
+                                view_state.header_bar.repo_name.clone(),
+                                current,
+                                repo.ahead_behind().map(|(a,_)| a).unwrap_or(0),
+                                repo.ahead_behind().map(|(_,b)| b).unwrap_or(0),
+                            );
+                            self.toast_manager.push(
+                                format!("Switched to {}/{}", remote, branch),
+                                ToastSeverity::Success,
+                            );
                         }
                         Err(e) => {
                             eprintln!("Failed to checkout remote branch '{}/{}': {}", remote, branch, e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Checkout failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Checkout failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
@@ -687,100 +656,85 @@ impl App {
                     match repo.delete_branch(&name) {
                         Ok(()) => {
                             println!("Deleted branch: {}", name);
-                            // Refresh branch data
-                            if let Some(state) = &mut self.state {
-                                let branch_tips = repo.branch_tips().unwrap_or_default();
-                                let tags = repo.tags().unwrap_or_default();
-                                let current = repo.current_branch().unwrap_or_default();
-                                state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
-                                state.toast_manager.push(
-                                    format!("Deleted branch {}", name),
-                                    ToastSeverity::Success,
-                                );
-                            }
+                            let branch_tips = repo.branch_tips().unwrap_or_default();
+                            let tags = repo.tags().unwrap_or_default();
+                            let current = repo.current_branch().unwrap_or_default();
+                            view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                            self.toast_manager.push(
+                                format!("Deleted branch {}", name),
+                                ToastSeverity::Success,
+                            );
                         }
                         Err(e) => {
                             eprintln!("Failed to delete branch '{}': {}", name, e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Delete failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Delete failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
                 AppMessage::StageHunk(path, hunk_idx) => {
                     match repo.stage_hunk(&path, hunk_idx) {
                         Ok(()) => {
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Staged hunk {} in {}", hunk_idx + 1, path),
-                                    ToastSeverity::Success,
-                                );
-                                // Re-open the diff to reflect the change
-                                if let Ok(hunks) = repo.diff_working_file(&path, false) {
-                                    if hunks.is_empty() {
-                                        state.diff_view.clear();
-                                    } else {
-                                        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-                                        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-                                        let diff_file = crate::git::DiffFile {
-                                            path: path.clone(),
-                                            hunks,
-                                            additions,
-                                            deletions,
-                                        };
-                                        state.diff_view.set_diff(vec![diff_file], path);
-                                    }
+                            self.toast_manager.push(
+                                format!("Staged hunk {} in {}", hunk_idx + 1, path),
+                                ToastSeverity::Success,
+                            );
+                            if let Ok(hunks) = repo.diff_working_file(&path, false) {
+                                if hunks.is_empty() {
+                                    view_state.diff_view.clear();
+                                } else {
+                                    let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+                                    let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
+                                    let diff_file = crate::git::DiffFile {
+                                        path: path.clone(),
+                                        hunks,
+                                        additions,
+                                        deletions,
+                                    };
+                                    view_state.diff_view.set_diff(vec![diff_file], path);
                                 }
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to stage hunk: {}", e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Stage hunk failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Stage hunk failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
                 AppMessage::UnstageHunk(path, hunk_idx) => {
                     match repo.unstage_hunk(&path, hunk_idx) {
                         Ok(()) => {
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
-                                    ToastSeverity::Success,
-                                );
-                                // Re-open the staged diff to reflect the change
-                                if let Ok(hunks) = repo.diff_working_file(&path, true) {
-                                    if hunks.is_empty() {
-                                        state.diff_view.clear();
-                                    } else {
-                                        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-                                        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-                                        let diff_file = crate::git::DiffFile {
-                                            path: path.clone(),
-                                            hunks,
-                                            additions,
-                                            deletions,
-                                        };
-                                        state.diff_view.set_staged_diff(vec![diff_file], path);
-                                    }
+                            self.toast_manager.push(
+                                format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
+                                ToastSeverity::Success,
+                            );
+                            if let Ok(hunks) = repo.diff_working_file(&path, true) {
+                                if hunks.is_empty() {
+                                    view_state.diff_view.clear();
+                                } else {
+                                    let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+                                    let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
+                                    let diff_file = crate::git::DiffFile {
+                                        path: path.clone(),
+                                        hunks,
+                                        additions,
+                                        deletions,
+                                    };
+                                    view_state.diff_view.set_staged_diff(vec![diff_file], path);
                                 }
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to unstage hunk: {}", e);
-                            if let Some(state) = &mut self.state {
-                                state.toast_manager.push(
-                                    format!("Unstage hunk failed: {}", e),
-                                    ToastSeverity::Error,
-                                );
-                            }
+                            self.toast_manager.push(
+                                format!("Unstage hunk failed: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
@@ -792,40 +746,37 @@ impl App {
     }
 
     fn poll_remote_ops(&mut self) {
-        let Some(state) = &mut self.state else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
         // Poll fetch
-        if let Some(ref rx) = state.fetch_receiver {
+        if let Some(ref rx) = view_state.fetch_receiver {
             if let Ok(result) = rx.try_recv() {
-                state.header_bar.fetching = false;
-                state.fetch_receiver = None;
+                view_state.header_bar.fetching = false;
+                view_state.fetch_receiver = None;
                 if result.success {
                     println!("Fetch completed successfully");
                     if !result.error.is_empty() {
-                        // git fetch writes progress to stderr even on success
                         println!("{}", result.error.trim());
                     }
-                    state.toast_manager.push("Fetch complete", ToastSeverity::Success);
-                    // Refresh repo data
-                    if let Some(ref repo) = self.repo {
-                        self.commits = repo.commit_graph(50).unwrap_or_default();
-                        state.commit_graph_view.update_layout(&self.commits);
-                        state.commit_graph_view.head_oid = repo.head_oid().ok();
-                        state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
-                        state.commit_graph_view.tags = repo.tags().unwrap_or_default();
+                    self.toast_manager.push("Fetch complete", ToastSeverity::Success);
+                    if let Some(ref repo) = repo_tab.repo {
+                        repo_tab.commits = repo.commit_graph(50).unwrap_or_default();
+                        view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                        view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+                        view_state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
+                        view_state.commit_graph_view.tags = repo.tags().unwrap_or_default();
                         if let Ok((ahead, behind)) = repo.ahead_behind() {
-                            state.header_bar.ahead = ahead;
-                            state.header_bar.behind = behind;
+                            view_state.header_bar.ahead = ahead;
+                            view_state.header_bar.behind = behind;
                         }
-                        // Refresh sidebar
                         let branch_tips = repo.branch_tips().unwrap_or_default();
                         let tags = repo.tags().unwrap_or_default();
                         let current = repo.current_branch().unwrap_or_default();
-                        state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                        view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
                     }
                 } else {
                     eprintln!("Fetch failed: {}", result.error);
-                    state.toast_manager.push(
+                    self.toast_manager.push(
                         format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")),
                         ToastSeverity::Error,
                     );
@@ -834,36 +785,34 @@ impl App {
         }
 
         // Poll pull
-        if let Some(ref rx) = state.pull_receiver {
+        if let Some(ref rx) = view_state.pull_receiver {
             if let Ok(result) = rx.try_recv() {
-                state.header_bar.pulling = false;
-                state.pull_receiver = None;
+                view_state.header_bar.pulling = false;
+                view_state.pull_receiver = None;
                 if result.success {
                     println!("Pull completed successfully");
                     if !result.error.is_empty() {
                         println!("{}", result.error.trim());
                     }
-                    state.toast_manager.push("Pull complete", ToastSeverity::Success);
-                    // Full refresh after pull (commits, branches, ahead/behind)
-                    if let Some(ref repo) = self.repo {
-                        self.commits = repo.commit_graph(50).unwrap_or_default();
-                        state.commit_graph_view.update_layout(&self.commits);
-                        state.commit_graph_view.head_oid = repo.head_oid().ok();
-                        state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
-                        state.commit_graph_view.tags = repo.tags().unwrap_or_default();
+                    self.toast_manager.push("Pull complete", ToastSeverity::Success);
+                    if let Some(ref repo) = repo_tab.repo {
+                        repo_tab.commits = repo.commit_graph(50).unwrap_or_default();
+                        view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                        view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+                        view_state.commit_graph_view.branch_tips = repo.branch_tips().unwrap_or_default();
+                        view_state.commit_graph_view.tags = repo.tags().unwrap_or_default();
                         if let Ok((ahead, behind)) = repo.ahead_behind() {
-                            state.header_bar.ahead = ahead;
-                            state.header_bar.behind = behind;
+                            view_state.header_bar.ahead = ahead;
+                            view_state.header_bar.behind = behind;
                         }
-                        // Refresh sidebar
                         let branch_tips = repo.branch_tips().unwrap_or_default();
                         let tags = repo.tags().unwrap_or_default();
                         let current = repo.current_branch().unwrap_or_default();
-                        state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
+                        view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
                     }
                 } else {
                     eprintln!("Pull failed: {}", result.error);
-                    state.toast_manager.push(
+                    self.toast_manager.push(
                         format!("Pull failed: {}", result.error.lines().next().unwrap_or("unknown error")),
                         ToastSeverity::Error,
                     );
@@ -872,32 +821,140 @@ impl App {
         }
 
         // Poll push
-        if let Some(ref rx) = state.push_receiver {
+        if let Some(ref rx) = view_state.push_receiver {
             if let Ok(result) = rx.try_recv() {
-                state.header_bar.pushing = false;
-                state.push_receiver = None;
+                view_state.header_bar.pushing = false;
+                view_state.push_receiver = None;
                 if result.success {
                     println!("Push completed successfully");
                     if !result.error.is_empty() {
                         println!("{}", result.error.trim());
                     }
-                    state.toast_manager.push("Push complete", ToastSeverity::Success);
-                    // Refresh ahead/behind
-                    if let Some(ref repo) = self.repo {
+                    self.toast_manager.push("Push complete", ToastSeverity::Success);
+                    if let Some(ref repo) = repo_tab.repo {
                         if let Ok((ahead, behind)) = repo.ahead_behind() {
-                            state.header_bar.ahead = ahead;
-                            state.header_bar.behind = behind;
+                            view_state.header_bar.ahead = ahead;
+                            view_state.header_bar.behind = behind;
                         }
                     }
                 } else {
                     eprintln!("Push failed: {}", result.error);
-                    state.toast_manager.push(
+                    self.toast_manager.push(
                         format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
                         ToastSeverity::Error,
                     );
                 }
             }
         }
+    }
+
+    /// Open a new repo and add it as a tab
+    fn open_repo_tab(&mut self, path: PathBuf) {
+        match GitRepo::open(&path) {
+            Ok(repo) => {
+                let commits = repo.commit_graph(50).unwrap_or_default();
+                let name = repo.repo_name();
+                println!("Opened {} with {} commits", name, commits.len());
+
+                self.tab_bar.add_tab(name.clone());
+                let mut view_state = TabViewState::new();
+
+                // Initialize the view if render state exists
+                let mut repo_tab = RepoTab {
+                    repo: Some(repo),
+                    commits,
+                    name,
+                    path,
+                };
+
+                if let Some(ref render_state) = self.state {
+                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer);
+                }
+
+                self.tabs.push((repo_tab, view_state));
+                let new_idx = self.tabs.len() - 1;
+                self.active_tab = new_idx;
+                self.tab_bar.set_active(new_idx);
+                self.toast_manager.push(
+                    format!("Opened {}", self.tabs[new_idx].0.name),
+                    ToastSeverity::Success,
+                );
+            }
+            Err(e) => {
+                eprintln!("Failed to open repo at {:?}: {}", path, e);
+                self.toast_manager.push(
+                    format!("Failed to open: {}", e),
+                    ToastSeverity::Error,
+                );
+            }
+        }
+    }
+
+    fn close_tab(&mut self, index: usize) {
+        if self.tabs.len() <= 1 {
+            return; // Don't close the last tab
+        }
+        let name = self.tabs[index].0.name.clone();
+        self.tabs.remove(index);
+        self.active_tab = self.tab_bar.remove_tab(index);
+        self.toast_manager.push(
+            format!("Closed {}", name),
+            ToastSeverity::Info,
+        );
+        self.refresh_status();
+    }
+
+    fn switch_tab(&mut self, index: usize) {
+        if index < self.tabs.len() {
+            self.active_tab = index;
+            self.tab_bar.set_active(index);
+            self.refresh_status();
+        }
+    }
+}
+
+/// Initialize a tab's view state from its repo data
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer) {
+    // Sync view metrics to the current text renderer scale
+    view_state.commit_graph_view.sync_metrics(text_renderer);
+    view_state.branch_sidebar.sync_metrics(text_renderer);
+
+    // Set up graph view with repo data
+    view_state.commit_graph_view.update_layout(&repo_tab.commits);
+
+    if let Some(ref repo) = repo_tab.repo {
+        // Set repo info in header
+        let repo_name = repo.repo_name();
+        let branch = repo.current_branch().unwrap_or_else(|_| "unknown".to_string());
+        let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
+        view_state.header_bar.set_repo_info(repo_name, branch, ahead, behind);
+
+        // Cache branch/tag data
+        let branch_tips = repo.branch_tips().unwrap_or_default();
+        let tags = repo.tags().unwrap_or_default();
+        let current = repo.current_branch().unwrap_or_default();
+
+        // Set HEAD and branch info in graph
+        view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+        view_state.commit_graph_view.branch_tips = branch_tips.clone();
+        view_state.commit_graph_view.tags = tags.clone();
+        view_state.commit_graph_view.working_dir_status = repo.status().ok();
+
+        // Set staging status
+        view_state.header_bar.has_staged = repo.status()
+            .map(|s| !s.staged.is_empty())
+            .unwrap_or(false);
+
+        // Load submodules and worktrees
+        if let Ok(submodules) = repo.submodules() {
+            view_state.secondary_repos_view.set_submodules(submodules);
+        }
+        if let Ok(worktrees) = repo.worktrees() {
+            view_state.secondary_repos_view.set_worktrees(worktrees);
+        }
+
+        // Populate branch sidebar
+        view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current);
     }
 }
 
@@ -929,8 +986,11 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale_factor = scale_factor;
                 state.text_renderer.set_render_scale(scale_factor);
-                state.commit_graph_view.sync_metrics(&state.text_renderer);
-                state.branch_sidebar.sync_metrics(&state.text_renderer);
+                // Sync metrics on all tabs
+                for (_, view_state) in &mut self.tabs {
+                    view_state.commit_graph_view.sync_metrics(&state.text_renderer);
+                    view_state.branch_sidebar.sync_metrics(&state.text_renderer);
+                }
                 state.surface.needs_recreate = true;
             }
 
@@ -940,22 +1000,34 @@ impl ApplicationHandler for App {
                 // Process any pending messages
                 self.process_messages();
 
-                if let Err(e) = draw_frame(&mut self.state, &self.commits) {
+                // Check for repo dialog actions
+                if let Some(action) = self.repo_dialog.take_action() {
+                    match action {
+                        RepoDialogAction::Open(path) => {
+                            self.open_repo_tab(path);
+                        }
+                        RepoDialogAction::Cancel => {}
+                    }
+                }
+
+                if let Err(e) = draw_frame(self) {
                     eprintln!("Draw error: {e:?}");
                 }
 
                 // Screenshot mode
                 let Some(state) = &mut self.state else { return };
-                if let Some(ref path) = self.cli_args.screenshot {
+                let screenshot_path = self.cli_args.screenshot.clone();
+                let screenshot_size = self.cli_args.screenshot_size;
+                if let Some(path) = screenshot_path {
                     if state.frame_count == 3 {
-                        let result = if let Some((width, height)) = self.cli_args.screenshot_size {
-                            capture_screenshot_offscreen(state, &self.commits, width, height)
+                        let result = if let Some((width, height)) = screenshot_size {
+                            capture_screenshot_offscreen(self, width, height)
                         } else {
-                            capture_screenshot(state, &self.commits)
+                            capture_screenshot(self)
                         };
                         match result {
                             Ok(img) => {
-                                if let Err(e) = img.save(path) {
+                                if let Err(e) = img.save(&path) {
                                     eprintln!("Failed to save screenshot: {e}");
                                 } else {
                                     println!("Screenshot saved to: {}", path.display());
@@ -978,49 +1050,105 @@ impl ApplicationHandler for App {
                     // Calculate layout
                     let extent = state.surface.extent();
                     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-                    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
+                    let scale = state.scale_factor as f32;
+                    let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
+                    let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+                    let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
+
+                    // Dialog takes priority (modal)
+                    if self.repo_dialog.is_visible() {
+                        self.repo_dialog.handle_event(&input_event, screen_bounds);
+                        return;
+                    }
 
                     // Handle global keys first
+                    if let InputEvent::KeyDown { key, modifiers } = &input_event {
+                        // Ctrl+O: open repo
+                        if *key == Key::O && modifiers.only_ctrl() {
+                            self.repo_dialog.show();
+                            return;
+                        }
+                        // Ctrl+W: close tab
+                        if *key == Key::W && modifiers.only_ctrl() {
+                            if self.tabs.len() > 1 {
+                                let idx = self.active_tab;
+                                self.close_tab(idx);
+                            }
+                            return;
+                        }
+                        // Ctrl+Tab: next tab
+                        if *key == Key::Tab && modifiers.only_ctrl() {
+                            let next = (self.active_tab + 1) % self.tabs.len();
+                            self.switch_tab(next);
+                            return;
+                        }
+                        // Ctrl+Shift+Tab: previous tab
+                        if *key == Key::Tab && modifiers.ctrl_shift() {
+                            let prev = if self.active_tab == 0 {
+                                self.tabs.len() - 1
+                            } else {
+                                self.active_tab - 1
+                            };
+                            self.switch_tab(prev);
+                            return;
+                        }
+                    }
+
+                    // Route to tab bar (if visible)
+                    if self.tabs.len() > 1 {
+                        if self.tab_bar.handle_event(&input_event, tab_bar_bounds).is_consumed() {
+                            if let Some(action) = self.tab_bar.take_action() {
+                                match action {
+                                    TabAction::SelectTab(idx) => self.switch_tab(idx),
+                                    TabAction::CloseTab(idx) => self.close_tab(idx),
+                                    TabAction::NewTab => self.repo_dialog.show(),
+                                }
+                            }
+                            return;
+                        }
+                    }
+
+                    // Route to active tab's views
+                    let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+
+                    // Handle per-tab global keys
                     if let InputEvent::KeyDown { key, .. } = &input_event {
                         match key {
                             Key::Escape => {
-                                if state.diff_view.has_content() {
-                                    state.diff_view.clear();
-                                    state.last_diff_commit = None;
-                                } else if state.commit_detail_view.has_content() {
-                                    state.commit_detail_view.clear();
+                                if view_state.diff_view.has_content() {
+                                    view_state.diff_view.clear();
+                                    view_state.last_diff_commit = None;
+                                } else if view_state.commit_detail_view.has_content() {
+                                    view_state.commit_detail_view.clear();
                                 } else {
                                     event_loop.exit();
                                 }
                                 return;
                             }
                             Key::Tab => {
-                                // Cycle focus between panels
-                                state.focused_panel = match state.focused_panel {
+                                view_state.focused_panel = match view_state.focused_panel {
                                     FocusedPanel::Graph => FocusedPanel::Staging,
                                     FocusedPanel::Staging => FocusedPanel::Sidebar,
                                     FocusedPanel::Sidebar => FocusedPanel::Graph,
                                 };
-                                // Update focus states
-                                state.branch_sidebar.set_focused(state.focused_panel == FocusedPanel::Sidebar);
+                                view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
                             }
                             _ => {}
                         }
                     }
 
                     // Route to branch sidebar
-                    if state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
-                        // Check for sidebar actions
-                        if let Some(action) = state.branch_sidebar.take_action() {
+                    if view_state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
+                        if let Some(action) = view_state.branch_sidebar.take_action() {
                             match action {
                                 SidebarAction::CheckoutBranch(name) => {
-                                    state.pending_messages.push(AppMessage::CheckoutBranch(name));
+                                    view_state.pending_messages.push(AppMessage::CheckoutBranch(name));
                                 }
                                 SidebarAction::CheckoutRemoteBranch(remote, branch) => {
-                                    state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
+                                    view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
                                 }
                                 SidebarAction::DeleteBranch(name) => {
-                                    state.pending_messages.push(AppMessage::DeleteBranch(name));
+                                    view_state.pending_messages.push(AppMessage::DeleteBranch(name));
                                 }
                             }
                         }
@@ -1028,23 +1156,21 @@ impl ApplicationHandler for App {
                     }
 
                     // Route to header bar
-                    if state.header_bar.handle_event(&input_event, layout.header).is_consumed() {
-                        // Check for header actions
-                        if let Some(action) = state.header_bar.take_action() {
+                    if view_state.header_bar.handle_event(&input_event, layout.header).is_consumed() {
+                        if let Some(action) = view_state.header_bar.take_action() {
                             use crate::ui::widgets::HeaderAction;
                             match action {
                                 HeaderAction::Fetch => {
-                                    state.pending_messages.push(AppMessage::Fetch);
+                                    view_state.pending_messages.push(AppMessage::Fetch);
                                 }
                                 HeaderAction::Pull => {
-                                    state.pending_messages.push(AppMessage::Pull);
+                                    view_state.pending_messages.push(AppMessage::Pull);
                                 }
                                 HeaderAction::Push => {
-                                    state.pending_messages.push(AppMessage::Push);
+                                    view_state.pending_messages.push(AppMessage::Push);
                                 }
                                 HeaderAction::Commit => {
-                                    // Focus staging well for commit
-                                    state.focused_panel = FocusedPanel::Staging;
+                                    view_state.focused_panel = FocusedPanel::Staging;
                                 }
                                 HeaderAction::Help => {
                                     println!("Help: Tab to switch panels, j/k to navigate, Space to stage/unstage");
@@ -1058,14 +1184,13 @@ impl ApplicationHandler for App {
                     }
 
                     // Route to commit detail view when active
-                    if state.commit_detail_view.has_content() {
+                    if view_state.commit_detail_view.has_content() {
                         let (detail_rect, _diff_rect) = layout.secondary_repos.split_vertical(0.40);
-                        if state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
-                            // Check for file selection actions
-                            if let Some(action) = state.commit_detail_view.take_action() {
+                        if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
+                            if let Some(action) = view_state.commit_detail_view.take_action() {
                                 match action {
                                     CommitDetailAction::ViewFileDiff(oid, path) => {
-                                        state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
+                                        view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
                                     }
                                 }
                             }
@@ -1073,23 +1198,22 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    // Route scroll events to diff view if it has content and cursor is in its area
-                    if state.diff_view.has_content() {
-                        let diff_bounds = if state.commit_detail_view.has_content() {
+                    // Route scroll events to diff view if it has content
+                    if view_state.diff_view.has_content() {
+                        let diff_bounds = if view_state.commit_detail_view.has_content() {
                             let (_detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
                             diff_rect
                         } else {
                             layout.secondary_repos
                         };
-                        if state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
-                            // Handle hunk staging actions
-                            if let Some(action) = state.diff_view.take_action() {
+                        if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
+                            if let Some(action) = view_state.diff_view.take_action() {
                                 match action {
                                     DiffAction::StageHunk(path, hunk_idx) => {
-                                        state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
+                                        view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
                                     }
                                     DiffAction::UnstageHunk(path, hunk_idx) => {
-                                        state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                                        view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
                                     }
                                 }
                             }
@@ -1098,49 +1222,45 @@ impl ApplicationHandler for App {
                     }
 
                     // Route to focused panel
-                    match state.focused_panel {
+                    match view_state.focused_panel {
                         FocusedPanel::Graph => {
-                            let prev_selected = state.commit_graph_view.selected_commit;
-                            let response = state.commit_graph_view.handle_event(&input_event, &self.commits, layout.graph);
-                            // Check selection change regardless of consumed state
-                            if state.commit_graph_view.selected_commit != prev_selected {
-                                if let Some(oid) = state.commit_graph_view.selected_commit {
-                                    if state.last_diff_commit != Some(oid) {
-                                        state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                            let prev_selected = view_state.commit_graph_view.selected_commit;
+                            let response = view_state.commit_graph_view.handle_event(&input_event, &repo_tab.commits, layout.graph);
+                            if view_state.commit_graph_view.selected_commit != prev_selected {
+                                if let Some(oid) = view_state.commit_graph_view.selected_commit {
+                                    if view_state.last_diff_commit != Some(oid) {
+                                        view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
                                     }
                                 }
                             }
-                            // But only skip further processing if consumed
                             if response.is_consumed() {
                                 return;
                             }
                         }
                         FocusedPanel::Staging => {
-                            let response = state.staging_well.handle_event(&input_event, layout.staging);
+                            let response = view_state.staging_well.handle_event(&input_event, layout.staging);
 
-                            // Check for staging actions
-                            if let Some(action) = state.staging_well.take_action() {
+                            if let Some(action) = view_state.staging_well.take_action() {
                                 match action {
                                     StagingAction::StageFile(path) => {
-                                        state.pending_messages.push(AppMessage::StageFile(path));
+                                        view_state.pending_messages.push(AppMessage::StageFile(path));
                                     }
                                     StagingAction::UnstageFile(path) => {
-                                        state.pending_messages.push(AppMessage::UnstageFile(path));
+                                        view_state.pending_messages.push(AppMessage::UnstageFile(path));
                                     }
                                     StagingAction::StageAll => {
-                                        state.pending_messages.push(AppMessage::StageAll);
+                                        view_state.pending_messages.push(AppMessage::StageAll);
                                     }
                                     StagingAction::UnstageAll => {
-                                        state.pending_messages.push(AppMessage::UnstageAll);
+                                        view_state.pending_messages.push(AppMessage::UnstageAll);
                                     }
                                     StagingAction::Commit(message) => {
-                                        state.pending_messages.push(AppMessage::Commit(message));
+                                        view_state.pending_messages.push(AppMessage::Commit(message));
                                     }
                                     StagingAction::ViewDiff(path) => {
-                                        // Determine if the file is staged or unstaged
-                                        let staged = state.staging_well.staged_list.files
+                                        let staged = view_state.staging_well.staged_list.files
                                             .iter().any(|f| f.path == path);
-                                        state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
                                     }
                                 }
                             }
@@ -1155,9 +1275,15 @@ impl ApplicationHandler for App {
 
                     // Update hover states
                     if let InputEvent::MouseMove { x, y, .. } = &input_event {
-                        state.header_bar.update_hover(*x, *y, layout.header);
-                        state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
-                        state.staging_well.update_hover(*x, *y, layout.staging);
+                        view_state.header_bar.update_hover(*x, *y, layout.header);
+                        view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
+                        view_state.staging_well.update_hover(*x, *y, layout.staging);
+                        // Tab bar hover needs text_renderer
+                        if self.tabs.len() > 1 {
+                            if let Some(ref render_state) = self.state {
+                                self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
+                            }
+                        }
                     }
                 }
             }
@@ -1210,8 +1336,81 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     ));
 }
 
-fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Result<()> {
-    let state = state_opt.as_mut().unwrap();
+/// Build the UI vertices for the active tab.
+/// Takes separate borrows to avoid conflict between App fields and RenderState.
+fn build_ui_output(
+    tabs: &mut [(RepoTab, TabViewState)],
+    active_tab: usize,
+    tab_bar: &TabBar,
+    toast_manager: &ToastManager,
+    repo_dialog: &RepoDialog,
+    text_renderer: &TextRenderer,
+    scale_factor: f64,
+    extent: [u32; 2],
+) -> WidgetOutput {
+    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+    let scale = scale_factor as f32;
+
+    // Tab bar takes space at top when multiple tabs
+    let tab_bar_height = if tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
+    let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+    let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
+
+    let mut output = WidgetOutput::new();
+
+    // Panel backgrounds and borders
+    add_panel_chrome(&mut output, &layout, &main_bounds);
+
+    // Tab bar (only when multiple tabs)
+    if tabs.len() > 1 {
+        output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
+    }
+
+    // Active tab views
+    if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
+        // Header bar
+        output.extend(view_state.header_bar.layout(text_renderer, layout.header));
+
+        // Branch sidebar
+        output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
+
+        // Commit graph
+        let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
+        let (text_vertices, pill_vertices) = view_state.commit_graph_view.layout_text(text_renderer, &repo_tab.commits, layout.graph);
+        output.spline_vertices.extend(spline_vertices);
+        output.spline_vertices.extend(pill_vertices);
+        output.text_vertices.extend(text_vertices);
+
+        // Staging well
+        output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
+
+        // Right panel
+        if view_state.commit_detail_view.has_content() {
+            let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+            output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
+            if view_state.diff_view.has_content() {
+                output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
+            }
+        } else if view_state.diff_view.has_content() {
+            output.extend(view_state.diff_view.layout(text_renderer, layout.secondary_repos));
+        } else {
+            output.extend(view_state.secondary_repos_view.layout(text_renderer, layout.secondary_repos));
+        }
+    }
+
+    // Toast notifications (rendered last, on top of everything)
+    output.extend(toast_manager.layout(text_renderer, screen_bounds));
+
+    // Repo dialog (on top of everything including toasts)
+    if repo_dialog.is_visible() {
+        output.extend(repo_dialog.layout(text_renderer, screen_bounds));
+    }
+
+    output
+}
+
+fn draw_frame(app: &mut App) -> Result<()> {
+    let state = app.state.as_mut().unwrap();
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
     // Recreate swapchain if needed
@@ -1234,54 +1433,22 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
         state.surface.needs_recreate = true;
     }
 
-    // Build UI
-    let extent = state.surface.extent();
-    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
-
-    // Sync button state before layout (labels, styles based on current state)
-    state.header_bar.update_button_state();
-    state.staging_well.update_button_state();
-
-    // Collect all vertices
-    let mut output = WidgetOutput::new();
-
-    // Panel backgrounds and borders
-    add_panel_chrome(&mut output, &layout, &screen_bounds);
-
-    // Header bar
-    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
-
-    // Branch sidebar
-    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
-
-    // Commit graph (in graph area)
-    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
-    output.spline_vertices.extend(spline_vertices);
-    output.spline_vertices.extend(pill_vertices);
-    output.text_vertices.extend(text_vertices);
-
-    // Staging well
-    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
-
-    // Right panel: commit detail + diff when active, otherwise secondary repos
-    if state.commit_detail_view.has_content() {
-        // Split secondary_repos area: top 40% commit detail, bottom 60% diff
-        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
-        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
-        if state.diff_view.has_content() {
-            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
-        }
-    } else if state.diff_view.has_content() {
-        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
-    } else {
-        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
+    // Sync button state before layout
+    if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
+        view_state.header_bar.update_button_state();
+        view_state.staging_well.update_button_state();
     }
 
-    // Toast notifications (rendered last, on top of everything)
-    state.toast_manager.update(Instant::now());
-    output.extend(state.toast_manager.layout(&state.text_renderer, screen_bounds));
+    // Update toast manager
+    app.toast_manager.update(Instant::now());
+
+    let extent = state.surface.extent();
+    let scale_factor = state.scale_factor;
+    let output = build_ui_output(
+        &mut app.tabs, app.active_tab, &app.tab_bar,
+        &app.toast_manager, &app.repo_dialog,
+        &state.text_renderer, scale_factor, extent,
+    );
 
     let viewport = Viewport {
         offset: [0.0, 0.0],
@@ -1297,7 +1464,6 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     )
     .context("Failed to create command buffer")?;
 
-    // Classic dark mode background
     let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
 
     builder
@@ -1363,49 +1529,19 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     Ok(())
 }
 
-fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result<image::RgbaImage> {
+fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
+    let state = app.state.as_mut().unwrap();
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
-    // Build UI
     let extent = state.surface.extent();
-    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
+    let scale_factor = state.scale_factor;
+    let output = build_ui_output(
+        &mut app.tabs, app.active_tab, &app.tab_bar,
+        &app.toast_manager, &app.repo_dialog,
+        &state.text_renderer, scale_factor, extent,
+    );
 
-    // Collect all vertices
-    let mut output = WidgetOutput::new();
-
-    // Panel backgrounds and borders
-    add_panel_chrome(&mut output, &layout, &screen_bounds);
-
-    // Header bar
-    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
-
-    // Branch sidebar
-    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
-
-    // Commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
-    output.spline_vertices.extend(spline_vertices);
-    output.spline_vertices.extend(pill_vertices);
-    output.text_vertices.extend(text_vertices);
-
-    // Staging well
-    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
-
-    // Right panel: commit detail + diff when active, otherwise secondary repos
-    if state.commit_detail_view.has_content() {
-        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
-        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
-        if state.diff_view.has_content() {
-            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
-        }
-    } else if state.diff_view.has_content() {
-        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
-    } else {
-        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
-    }
-
+    let state = app.state.as_mut().unwrap();
     let viewport = Viewport {
         offset: [0.0, 0.0],
         extent: [extent[0] as f32, extent[1] as f32],
@@ -1425,7 +1561,7 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     )
     .context("Failed to create command buffer")?;
 
-    let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
+    let bg_color = [0.051f32, 0.051, 0.051, 1.0];
 
     builder
         .begin_render_pass(
@@ -1439,13 +1575,11 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
         )
         .context("Failed to begin render pass")?;
 
-    // Draw splines first (background)
     if !output.spline_vertices.is_empty() {
         let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
         state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
     }
 
-    // Draw text on top
     if !output.text_vertices.is_empty() {
         let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
@@ -1455,7 +1589,6 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
         .end_render_pass(Default::default())
         .context("Failed to end render pass")?;
 
-    // Capture to buffer
     let capture = capture_to_buffer(
         &mut builder,
         state.ctx.memory_allocator.clone(),
@@ -1465,7 +1598,6 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
 
     let command_buffer = builder.build().context("Failed to build command buffer")?;
 
-    // Execute and wait
     let future = state
         .previous_frame_end
         .take()
@@ -1483,16 +1615,14 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     capture.to_image()
 }
 
-/// Capture a screenshot at a specific resolution using offscreen rendering
 fn capture_screenshot_offscreen(
-    state: &mut RenderState,
-    commits: &[CommitInfo],
+    app: &mut App,
     width: u32,
     height: u32,
 ) -> Result<image::RgbaImage> {
+    let state = app.state.as_mut().unwrap();
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
 
-    // Create offscreen render target with specified dimensions
     let offscreen = OffscreenTarget::new(
         &state.ctx,
         state.surface.render_pass.clone(),
@@ -1501,53 +1631,21 @@ fn capture_screenshot_offscreen(
         state.surface.image_format(),
     )?;
 
-    // Build UI at the specified dimensions
     let extent = offscreen.extent();
-    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-    let layout = ScreenLayout::compute_with_gap(screen_bounds, 4.0, state.scale_factor as f32);
+    let scale_factor = state.scale_factor;
+    let output = build_ui_output(
+        &mut app.tabs, app.active_tab, &app.tab_bar,
+        &app.toast_manager, &app.repo_dialog,
+        &state.text_renderer, scale_factor, extent,
+    );
 
-    // Collect all vertices
-    let mut output = WidgetOutput::new();
-
-    // Panel backgrounds and borders
-    add_panel_chrome(&mut output, &layout, &screen_bounds);
-
-    // Header bar
-    output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
-
-    // Branch sidebar
-    output.extend(state.branch_sidebar.layout(&state.text_renderer, layout.sidebar));
-
-    // Commit graph
-    let spline_vertices = state.commit_graph_view.layout_splines(&state.text_renderer, commits, layout.graph);
-    let (text_vertices, pill_vertices) = state.commit_graph_view.layout_text(&state.text_renderer, commits, layout.graph);
-    output.spline_vertices.extend(spline_vertices);
-    output.spline_vertices.extend(pill_vertices);
-    output.text_vertices.extend(text_vertices);
-
-    // Staging well
-    output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
-
-    // Right panel: commit detail + diff when active, otherwise secondary repos
-    if state.commit_detail_view.has_content() {
-        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
-        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
-        if state.diff_view.has_content() {
-            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
-        }
-    } else if state.diff_view.has_content() {
-        output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
-    } else {
-        output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
-    }
-
+    let state = app.state.as_mut().unwrap();
     let viewport = Viewport {
         offset: [0.0, 0.0],
         extent: [extent[0] as f32, extent[1] as f32],
         depth_range: 0.0..=1.0,
     };
 
-    // Build command buffer - no swapchain acquire needed for offscreen
     let mut builder = AutoCommandBufferBuilder::primary(
         state.ctx.command_buffer_allocator.clone(),
         state.ctx.queue.queue_family_index(),
@@ -1555,7 +1653,7 @@ fn capture_screenshot_offscreen(
     )
     .context("Failed to create command buffer")?;
 
-    let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
+    let bg_color = [0.051f32, 0.051, 0.051, 1.0];
 
     builder
         .begin_render_pass(
@@ -1567,13 +1665,11 @@ fn capture_screenshot_offscreen(
         )
         .context("Failed to begin render pass")?;
 
-    // Draw splines first (background)
     if !output.spline_vertices.is_empty() {
         let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
         state.spline_renderer.draw(&mut builder, spline_buffer, viewport.clone())?;
     }
 
-    // Draw text on top
     if !output.text_vertices.is_empty() {
         let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
         state.text_renderer.draw(&mut builder, vertex_buffer, viewport)?;
@@ -1583,7 +1679,6 @@ fn capture_screenshot_offscreen(
         .end_render_pass(Default::default())
         .context("Failed to end render pass")?;
 
-    // Capture to buffer from offscreen image
     let capture = capture_to_buffer(
         &mut builder,
         state.ctx.memory_allocator.clone(),
@@ -1593,7 +1688,6 @@ fn capture_screenshot_offscreen(
 
     let command_buffer = builder.build().context("Failed to build command buffer")?;
 
-    // Execute and wait - simpler than swapchain path, no acquire future needed
     let future = state
         .previous_frame_end
         .take()
