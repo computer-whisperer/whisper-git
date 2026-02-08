@@ -234,10 +234,12 @@ impl App {
         )
         .context("Failed to create upload command buffer")?;
 
+        let scale_factor = window.scale_factor();
         let text_renderer = TextRenderer::new(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
+            scale_factor,
         )
         .context("Failed to create text renderer")?;
 
@@ -853,7 +855,7 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     )
     .context("Failed to create command buffer")?;
 
-    let bg_color = [0.059f32, 0.090, 0.165, 1.0];
+    let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
 
     builder
         .begin_render_pass(
@@ -974,7 +976,7 @@ fn capture_screenshot_offscreen(
     )
     .context("Failed to create command buffer")?;
 
-    let bg_color = [0.059f32, 0.090, 0.165, 1.0];
+    let bg_color = [0.051f32, 0.051, 0.051, 1.0]; // #0d0d0d
 
     builder
         .begin_render_pass(

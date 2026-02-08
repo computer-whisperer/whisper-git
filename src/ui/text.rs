@@ -127,6 +127,7 @@ impl TextRenderer {
         memory_allocator: Arc<StandardMemoryAllocator>,
         render_pass: Arc<RenderPass>,
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        scale_factor: f64,
     ) -> Result<Self> {
         let device = memory_allocator.device().clone();
 
@@ -134,8 +135,9 @@ impl TextRenderer {
         let font_data = include_bytes!("/usr/share/fonts/TTF/DejaVuSansMono.ttf");
         let font = FontRef::try_from_slice(font_data).context("Failed to load font")?;
 
-        // Create font atlas
-        let scale = PxScale::from(24.0);
+        // Create font atlas - scale base font size by the display's DPI scale factor
+        let base_font_size = 24.0_f64;
+        let scale = PxScale::from((base_font_size * scale_factor) as f32);
         let scaled_font = font.as_scaled(scale);
         let line_height = scaled_font.height();
         let ascent = scaled_font.ascent();
@@ -401,7 +403,7 @@ impl TextRenderer {
         self.glyphs
             .get(&'M')
             .map(|g| g.advance)
-            .unwrap_or(14.0) // Fallback for 24px font
+            .unwrap_or(14.0) // Fallback (approx for 24px @ 1x scale)
     }
 
     /// Measure the width of a text string in pixels
