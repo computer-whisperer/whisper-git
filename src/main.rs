@@ -32,6 +32,7 @@ use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
+use crate::ui::widget::theme;
 use crate::ui::widgets::{HeaderBar, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
@@ -1168,6 +1169,41 @@ impl ApplicationHandler for App {
 // Rendering
 // ============================================================================
 
+/// Add panel backgrounds, borders, and visual chrome to the output
+fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect) {
+    // Panel backgrounds for depth separation
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &layout.graph,
+        theme::PANEL_GRAPH.to_array(),
+    ));
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &layout.staging,
+        theme::PANEL_STAGING.to_array(),
+    ));
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &layout.secondary_repos,
+        theme::PANEL_STAGING.to_array(),
+    ));
+
+    // Header bottom border (full width of screen)
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &Rect::new(0.0, layout.header.bottom() + 2.0, screen_bounds.width, 1.0),
+        theme::BORDER.to_array(),
+    ));
+
+    // Vertical border: sidebar | graph
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &Rect::new(layout.sidebar.right(), layout.sidebar.y, 1.0, layout.sidebar.height),
+        theme::BORDER.to_array(),
+    ));
+
+    // Vertical border: graph | staging/secondary
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &Rect::new(layout.graph.right(), layout.graph.y, 1.0, layout.graph.height),
+        theme::BORDER.to_array(),
+    ));
+}
+
 fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Result<()> {
     let state = state_opt.as_mut().unwrap();
     state.previous_frame_end.as_mut().unwrap().cleanup_finished();
@@ -1203,6 +1239,9 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
 
     // Collect all vertices
     let mut output = WidgetOutput::new();
+
+    // Panel backgrounds and borders
+    add_panel_chrome(&mut output, &layout, &screen_bounds);
 
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
@@ -1328,6 +1367,9 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
 
     // Collect all vertices
     let mut output = WidgetOutput::new();
+
+    // Panel backgrounds and borders
+    add_panel_chrome(&mut output, &layout, &screen_bounds);
 
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));
@@ -1460,6 +1502,9 @@ fn capture_screenshot_offscreen(
 
     // Collect all vertices
     let mut output = WidgetOutput::new();
+
+    // Panel backgrounds and borders
+    add_panel_chrome(&mut output, &layout, &screen_bounds);
 
     // Header bar
     output.extend(state.header_bar.layout(&state.text_renderer, layout.header));

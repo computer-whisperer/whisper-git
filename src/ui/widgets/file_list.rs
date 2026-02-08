@@ -351,25 +351,25 @@ impl Widget for FileList {
                 ));
             }
 
-            // Status indicator with background
-            let status_color = match file.status {
-                FileStatusKind::New => theme::STATUS_CLEAN,
-                FileStatusKind::Modified => theme::STATUS_BEHIND,
-                FileStatusKind::Deleted => theme::STATUS_DIRTY,
-                FileStatusKind::Renamed => theme::BRANCH_PRIMARY,
-                FileStatusKind::TypeChange => theme::BRANCH_HOTFIX,
+            // Status indicator - colored dot + letter for clarity
+            let (status_color, status_icon) = match file.status {
+                FileStatusKind::New =>       (theme::STATUS_CLEAN,   "\u{25CF} A"), // ● A (green)
+                FileStatusKind::Modified =>  (theme::STATUS_BEHIND,  "\u{25CF} M"), // ● M (yellow)
+                FileStatusKind::Deleted =>   (theme::STATUS_DIRTY,   "\u{25CF} D"), // ● D (red)
+                FileStatusKind::Renamed =>   (theme::BRANCH_PRIMARY, "\u{25CF} R"), // ● R (blue)
+                FileStatusKind::TypeChange => (theme::BRANCH_HOTFIX, "\u{25CF} T"), // ● T (purple)
             };
 
-            let status_char = file.status.symbol().to_string();
             output.text_vertices.extend(text_renderer.layout_text(
-                &status_char,
-                bounds.x + 10.0,
+                status_icon,
+                bounds.x + 8.0,
                 y + 2.0,
                 status_color.to_array(),
             ));
 
             // File path - use brighter text when selected
-            let max_path_width = bounds.width - 60.0;
+            let path_x_offset = 38.0; // After status icon
+            let max_path_width = bounds.width - path_x_offset - 30.0;
             let char_width = text_renderer.char_width();
             let max_chars = (max_path_width / char_width) as usize;
             let path = if file.path.len() > max_chars && max_chars > 3 {
@@ -385,7 +385,7 @@ impl Widget for FileList {
             };
             output.text_vertices.extend(text_renderer.layout_text(
                 &path,
-                bounds.x + 28.0,
+                bounds.x + path_x_offset,
                 y + 2.0,
                 path_color.to_array(),
             ));
@@ -403,15 +403,29 @@ impl Widget for FileList {
             }
         }
 
-        // Empty state - centered and styled
+        // Empty state - centered with checkmark
         if self.files.is_empty() {
-            let empty_text = if self.is_staged { "No staged changes" } else { "No changes" };
-            let text_width = text_renderer.measure_text(empty_text);
+            let check_icon = "\u{2713}"; // ✓
+            let empty_text = if self.is_staged {
+                "No staged changes"
+            } else {
+                "Working tree clean"
+            };
+            let full_text = format!("{} {}", check_icon, empty_text);
+            let text_width = text_renderer.measure_text(&full_text);
             let center_x = bounds.x + (bounds.width - text_width) / 2.0;
-            let center_y = content_y + entry_height * 2.0;
+            let center_y = bounds.y + bounds.height / 2.0 - entry_height;
+            // Checkmark in green
+            output.text_vertices.extend(text_renderer.layout_text(
+                check_icon,
+                center_x,
+                center_y,
+                theme::STATUS_CLEAN.with_alpha(0.5).to_array(),
+            ));
+            let icon_w = text_renderer.measure_text(check_icon) + 4.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 empty_text,
-                center_x,
+                center_x + icon_w,
                 center_y,
                 theme::TEXT_MUTED.to_array(),
             ));

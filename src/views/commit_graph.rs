@@ -975,8 +975,37 @@ impl CommitGraphView {
                 author_color.with_alpha(dim_alpha).to_array(),
             ));
 
+            // === Author identicon (small colored circle with initial) ===
+            let identicon_radius = (line_height * 0.42).max(5.0);
+            let identicon_cx = text_x + identicon_radius;
+            let identicon_cy = y + line_height / 2.0;
+            let identicon_color_idx = author_color_index(&commit.author);
+            let identicon_color = IDENTICON_COLORS[identicon_color_idx].with_alpha(dim_alpha);
+
+            // Draw filled circle
+            pill_vertices.extend(self.create_circle_vertices(
+                identicon_cx,
+                identicon_cy,
+                identicon_radius,
+                identicon_color.to_array(),
+            ));
+
+            // Draw initial centered in circle
+            let initial = commit.author.chars().next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let initial_width = text_renderer.measure_text(&initial);
+            vertices.extend(text_renderer.layout_text(
+                &initial,
+                identicon_cx - initial_width / 2.0,
+                identicon_cy - line_height / 2.0,
+                theme::TEXT_BRIGHT.with_alpha(dim_alpha).to_array(),
+            ));
+
+            let identicon_advance = identicon_radius * 2.0 + 6.0;
+
             // === Subject line (primary content, bright text) ===
-            let mut current_x = text_x;
+            let mut current_x = text_x + identicon_advance;
             // The subject occupies the space between graph and the fixed author column
             let available_width = (author_col_left - col_gap) - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
@@ -1173,6 +1202,24 @@ impl CommitGraphView {
 
         vertices
     }
+}
+
+/// Author identicon colors - distinct hues for visual differentiation
+const IDENTICON_COLORS: &[Color] = &[
+    Color::rgba(0.906, 0.298, 0.235, 1.0), // Red
+    Color::rgba(0.204, 0.659, 0.325, 1.0), // Green
+    Color::rgba(0.259, 0.522, 0.957, 1.0), // Blue
+    Color::rgba(0.608, 0.349, 0.714, 1.0), // Purple
+    Color::rgba(0.953, 0.612, 0.071, 1.0), // Amber
+    Color::rgba(0.173, 0.733, 0.706, 1.0), // Teal
+    Color::rgba(0.914, 0.392, 0.173, 1.0), // Deep Orange
+    Color::rgba(0.463, 0.502, 0.898, 1.0), // Indigo
+];
+
+/// Hash an author name to get a deterministic color index
+fn author_color_index(author: &str) -> usize {
+    let hash: u32 = author.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    (hash as usize) % IDENTICON_COLORS.len()
 }
 
 /// Truncate author name to first name or max characters

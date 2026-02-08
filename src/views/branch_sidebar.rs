@@ -415,17 +415,10 @@ impl BranchSidebar {
 
         self.build_visible_items();
 
-        // Panel background
+        // Panel background - slightly darker for depth
         output.spline_vertices.extend(create_rect_vertices(
             &bounds,
-            theme::SURFACE.to_array(),
-        ));
-
-        // Panel border (right edge only)
-        let border_rect = Rect::new(bounds.right() - 1.0, bounds.y, 1.0, bounds.height);
-        output.spline_vertices.extend(create_rect_vertices(
-            &border_rect,
-            theme::BORDER.to_array(),
+            theme::PANEL_SIDEBAR.to_array(),
         ));
 
         let padding = 8.0;
@@ -492,6 +485,17 @@ impl BranchSidebar {
                     }
 
                     if is_current {
+                        // Accent left stripe for current branch
+                        let stripe_rect = Rect::new(
+                            inner.x,
+                            y,
+                            3.0,
+                            line_height,
+                        );
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &stripe_rect,
+                            theme::ACCENT.to_array(),
+                        ));
                         // Highlight background for current branch
                         let highlight_rect = Rect::new(
                             inner.x,
@@ -513,10 +517,25 @@ impl BranchSidebar {
                         theme::TEXT.to_array()
                     };
 
-                    let display_name = truncate_to_width(branch, text_renderer, inner.width - indent);
+                    // Branch icon prefix
+                    let icon = if is_current { "\u{25CF}" } else { "\u{25CB}" }; // ● / ○
+                    let icon_color = if is_current {
+                        theme::ACCENT.to_array()
+                    } else {
+                        theme::TEXT_MUTED.to_array()
+                    };
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        icon,
+                        inner.x + indent,
+                        y + 2.0,
+                        icon_color,
+                    ));
+                    let icon_width = text_renderer.measure_text(icon) + 4.0;
+
+                    let display_name = truncate_to_width(branch, text_renderer, inner.width - indent - icon_width);
                     output.text_vertices.extend(text_renderer.layout_text(
                         &display_name,
-                        inner.x + indent,
+                        inner.x + indent + icon_width,
                         y + 2.0,
                         color,
                     ));
@@ -578,8 +597,10 @@ impl BranchSidebar {
                     } else {
                         theme::TEXT_MUTED.to_array()
                     };
+                    // Remote icon prefix
+                    let remote_label = format!("\u{2601} {}", remote_name); // ☁ icon
                     output.text_vertices.extend(text_renderer.layout_text(
-                        remote_name,
+                        &remote_label,
                         inner.x + indent,
                         y + 2.0,
                         remote_color,
@@ -616,10 +637,18 @@ impl BranchSidebar {
                         } else {
                             theme::BRANCH_REMOTE.to_array()
                         };
-                        let display_name = truncate_to_width(branch, text_renderer, inner.width - indent * 2.0);
+                        // Remote branch icon
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            "\u{25CB}", // ○
+                            inner.x + indent * 2.0,
+                            y + 2.0,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                        let icon_width = text_renderer.measure_text("\u{25CB}") + 4.0;
+                        let display_name = truncate_to_width(branch, text_renderer, inner.width - indent * 2.0 - icon_width);
                         output.text_vertices.extend(text_renderer.layout_text(
                             &display_name,
-                            inner.x + indent * 2.0,
+                            inner.x + indent * 2.0 + icon_width,
                             y + 2.0,
                             branch_color,
                         ));
@@ -673,10 +702,18 @@ impl BranchSidebar {
                     } else {
                         theme::BRANCH_RELEASE.to_array()
                     };
-                    let display_name = truncate_to_width(tag, text_renderer, inner.width - indent);
+                    // Tag icon prefix
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        "\u{2691}", // ⚑
+                        inner.x + indent,
+                        y + 2.0,
+                        theme::BRANCH_RELEASE.to_array(),
+                    ));
+                    let icon_width = text_renderer.measure_text("\u{2691}") + 4.0;
+                    let display_name = truncate_to_width(tag, text_renderer, inner.width - indent - icon_width);
                     output.text_vertices.extend(text_renderer.layout_text(
                         &display_name,
-                        inner.x + indent,
+                        inner.x + indent + icon_width,
                         y + 2.0,
                         tag_color,
                     ));
@@ -749,21 +786,21 @@ impl BranchSidebar {
             theme::SURFACE_RAISED.to_array(),
         ));
 
-        // Collapse indicator
-        let indicator = if collapsed { "+" } else { "-" };
+        // Collapse indicator - Unicode triangle
+        let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
         output.text_vertices.extend(text_renderer.layout_text(
             indicator,
             inner.x + 4.0,
             y + 4.0,
-            theme::TEXT_MUTED.to_array(),
+            theme::TEXT.to_array(),
         ));
 
-        // Section title
+        // Section title - brighter than before
         output.text_vertices.extend(text_renderer.layout_text(
             title,
             inner.x + 16.0,
             y + 4.0,
-            theme::TEXT_MUTED.to_array(),
+            theme::TEXT_BRIGHT.to_array(),
         ));
 
         // Count badge
@@ -773,7 +810,7 @@ impl BranchSidebar {
             &count_text,
             inner.x + 16.0 + title_width + 8.0,
             y + 4.0,
-            theme::BRANCH_FEATURE.to_array(),
+            theme::TEXT_MUTED.to_array(),
         ));
 
         y + header_height
