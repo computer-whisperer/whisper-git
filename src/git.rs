@@ -771,3 +771,95 @@ pub struct TagInfo {
     pub name: String,
     pub oid: Oid,
 }
+
+/// Full commit information for the detail panel
+#[derive(Clone, Debug)]
+pub struct FullCommitInfo {
+    pub id: Oid,
+    pub short_id: String,
+    pub summary: String,
+    pub full_message: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub committer_name: String,
+    pub committer_email: String,
+    pub author_time: i64,
+    pub commit_time: i64,
+    pub parent_ids: Vec<Oid>,
+    pub parent_short_ids: Vec<String>,
+}
+
+impl FullCommitInfo {
+    pub fn relative_author_time(&self) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let diff = (now - self.author_time).max(0);
+        match diff {
+            d if d < 60 => "just now".to_string(),
+            d if d < 3600 => format!("{}m ago", d / 60),
+            d if d < 86400 => format!("{}h ago", d / 3600),
+            d if d < 604800 => format!("{}d ago", d / 86400),
+            d if d < 2592000 => format!("{}w ago", d / 604800),
+            d if d < 31536000 => format!("{}mo ago", d / 2592000),
+            d => format!("{}y ago", d / 31536000),
+        }
+    }
+}
+
+impl GitRepo {
+    /// Get full commit information for the detail panel
+    pub fn full_commit_info(&self, oid: Oid) -> Result<FullCommitInfo> {
+        let commit = self.repo.find_commit(oid)
+            .with_context(|| format!("Failed to find commit {}", oid))?;
+
+        let author = commit.author();
+        let committer = commit.committer();
+
+        let parent_ids: Vec<Oid> = commit.parent_ids().collect();
+        let parent_short_ids: Vec<String> = parent_ids.iter()
+            .map(|id| id.to_string().get(..7).unwrap_or("").to_string())
+            .collect();
+
+        Ok(FullCommitInfo {
+            id: commit.id(),
+            short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
+            summary: commit.summary().unwrap_or("").to_string(),
+            full_message: commit.message().unwrap_or("").to_string(),
+            author_name: author.name().unwrap_or("Unknown").to_string(),
+            author_email: author.email().unwrap_or("").to_string(),
+            committer_name: committer.name().unwrap_or("Unknown").to_string(),
+            committer_email: committer.email().unwrap_or("").to_string(),
+            author_time: author.when().seconds(),
+            commit_time: committer.when().seconds(),
+            parent_ids,
+            parent_short_ids,
+        })
+    }
+
+    /// Get diff for a specific file in a commit
+    pub fn diff_file_in_commit(&self, oid: Oid, file_path: &str) -> Result<Vec<DiffFile>> {
+        let commit = self.repo.find_commit(oid)
+            .context("Failed to find commit")?;
+        let tree = commit.tree().context("Failed to get commit tree")?;
+
+        let parent_tree = if commit.parent_count() > 0 {
+            let parent = commit.parent(0).context("Failed to get parent commit")?;
+            Some(parent.tree().context("Failed to get parent tree")?)
+        } else {
+            None
+        };
+
+        let mut opts = git2::DiffOptions::new();
+        opts.pathspec(file_path);
+
+        let diff = self.repo.diff_tree_to_tree(
+            parent_tree.as_ref(),
+            Some(&tree),
+            Some(&mut opts),
+        ).context("Failed to compute diff")?;
+
+        Self::parse_diff(&diff)
+    }
+}

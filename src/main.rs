@@ -31,7 +31,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widgets::HeaderBar;
-use crate::views::{BranchSidebar, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction};
+use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, SecondaryReposView, StagingWell, StagingAction};
 
 // ============================================================================
 // CLI
@@ -101,6 +101,7 @@ enum AppMessage {
     Fetch,
     Push,
     SelectedCommit(Oid),
+    ViewCommitFileDiff(Oid, String),
     ViewDiff(String, bool), // (path, staged)
 }
 
@@ -147,6 +148,7 @@ struct RenderState {
     staging_well: StagingWell,
     secondary_repos_view: SecondaryReposView,
     diff_view: DiffView,
+    commit_detail_view: CommitDetailView,
     /// Track which commit we last loaded a diff for
     last_diff_commit: Option<Oid>,
     // Pending messages
@@ -341,6 +343,7 @@ impl App {
             staging_well,
             secondary_repos_view,
             diff_view: DiffView::new(),
+            commit_detail_view: CommitDetailView::new(),
             last_diff_commit: None,
             pending_messages: Vec::new(),
         });
@@ -433,19 +436,44 @@ impl App {
                     eprintln!("Push not yet implemented");
                 }
                 AppMessage::SelectedCommit(oid) => {
+                    // Load full commit info for the detail panel
+                    let full_info = repo.full_commit_info(oid);
                     match repo.diff_for_commit(oid) {
                         Ok(diff_files) => {
-                            let title = self.commits.iter()
-                                .find(|c| c.id == oid)
-                                .map(|c| format!("{} {}", c.short_id, c.summary))
-                                .unwrap_or_else(|| oid.to_string());
                             if let Some(state) = &mut self.state {
-                                state.diff_view.set_diff(diff_files, title);
+                                // Populate commit detail panel
+                                if let Ok(info) = full_info {
+                                    state.commit_detail_view.set_commit(info, diff_files.clone());
+                                }
+
+                                // Show first file's diff by default, or full diff if no files
+                                if let Some(first_file) = diff_files.first() {
+                                    let title = first_file.path.clone();
+                                    state.diff_view.set_diff(vec![first_file.clone()], title);
+                                } else {
+                                    let title = self.commits.iter()
+                                        .find(|c| c.id == oid)
+                                        .map(|c| format!("{} {}", c.short_id, c.summary))
+                                        .unwrap_or_else(|| oid.to_string());
+                                    state.diff_view.set_diff(diff_files, title);
+                                }
                                 state.last_diff_commit = Some(oid);
                             }
                         }
                         Err(e) => {
                             eprintln!("Failed to load diff for {}: {}", oid, e);
+                        }
+                    }
+                }
+                AppMessage::ViewCommitFileDiff(oid, path) => {
+                    match repo.diff_file_in_commit(oid, &path) {
+                        Ok(diff_files) => {
+                            if let Some(state) = &mut self.state {
+                                state.diff_view.set_diff(diff_files, path);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load diff for file '{}': {}", path, e);
                         }
                     }
                 }
@@ -567,6 +595,8 @@ impl ApplicationHandler for App {
                                 if state.diff_view.has_content() {
                                     state.diff_view.clear();
                                     state.last_diff_commit = None;
+                                } else if state.commit_detail_view.has_content() {
+                                    state.commit_detail_view.clear();
                                 } else {
                                     event_loop.exit();
                                 }
@@ -615,9 +645,31 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Route to commit detail view when active
+                    if state.commit_detail_view.has_content() {
+                        let (detail_rect, _diff_rect) = layout.secondary_repos.split_vertical(0.40);
+                        if state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
+                            // Check for file selection actions
+                            if let Some(action) = state.commit_detail_view.take_action() {
+                                match action {
+                                    CommitDetailAction::ViewFileDiff(oid, path) => {
+                                        state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+
                     // Route scroll events to diff view if it has content and cursor is in its area
                     if state.diff_view.has_content() {
-                        if state.diff_view.handle_event(&input_event, layout.secondary_repos).is_consumed() {
+                        let diff_bounds = if state.commit_detail_view.has_content() {
+                            let (_detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+                            diff_rect
+                        } else {
+                            layout.secondary_repos
+                        };
+                        if state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
                             return;
                         }
                     }
@@ -740,8 +792,15 @@ fn draw_frame(state_opt: &mut Option<RenderState>, commits: &[CommitInfo]) -> Re
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Diff view replaces secondary repos area when active
-    if state.diff_view.has_content() {
+    // Right panel: commit detail + diff when active, otherwise secondary repos
+    if state.commit_detail_view.has_content() {
+        // Split secondary_repos area: top 40% commit detail, bottom 60% diff
+        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
+        if state.diff_view.has_content() {
+            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
+        }
+    } else if state.diff_view.has_content() {
         output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
     } else {
         output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
@@ -854,8 +913,14 @@ fn capture_screenshot(state: &mut RenderState, commits: &[CommitInfo]) -> Result
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Diff view or secondary repos
-    if state.diff_view.has_content() {
+    // Right panel: commit detail + diff when active, otherwise secondary repos
+    if state.commit_detail_view.has_content() {
+        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
+        if state.diff_view.has_content() {
+            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
+        }
+    } else if state.diff_view.has_content() {
         output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
     } else {
         output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
@@ -980,8 +1045,14 @@ fn capture_screenshot_offscreen(
     // Staging well
     output.extend(state.staging_well.layout(&state.text_renderer, layout.staging));
 
-    // Diff view or secondary repos
-    if state.diff_view.has_content() {
+    // Right panel: commit detail + diff when active, otherwise secondary repos
+    if state.commit_detail_view.has_content() {
+        let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+        output.extend(state.commit_detail_view.layout(&state.text_renderer, detail_rect));
+        if state.diff_view.has_content() {
+            output.extend(state.diff_view.layout(&state.text_renderer, diff_rect));
+        }
+    } else if state.diff_view.has_content() {
         output.extend(state.diff_view.layout(&state.text_renderer, layout.secondary_repos));
     } else {
         output.extend(state.secondary_repos_view.layout(&state.text_renderer, layout.secondary_repos));
