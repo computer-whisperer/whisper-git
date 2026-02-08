@@ -573,6 +573,107 @@ impl GitRepo {
         Ok(files.into_iter().flat_map(|f| f.hunks).collect())
     }
 
+    /// Compute intra-line highlight ranges for paired add/remove lines within hunks.
+    /// Finds consecutive `-` then `+` line pairs and highlights the differing byte ranges.
+    fn compute_intra_line_highlights(files: &mut [DiffFile]) {
+        for file in files.iter_mut() {
+            for hunk in &mut file.hunks {
+                // Find paired -/+ line runs within the hunk
+                let len = hunk.lines.len();
+                let mut i = 0;
+                while i < len {
+                    // Collect a run of '-' lines followed by a run of '+' lines
+                    let del_start = i;
+                    while i < len && hunk.lines[i].origin == '-' {
+                        i += 1;
+                    }
+                    let del_end = i;
+
+                    let add_start = i;
+                    while i < len && hunk.lines[i].origin == '+' {
+                        i += 1;
+                    }
+                    let add_end = i;
+
+                    let del_count = del_end - del_start;
+                    let add_count = add_end - add_start;
+
+                    // Only compute highlights if we have paired lines
+                    if del_count > 0 && add_count > 0 {
+                        let pair_count = del_count.min(add_count);
+                        for j in 0..pair_count {
+                            let del_idx = del_start + j;
+                            let add_idx = add_start + j;
+                            let (del_ranges, add_ranges) = Self::diff_chars(
+                                &hunk.lines[del_idx].content,
+                                &hunk.lines[add_idx].content,
+                            );
+                            hunk.lines[del_idx].highlight_ranges = del_ranges;
+                            hunk.lines[add_idx].highlight_ranges = add_ranges;
+                        }
+                    }
+
+                    // Skip context lines
+                    if i == del_end && i == add_start {
+                        i += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute the differing byte ranges between two strings.
+    /// Returns (old_ranges, new_ranges) where each range is a (start, end) byte offset
+    /// into the respective string's content (excluding trailing newline).
+    fn diff_chars(old: &str, new: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+        let old = old.trim_end_matches('\n');
+        let new = new.trim_end_matches('\n');
+
+        let old_bytes = old.as_bytes();
+        let new_bytes = new.as_bytes();
+
+        // Find common prefix length
+        let prefix_len = old_bytes.iter()
+            .zip(new_bytes.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        // Find common suffix length (not overlapping with prefix)
+        let old_remaining = old_bytes.len() - prefix_len;
+        let new_remaining = new_bytes.len() - prefix_len;
+        let suffix_len = old_bytes[prefix_len..].iter().rev()
+            .zip(new_bytes[prefix_len..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count()
+            .min(old_remaining)
+            .min(new_remaining);
+
+        let old_diff_end = old_bytes.len() - suffix_len;
+        let new_diff_end = new_bytes.len() - suffix_len;
+
+        // If the entire line changed or nothing changed, return empty (render as full-line highlight)
+        if prefix_len == 0 && suffix_len == 0 {
+            return (Vec::new(), Vec::new());
+        }
+        if prefix_len >= old_diff_end && prefix_len >= new_diff_end {
+            // Lines are identical
+            return (Vec::new(), Vec::new());
+        }
+
+        let old_ranges = if prefix_len < old_diff_end {
+            vec![(prefix_len, old_diff_end)]
+        } else {
+            Vec::new()
+        };
+        let new_ranges = if prefix_len < new_diff_end {
+            vec![(prefix_len, new_diff_end)]
+        } else {
+            Vec::new()
+        };
+
+        (old_ranges, new_ranges)
+    }
+
     fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
         let mut files: Vec<DiffFile> = Vec::new();
 
@@ -628,6 +729,7 @@ impl GitRepo {
                             content: String::from_utf8_lossy(line.content()).to_string(),
                             old_lineno: line.old_lineno(),
                             new_lineno: line.new_lineno(),
+                            highlight_ranges: Vec::new(),
                         });
                     }
                 }
@@ -636,6 +738,7 @@ impl GitRepo {
             true
         })?;
 
+        Self::compute_intra_line_highlights(&mut files);
         Ok(files)
     }
 }
@@ -663,6 +766,9 @@ pub struct DiffLine {
     pub content: String,
     pub old_lineno: Option<u32>,
     pub new_lineno: Option<u32>,
+    /// Byte ranges within `content` that represent intra-line changes (word-level highlight).
+    /// Empty means the entire line is changed (no paired line found for comparison).
+    pub highlight_ranges: Vec<(usize, usize)>,
 }
 
 /// Working directory status
@@ -981,6 +1087,92 @@ impl GitRepo {
         ).context("Failed to compute diff")?;
 
         Self::parse_diff(&diff)
+    }
+
+    /// Stage a single hunk from a working-directory file by building a minimal
+    /// unified-diff patch and applying it to the index via `git apply --cached`.
+    pub fn stage_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
+        let hunks = self.diff_working_file(file_path, false)?;
+        let hunk = hunks.get(hunk_index)
+            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
+
+        let patch = Self::build_hunk_patch(file_path, file_path, hunk);
+        let workdir = self.repo.workdir()
+            .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
+
+        let output = std::process::Command::new("git")
+            .args(["apply", "--cached", "--unidiff-zero", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(workdir)
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(ref mut stdin) = child.stdin {
+                    stdin.write_all(patch.as_bytes())?;
+                }
+                child.wait_with_output()
+            })
+            .context("Failed to run git apply")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to stage hunk: {}", stderr);
+        }
+        Ok(())
+    }
+
+    /// Unstage a single hunk from the index by building a reverse patch and applying it.
+    pub fn unstage_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
+        let hunks = self.diff_working_file(file_path, true)?;
+        let hunk = hunks.get(hunk_index)
+            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
+
+        let patch = Self::build_hunk_patch(file_path, file_path, hunk);
+        let workdir = self.repo.workdir()
+            .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
+
+        let output = std::process::Command::new("git")
+            .args(["apply", "--cached", "--reverse", "--unidiff-zero", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(workdir)
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(ref mut stdin) = child.stdin {
+                    stdin.write_all(patch.as_bytes())?;
+                }
+                child.wait_with_output()
+            })
+            .context("Failed to run git apply --reverse")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to unstage hunk: {}", stderr);
+        }
+        Ok(())
+    }
+
+    /// Build a minimal unified-diff patch for a single hunk.
+    fn build_hunk_patch(old_path: &str, new_path: &str, hunk: &DiffHunk) -> String {
+        let mut patch = String::new();
+        patch.push_str(&format!("--- a/{}\n", old_path));
+        patch.push_str(&format!("+++ b/{}\n", new_path));
+        patch.push_str(&hunk.header);
+        if !hunk.header.ends_with('\n') {
+            patch.push('\n');
+        }
+        for line in &hunk.lines {
+            patch.push(line.origin);
+            patch.push_str(&line.content);
+            if !line.content.ends_with('\n') {
+                patch.push('\n');
+            }
+        }
+        patch
     }
 }
 
