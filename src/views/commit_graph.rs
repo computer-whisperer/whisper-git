@@ -1171,6 +1171,9 @@ impl CommitGraphView {
         let pill_radius: f32 = 3.0;
         let pill_border_thickness: f32 = 1.0;
 
+        // Fixed-width author column (after avatar, before commit message)
+        let author_col_width: f32 = 120.0;
+
         // === Column header labels ===
         {
             let col_header_h = self.column_header_height();
@@ -1196,9 +1199,17 @@ impl CommitGraphView {
                 header_color,
             ));
 
-            // "COMMIT MESSAGE" label further right (where subject text starts)
-            // Estimate a position past typical pill area
-            let msg_label_x = text_x + text_renderer.measure_text_scaled("BRANCH / TAG", 0.85) + char_width * 4.0;
+            // "AUTHOR" label after BRANCH / TAG area
+            let author_label_x = text_x + text_renderer.measure_text_scaled("BRANCH / TAG", 0.85) + char_width * 4.0;
+            vertices.extend(text_renderer.layout_text_small(
+                "AUTHOR",
+                author_label_x,
+                header_text_y,
+                header_color,
+            ));
+
+            // "COMMIT MESSAGE" label after AUTHOR column
+            let msg_label_x = author_label_x + text_renderer.measure_text_scaled("AUTHOR", 0.85) + char_width * 4.0;
             vertices.extend(text_renderer.layout_text_small(
                 "COMMIT MESSAGE",
                 msg_label_x,
@@ -1527,6 +1538,19 @@ impl CommitGraphView {
 
             let identicon_advance = identicon_radius * 2.0 + 6.0;
             current_x += identicon_advance;
+
+            // === Author name (muted, fixed-width column after avatar) ===
+            {
+                let author_text = truncate_to_width(&commit.author, text_renderer, author_col_width);
+                let author_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
+                vertices.extend(text_renderer.layout_text(
+                    &author_text,
+                    current_x,
+                    y,
+                    author_color,
+                ));
+                current_x += author_col_width + col_gap;
+            }
 
             // === Subject line (primary content, bright text, in remaining space) ===
             let available_width = (time_col_left - col_gap) - current_x;
