@@ -218,6 +218,8 @@ pub struct CommitGraphView {
     pub branch_tips: Vec<BranchTip>,
     /// Tags
     pub tags: Vec<TagInfo>,
+    /// Row scale factor (1.0 = normal, 2.0 = large)
+    pub row_scale: f32,
     /// Scroll offset
     pub scroll_offset: f32,
     /// Scrollbar widget
@@ -241,6 +243,7 @@ impl Default for CommitGraphView {
             row_height: 24.0,
             node_radius: 5.0,
             segments_per_curve: 20,
+            row_scale: 2.0,
             selected_commit: None,
             hovered_commit: None,
             working_dir_status: None,
@@ -262,10 +265,11 @@ impl CommitGraphView {
     /// Call this when the display scale changes or at startup.
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         let lh = text_renderer.line_height();
-        self.row_height = (lh * 1.8).max(20.0);
-        self.lane_width = (lh * 1.4).max(12.0);
-        self.node_radius = (lh * 0.38).max(4.0);
-        self.line_width = (lh * 0.14).max(1.5);
+        let s = self.row_scale;
+        self.row_height = (lh * 1.8 * s).max(20.0 * s);
+        self.lane_width = (lh * 1.4 * s).max(12.0 * s);
+        self.node_radius = (lh * 0.38 * s).max(4.0 * s);
+        self.line_width = (lh * 0.14 * s.sqrt()).max(1.5);
     }
 }
 
