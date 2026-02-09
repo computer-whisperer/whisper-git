@@ -102,29 +102,29 @@ impl HeaderBar {
     /// Sync button labels and styles to current header state.
     /// Call this before layout so the stored buttons render the correct text.
     pub fn update_button_state(&mut self) {
-        // Fetch button label
+        // Fetch button label (~ as refresh icon, ASCII-safe for font atlas)
         self.fetch_button.label = if self.fetching {
             "...".to_string()
         } else {
-            "Fetch".to_string()
+            "~ Fetch".to_string()
         };
 
-        // Pull button label with behind badge
+        // Pull button label with behind badge (v as down-arrow icon)
         self.pull_button.label = if self.pulling {
             "...".to_string()
         } else if self.behind > 0 {
-            format!("Pull (-{})", self.behind)
+            format!("v Pull (-{})", self.behind)
         } else {
-            "Pull".to_string()
+            "v Pull".to_string()
         };
 
-        // Push button label with ahead badge
+        // Push button label with ahead badge (^ as up-arrow icon)
         self.push_button.label = if self.pushing {
             "...".to_string()
         } else if self.ahead > 0 {
-            format!("Push (+{})", self.ahead)
+            format!("^ Push (+{})", self.ahead)
         } else {
-            "Push".to_string()
+            "^ Push".to_string()
         };
 
         // Commit button: always primary style (blue accent)
