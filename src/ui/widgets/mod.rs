@@ -10,6 +10,7 @@ mod label;
 mod panel;
 mod repo_dialog;
 pub mod scrollbar;
+mod settings_dialog;
 pub mod search_bar;
 mod shortcut_bar;
 mod tab_bar;
@@ -23,6 +24,7 @@ pub use context_menu::{ContextMenu, MenuItem, MenuAction};
 pub use file_list::{FileList, FileListAction};
 pub use header_bar::{HeaderBar, HeaderAction};
 pub use repo_dialog::{RepoDialog, RepoDialogAction};
+pub use settings_dialog::{SettingsDialog, SettingsDialogAction};
 #[allow(unused_imports)]
 pub use scrollbar::{Scrollbar, ScrollAction};
 #[allow(unused_imports)]

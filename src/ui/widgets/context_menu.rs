@@ -10,6 +10,7 @@ pub struct MenuItem {
     pub label: String,
     pub shortcut: Option<String>,
     pub action_id: String,
+    pub is_separator: bool,
 }
 
 impl MenuItem {
@@ -18,6 +19,16 @@ impl MenuItem {
             label: label.into(),
             shortcut: None,
             action_id: action_id.into(),
+            is_separator: false,
+        }
+    }
+
+    pub fn separator() -> Self {
+        Self {
+            label: String::new(),
+            shortcut: None,
+            action_id: String::new(),
+            is_separator: true,
         }
     }
 
@@ -90,15 +101,27 @@ impl ContextMenu {
         self.pending_action.take()
     }
 
+    /// Compute the total height of the menu accounting for separators
+    fn total_height(&self) -> f32 {
+        let mut h = 4.0; // 2px padding top+bottom
+        for item in &self.items {
+            if item.is_separator {
+                h += self.item_height / 2.0;
+            } else {
+                h += self.item_height;
+            }
+        }
+        h
+    }
+
     /// Get the bounding rectangle of the menu
     fn menu_bounds(&self) -> Rect {
-        let height = self.items.len() as f32 * self.item_height + 4.0; // 2px padding top+bottom
-        Rect::new(self.pos_x, self.pos_y, self.menu_width, height)
+        Rect::new(self.pos_x, self.pos_y, self.menu_width, self.total_height())
     }
 
     /// Clamp menu position so it stays within screen bounds
     fn clamp_position(&mut self, screen: Rect) {
-        let height = self.items.len() as f32 * self.item_height + 4.0;
+        let height = self.total_height();
 
         if self.pos_x + self.menu_width > screen.right() {
             self.pos_x = (screen.right() - self.menu_width).max(screen.x);
@@ -106,6 +129,67 @@ impl ContextMenu {
         if self.pos_y + height > screen.bottom() {
             self.pos_y = (screen.bottom() - height).max(screen.y);
         }
+    }
+
+    /// Find the next non-separator index in the given direction
+    fn next_selectable(&self, from: Option<usize>, forward: bool) -> Option<usize> {
+        if self.items.is_empty() {
+            return None;
+        }
+        let start = match from {
+            Some(idx) => {
+                if forward {
+                    if idx + 1 < self.items.len() { idx + 1 } else { idx }
+                } else {
+                    if idx > 0 { idx - 1 } else { idx }
+                }
+            }
+            None => 0,
+        };
+        // Search from start in the given direction
+        if forward {
+            for i in start..self.items.len() {
+                if !self.items[i].is_separator {
+                    return Some(i);
+                }
+            }
+        } else {
+            for i in (0..=start).rev() {
+                if !self.items[i].is_separator {
+                    return Some(i);
+                }
+            }
+        }
+        from // If no selectable found, keep current
+    }
+
+    /// Get the Y offset for a specific item index (accounting for separators)
+    fn item_y_offset(&self, target_idx: usize) -> f32 {
+        let mut y = 2.0; // top padding
+        for i in 0..target_idx {
+            if self.items[i].is_separator {
+                y += self.item_height / 2.0;
+            } else {
+                y += self.item_height;
+            }
+        }
+        y
+    }
+
+    /// Find the item index at a given Y position within the menu
+    fn item_index_at_y(&self, rel_y: f32) -> Option<usize> {
+        let mut y = 2.0; // top padding
+        for (i, item) in self.items.iter().enumerate() {
+            let h = if item.is_separator { self.item_height / 2.0 } else { self.item_height };
+            if rel_y >= y && rel_y < y + h {
+                if item.is_separator {
+                    return None;
+                }
+                return Some(i);
+            }
+            y += h;
+        }
+        None
     }
 
     /// Handle an input event. Returns EventResponse::Consumed if the menu handled it.
@@ -119,13 +203,8 @@ impl ContextMenu {
         match event {
             InputEvent::MouseMove { x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let rel_y = *y - bounds.y - 2.0; // account for padding
-                    let idx = (rel_y / self.item_height) as usize;
-                    if idx < self.items.len() {
-                        self.hovered_index = Some(idx);
-                    } else {
-                        self.hovered_index = None;
-                    }
+                    let rel_y = *y - bounds.y;
+                    self.hovered_index = self.item_index_at_y(rel_y);
                 } else {
                     self.hovered_index = None;
                 }
@@ -133,9 +212,8 @@ impl ContextMenu {
             }
             InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let rel_y = *y - bounds.y - 2.0;
-                    let idx = (rel_y / self.item_height) as usize;
-                    if idx < self.items.len() {
+                    let rel_y = *y - bounds.y;
+                    if let Some(idx) = self.item_index_at_y(rel_y) {
                         let action_id = self.items[idx].action_id.clone();
                         self.pending_action = Some(MenuAction::Selected(action_id));
                         self.hide();
@@ -153,6 +231,24 @@ impl ContextMenu {
             }
             InputEvent::KeyDown { key: Key::Escape, .. } => {
                 self.hide();
+                EventResponse::Consumed
+            }
+            InputEvent::KeyDown { key: Key::J | Key::Down, .. } => {
+                self.hovered_index = self.next_selectable(self.hovered_index, true);
+                EventResponse::Consumed
+            }
+            InputEvent::KeyDown { key: Key::K | Key::Up, .. } => {
+                self.hovered_index = self.next_selectable(self.hovered_index, false);
+                EventResponse::Consumed
+            }
+            InputEvent::KeyDown { key: Key::Enter | Key::Space, .. } => {
+                if let Some(idx) = self.hovered_index {
+                    if idx < self.items.len() && !self.items[idx].is_separator {
+                        let action_id = self.items[idx].action_id.clone();
+                        self.pending_action = Some(MenuAction::Selected(action_id));
+                        self.hide();
+                    }
+                }
                 EventResponse::Consumed
             }
             // Consume all other events while visible (prevent interaction with widgets behind)
@@ -178,6 +274,9 @@ impl ContextMenu {
 
         // Compute menu width based on content
         for item in &self.items {
+            if item.is_separator {
+                continue;
+            }
             let label_width = text_renderer.measure_text(&item.label);
             let shortcut_width = item.shortcut.as_ref()
                 .map(|s| text_renderer.measure_text(s) + 24.0)
@@ -218,7 +317,19 @@ impl ContextMenu {
         // Menu items
         let pad_x = 12.0;
         for (idx, item) in self.items.iter().enumerate() {
-            let item_y = bounds.y + 2.0 + idx as f32 * self.item_height;
+            let item_y = bounds.y + self.item_y_offset(idx);
+
+            if item.is_separator {
+                // Render a thin horizontal line for separator
+                let sep_h = self.item_height / 2.0;
+                let line_y = item_y + sep_h / 2.0;
+                output.spline_vertices.extend(create_rect_vertices(
+                    &Rect::new(bounds.x + 8.0, line_y, bounds.width - 16.0, 1.0),
+                    theme::BORDER.to_array(),
+                ));
+                continue;
+            }
+
             let item_rect = Rect::new(
                 bounds.x + 1.0,
                 item_y,
