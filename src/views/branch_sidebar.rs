@@ -1122,13 +1122,35 @@ impl BranchSidebar {
                         ));
                         let icon_width = text_renderer.measure_text(icon) + 4.0;
 
-                        let display_name = truncate_to_width(&wt_name, text_renderer, inner.width - indent - icon_width);
+                        // Check dirty status
+                        let is_dirty = self.worktrees.iter()
+                            .any(|w| w.name == wt_name && w.is_dirty);
+
+                        // Show dirty indicator after name if dirty
+                        let dirty_marker = " \u{25CF}M"; // ●M
+                        let suffix_width = if is_dirty {
+                            text_renderer.measure_text(dirty_marker)
+                        } else {
+                            0.0
+                        };
+
+                        let display_name = truncate_to_width(&wt_name, text_renderer, inner.width - indent - icon_width - suffix_width);
                         output.text_vertices.extend(text_renderer.layout_text(
                             &display_name,
                             inner.x + indent + icon_width,
                             y + 2.0,
                             name_color,
                         ));
+
+                        if is_dirty {
+                            let name_width = text_renderer.measure_text(&display_name);
+                            output.text_vertices.extend(text_renderer.layout_text(
+                                dirty_marker,
+                                inner.x + indent + icon_width + name_width,
+                                y + 2.0,
+                                theme::STATUS_DIRTY.to_array(),
+                            ));
+                        }
                     }
                     y += line_height;
                     item_idx += 1;
