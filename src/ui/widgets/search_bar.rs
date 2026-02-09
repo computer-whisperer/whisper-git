@@ -311,8 +311,7 @@ impl SearchBar {
 
         // Cursor (blinks when active)
         if self.cursor_visible {
-            let char_width = text_renderer.char_width();
-            let cursor_x = text_x + self.cursor as f32 * char_width;
+            let cursor_x = text_x + text_renderer.measure_text(&self.query[..self.cursor]);
             let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &cursor_rect,

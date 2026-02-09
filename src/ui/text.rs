@@ -142,7 +142,7 @@ impl TextRenderer {
         let device = memory_allocator.device().clone();
 
         // Load embedded font (DejaVu Sans Mono or similar)
-        let font_data = include_bytes!("/usr/share/fonts/TTF/DejaVuSansMono.ttf");
+        let font_data = include_bytes!("/usr/share/fonts/TTF/Roboto-Regular.ttf");
         let font = FontRef::try_from_slice(font_data).context("Failed to load font")?;
 
         // Build atlas at the given scale factor (should be the max across all monitors).

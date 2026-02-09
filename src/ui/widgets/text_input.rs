@@ -327,8 +327,7 @@ impl Widget for TextInput {
 
         // Cursor (when focused and visible per blink cycle)
         if self.state.focused && self.cursor_visible {
-            let char_width = text_renderer.char_width();
-            let cursor_x = text_x + self.cursor as f32 * char_width;
+            let cursor_x = text_x + text_renderer.measure_text(&self.text[..self.cursor]);
             let cursor_rect = Rect::new(cursor_x, bounds.y + 6.0, 2.0, bounds.height - 12.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &cursor_rect,

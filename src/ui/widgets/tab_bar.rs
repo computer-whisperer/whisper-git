@@ -317,7 +317,7 @@ impl Widget for TabBar {
                 } else {
                     theme::TEXT_MUTED
                 };
-                let cx = close_rect.x + (close_rect.width - text_renderer.char_width()) / 2.0;
+                let cx = close_rect.x + (close_rect.width - text_renderer.measure_text("x")) / 2.0;
                 let cy = close_rect.y + (close_rect.height - line_height) / 2.0;
                 output.text_vertices.extend(text_renderer.layout_text(
                     "x",
@@ -347,7 +347,7 @@ impl Widget for TabBar {
         } else {
             theme::TEXT_MUTED
         };
-        let plus_x = cached.new_rect.x + (cached.new_rect.width - text_renderer.char_width()) / 2.0;
+        let plus_x = cached.new_rect.x + (cached.new_rect.width - text_renderer.measure_text("+")) / 2.0;
         let plus_y = cached.new_rect.y + (cached.new_rect.height - line_height) / 2.0;
         output.text_vertices.extend(text_renderer.layout_text(
             "+",

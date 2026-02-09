@@ -1379,14 +1379,7 @@ impl CommitGraphView {
 
             // === Subject line (primary content, bright text, in remaining space) ===
             let available_width = (time_col_left - col_gap) - current_x;
-            let max_chars = ((available_width / char_width) as usize).max(4);
-            let char_count = commit.summary.chars().count();
-            let summary = if char_count > max_chars && max_chars > 3 {
-                let truncated: String = commit.summary.chars().take(max_chars.saturating_sub(1)).collect();
-                format!("{}\u{2026}", truncated)
-            } else {
-                commit.summary.clone()
-            };
+            let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
 
             let summary_color = if is_selected {
                 theme::TEXT_BRIGHT
@@ -1484,5 +1477,33 @@ const IDENTICON_COLORS: &[Color] = &[
 fn author_color_index(author: &str) -> usize {
     let hash: u32 = author.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
     (hash as usize) % IDENTICON_COLORS.len()
+}
+
+/// Truncate text to fit within the given pixel width, appending ellipsis if needed
+fn truncate_to_width(text: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let full_width = text_renderer.measure_text(text);
+    if full_width <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = "\u{2026}";
+    let ellipsis_width = text_renderer.measure_text(ellipsis);
+    let target_width = max_width - ellipsis_width;
+    if target_width <= 0.0 {
+        return ellipsis.to_string();
+    }
+    let mut width = 0.0;
+    let mut end = 0;
+    for (i, c) in text.char_indices() {
+        let cw = text_renderer.measure_text(&text[i..i + c.len_utf8()]);
+        if width + cw > target_width {
+            break;
+        }
+        width += cw;
+        end = i + c.len_utf8();
+    }
+    format!("{}{}", &text[..end], ellipsis)
 }
 

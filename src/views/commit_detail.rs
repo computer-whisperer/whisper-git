@@ -245,13 +245,7 @@ impl CommitDetailView {
                 break;
             }
             // Truncate long lines
-            let max_chars = ((meta_inner.width) / char_width) as usize;
-            let display = if msg_line.chars().count() > max_chars && max_chars > 3 {
-                let truncated: String = msg_line.chars().take(max_chars - 3).collect();
-                format!("{}...", truncated)
-            } else {
-                msg_line.to_string()
-            };
+            let display = truncate_to_width(msg_line, text_renderer, meta_inner.width);
             output.text_vertices.extend(text_renderer.layout_text(
                 &display,
                 meta_inner.x,
@@ -407,4 +401,32 @@ fn truncate_path(path: &str, text_renderer: &TextRenderer, max_width: f32) -> St
         end -= 1;
     }
     ellipsis.to_string()
+}
+
+/// Truncate text to fit within the given pixel width, appending ellipsis if needed
+fn truncate_to_width(text: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let full_width = text_renderer.measure_text(text);
+    if full_width <= max_width {
+        return text.to_string();
+    }
+    let ellipsis = "...";
+    let ellipsis_width = text_renderer.measure_text(ellipsis);
+    let target_width = max_width - ellipsis_width;
+    if target_width <= 0.0 {
+        return ellipsis.to_string();
+    }
+    let mut width = 0.0;
+    let mut end = 0;
+    for (i, c) in text.char_indices() {
+        let cw = text_renderer.measure_text(&text[i..i + c.len_utf8()]);
+        if width + cw > target_width {
+            break;
+        }
+        width += cw;
+        end = i + c.len_utf8();
+    }
+    format!("{}{}", &text[..end], ellipsis)
 }

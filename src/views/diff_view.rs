@@ -204,8 +204,8 @@ impl DiffView {
 
         let padding = 8.0;
         let line_height = text_renderer.line_height();
-        let char_width = text_renderer.char_width();
-        let gutter_width = char_width * 8.0; // Space for two line numbers (4+4)
+        let digit_width = text_renderer.measure_text("0");
+        let gutter_width = digit_width * 8.0; // Space for two line numbers (4+4)
         let content_x = bounds.x + padding + gutter_width;
 
         let mut y = bounds.y + padding - self.scroll_offset;
@@ -351,11 +351,9 @@ impl DiffView {
                                     continue;
                                 }
                                 let end = end.min(content_trimmed.len());
-                                // Convert byte offsets to character-based x positions
-                                let prefix_chars = content_trimmed[..start].chars().count();
-                                let range_chars = content_trimmed[start..end].chars().count();
-                                let hl_x = content_x + (prefix_chars as f32) * char_width - self.h_scroll_offset;
-                                let hl_w = (range_chars as f32) * char_width;
+                                // Measure actual text widths for proportional font
+                                let hl_x = content_x + text_renderer.measure_text(&content_trimmed[..start]) - self.h_scroll_offset;
+                                let hl_w = text_renderer.measure_text(&content_trimmed[start..end]);
                                 if hl_x + hl_w > bounds.x && hl_x < bounds.right() {
                                     let hl_rect = Rect::new(hl_x, y, hl_w, line_height);
                                     output.spline_vertices.extend(create_rect_vertices(
@@ -381,7 +379,7 @@ impl DiffView {
                             let num_str = format!("{:>4}", new);
                             output.text_vertices.extend(text_renderer.layout_text(
                                 &num_str,
-                                gutter_x + char_width * 4.0,
+                                gutter_x + digit_width * 4.0,
                                 y,
                                 diff_colors::LINE_NUMBER.to_array(),
                             ));
@@ -396,7 +394,7 @@ impl DiffView {
                         };
                         output.text_vertices.extend(text_renderer.layout_text(
                             &origin_str,
-                            content_x - char_width * 1.5,
+                            content_x - digit_width * 1.5,
                             y,
                             origin_color.to_array(),
                         ));
