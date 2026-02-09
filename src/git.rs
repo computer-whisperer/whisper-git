@@ -908,14 +908,20 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Delete a local branch (refuses to delete the current branch)
+    /// Delete a local branch (refuses to delete the current branch or one checked out in a worktree)
     pub fn delete_branch(&self, name: &str) -> Result<()> {
-        let current = self.current_branch()?;
-        if current == name {
-            anyhow::bail!("Cannot delete the currently checked-out branch '{}'", name);
+        // Check if this branch is the current branch (handle bare-repo failures gracefully)
+        if let Ok(current) = self.current_branch() {
+            if current == name {
+                anyhow::bail!("Cannot delete the currently checked-out branch");
+            }
         }
         let mut branch = self.repo.find_branch(name, git2::BranchType::Local)
             .with_context(|| format!("Branch '{}' not found", name))?;
+        // Check if the branch is checked out in any worktree
+        if branch.is_head() {
+            anyhow::bail!("Cannot delete the currently checked-out branch");
+        }
         branch.delete()
             .with_context(|| format!("Failed to delete branch '{}'", name))?;
         Ok(())

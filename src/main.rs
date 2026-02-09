@@ -666,8 +666,10 @@ impl App {
                         }
                         Err(e) => {
                             eprintln!("Failed to delete branch '{}': {}", name, e);
+                            // Show root cause for a cleaner message
+                            let root = e.root_cause().to_string();
                             self.toast_manager.push(
-                                format!("Delete failed: {}", e),
+                                format!("Cannot delete '{}': {}", name, root),
                                 ToastSeverity::Error,
                             );
                         }

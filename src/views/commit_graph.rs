@@ -281,6 +281,36 @@ impl CommitGraphView {
         Self::default()
     }
 
+    /// Header offset above graph content, scales with row_height
+    fn header_offset(&self) -> f32 {
+        self.row_height * 0.35
+    }
+
+    /// Width reserved for the scrollbar track
+    fn scrollbar_width(&self) -> f32 {
+        (self.lane_width * 0.6).max(8.0)
+    }
+
+    /// Height of the search bar overlay
+    fn search_bar_height(&self) -> f32 {
+        self.row_height
+    }
+
+    /// Horizontal padding for the search bar from graph edges
+    fn search_bar_pad(&self) -> f32 {
+        self.lane_width * 2.0
+    }
+
+    /// Extra gap between working directory row and first commit
+    fn working_dir_gap(&self) -> f32 {
+        self.row_height * 0.3
+    }
+
+    /// Left padding before the first lane
+    fn lane_left_pad(&self) -> f32 {
+        self.lane_width * 0.5
+    }
+
     /// Take the pending action, if any
     pub fn take_action(&mut self) -> Option<GraphAction> {
         self.pending_action.take()
@@ -358,13 +388,13 @@ impl CommitGraphView {
 
     /// Get x position for a lane
     fn lane_x(&self, lane: usize, bounds: &Rect) -> f32 {
-        bounds.x + 12.0 + lane as f32 * self.lane_width + self.lane_width / 2.0
+        bounds.x + self.lane_left_pad() + lane as f32 * self.lane_width + self.lane_width / 2.0
     }
 
     /// Get y position for a row (adjusted for scroll and optional working dir node)
     fn row_y(&self, row: usize, bounds: &Rect, header_offset: f32) -> f32 {
         let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
-            self.row_height + 8.0 // Extra space for working dir node
+            self.row_height + self.working_dir_gap()
         } else {
             0.0
         };
@@ -382,7 +412,7 @@ impl CommitGraphView {
             return None;
         }
         let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
-            self.row_height + 8.0
+            self.row_height + self.working_dir_gap()
         } else {
             0.0
         };
@@ -425,18 +455,19 @@ impl CommitGraphView {
         commits: &[CommitInfo],
         bounds: Rect,
     ) -> EventResponse {
-        let header_offset = 10.0;
-        let scrollbar_width = 10.0;
+        let header_offset = self.header_offset();
+        let scrollbar_width = self.scrollbar_width();
 
         // Calculate scrollbar bounds (right edge of graph area)
         let (content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
 
         // Search bar bounds (overlay at top of graph area)
-        let search_bar_height = 30.0;
+        let search_bar_height = self.search_bar_height();
+        let search_bar_pad = self.search_bar_pad();
         let search_bounds = Rect::new(
-            bounds.x + 40.0,
+            bounds.x + search_bar_pad,
             bounds.y + 4.0,
-            bounds.width - 80.0 - scrollbar_width,
+            bounds.width - search_bar_pad * 2.0 - scrollbar_width,
             search_bar_height,
         );
 
@@ -467,7 +498,7 @@ impl CommitGraphView {
         // Route events to scrollbar
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
-                let max_scroll = (self.total_content_height(commits.len()) - bounds.height + 60.0).max(0.0);
+                let max_scroll = (self.total_content_height(commits.len()) - bounds.height + self.row_height * 2.0).max(0.0);
                 self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
             }
             self.check_load_more(commits, bounds);
@@ -522,8 +553,18 @@ impl CommitGraphView {
                 y,
                 ..
             } => {
-                // Check for click on a commit using binary search
                 if content_bounds.contains(*x, *y) {
+                    // Check if clicking on working directory row (deselects commits)
+                    if let Some(ref status) = self.working_dir_status {
+                        if !status.is_clean() {
+                            let wd_center_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
+                            if (*y - wd_center_y).abs() < self.row_height / 2.0 {
+                                self.selected_commit = None;
+                                return EventResponse::Consumed;
+                            }
+                        }
+                    }
+                    // Check for click on a commit using binary search
                     if let Some(row) = self.row_at_y(*y, &bounds, header_offset, commits.len()) {
                         if let Some(commit) = commits.get(row) {
                             self.selected_commit = Some(commit.id);
@@ -549,7 +590,7 @@ impl CommitGraphView {
             }
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let max_scroll = (self.total_content_height(commits.len()) - bounds.height + 60.0).max(0.0);
+                    let max_scroll = (self.total_content_height(commits.len()) - bounds.height + self.row_height * 2.0).max(0.0);
                     self.scroll_offset = (self.scroll_offset - delta_y * 2.0).max(0.0).min(max_scroll);
                     self.check_load_more(commits, bounds);
                     EventResponse::Consumed
@@ -570,8 +611,8 @@ impl CommitGraphView {
         commits: &[CommitInfo],
         bounds: Rect,
     ) -> Option<(Vec<MenuItem>, Oid)> {
-        let header_offset = 10.0;
-        let scrollbar_width = 10.0;
+        let header_offset = self.header_offset();
+        let scrollbar_width = self.scrollbar_width();
         let (content_bounds, _) = bounds.take_right(scrollbar_width);
 
         if !content_bounds.contains(x, y) {
@@ -651,7 +692,7 @@ impl CommitGraphView {
             && let Some(idx) = commits.iter().position(|c| c.id == id) {
                 let target_y = self.row_y_offsets.get(idx).copied()
                     .unwrap_or(idx as f32 * self.row_height);
-                let visible_height = bounds.height - 60.0;
+                let visible_height = bounds.height - self.row_height * 2.0;
 
                 if target_y < self.scroll_offset {
                     self.scroll_offset = target_y;
@@ -669,8 +710,8 @@ impl CommitGraphView {
         bounds: Rect,
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
-        let header_offset = 10.0;
-        let scrollbar_width = 10.0;
+        let header_offset = self.header_offset();
+        let scrollbar_width = self.scrollbar_width();
 
         // Update scrollbar state using total content height (approximate via equivalent row count)
         let total_h = self.total_content_height(commits.len());
@@ -680,7 +721,7 @@ impl CommitGraphView {
         self.scrollbar.set_content(equivalent_total_rows, visible_rows, scroll_offset_items);
 
         // Background strip for graph column - subtle elevation
-        let graph_bg_width = self.graph_width() + 24.0;
+        let graph_bg_width = self.graph_width() + self.lane_width * 1.5;
         let graph_bg = Rect::new(bounds.x, bounds.y, graph_bg_width, bounds.height);
         vertices.extend(create_rect_vertices(
             &graph_bg,
@@ -708,8 +749,8 @@ impl CommitGraphView {
                 let wd_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
                 let file_count = status.total_files();
                 let wd_text = format!("Working ({})", file_count);
-                let wd_width = text_renderer.measure_text(&wd_text) + 20.0; // padding
-                let wd_height = text_renderer.line_height() + 8.0;
+                let wd_width = text_renderer.measure_text(&wd_text) + self.lane_width; // padding
+                let wd_height = text_renderer.line_height() + self.working_dir_gap();
 
                 let wd_rect = Rect::new(wd_x - 10.0, wd_y - wd_height / 2.0, wd_width, wd_height);
 
@@ -918,11 +959,12 @@ impl CommitGraphView {
 
         // Render search bar overlay
         if self.search_bar.is_active() {
+            let search_bar_pad = self.search_bar_pad();
             let search_bounds = Rect::new(
-                bounds.x + 40.0,
+                bounds.x + search_bar_pad,
                 bounds.y + 4.0,
-                bounds.width - 80.0 - scrollbar_width,
-                30.0,
+                bounds.width - search_bar_pad * 2.0 - scrollbar_width,
+                self.search_bar_height(),
             );
             let search_output = self.search_bar.layout(text_renderer, search_bounds);
             vertices.extend(search_output.spline_vertices);
@@ -1040,12 +1082,12 @@ impl CommitGraphView {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
         let mut avatar_vertices = Vec::new();
-        let header_offset = 10.0;
+        let header_offset = self.header_offset();
         let line_height = text_renderer.line_height();
-        let scrollbar_width = 10.0;
+        let scrollbar_width = self.scrollbar_width();
 
         // Graph offset for text - right after the graph column
-        let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
+        let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 0.6;
 
         // Column layout: fixed-width time column right-aligned
         // Author column removed - identicon already communicates authorship
@@ -1065,7 +1107,7 @@ impl CommitGraphView {
 
                 vertices.extend(text_renderer.layout_text(
                     &wd_text,
-                    self.lane_x(0, &bounds) + 8.0,
+                    self.lane_x(0, &bounds) + self.working_dir_gap(),
                     text_y,
                     theme::STATUS_DIRTY.to_array(),
                 ));
@@ -1309,11 +1351,12 @@ impl CommitGraphView {
 
         // Render search bar text overlay
         if self.search_bar.is_active() {
+            let search_bar_pad = self.search_bar_pad();
             let search_bounds = Rect::new(
-                bounds.x + 40.0,
+                bounds.x + search_bar_pad,
                 bounds.y + 4.0,
-                bounds.width - 80.0 - scrollbar_width,
-                30.0,
+                bounds.width - search_bar_pad * 2.0 - scrollbar_width,
+                self.search_bar_height(),
             );
             let search_output = self.search_bar.layout(text_renderer, search_bounds);
             vertices.extend(search_output.text_vertices);
