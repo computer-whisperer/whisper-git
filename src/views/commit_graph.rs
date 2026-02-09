@@ -904,9 +904,8 @@ impl CommitGraphView {
 
     /// Generate text vertices for commit info, and spline vertices for label pill backgrounds.
     ///
-    /// Row layout: graph lanes | subject line | branch/tag labels | author (dimmer) | time (dimmer, right-aligned)
-    /// The subject line is the most prominent element (bright text), while author
-    /// and time are rendered in muted colors as secondary information.
+    /// Row layout: graph lanes | identicon | subject line | branch/tag labels | time (dimmer, right-aligned)
+    /// The identicon already communicates authorship; subject gets maximum space.
     pub fn layout_text(
         &self,
         text_renderer: &TextRenderer,
@@ -922,16 +921,13 @@ impl CommitGraphView {
         // Graph offset for text - right after the graph column
         let text_x = bounds.x + 12.0 + self.graph_width() + 10.0;
 
-        // Column layout: fixed-width columns from the right edge
-        // Keep these compact to maximize subject line space
-        let time_col_width: f32 = 64.0;
-        let author_col_width: f32 = 80.0;
+        // Column layout: fixed-width time column right-aligned
+        // Author column removed - identicon already communicates authorship
+        let time_col_width: f32 = 48.0;
         let right_margin: f32 = 8.0;
         let col_gap: f32 = 8.0;
-        let time_col_right = bounds.right() - right_margin;
+        let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let time_col_left = time_col_right - time_col_width;
-        let author_col_right = time_col_left - col_gap;
-        let author_col_left = author_col_right - author_col_width;
 
         // Working directory node text
         if let Some(ref status) = self.working_dir_status {
@@ -1000,22 +996,6 @@ impl CommitGraphView {
                 theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
             ));
 
-            // === Right-aligned author column (fixed-width zone) ===
-            let author_display = truncate_author(&commit.author, 10);
-            let author_width = text_renderer.measure_text(&author_display);
-            let author_x = author_col_right - author_width;
-            let author_color = if is_selected {
-                theme::TEXT
-            } else {
-                theme::TEXT_MUTED
-            };
-            vertices.extend(text_renderer.layout_text(
-                &author_display,
-                author_x,
-                y,
-                author_color.with_alpha(dim_alpha).to_array(),
-            ));
-
             // === Author identicon (small colored circle with initial) ===
             let identicon_radius = (line_height * 0.42).max(5.0);
             let identicon_cx = text_x + identicon_radius;
@@ -1047,8 +1027,8 @@ impl CommitGraphView {
 
             // === Subject line (primary content, bright text) ===
             let mut current_x = text_x + identicon_advance;
-            // The subject occupies the space between graph and the fixed author column
-            let available_width = (author_col_left - col_gap) - current_x;
+            // The subject occupies the space between graph and the time column
+            let available_width = (time_col_left - col_gap) - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
             let char_count = commit.summary.chars().count();
             let summary = if char_count > max_chars && max_chars > 3 {
@@ -1097,7 +1077,7 @@ impl CommitGraphView {
                     let label_width = text_renderer.measure_text(label);
 
                     // Don't render if it would overlap author column
-                    if current_x + label_width + pill_pad_h * 2.0 + char_width > author_col_left - col_gap {
+                    if current_x + label_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
                         break;
                     }
 
@@ -1129,7 +1109,7 @@ impl CommitGraphView {
             if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
                 let head_label = "HEAD";
                 let head_width = text_renderer.measure_text(head_label);
-                if current_x + head_width + pill_pad_h * 2.0 < author_col_left - col_gap {
+                if current_x + head_width + pill_pad_h * 2.0 < time_col_left - col_gap {
                     let pill_rect = Rect::new(
                         current_x,
                         y - pill_pad_v,
@@ -1156,7 +1136,7 @@ impl CommitGraphView {
                 for tag in tags {
                     let tag_label = format!("\u{25C6} {}", tag.name);
                     let tag_width = text_renderer.measure_text(&tag_label);
-                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > author_col_left - col_gap {
+                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
                         break;
                     }
                     let pill_rect = Rect::new(
@@ -1263,14 +1243,3 @@ fn author_color_index(author: &str) -> usize {
     (hash as usize) % IDENTICON_COLORS.len()
 }
 
-/// Truncate author name to first name or max characters
-fn truncate_author(author: &str, max_chars: usize) -> String {
-    // Try first name only
-    let first_name = author.split_whitespace().next().unwrap_or(author);
-    if first_name.chars().count() <= max_chars {
-        first_name.to_string()
-    } else {
-        let truncated: String = first_name.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{}...", truncated)
-    }
-}

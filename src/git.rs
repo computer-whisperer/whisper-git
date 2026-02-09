@@ -34,12 +34,12 @@ impl CommitInfo {
         let diff = (now - self.time).max(0);
         match diff {
             d if d < 60 => "just now".to_string(),
-            d if d < 3600 => format!("{}m ago", d / 60),
-            d if d < 86400 => format!("{}h ago", d / 3600),
-            d if d < 604800 => format!("{}d ago", d / 86400),
-            d if d < 2592000 => format!("{}w ago", d / 604800),
-            d if d < 31536000 => format!("{}mo ago", d / 2592000),
-            d => format!("{}y ago", d / 31536000),
+            d if d < 3600 => format!("{}m", d / 60),
+            d if d < 86400 => format!("{}h", d / 3600),
+            d if d < 604800 => format!("{}d", d / 86400),
+            d if d < 2592000 => format!("{}w", d / 604800),
+            d if d < 31536000 => format!("{}mo", d / 2592000),
+            d => format!("{}y", d / 31536000),
         }
     }
 }
@@ -913,12 +913,12 @@ impl FullCommitInfo {
         let diff = (now - self.author_time).max(0);
         match diff {
             d if d < 60 => "just now".to_string(),
-            d if d < 3600 => format!("{}m ago", d / 60),
-            d if d < 86400 => format!("{}h ago", d / 3600),
-            d if d < 604800 => format!("{}d ago", d / 86400),
-            d if d < 2592000 => format!("{}w ago", d / 604800),
-            d if d < 31536000 => format!("{}mo ago", d / 2592000),
-            d => format!("{}y ago", d / 31536000),
+            d if d < 3600 => format!("{}m", d / 60),
+            d if d < 86400 => format!("{}h", d / 3600),
+            d if d < 604800 => format!("{}d", d / 86400),
+            d if d < 2592000 => format!("{}w", d / 604800),
+            d if d < 31536000 => format!("{}mo", d / 2592000),
+            d => format!("{}y", d / 31536000),
         }
     }
 }
