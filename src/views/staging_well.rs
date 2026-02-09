@@ -60,6 +60,13 @@ impl StagingWell {
         }
     }
 
+    /// Set the display scale factor for HiDPI scaling. Propagates to child file lists.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+        self.staged_list.set_scale(scale);
+        self.unstaged_list.set_scale(scale);
+    }
+
     /// Update from working directory status
     pub fn update_status(&mut self, status: &WorkingDirStatus) {
         use crate::ui::widgets::file_list::FileEntry;

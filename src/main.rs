@@ -1156,7 +1156,7 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
-    view_state.staging_well.scale = scale;
+    view_state.staging_well.set_scale(scale);
 
     if let Some(ref repo) = repo_tab.repo {
         // Set initial repo name in header (refresh_repo_state preserves the existing name)
@@ -1225,7 +1225,7 @@ impl ApplicationHandler for App {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                     view_state.commit_graph_view.update_layout(&repo_tab.commits);
                     view_state.branch_sidebar.sync_metrics(&state.text_renderer);
-                    view_state.staging_well.scale = scale_factor as f32;
+                    view_state.staging_well.set_scale(scale_factor as f32);
                 }
                 state.surface.needs_recreate = true;
             }
