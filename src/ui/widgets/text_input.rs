@@ -24,6 +24,10 @@ pub struct TextInput {
     /// Guard against double-insertion: set when KeyDown inserts text,
     /// cleared when TextInput fires for the same keystroke
     inserted_from_key: bool,
+    /// Whether the cursor is currently visible (for blinking)
+    cursor_visible: bool,
+    /// Last time the cursor blink state changed
+    last_blink: std::time::Instant,
 }
 
 impl TextInput {
@@ -38,6 +42,8 @@ impl TextInput {
             max_length: 0,
             modified: false,
             inserted_from_key: false,
+            cursor_visible: true,
+            last_blink: std::time::Instant::now(),
         }
     }
 
@@ -64,6 +70,19 @@ impl TextInput {
         let modified = self.modified;
         self.modified = false;
         modified
+    }
+
+    /// Update cursor blink state. Call once per frame.
+    pub fn update_cursor(&mut self, now: std::time::Instant) {
+        if self.state.focused {
+            if now.duration_since(self.last_blink).as_millis() >= 530 {
+                self.cursor_visible = !self.cursor_visible;
+                self.last_blink = now;
+            }
+        } else {
+            self.cursor_visible = true;
+            self.last_blink = now;
+        }
     }
 
     /// Get the current text
@@ -179,6 +198,8 @@ impl Widget for TextInput {
                             self.text.remove(self.cursor);
                             self.modified = true;
                         }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Delete => {
@@ -188,6 +209,8 @@ impl Widget for TextInput {
                             self.text.remove(self.cursor);
                             self.modified = true;
                         }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::A if modifiers.only_ctrl() => {
@@ -220,6 +243,8 @@ impl Widget for TextInput {
                                 }
                             }
                             self.inserted_from_key = true;
+                            self.cursor_visible = true;
+                            self.last_blink = std::time::Instant::now();
                         }
                         return EventResponse::Consumed;
                     }
@@ -238,6 +263,8 @@ impl Widget for TextInput {
                         self.insert_char(c);
                     }
                 }
+                self.cursor_visible = true;
+                self.last_blink = std::time::Instant::now();
                 return EventResponse::Consumed;
             }
             _ => {}
@@ -298,8 +325,8 @@ impl Widget for TextInput {
             ));
         }
 
-        // Cursor (when focused) - blinking would be nice but requires animation
-        if self.state.focused {
+        // Cursor (when focused and visible per blink cycle)
+        if self.state.focused && self.cursor_visible {
             let char_width = text_renderer.char_width();
             let cursor_x = text_x + self.cursor as f32 * char_width;
             let cursor_rect = Rect::new(cursor_x, bounds.y + 6.0, 2.0, bounds.height - 12.0);

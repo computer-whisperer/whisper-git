@@ -159,7 +159,7 @@ impl Widget for Button {
             let highlight_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, 1.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &highlight_rect,
-                theme::BORDER_LIGHT.with_alpha(0.5).to_array(),
+                theme::BORDER_LIGHT.with_alpha(0.7).to_array(),
             ));
         }
 

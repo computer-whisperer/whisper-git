@@ -168,11 +168,11 @@ impl Scrollbar {
         // Thumb
         let thumb = self.thumb_rect(&bounds);
         let thumb_color = if self.dragging {
-            theme::TEXT_MUTED.with_alpha(0.8)
+            theme::ACCENT.with_alpha(0.7)
         } else if self.hovered {
-            theme::TEXT_MUTED.with_alpha(0.6)
+            theme::ACCENT.with_alpha(0.45)
         } else {
-            theme::TEXT_MUTED.with_alpha(0.4)
+            theme::TEXT_MUTED.with_alpha(0.3)
         };
 
         // Rounded corners via inset for visual softness

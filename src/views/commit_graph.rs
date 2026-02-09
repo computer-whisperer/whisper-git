@@ -745,7 +745,7 @@ impl CommitGraphView {
                 let highlight_color = if is_selected {
                     theme::ACCENT_MUTED
                 } else {
-                    theme::SURFACE_HOVER
+                    theme::SURFACE_HOVER.with_alpha(0.15)
                 };
                 let highlight_rect = Rect::new(
                     bounds.x,
