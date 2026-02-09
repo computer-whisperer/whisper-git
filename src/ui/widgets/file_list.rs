@@ -6,7 +6,7 @@ use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
-use crate::ui::{Rect, TextRenderer};
+use crate::ui::{Color, Rect, TextRenderer};
 
 /// A file entry in the list
 #[derive(Clone, Debug)]
@@ -452,37 +452,61 @@ impl Widget for FileList {
                 ));
             }
 
-            // Status indicator - colored dot + letter for clarity
-            let (status_color, status_icon) = match file.status {
-                FileStatusKind::New =>       (theme::STATUS_CLEAN,   "\u{25CF} A"), // ● A (green)
-                FileStatusKind::Modified =>  (theme::STATUS_BEHIND,  "\u{25CF} M"), // ● M (yellow)
-                FileStatusKind::Deleted =>   (theme::STATUS_DIRTY,   "\u{25CF} D"), // ● D (red)
-                FileStatusKind::Renamed =>   (theme::BRANCH_PRIMARY, "\u{25CF} R"), // ● R (blue)
-                FileStatusKind::TypeChange => (theme::BRANCH_HOTFIX, "\u{25CF} T"), // ● T (purple)
+            // Status indicator - colored letter
+            let (status_color, status_letter) = match file.status {
+                FileStatusKind::New =>        (Color::rgba(0.259, 0.647, 0.961, 1.0), "A"), // #42A5F5 blue
+                FileStatusKind::Modified =>   (Color::rgba(0.400, 0.733, 0.416, 1.0), "M"), // #66BB6A green
+                FileStatusKind::Deleted =>    (Color::rgba(0.937, 0.325, 0.314, 1.0), "D"), // #EF5350 red
+                FileStatusKind::Renamed =>    (Color::rgba(0.149, 0.776, 0.855, 1.0), "R"), // #26C6DA cyan
+                FileStatusKind::TypeChange => (Color::rgba(1.000, 0.718, 0.302, 1.0), "T"), // #FFB74D amber
             };
 
             output.text_vertices.extend(text_renderer.layout_text(
-                status_icon,
-                bounds.x + 8.0,
+                status_letter,
+                bounds.x + 10.0,
                 y + 2.0,
                 status_color.to_array(),
             ));
 
-            // File path - use brighter text when selected
-            let path_x_offset = 38.0; // After status icon
+            // File path - split into directory (dim) and filename (bright)
+            let path_x_offset = 26.0; // After status letter
             let max_path_width = bounds.width - path_x_offset - 30.0;
             let path = truncate_path_to_width(&file.path, text_renderer, max_path_width);
 
-            let path_color = if is_selected || is_hovered {
+            let (dir_part, file_part) = match path.rfind('/') {
+                Some(pos) => (&path[..=pos], &path[pos + 1..]),
+                None => ("", path.as_str()),
+            };
+
+            let mut text_x = bounds.x + path_x_offset;
+
+            // Directory portion in muted color
+            if !dir_part.is_empty() {
+                let dir_color = if is_selected || is_hovered {
+                    theme::TEXT_MUTED.lighten(0.15)
+                } else {
+                    theme::TEXT_MUTED
+                };
+                output.text_vertices.extend(text_renderer.layout_text(
+                    dir_part,
+                    text_x,
+                    y + 2.0,
+                    dir_color.to_array(),
+                ));
+                text_x += text_renderer.measure_text(dir_part);
+            }
+
+            // Filename portion in bright color
+            let file_color = if is_selected || is_hovered {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT
             };
             output.text_vertices.extend(text_renderer.layout_text(
-                &path,
-                bounds.x + path_x_offset,
+                file_part,
+                text_x,
                 y + 2.0,
-                path_color.to_array(),
+                file_color.to_array(),
             ));
 
             // +/- counts on the right
