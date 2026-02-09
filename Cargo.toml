@@ -22,6 +22,13 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 ureq = "2"
 md5 = "0.7"
 
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Clipboard
+arboard = "3"
+
 # Utilities
 bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"
