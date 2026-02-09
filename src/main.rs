@@ -32,7 +32,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -228,6 +228,7 @@ struct App {
     repo_dialog: RepoDialog,
     settings_dialog: SettingsDialog,
     confirm_dialog: ConfirmDialog,
+    branch_name_dialog: BranchNameDialog,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
@@ -317,6 +318,7 @@ impl App {
         settings_dialog.show_avatars = config.avatars_enabled;
         settings_dialog.scroll_speed = if config.fast_scroll { 2.0 } else { 1.0 };
         settings_dialog.row_scale = config.row_scale;
+        let shortcut_bar_visible = config.shortcut_bar_visible;
 
         Ok(Self {
             cli_args,
@@ -327,6 +329,7 @@ impl App {
             repo_dialog: RepoDialog::new(),
             settings_dialog,
             confirm_dialog: ConfirmDialog::new(),
+            branch_name_dialog: BranchNameDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
@@ -334,7 +337,7 @@ impl App {
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
             staging_ratio: 0.45,
-            shortcut_bar_visible: true,
+            shortcut_bar_visible,
         })
     }
 
@@ -490,6 +493,7 @@ impl App {
     }
 
     fn process_messages(&mut self) {
+        let tab_count = self.tabs.len();
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
         // Extract messages to avoid borrow conflicts
@@ -831,7 +835,24 @@ impl App {
                         if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
                             .find(|t| t.name == branch_name && !t.is_remote) {
                                 view_state.commit_graph_view.selected_commit = Some(tip.oid);
-                                view_state.commit_graph_view.scroll_to_selection(&repo_tab.commits, Rect::new(0.0, 0.0, 1920.0, 1080.0));
+                                let graph_bounds = if let Some(ref state) = self.state {
+                                    let extent = state.surface.extent();
+                                    let scale = state.scale_factor as f32;
+                                    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+                                    let tab_bar_height = if tab_count > 1 { TabBar::height(scale) } else { 0.0 };
+                                    let (_tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+                                    let layout = ScreenLayout::compute_with_ratios_and_shortcut(
+                                        main_bounds, 4.0, scale,
+                                        Some(self.sidebar_ratio),
+                                        Some(self.graph_ratio),
+                                        Some(self.staging_ratio),
+                                        self.shortcut_bar_visible,
+                                    );
+                                    layout.graph
+                                } else {
+                                    Rect::new(0.0, 0.0, 1920.0, 1080.0)
+                                };
+                                view_state.commit_graph_view.scroll_to_selection(&repo_tab.commits, graph_bounds);
                                 self.toast_manager.push(format!("Jumped to branch '{}'", branch_name), ToastSeverity::Info);
                         } else {
                             self.toast_manager.push(format!("Branch '{}' not found in graph", branch_name), ToastSeverity::Error);
@@ -1326,6 +1347,22 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Branch name dialog takes modal priority
+                    if self.branch_name_dialog.is_visible() {
+                        self.branch_name_dialog.handle_event(&input_event, screen_bounds);
+                        if let Some(action) = self.branch_name_dialog.take_action() {
+                            match action {
+                                BranchNameDialogAction::Create(name, oid) => {
+                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                        view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                                    }
+                                }
+                                BranchNameDialogAction::Cancel => {}
+                            }
+                        }
+                        return;
+                    }
+
                     // Settings dialog takes priority (modal)
                     if self.settings_dialog.is_visible() {
                         self.settings_dialog.handle_event(&input_event, screen_bounds);
@@ -1367,6 +1404,7 @@ impl ApplicationHandler for App {
                                             view_state,
                                             &mut self.toast_manager,
                                             &mut self.confirm_dialog,
+                                            &mut self.branch_name_dialog,
                                             &mut self.pending_confirm_action,
                                         );
                                     }
@@ -1531,6 +1569,7 @@ impl ApplicationHandler for App {
                                 view_state.last_diff_commit = None;
                             } else if view_state.commit_detail_view.has_content() {
                                 view_state.commit_detail_view.clear();
+                                view_state.last_diff_commit = None;
                             } else {
                                 event_loop.exit();
                             }
@@ -1605,6 +1644,8 @@ impl ApplicationHandler for App {
                                 }
                                 HeaderAction::Help => {
                                     self.shortcut_bar_visible = !self.shortcut_bar_visible;
+                                    self.config.shortcut_bar_visible = self.shortcut_bar_visible;
+                                    self.config.save();
                                 }
                                 HeaderAction::Settings => {
                                     self.settings_dialog.show();
@@ -1860,6 +1901,7 @@ fn handle_context_menu_action(
     view_state: &mut TabViewState,
     toast_manager: &mut ToastManager,
     confirm_dialog: &mut ConfirmDialog,
+    branch_name_dialog: &mut BranchNameDialog,
     pending_confirm_action: &mut Option<AppMessage>,
 ) {
     // Actions may be in format "action:param" or just "action"
@@ -1992,8 +2034,8 @@ fn handle_context_menu_action(
         "create_branch" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let name = format!("branch-{}", short);
-                view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                let default_name = format!("branch-{}", short);
+                branch_name_dialog.show(&default_name, oid);
             }
         }
         "stash_push" => {
@@ -2089,6 +2131,7 @@ fn build_ui_output(
     repo_dialog: &RepoDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
+    branch_name_dialog: &BranchNameDialog,
     text_renderer: &TextRenderer,
     scale_factor: f64,
     extent: [u32; 2],
@@ -2149,7 +2192,7 @@ fn build_ui_output(
         // Staging well (chrome layer)
         chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
 
-        // Right panel (chrome layer) - only render when diff/detail is active
+        // Right panel (chrome layer) - render diff/detail or empty state placeholder
         if view_state.commit_detail_view.has_content() {
             let (detail_rect, diff_rect) = layout.right_panel.split_vertical(0.40);
             chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
@@ -2158,6 +2201,17 @@ fn build_ui_output(
             }
         } else if view_state.diff_view.has_content() {
             chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.right_panel));
+        } else {
+            // Empty state placeholder
+            let msg = "Select a commit to view details";
+            let msg_w = text_renderer.measure_text(msg);
+            let line_h = text_renderer.line_height();
+            let cx = layout.right_panel.x + (layout.right_panel.width - msg_w) / 2.0;
+            let cy = layout.right_panel.y + (layout.right_panel.height - line_h) / 2.0;
+            chrome_output.text_vertices.extend(text_renderer.layout_text(
+                msg, cx, cy,
+                theme::TEXT_MUTED.to_array(),
+            ));
         }
     }
 
@@ -2188,6 +2242,11 @@ fn build_ui_output(
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
         overlay_output.extend(confirm_dialog.layout(text_renderer, screen_bounds));
+    }
+
+    // Branch name dialog (overlay layer - on top of everything)
+    if branch_name_dialog.is_visible() {
+        overlay_output.extend(branch_name_dialog.layout(text_renderer, screen_bounds));
     }
 
     (graph_output, chrome_output, overlay_output)
@@ -2249,7 +2308,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -2378,7 +2437,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -2493,7 +2552,7 @@ fn capture_screenshot_offscreen(
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,

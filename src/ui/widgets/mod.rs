@@ -1,5 +1,6 @@
 //! Widget implementations
 
+mod branch_name_dialog;
 mod button;
 pub mod confirm_dialog;
 pub mod context_menu;
@@ -15,6 +16,7 @@ mod text_area;
 mod text_input;
 mod toast;
 
+pub use branch_name_dialog::{BranchNameDialog, BranchNameDialogAction};
 pub use button::Button;
 pub use confirm_dialog::{ConfirmDialog, ConfirmDialogAction};
 pub use context_menu::{ContextMenu, MenuItem, MenuAction};
