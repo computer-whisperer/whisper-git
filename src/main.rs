@@ -1076,7 +1076,7 @@ impl ApplicationHandler for App {
                     // Route to active tab's views
                     let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
-                    // Handle per-tab global keys
+                    // Handle per-tab global keys (except Tab, which is handled after panel routing)
                     if let InputEvent::KeyDown { key, .. } = &input_event {
                         match key {
                             Key::Escape => {
@@ -1089,14 +1089,6 @@ impl ApplicationHandler for App {
                                     event_loop.exit();
                                 }
                                 return;
-                            }
-                            Key::Tab => {
-                                view_state.focused_panel = match view_state.focused_panel {
-                                    FocusedPanel::Graph => FocusedPanel::Staging,
-                                    FocusedPanel::Staging => FocusedPanel::Sidebar,
-                                    FocusedPanel::Sidebar => FocusedPanel::Graph,
-                                };
-                                view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
                             }
                             _ => {}
                         }
@@ -1186,6 +1178,22 @@ impl ApplicationHandler for App {
                         }
                     }
 
+                    // Detect clicks on panels to switch focus
+                    if let InputEvent::MouseDown { x, y, .. } = &input_event {
+                        if layout.staging.contains(*x, *y) {
+                            view_state.focused_panel = FocusedPanel::Staging;
+                        } else if layout.graph.contains(*x, *y) {
+                            view_state.focused_panel = FocusedPanel::Graph;
+                        } else if layout.sidebar.contains(*x, *y) {
+                            view_state.focused_panel = FocusedPanel::Sidebar;
+                            view_state.branch_sidebar.set_focused(true);
+                        }
+                        // Update sidebar focus state based on panel focus
+                        if view_state.focused_panel != FocusedPanel::Sidebar {
+                            view_state.branch_sidebar.set_focused(false);
+                        }
+                    }
+
                     // Route to focused panel
                     match view_state.focused_panel {
                         FocusedPanel::Graph => {
@@ -1236,6 +1244,17 @@ impl ApplicationHandler for App {
                         FocusedPanel::Sidebar => {
                             // Keyboard events handled by branch_sidebar.handle_event above
                         }
+                    }
+
+                    // Tab to cycle panels (only when not consumed by focused panel)
+                    if let InputEvent::KeyDown { key: Key::Tab, .. } = &input_event {
+                        view_state.focused_panel = match view_state.focused_panel {
+                            FocusedPanel::Graph => FocusedPanel::Staging,
+                            FocusedPanel::Staging => FocusedPanel::Sidebar,
+                            FocusedPanel::Sidebar => FocusedPanel::Graph,
+                        };
+                        view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
+                        return;
                     }
 
                     // Update hover states
