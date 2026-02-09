@@ -687,7 +687,7 @@ impl CommitGraphView {
         }
     }
 
-    fn scroll_to_selection(&mut self, commits: &[CommitInfo], bounds: Rect) {
+    pub fn scroll_to_selection(&mut self, commits: &[CommitInfo], bounds: Rect) {
         if let Some(id) = self.selected_commit
             && let Some(idx) = commits.iter().position(|c| c.id == id) {
                 let target_y = self.row_y_offsets.get(idx).copied()

@@ -119,6 +119,10 @@ enum AppMessage {
     UnstageHunk(String, usize),  // (file_path, hunk_index)
     DiscardFile(String),
     LoadMoreCommits,
+    DeleteSubmodule(String),
+    UpdateSubmodule(String),
+    JumpToWorktreeBranch(String),
+    RemoveWorktree(String),
 }
 
 /// Per-tab repository data
@@ -148,6 +152,8 @@ struct TabViewState {
     fetch_receiver: Option<Receiver<RemoteOpResult>>,
     pull_receiver: Option<Receiver<RemoteOpResult>>,
     push_receiver: Option<Receiver<RemoteOpResult>>,
+    /// Generic async receiver for submodule/worktree ops (label for toast)
+    generic_op_receiver: Option<(Receiver<RemoteOpResult>, String)>,
 }
 
 impl TabViewState {
@@ -169,6 +175,7 @@ impl TabViewState {
             fetch_receiver: None,
             pull_receiver: None,
             push_receiver: None,
+            generic_op_receiver: None,
         }
     }
 }
@@ -750,6 +757,55 @@ impl App {
                     }
                     view_state.commit_graph_view.finish_loading();
                 }
+                AppMessage::DeleteSubmodule(name) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::remove_submodule_async(workdir, name.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Delete submodule '{}'", name)));
+                        self.toast_manager.push(format!("Removing submodule '{}'...", name), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::UpdateSubmodule(name) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::update_submodule_async(workdir, name.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Update submodule '{}'", name)));
+                        self.toast_manager.push(format!("Updating submodule '{}'...", name), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::JumpToWorktreeBranch(name) => {
+                    // Find the worktree by name, get its branch, find the branch tip, select it
+                    if let Some(wt) = view_state.branch_sidebar.worktrees.iter().find(|w| w.name == name) {
+                        let branch_name = wt.branch.clone();
+                        if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
+                            .find(|t| t.name == branch_name && !t.is_remote) {
+                                view_state.commit_graph_view.selected_commit = Some(tip.oid);
+                                view_state.commit_graph_view.scroll_to_selection(&repo_tab.commits, Rect::new(0.0, 0.0, 1920.0, 1080.0));
+                                self.toast_manager.push(format!("Jumped to branch '{}'", branch_name), ToastSeverity::Info);
+                        } else {
+                            self.toast_manager.push(format!("Branch '{}' not found in graph", branch_name), ToastSeverity::Error);
+                        }
+                    } else {
+                        self.toast_manager.push(format!("Worktree '{}' not found", name), ToastSeverity::Error);
+                    }
+                }
+                AppMessage::RemoveWorktree(name) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::remove_worktree_async(workdir, name.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Remove worktree '{}'", name)));
+                        self.toast_manager.push(format!("Removing worktree '{}'...", name), ToastSeverity::Info);
+                    }
+                }
             }
         }
 
@@ -818,6 +874,33 @@ impl App {
                     eprintln!("Push failed: {}", result.error);
                     self.toast_manager.push(
                         format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+
+        // Poll generic async ops (submodule/worktree operations)
+        if let Some((ref rx, ref label)) = view_state.generic_op_receiver
+            && let Ok(result) = rx.try_recv() {
+                let label = label.clone();
+                view_state.generic_op_receiver = None;
+                if result.success {
+                    self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
+                    refresh_repo_state(repo_tab, view_state);
+                    // Also refresh submodules/worktrees
+                    if let Some(ref repo) = repo_tab.repo {
+                        if let Ok(submodules) = repo.submodules() {
+                            view_state.secondary_repos_view.set_submodules(submodules.clone());
+                            view_state.branch_sidebar.submodules = submodules;
+                        }
+                        if let Ok(worktrees) = repo.worktrees() {
+                            view_state.secondary_repos_view.set_worktrees(worktrees.clone());
+                            view_state.branch_sidebar.worktrees = worktrees;
+                        }
+                    }
+                } else {
+                    self.toast_manager.push(
+                        format!("{} failed: {}", label, result.error.lines().next().unwrap_or("unknown error")),
                         ToastSeverity::Error,
                     );
                 }
@@ -1203,6 +1286,26 @@ impl ApplicationHandler for App {
                                     self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
                                     self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
                                 }
+                                SidebarAction::DeleteSubmodule(name) => {
+                                    self.confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", name));
+                                    self.pending_confirm_action = Some(AppMessage::DeleteSubmodule(name));
+                                }
+                                SidebarAction::UpdateSubmodule(name) => {
+                                    view_state.pending_messages.push(AppMessage::UpdateSubmodule(name));
+                                }
+                                SidebarAction::OpenSubmoduleTerminal(name) => {
+                                    self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                }
+                                SidebarAction::JumpToWorktreeBranch(name) => {
+                                    view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(name));
+                                }
+                                SidebarAction::RemoveWorktree(name) => {
+                                    self.confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", name));
+                                    self.pending_confirm_action = Some(AppMessage::RemoveWorktree(name));
+                                }
+                                SidebarAction::OpenWorktreeTerminal(name) => {
+                                    self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                }
                             }
                         }
                         return;
@@ -1531,6 +1634,31 @@ fn handle_context_menu_action(
         "discard" => {
             if !param.is_empty() {
                 view_state.pending_messages.push(AppMessage::DiscardFile(param.to_string()));
+            }
+        }
+        "delete_submodule" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", param));
+                *pending_confirm_action = Some(AppMessage::DeleteSubmodule(param.to_string()));
+            }
+        }
+        "update_submodule" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::UpdateSubmodule(param.to_string()));
+            }
+        }
+        "open_submodule" | "open_worktree" => {
+            toast_manager.push("Open terminal not yet implemented".to_string(), ToastSeverity::Info);
+        }
+        "jump_to_worktree" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(param.to_string()));
+            }
+        }
+        "remove_worktree" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", param));
+                *pending_confirm_action = Some(AppMessage::RemoveWorktree(param.to_string()));
             }
         }
         _ => {
