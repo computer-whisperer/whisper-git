@@ -971,6 +971,40 @@ impl GitRepo {
         }).collect()
     }
 
+    /// Amend the last commit with the current index and a new message
+    pub fn amend_commit(&self, message: &str) -> Result<Oid> {
+        if self.repo.is_bare() {
+            anyhow::bail!("Cannot perform this operation on a bare repository");
+        }
+        let head = self.repo.head().context("Failed to get HEAD")?;
+        let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
+        let mut index = self.repo.index().context("Failed to get index")?;
+        let tree_oid = index.write_tree().context("Failed to write tree")?;
+        let tree = self.repo.find_tree(tree_oid).context("Failed to find tree")?;
+
+        let oid = head_commit.amend(
+            Some("HEAD"),
+            None,  // keep author
+            None,  // keep committer
+            None,  // keep encoding
+            Some(message),
+            Some(&tree),
+        ).context("Failed to amend commit")?;
+
+        Ok(oid)
+    }
+
+    /// Get the HEAD commit's message split into (subject, body)
+    pub fn head_commit_message(&self) -> Option<(String, String)> {
+        let head = self.repo.head().ok()?;
+        let commit = head.peel_to_commit().ok()?;
+        let msg = commit.message()?.to_string();
+        let mut lines = msg.splitn(2, '\n');
+        let subject = lines.next().unwrap_or("").trim().to_string();
+        let body = lines.next().unwrap_or("").trim().to_string();
+        Some((subject, body))
+    }
+
     /// Discard working directory changes for a file by checking out from HEAD
     pub fn discard_file(&self, path: &str) -> Result<()> {
         let mut checkout_builder = git2::build::CheckoutBuilder::new();

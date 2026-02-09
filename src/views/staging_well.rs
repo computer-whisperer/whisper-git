@@ -15,6 +15,8 @@ pub enum StagingAction {
     StageAll,
     UnstageAll,
     Commit(String),
+    AmendCommit(String),
+    ToggleAmend,
     ViewDiff(String),
 }
 
@@ -34,6 +36,10 @@ pub struct StagingWell {
     unstage_all_btn: Button,
     /// Commit button
     commit_btn: Button,
+    /// Amend toggle button
+    amend_btn: Button,
+    /// Whether we are in amend mode
+    pub amend_mode: bool,
     /// Pending action
     pending_action: Option<StagingAction>,
     /// Which section has focus (0=subject, 1=body, 2=staged, 3=unstaged)
@@ -54,6 +60,8 @@ impl StagingWell {
             stage_all_btn: Button::new("Stage All"),
             unstage_all_btn: Button::new("Unstage All"),
             commit_btn: Button::new("Commit").primary(),
+            amend_btn: Button::new("Amend"),
+            amend_mode: false,
             pending_action: None,
             focus_section: 0,
             scale: 1.0,
@@ -101,9 +109,29 @@ impl StagingWell {
         self.body_area.set_text("");
     }
 
-    /// Check if commit button should be enabled
+    /// Check if commit button should be enabled.
+    /// In amend mode, we only require a non-empty subject (no staged files needed).
     pub fn can_commit(&self) -> bool {
-        !self.subject_input.text().is_empty() && !self.staged_list.files.is_empty()
+        if self.amend_mode {
+            !self.subject_input.text().is_empty()
+        } else {
+            !self.subject_input.text().is_empty() && !self.staged_list.files.is_empty()
+        }
+    }
+
+    /// Enter amend mode, pre-filling the commit message with the last commit's subject/body.
+    pub fn enter_amend_mode(&mut self, subject: &str, body: &str) {
+        self.amend_mode = true;
+        self.subject_input.set_text(subject);
+        self.body_area.set_text(body);
+        self.focus_section = 0;
+        self.update_focus_state();
+    }
+
+    /// Exit amend mode and clear the commit message fields.
+    pub fn exit_amend_mode(&mut self) {
+        self.amend_mode = false;
+        self.clear_message();
     }
 
     /// Get context menu items for the file at (x, y) in the staging area.
@@ -178,15 +206,41 @@ impl StagingWell {
     /// Sync button styles based on current state. Call before layout.
     pub fn update_button_state(&mut self) {
         let staged_count = self.staged_list.files.len();
+
+        // Amend toggle button styling
+        if self.amend_mode {
+            self.amend_btn.label = "Amend: ON".to_string();
+            self.amend_btn.background = theme::STATUS_BEHIND.with_alpha(0.3);
+            self.amend_btn.hover_background = theme::STATUS_BEHIND.with_alpha(0.4);
+            self.amend_btn.pressed_background = theme::STATUS_BEHIND.with_alpha(0.2);
+            self.amend_btn.text_color = theme::STATUS_BEHIND;
+            self.amend_btn.border_color = Some(theme::STATUS_BEHIND);
+        } else {
+            self.amend_btn.label = "Amend".to_string();
+            self.amend_btn.background = theme::SURFACE_RAISED;
+            self.amend_btn.hover_background = theme::SURFACE_HOVER;
+            self.amend_btn.pressed_background = theme::SURFACE;
+            self.amend_btn.text_color = theme::TEXT_MUTED;
+            self.amend_btn.border_color = Some(theme::BORDER);
+        }
+
+        // Commit button styling
         if self.can_commit() {
-            self.commit_btn.label = format!("Commit ({})", staged_count);
-            self.commit_btn.background = theme::ACCENT;
-            self.commit_btn.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
-            self.commit_btn.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+            if self.amend_mode {
+                self.commit_btn.label = "Amend Commit".to_string();
+                self.commit_btn.background = theme::STATUS_BEHIND;
+                self.commit_btn.hover_background = crate::ui::Color::rgba(1.0, 0.70, 0.15, 1.0);
+                self.commit_btn.pressed_background = crate::ui::Color::rgba(0.85, 0.50, 0.0, 1.0);
+            } else {
+                self.commit_btn.label = format!("Commit ({})", staged_count);
+                self.commit_btn.background = theme::ACCENT;
+                self.commit_btn.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
+                self.commit_btn.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+            }
             self.commit_btn.text_color = theme::TEXT_BRIGHT;
             self.commit_btn.border_color = None;
         } else {
-            self.commit_btn.label = "Commit".to_string();
+            self.commit_btn.label = if self.amend_mode { "Amend Commit".to_string() } else { "Commit".to_string() };
             self.commit_btn.background = theme::SURFACE_RAISED;
             self.commit_btn.hover_background = theme::SURFACE_HOVER;
             self.commit_btn.pressed_background = theme::SURFACE;
@@ -204,6 +258,7 @@ impl StagingWell {
         self.unstaged_list.update_hover(x, y, unstaged_bounds);
         self.stage_all_btn.update_hover(x, y, self.stage_all_button_bounds(buttons_bounds));
         self.unstage_all_btn.update_hover(x, y, self.unstage_all_button_bounds(buttons_bounds));
+        self.amend_btn.update_hover(x, y, self.amend_button_bounds(buttons_bounds));
         self.commit_btn.update_hover(x, y, self.commit_button_bounds(buttons_bounds));
     }
 
@@ -230,10 +285,14 @@ impl StagingWell {
             return EventResponse::Consumed;
         }
 
-        // Ctrl+Enter to commit
+        // Ctrl+Enter to commit (or amend)
         if let InputEvent::KeyDown { key: Key::Enter, modifiers, .. } = event
             && modifiers.only_ctrl() && self.can_commit() {
-                self.pending_action = Some(StagingAction::Commit(self.commit_message()));
+                if self.amend_mode {
+                    self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
+                } else {
+                    self.pending_action = Some(StagingAction::Commit(self.commit_message()));
+                }
                 return EventResponse::Consumed;
             }
 
@@ -252,9 +311,20 @@ impl StagingWell {
             return EventResponse::Consumed;
         }
 
+        if self.amend_btn.handle_event(event, self.amend_button_bounds(buttons_bounds)).is_consumed() {
+            if self.amend_btn.was_clicked() {
+                self.pending_action = Some(StagingAction::ToggleAmend);
+            }
+            return EventResponse::Consumed;
+        }
+
         if self.commit_btn.handle_event(event, self.commit_button_bounds(buttons_bounds)).is_consumed() {
             if self.commit_btn.was_clicked() && self.can_commit() {
-                self.pending_action = Some(StagingAction::Commit(self.commit_message()));
+                if self.amend_mode {
+                    self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
+                } else {
+                    self.pending_action = Some(StagingAction::Commit(self.commit_message()));
+                }
             }
             return EventResponse::Consumed;
         }
@@ -395,9 +465,15 @@ impl StagingWell {
         Rect::new(buttons.x + 138.0 * s, buttons.y + 8.0 * s, 150.0 * s, 28.0 * s)
     }
 
+    fn amend_button_bounds(&self, buttons: Rect) -> Rect {
+        let s = self.scale;
+        Rect::new(buttons.right() - 240.0 * s, buttons.y + 8.0 * s, 90.0 * s, 28.0 * s)
+    }
+
     fn commit_button_bounds(&self, buttons: Rect) -> Rect {
         let s = self.scale;
-        Rect::new(buttons.right() - 110.0 * s, buttons.y + 8.0 * s, 110.0 * s, 28.0 * s)
+        let width = if self.amend_mode { 130.0 * s } else { 110.0 * s };
+        Rect::new(buttons.right() - width, buttons.y + 8.0 * s, width, 28.0 * s)
     }
 
     /// Layout the staging well
@@ -434,13 +510,15 @@ impl StagingWell {
             1.0,
         ));
 
-        // Title in bright text
+        // Title in bright text, with [Amend] indicator when in amend mode
         let title_y = bounds.y + 10.0 * s;
+        let title_text = if self.amend_mode { "Amend Commit" } else { "Commit Message" };
+        let title_color = if self.amend_mode { theme::STATUS_BEHIND } else { theme::TEXT_BRIGHT };
         output.text_vertices.extend(text_renderer.layout_text(
-            "Commit Message",
+            title_text,
             bounds.x + 12.0 * s,
             title_y,
-            theme::TEXT_BRIGHT.to_array(),
+            title_color.to_array(),
         ));
 
         // Character count for subject - right-aligned on title row
@@ -488,6 +566,9 @@ impl StagingWell {
         // Buttons
         output.extend(self.stage_all_btn.layout(text_renderer, self.stage_all_button_bounds(buttons_bounds)));
         output.extend(self.unstage_all_btn.layout(text_renderer, self.unstage_all_button_bounds(buttons_bounds)));
+
+        // Amend toggle button
+        output.extend(self.amend_btn.layout(text_renderer, self.amend_button_bounds(buttons_bounds)));
 
         // Commit button (uses stored instance to preserve hover state)
         let commit_bounds = self.commit_button_bounds(buttons_bounds);

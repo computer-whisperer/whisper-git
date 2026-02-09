@@ -134,6 +134,8 @@ enum AppMessage {
     StashDrop(usize),
     StashPopIndex(usize),
     CherryPick(Oid),
+    AmendCommit(String),
+    ToggleAmend,
 }
 
 /// Per-tab repository data
@@ -978,6 +980,38 @@ impl App {
                         self.toast_manager.push(format!("Cherry-picking {}...", &sha[..7]), ToastSeverity::Info);
                     }
                 }
+                AppMessage::AmendCommit(message) => {
+                    match repo!().amend_commit(&message) {
+                        Ok(oid) => {
+                            println!("Amended commit: {}", oid);
+                            refresh_repo_state(repo_tab, view_state);
+                            view_state.staging_well.exit_amend_mode();
+                            self.toast_manager.push(
+                                format!("Amended {}", &oid.to_string()[..7]),
+                                ToastSeverity::Success,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to amend: {}", e);
+                            self.toast_manager.push(
+                                format!("Amend failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                }
+                AppMessage::ToggleAmend => {
+                    if view_state.staging_well.amend_mode {
+                        view_state.staging_well.exit_amend_mode();
+                    } else if let Some((subject, body)) = repo!().head_commit_message() {
+                        view_state.staging_well.enter_amend_mode(&subject, &body);
+                    } else {
+                        self.toast_manager.push(
+                            "No HEAD commit to amend".to_string(),
+                            ToastSeverity::Error,
+                        );
+                    }
+                }
             }
         }
 
@@ -1542,6 +1576,15 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         }
+                        // Ctrl+Shift+A: toggle amend mode
+                        if *key == Key::A && modifiers.ctrl_shift() {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                if !view_state.staging_well.has_text_focus() {
+                                    view_state.pending_messages.push(AppMessage::ToggleAmend);
+                                    return;
+                                }
+                            }
+                        }
                     }
 
                     // Route to tab bar (if visible)
@@ -1776,6 +1819,12 @@ impl ApplicationHandler for App {
                                     }
                                     StagingAction::Commit(message) => {
                                         view_state.pending_messages.push(AppMessage::Commit(message));
+                                    }
+                                    StagingAction::AmendCommit(message) => {
+                                        view_state.pending_messages.push(AppMessage::AmendCommit(message));
+                                    }
+                                    StagingAction::ToggleAmend => {
+                                        view_state.pending_messages.push(AppMessage::ToggleAmend);
                                     }
                                     StagingAction::ViewDiff(path) => {
                                         let staged = view_state.staging_well.staged_list.files
