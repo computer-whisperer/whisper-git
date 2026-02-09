@@ -173,6 +173,12 @@ impl StagingWell {
         self.unstaged_list.set_focused(false);
     }
 
+    /// Update cursor blink state for text inputs. Call once per frame.
+    pub fn update_cursors(&mut self, now: std::time::Instant) {
+        self.subject_input.update_cursor(now);
+        self.body_area.update_cursor(now);
+    }
+
     /// Sync button styles based on current state. Call before layout.
     pub fn update_button_state(&mut self) {
         let staged_count = self.staged_list.files.len();

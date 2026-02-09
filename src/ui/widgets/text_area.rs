@@ -21,6 +21,10 @@ pub struct TextArea {
     /// Guard against double-insertion: set when KeyDown inserts text,
     /// cleared when TextInput fires for the same keystroke
     inserted_from_key: bool,
+    /// Whether the cursor is currently visible (for blinking)
+    cursor_visible: bool,
+    /// Last time the cursor blink state changed
+    last_blink: std::time::Instant,
 }
 
 impl TextArea {
@@ -34,6 +38,8 @@ impl TextArea {
             scroll_offset: 0,
             modified: false,
             inserted_from_key: false,
+            cursor_visible: true,
+            last_blink: std::time::Instant::now(),
         }
     }
 
@@ -154,6 +160,19 @@ impl TextArea {
             self.scroll_offset = self.cursor_line - visible_lines + 1;
         }
     }
+
+    /// Update cursor blink state. Call once per frame.
+    pub fn update_cursor(&mut self, now: std::time::Instant) {
+        if self.state.focused {
+            if now.duration_since(self.last_blink).as_millis() >= 530 {
+                self.cursor_visible = !self.cursor_visible;
+                self.last_blink = now;
+            }
+        } else {
+            self.cursor_visible = true;
+            self.last_blink = now;
+        }
+    }
 }
 
 impl Default for TextArea {
@@ -226,14 +245,20 @@ impl Widget for TextArea {
                         self.insert_newline();
                         let visible_lines = (bounds.height / 24.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Backspace => {
                         self.delete_backward();
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Delete => {
                         self.delete_forward();
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Tab => {
@@ -256,6 +281,8 @@ impl Widget for TextArea {
                                 }
                             }
                             self.inserted_from_key = true;
+                            self.cursor_visible = true;
+                            self.last_blink = std::time::Instant::now();
                         }
                         return EventResponse::Consumed;
                     }
@@ -276,6 +303,8 @@ impl Widget for TextArea {
                         self.insert_char(c);
                     }
                 }
+                self.cursor_visible = true;
+                self.last_blink = std::time::Instant::now();
                 return EventResponse::Consumed;
             }
             InputEvent::Scroll { delta_y, .. } if self.state.focused => {
@@ -339,8 +368,8 @@ impl Widget for TextArea {
                 ));
             }
 
-            // Draw cursor on this line
-            if self.state.focused && line_idx == self.cursor_line {
+            // Draw cursor on this line (blinks when focused)
+            if self.state.focused && self.cursor_visible && line_idx == self.cursor_line {
                 let cursor_x = text_x + self.cursor_col as f32 * text_renderer.char_width();
                 let cursor_rect = Rect::new(cursor_x, y, 2.0, line_height);
                 output.spline_vertices.extend(create_rect_vertices(

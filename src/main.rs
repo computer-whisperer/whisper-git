@@ -1618,9 +1618,12 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     // Sync button state and shortcut context before layout
     let single_tab = app.tabs.len() == 1;
+    let now = Instant::now();
     if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
         view_state.header_bar.update_button_state();
         view_state.staging_well.update_button_state();
+        view_state.staging_well.update_cursors(now);
+        view_state.commit_graph_view.search_bar.update_cursor(now);
         view_state.shortcut_bar.set_context(match view_state.focused_panel {
             FocusedPanel::Graph => ShortcutContext::Graph,
             FocusedPanel::Staging => ShortcutContext::Staging,

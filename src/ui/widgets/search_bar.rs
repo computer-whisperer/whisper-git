@@ -29,6 +29,10 @@ pub struct SearchBar {
     pending_action: Option<SearchAction>,
     /// Guard against double-insertion from KeyDown + TextInput
     inserted_from_key: bool,
+    /// Whether the cursor is currently visible (for blinking)
+    cursor_visible: bool,
+    /// Last time the cursor blink state changed
+    last_blink: std::time::Instant,
 }
 
 impl SearchBar {
@@ -41,6 +45,8 @@ impl SearchBar {
             current_match: 0,
             pending_action: None,
             inserted_from_key: false,
+            cursor_visible: true,
+            last_blink: std::time::Instant::now(),
         }
     }
 
@@ -112,6 +118,19 @@ impl SearchBar {
         self.pending_action.take()
     }
 
+    /// Update cursor blink state. Call once per frame.
+    pub fn update_cursor(&mut self, now: std::time::Instant) {
+        if self.active {
+            if now.duration_since(self.last_blink).as_millis() >= 530 {
+                self.cursor_visible = !self.cursor_visible;
+                self.last_blink = now;
+            }
+        } else {
+            self.cursor_visible = true;
+            self.last_blink = now;
+        }
+    }
+
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.active {
@@ -139,6 +158,8 @@ impl SearchBar {
                             self.query.remove(self.cursor);
                             self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
                         }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Delete => {
@@ -146,6 +167,8 @@ impl SearchBar {
                             self.query.remove(self.cursor);
                             self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
                         }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Left => {
@@ -179,6 +202,8 @@ impl SearchBar {
                                 }
                             }
                             self.inserted_from_key = true;
+                            self.cursor_visible = true;
+                            self.last_blink = std::time::Instant::now();
                             self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
                             return EventResponse::Consumed;
                         }
@@ -199,6 +224,8 @@ impl SearchBar {
                     }
                 }
                 if !text.is_empty() {
+                    self.cursor_visible = true;
+                    self.last_blink = std::time::Instant::now();
                     self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
                     return EventResponse::Consumed;
                 }
@@ -282,14 +309,16 @@ impl SearchBar {
             ));
         }
 
-        // Cursor
-        let char_width = text_renderer.char_width();
-        let cursor_x = text_x + self.cursor as f32 * char_width;
-        let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
-        output.spline_vertices.extend(create_rect_vertices(
-            &cursor_rect,
-            theme::ACCENT.to_array(),
-        ));
+        // Cursor (blinks when active)
+        if self.cursor_visible {
+            let char_width = text_renderer.char_width();
+            let cursor_x = text_x + self.cursor as f32 * char_width;
+            let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
+            output.spline_vertices.extend(create_rect_vertices(
+                &cursor_rect,
+                theme::ACCENT.to_array(),
+            ));
+        }
 
         // Match count on the right
         let right_x = bounds.right() - padding;
