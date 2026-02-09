@@ -1,6 +1,6 @@
 # Whisper-Git UX Design
 
-**Version:** 1.3
+**Version:** 1.4
 **Date:** February 2026
 
 ---
@@ -9,21 +9,31 @@
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| **Input System** | ✓ Done | Unified keyboard/mouse events, modifier tracking |
-| **Widget Framework** | ✓ Done | Widget trait, state tracking, WidgetOutput |
-| **Layout System** | ✓ Done | Rect primitives, ScreenLayout, flex foundation |
-| **Theme System** | ✓ Done | Dark theme colors defined in `ui/widget.rs` |
-| **Header Bar** | ✓ Done | Repo name, branch, Fetch/Push/Commit buttons |
-| **Text Input** | ✓ Done | Single-line with placeholder, selection |
-| **Text Area** | ✓ Done | Multi-line for commit body |
-| **File List** | ✓ Done | Staged/unstaged with toggle, change counts |
-| **Staging Well** | ✓ Done | Full layout with subject, body, file lists |
-| **Commit Graph** | ✓ Done | Spline-rendered branch topology |
-| **Secondary Repos Panel** | ◐ Partial | Cards with accent borders, branch info; no interactivity yet |
+| **Input System** | Done | Unified keyboard/mouse events, modifier tracking, IME support |
+| **Widget Framework** | Done | Widget trait, WidgetState, WidgetOutput with spline/text/avatar vertices |
+| **Layout System** | Done | Rect primitives, ScreenLayout, flex foundation, HiDPI scaling |
+| **Theme System** | Done | Dark theme colors defined in `ui/widget.rs` |
+| **Header Bar** | Done | Repo name, branch, Fetch/Pull/Push/Commit/Help/Settings buttons |
+| **Text Input** | Done | Single-line with placeholder, cursor blink, IME support |
+| **Text Area** | Done | Multi-line for commit body, cursor blink |
+| **File List** | Done | Staged/unstaged with toggle, colored status dots |
+| **Staging Well** | Done | Full layout with subject, body, file lists, hunk-level staging |
+| **Commit Graph** | Done | Spline-rendered topology, lane reuse, search/filter, infinite scroll |
+| **Branch Sidebar** | Done | LOCAL/REMOTE/TAGS sections, collapsible, keyboard nav, context menu |
+| **Diff Viewer** | Done | Color-coded, word-level highlights, horizontal scroll, hunk staging |
+| **Commit Detail View** | Done | Full metadata, clickable file list with per-file diffs |
+| **Context Menus** | Done | Right-click on graph/sidebar/staging, keyboard nav, separators |
+| **Toast Notifications** | Done | Color-coded, auto-dismiss, stacking, fade-out |
+| **Search/Filter** | Done | Ctrl+F or `/`, matches subject/author/SHA, dims non-matches |
+| **Tab Bar + Multi-Repo** | Done | Ctrl+O open, Ctrl+W close, Ctrl+Tab cycle, per-tab state |
+| **Gravatar Avatars** | Done | Background download, disk cache, GPU atlas, identicon fallback |
+| **Settings Dialog** | Done | Avatar toggle, scroll speed (Normal/Fast) |
+| **Shortcut Bar** | Done | Context-sensitive keyboard hints below header |
+| **Scrollbars** | Done | Proportional thumb, drag support, accent hover colors |
+| **Remote Operations** | Done | Fetch/Pull/Push in background threads, auto-refresh |
+| **Secondary Repos Panel** | Partial | Cards with accent borders, branch info; no interactivity yet |
 | **LLM Suggestions** | Planned | Auto-generated commit messages |
 | **Command Palette** | Planned | Fuzzy command search |
-| **Context Menus** | Planned | Right-click actions |
-| **Commit Detail View** | Planned | Full message, diff, metadata |
 
 ---
 
