@@ -1531,12 +1531,7 @@ fn build_ui_output(
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
     add_panel_chrome(&mut output, &layout, &main_bounds, focused);
 
-    // Tab bar (only when multiple tabs)
-    if tabs.len() > 1 {
-        output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
-    }
-
-    // Active tab views
+    // Active tab views (graph rendered first so all chrome draws on top)
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
         // Commit graph (rendered first so header/chrome draws on top)
         let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
@@ -1573,6 +1568,11 @@ fn build_ui_output(
         } else {
             output.extend(view_state.secondary_repos_view.layout(text_renderer, layout.secondary_repos));
         }
+    }
+
+    // Tab bar (rendered after graph so it draws on top)
+    if tabs.len() > 1 {
+        output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
     }
 
     // Context menu overlay (on top of panels)

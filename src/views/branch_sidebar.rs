@@ -369,7 +369,7 @@ impl BranchSidebar {
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    self.scroll_offset = (self.scroll_offset - delta_y)
+                    self.scroll_offset = (self.scroll_offset - delta_y * 2.0)
                         .max(0.0)
                         .min((self.content_height - bounds.height).max(0.0));
                     return EventResponse::Consumed;

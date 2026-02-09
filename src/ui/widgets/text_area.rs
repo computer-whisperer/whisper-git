@@ -279,7 +279,7 @@ impl Widget for TextArea {
                 return EventResponse::Consumed;
             }
             InputEvent::Scroll { delta_y, .. } if self.state.focused => {
-                let scroll_lines = (delta_y / 20.0) as i32;
+                let scroll_lines = (delta_y / 10.0) as i32;
                 if scroll_lines < 0 {
                     self.scroll_offset = self.scroll_offset.saturating_sub((-scroll_lines) as usize);
                 } else {

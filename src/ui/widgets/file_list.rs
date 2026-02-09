@@ -243,7 +243,7 @@ impl Widget for FileList {
                 }
             }
             InputEvent::Scroll { delta_y, .. } if bounds.contains(event.position().unwrap_or((0.0, 0.0)).0, event.position().unwrap_or((0.0, 0.0)).1) => {
-                let scroll_lines = (-delta_y / 20.0) as i32;
+                let scroll_lines = (-delta_y / 10.0) as i32;
                 if scroll_lines < 0 {
                     self.scroll_offset = self.scroll_offset.saturating_sub((-scroll_lines) as usize);
                 } else {

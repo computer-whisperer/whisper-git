@@ -116,17 +116,17 @@ impl DiffView {
                 if bounds.contains(*x, *y) {
                     if modifiers.shift {
                         // Shift+Scroll = horizontal scroll
-                        self.h_scroll_offset = (self.h_scroll_offset - delta_y)
+                        self.h_scroll_offset = (self.h_scroll_offset - delta_y * 2.0)
                             .max(0.0)
                             .min((self.content_width - bounds.width).max(0.0));
                     } else {
                         // Normal scroll = vertical
-                        self.scroll_offset = (self.scroll_offset - delta_y)
+                        self.scroll_offset = (self.scroll_offset - delta_y * 2.0)
                             .max(0.0)
                             .min((self.content_height - bounds.height).max(0.0));
                         // Also handle native horizontal scroll (e.g. trackpads)
                         if delta_x.abs() > 0.5 {
-                            self.h_scroll_offset = (self.h_scroll_offset - delta_x)
+                            self.h_scroll_offset = (self.h_scroll_offset - delta_x * 2.0)
                                 .max(0.0)
                                 .min((self.content_width - bounds.width).max(0.0));
                         }

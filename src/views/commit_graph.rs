@@ -469,7 +469,7 @@ impl CommitGraphView {
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
                     let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
-                    self.scroll_offset = (self.scroll_offset - delta_y).max(0.0).min(max_scroll);
+                    self.scroll_offset = (self.scroll_offset - delta_y * 2.0).max(0.0).min(max_scroll);
                     self.check_load_more(commits, bounds);
                     EventResponse::Consumed
                 } else {

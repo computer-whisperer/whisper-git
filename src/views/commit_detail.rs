@@ -101,7 +101,7 @@ impl CommitDetailView {
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    self.file_scroll_offset = (self.file_scroll_offset - delta_y)
+                    self.file_scroll_offset = (self.file_scroll_offset - delta_y * 2.0)
                         .max(0.0)
                         .min((self.file_content_height - file_rect.height).max(0.0));
                     return EventResponse::Consumed;
