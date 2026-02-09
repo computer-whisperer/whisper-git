@@ -38,7 +38,7 @@ impl Button {
             badge: None,
             clicked: false,
             background: theme::SURFACE_RAISED,
-            hover_background: theme::SURFACE_HOVER,
+            hover_background: Color::rgba(0.22, 0.22, 0.22, 1.0), // Noticeably lighter on hover
             pressed_background: theme::SURFACE,
             text_color: theme::TEXT,
             border_color: Some(theme::BORDER),
@@ -75,6 +75,16 @@ impl Button {
         self.hover_background = Color::rgba(0.35, 0.70, 1.0, 1.0);  // Lighter blue on hover
         self.pressed_background = Color::rgba(0.20, 0.55, 0.85, 1.0); // Darker blue on press
         self.text_color = theme::TEXT_BRIGHT;
+        self.border_color = None;
+        self
+    }
+
+    /// Make this a ghost button (transparent bg, text only, subtle hover)
+    pub fn ghost(mut self) -> Self {
+        self.background = Color::rgba(0.0, 0.0, 0.0, 0.0);  // Fully transparent
+        self.hover_background = Color::rgba(1.0, 1.0, 1.0, 0.08); // Subtle white overlay on hover
+        self.pressed_background = Color::rgba(1.0, 1.0, 1.0, 0.12); // Slightly more visible on press
+        self.text_color = theme::TEXT_MUTED;
         self.border_color = None;
         self
     }

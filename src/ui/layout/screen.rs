@@ -97,12 +97,25 @@ impl ScreenLayout {
         graph_ratio: Option<f32>,
         staging_ratio: Option<f32>,
     ) -> Self {
+        Self::compute_with_ratios_and_shortcut(bounds, gap, scale, sidebar_ratio, graph_ratio, staging_ratio, true)
+    }
+
+    /// Like `compute_with_ratios` but allows hiding the shortcut bar.
+    pub fn compute_with_ratios_and_shortcut(
+        bounds: Rect,
+        gap: f32,
+        scale: f32,
+        sidebar_ratio: Option<f32>,
+        graph_ratio: Option<f32>,
+        staging_ratio: Option<f32>,
+        shortcut_bar_visible: bool,
+    ) -> Self {
         // Split into header and main area
         let header_height = bounds.height * 0.04;
         let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
 
-        // Shortcut bar: thin strip below header
-        let shortcut_bar_height = 20.0 * scale;
+        // Shortcut bar: thin strip below header (zero height when hidden)
+        let shortcut_bar_height = if shortcut_bar_visible { 20.0 * scale } else { 0.0 };
         let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
 
         // Sidebar width: use ratio if provided, otherwise default ~180px

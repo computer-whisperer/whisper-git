@@ -233,6 +233,8 @@ struct App {
     graph_ratio: f32,
     /// Fraction of right panel height for staging (default 0.45)
     staging_ratio: f32,
+    /// Whether the shortcut bar is visible
+    shortcut_bar_visible: bool,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -319,6 +321,7 @@ impl App {
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
             staging_ratio: 0.45,
+            shortcut_bar_visible: true,
         })
     }
 
@@ -1245,11 +1248,12 @@ impl ApplicationHandler for App {
                     let scale = state.scale_factor as f32;
                     let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
                     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-                    let layout = ScreenLayout::compute_with_ratios(
+                    let layout = ScreenLayout::compute_with_ratios_and_shortcut(
                         main_bounds, 4.0, scale,
                         Some(self.sidebar_ratio),
                         Some(self.graph_ratio),
                         Some(self.staging_ratio),
+                        self.shortcut_bar_visible,
                     );
 
                     // Confirm dialog takes highest modal priority
@@ -1535,7 +1539,7 @@ impl ApplicationHandler for App {
                                     view_state.focused_panel = FocusedPanel::Staging;
                                 }
                                 HeaderAction::Help => {
-                                    println!("Help: Tab to switch panels, j/k to navigate, Space to stage/unstage");
+                                    self.shortcut_bar_visible = !self.shortcut_bar_visible;
                                 }
                                 HeaderAction::Settings => {
                                     self.settings_dialog.show();
@@ -2004,6 +2008,7 @@ fn build_ui_output(
     sidebar_ratio: f32,
     graph_ratio: f32,
     staging_ratio: f32,
+    shortcut_bar_visible: bool,
 ) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
@@ -2011,11 +2016,12 @@ fn build_ui_output(
     // Tab bar takes space at top when multiple tabs
     let tab_bar_height = if tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-    let layout = ScreenLayout::compute_with_ratios(
+    let layout = ScreenLayout::compute_with_ratios_and_shortcut(
         main_bounds, 4.0, scale,
         Some(sidebar_ratio),
         Some(graph_ratio),
         Some(staging_ratio),
+        shortcut_bar_visible,
     );
 
     // Three layers: graph content renders first, chrome on top, overlay on top of everything
@@ -2043,8 +2049,10 @@ fn build_ui_output(
         // Header bar (chrome layer - on top of graph)
         chrome_output.extend(view_state.header_bar.layout(text_renderer, layout.header));
 
-        // Shortcut bar (chrome layer - on top of graph)
-        chrome_output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
+        // Shortcut bar (chrome layer - on top of graph) - only when visible
+        if shortcut_bar_visible {
+            chrome_output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
+        }
 
         // Branch sidebar (chrome layer)
         chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
@@ -2156,6 +2164,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
+        app.shortcut_bar_visible,
     );
 
     let viewport = Viewport {
@@ -2284,6 +2293,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
+        app.shortcut_bar_visible,
     );
 
     let state = app.state.as_mut().unwrap();
@@ -2398,6 +2408,7 @@ fn capture_screenshot_offscreen(
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
+        app.shortcut_bar_visible,
     );
 
     let state = app.state.as_mut().unwrap();
