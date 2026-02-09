@@ -389,7 +389,7 @@ pub mod theme {
     pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0);   // #1f2430 - staging (slightly lighter)
 
     // Zebra striping for graph rows
-    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.114, 0.130, 0.157, 1.0);   // #1d2128 - slightly lighter than PANEL_GRAPH
+    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.125, 0.145, 0.175, 1.0);   // #20252d - 50% more contrast from PANEL_GRAPH
 
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[

@@ -1,7 +1,7 @@
 //! Keyboard shortcut status bar - shows context-sensitive shortcuts for the focused panel
 
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme};
+use crate::ui::widget::{WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
 
 /// Which panel shortcuts to display
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +65,7 @@ impl ShortcutBar {
         let key_color = theme::TEXT_BRIGHT.to_array();
         let action_color = theme::TEXT_MUTED.to_array();
         let pill_bg = theme::SURFACE_RAISED.to_array();
+        let pill_outline = theme::BORDER_LIGHT.to_array();
         let pill_radius = 3.0;
         let pill_pad_h = 4.0;
         let pill_pad_v = 2.0;
@@ -85,6 +86,7 @@ impl ShortcutBar {
                 small_lh + pill_pad_v * 2.0,
             );
             output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
+            output.spline_vertices.extend(create_rounded_rect_outline_vertices(&pill_rect, pill_outline, pill_radius, 1.0));
 
             // Key label text inside pill
             output.text_vertices.extend(
@@ -119,6 +121,7 @@ impl ShortcutBar {
                 small_lh + pill_pad_v * 2.0,
             );
             output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
+            output.spline_vertices.extend(create_rounded_rect_outline_vertices(&pill_rect, pill_outline, pill_radius, 1.0));
 
             output.text_vertices.extend(
                 text_renderer.layout_text_small(hint_key, hint_x, text_y, theme::TEXT_MUTED.to_array()),
