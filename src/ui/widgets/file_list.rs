@@ -398,13 +398,7 @@ impl Widget for FileList {
             // File path - use brighter text when selected
             let path_x_offset = 38.0; // After status icon
             let max_path_width = bounds.width - path_x_offset - 30.0;
-            let char_width = text_renderer.char_width();
-            let max_chars = (max_path_width / char_width) as usize;
-            let path = if file.path.len() > max_chars && max_chars > 3 {
-                format!("...{}", &file.path[file.path.len().saturating_sub(max_chars - 3)..])
-            } else {
-                file.path.clone()
-            };
+            let path = truncate_path_to_width(&file.path, text_renderer, max_path_width);
 
             let path_color = if is_selected || is_hovered {
                 theme::TEXT_BRIGHT
@@ -491,4 +485,36 @@ impl Widget for FileList {
     fn set_focused(&mut self, focused: bool) {
         self.state.focused = focused;
     }
+}
+
+/// Truncate a file path to fit within max_width, preferring the filename end
+fn truncate_path_to_width(path: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let full_width = text_renderer.measure_text(path);
+    if full_width <= max_width {
+        return path.to_string();
+    }
+    let ellipsis = "...";
+    let ellipsis_width = text_renderer.measure_text(ellipsis);
+    let target_width = max_width - ellipsis_width;
+    if target_width <= 0.0 {
+        return ellipsis.to_string();
+    }
+    // Show as much of the end of the path as fits
+    let mut width = 0.0;
+    let chars: Vec<char> = path.chars().collect();
+    let mut start = chars.len();
+    while start > 0 {
+        start -= 1;
+        let cw = text_renderer.measure_text(&String::from(chars[start]));
+        if width + cw > target_width {
+            start += 1;
+            break;
+        }
+        width += cw;
+    }
+    let suffix: String = chars[start..].iter().collect();
+    format!("{}{}", ellipsis, suffix)
 }

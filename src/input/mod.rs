@@ -125,6 +125,8 @@ impl InputState {
                 // This handles keyboard layouts correctly without a manual mapping table.
                 let text = if let winit::keyboard::Key::Character(s) = &event.logical_key {
                     Some(s.to_string())
+                } else if event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) {
+                    Some(" ".to_string())
                 } else {
                     None
                 };
