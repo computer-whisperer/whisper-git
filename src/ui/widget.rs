@@ -193,6 +193,78 @@ pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -
     vertices
 }
 
+/// Helper to create rounded rectangle outline vertices (border only, no fill).
+///
+/// Draws the gap between an outer rounded rect and an inner rounded rect (inset
+/// by `thickness`) using 4 straight edge rectangles and 4 corner arc strips.
+pub fn create_rounded_rect_outline_vertices(
+    rect: &Rect,
+    color: [f32; 4],
+    radius: f32,
+    thickness: f32,
+) -> Vec<SplineVertex> {
+    let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
+    if r < 0.5 {
+        return create_rect_outline_vertices(rect, color, thickness);
+    }
+
+    let mut vertices = Vec::new();
+    let ri = (r - thickness).max(0.0); // inner corner radius
+
+    // Top edge (between top-left and top-right corners)
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.x + r, rect.y, rect.width - 2.0 * r, thickness),
+        color,
+    ));
+    // Bottom edge
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.x + r, rect.bottom() - thickness, rect.width - 2.0 * r, thickness),
+        color,
+    ));
+    // Left edge (between top-left and bottom-left corners)
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.x, rect.y + r, thickness, rect.height - 2.0 * r),
+        color,
+    ));
+    // Right edge
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.right() - thickness, rect.y + r, thickness, rect.height - 2.0 * r),
+        color,
+    ));
+
+    // Corner arcs: thin triangle strips between outer radius and inner radius
+    let corners = [
+        (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
+        (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
+        (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),
+        (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
+    ];
+
+    let segments = 6;
+    for (cx, cy, start_angle, end_angle) in corners {
+        for i in 0..segments {
+            let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
+            let a2 = start_angle + (end_angle - start_angle) * ((i + 1) as f32 / segments as f32);
+
+            let outer1 = [cx + r * a1.cos(), cy + r * a1.sin()];
+            let outer2 = [cx + r * a2.cos(), cy + r * a2.sin()];
+            let inner1 = [cx + ri * a1.cos(), cy + ri * a1.sin()];
+            let inner2 = [cx + ri * a2.cos(), cy + ri * a2.sin()];
+
+            // Two triangles for each arc segment
+            vertices.push(SplineVertex { position: outer1, color });
+            vertices.push(SplineVertex { position: outer2, color });
+            vertices.push(SplineVertex { position: inner1, color });
+
+            vertices.push(SplineVertex { position: outer2, color });
+            vertices.push(SplineVertex { position: inner2, color });
+            vertices.push(SplineVertex { position: inner1, color });
+        }
+    }
+
+    vertices
+}
+
 /// Helper to create rectangle outline vertices
 pub fn create_rect_outline_vertices(rect: &Rect, color: [f32; 4], thickness: f32) -> Vec<SplineVertex> {
     let mut vertices = Vec::new();
