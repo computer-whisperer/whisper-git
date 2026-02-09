@@ -37,7 +37,7 @@ impl SettingsDialog {
             pending_action: None,
             show_avatars: true,
             scroll_speed: 1.0,
-            row_scale: 2.0,
+            row_scale: 1.0,
         }
     }
 
@@ -151,7 +151,7 @@ impl Widget for SettingsDialog {
                 return EventResponse::Consumed;
             }
             if rs_large.contains(*x, *y) {
-                self.row_scale = 2.0;
+                self.row_scale = 1.5;
                 return EventResponse::Consumed;
             }
         }

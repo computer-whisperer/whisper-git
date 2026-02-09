@@ -218,7 +218,7 @@ pub struct CommitGraphView {
     pub branch_tips: Vec<BranchTip>,
     /// Tags
     pub tags: Vec<TagInfo>,
-    /// Row scale factor (1.0 = normal, 2.0 = large)
+    /// Row scale factor (1.0 = normal, 1.5 = large)
     pub row_scale: f32,
     /// Scroll offset
     pub scroll_offset: f32,
@@ -232,6 +232,8 @@ pub struct CommitGraphView {
     pending_action: Option<GraphAction>,
     /// Guard to prevent rapid-fire LoadMore requests
     loading_more: bool,
+    /// Pre-computed Y offsets for each row (time-based variable spacing)
+    row_y_offsets: Vec<f32>,
 }
 
 impl Default for CommitGraphView {
@@ -243,7 +245,7 @@ impl Default for CommitGraphView {
             row_height: 24.0,
             node_radius: 5.0,
             segments_per_curve: 20,
-            row_scale: 2.0,
+            row_scale: 1.0,
             selected_commit: None,
             hovered_commit: None,
             working_dir_status: None,
@@ -256,6 +258,7 @@ impl Default for CommitGraphView {
             search_matches: HashSet::new(),
             pending_action: None,
             loading_more: false,
+            row_y_offsets: Vec::new(),
         }
     }
 }
@@ -266,10 +269,10 @@ impl CommitGraphView {
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         let lh = text_renderer.line_height();
         let s = self.row_scale;
-        self.row_height = (lh * 1.8 * s).max(20.0 * s);
-        self.lane_width = (lh * 1.4 * s).max(12.0 * s);
-        self.node_radius = (lh * 0.38 * s).max(4.0 * s);
-        self.line_width = (lh * 0.14 * s.sqrt()).max(1.5);
+        self.row_height = (lh * 1.8 * s).max(20.0 * s);   // ~28.8px at s=1.0, lh=16
+        self.lane_width = (lh * 1.0 * s).max(12.0 * s);    // ~16px (compact lanes)
+        self.node_radius = (lh * 0.25 * s).max(3.0 * s);   // ~4px (small nodes)
+        self.line_width = (lh * 0.12 * s.sqrt()).max(1.5);  // ~1.9px (thin lines)
     }
 }
 
@@ -288,14 +291,23 @@ impl CommitGraphView {
         self.loading_more = false;
     }
 
+    /// Total content height based on row offsets (or fallback to uniform spacing)
+    fn total_content_height(&self, commit_count: usize) -> f32 {
+        if let Some(&last_offset) = self.row_y_offsets.last() {
+            last_offset + self.row_height
+        } else {
+            commit_count as f32 * self.row_height
+        }
+    }
+
     /// Check if we're near the bottom and should request more commits
     fn check_load_more(&mut self, commits: &[CommitInfo], bounds: Rect) {
         if self.loading_more {
             return;
         }
-        let visible_rows = (bounds.height / self.row_height).max(1.0) as usize;
-        let scroll_row = (self.scroll_offset / self.row_height) as usize;
-        if scroll_row + visible_rows >= commits.len().saturating_sub(5) {
+        let total_h = self.total_content_height(commits.len());
+        let threshold = total_h - bounds.height - self.row_height * 5.0;
+        if self.scroll_offset >= threshold.max(0.0) {
             self.loading_more = true;
             self.pending_action = Some(GraphAction::LoadMore);
         }
@@ -304,6 +316,36 @@ impl CommitGraphView {
     /// Update layout for the given commits
     pub fn update_layout(&mut self, commits: &[CommitInfo]) {
         self.layout.build(commits);
+        self.compute_row_offsets(commits);
+    }
+
+    /// Compute accumulated Y offsets for each row based on time deltas between
+    /// consecutive commits. Adjacent commits get minimal spacing; distant commits
+    /// get proportionally more gap (log-scaled, capped at 3x row_height).
+    fn compute_row_offsets(&mut self, commits: &[CommitInfo]) {
+        self.row_y_offsets.clear();
+        if commits.is_empty() {
+            return;
+        }
+
+        let min_gap = self.row_height;
+        let max_gap = self.row_height * 3.0;
+        let base_seconds: f64 = 3600.0; // 1 hour reference
+        let max_delta: f64 = 30.0 * 24.0 * 3600.0; // 30 days caps scaling
+        let log_max = (1.0 + max_delta / base_seconds).ln();
+
+        let mut accumulated = 0.0f32;
+        self.row_y_offsets.push(0.0); // first row starts at 0
+
+        for i in 1..commits.len() {
+            // Commits are in reverse chronological order (newer first)
+            let delta_seconds = (commits[i - 1].time - commits[i].time).unsigned_abs() as f64;
+            let clamped_delta = delta_seconds.min(max_delta);
+            let ratio = (1.0 + clamped_delta / base_seconds).ln() / log_max;
+            let gap = min_gap + (max_gap - min_gap) * ratio as f32;
+            accumulated += gap;
+            self.row_y_offsets.push(accumulated);
+        }
     }
 
     /// Calculate the width needed for the graph portion
@@ -326,9 +368,54 @@ impl CommitGraphView {
         } else {
             0.0
         };
-        bounds.y + header_offset + working_dir_offset + row as f32 * self.row_height
+        let y_offset = self.row_y_offsets.get(row).copied()
+            .unwrap_or(row as f32 * self.row_height);
+        bounds.y + header_offset + working_dir_offset + y_offset
             + self.row_height / 2.0
             - self.scroll_offset
+    }
+
+    /// Find the row index at a given Y position using binary search on row_y_offsets.
+    /// Returns None if the position doesn't correspond to any row.
+    fn row_at_y(&self, y: f32, bounds: &Rect, header_offset: f32, commit_count: usize) -> Option<usize> {
+        if commit_count == 0 {
+            return None;
+        }
+        let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
+            self.row_height + 8.0
+        } else {
+            0.0
+        };
+        // Convert screen Y to content-space Y (offset from the top of the content area)
+        let content_y = y - bounds.y - header_offset - working_dir_offset + self.scroll_offset;
+
+        if self.row_y_offsets.len() == commit_count {
+            // Binary search: find the row whose center (offset + row_height/2) is closest to content_y
+            // content_y should match offset + row_height/2, so look for offset closest to content_y - row_height/2
+            let target = content_y - self.row_height / 2.0;
+            let idx = self.row_y_offsets.partition_point(|&off| off < target);
+            // Check idx-1 and idx to find closest
+            let mut best_row = None;
+            let mut best_dist = f32::MAX;
+            for candidate in [idx.saturating_sub(1), idx.min(commit_count - 1)] {
+                let row_center_y = self.row_y_offsets[candidate] + self.row_height / 2.0;
+                let dist = (content_y - row_center_y).abs();
+                if dist < self.row_height / 2.0 && dist < best_dist {
+                    best_dist = dist;
+                    best_row = Some(candidate);
+                }
+            }
+            best_row
+        } else {
+            // Fallback: uniform spacing
+            let row_center_offset = self.row_height / 2.0;
+            let approx_row = ((content_y - row_center_offset) / self.row_height).round() as isize;
+            if approx_row >= 0 && (approx_row as usize) < commit_count {
+                Some(approx_row as usize)
+            } else {
+                None
+            }
+        }
     }
 
     /// Handle input events
@@ -380,7 +467,7 @@ impl CommitGraphView {
         // Route events to scrollbar
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
-                let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
+                let max_scroll = (self.total_content_height(commits.len()) - bounds.height + 60.0).max(0.0);
                 self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
             }
             self.check_load_more(commits, bounds);
@@ -435,11 +522,10 @@ impl CommitGraphView {
                 y,
                 ..
             } => {
-                // Check for click on a commit
+                // Check for click on a commit using binary search
                 if content_bounds.contains(*x, *y) {
-                    for (row, commit) in commits.iter().enumerate() {
-                        let commit_y = self.row_y(row, &bounds, header_offset);
-                        if (*y - commit_y).abs() < self.row_height / 2.0 {
+                    if let Some(row) = self.row_at_y(*y, &bounds, header_offset, commits.len()) {
+                        if let Some(commit) = commits.get(row) {
                             self.selected_commit = Some(commit.id);
                             return EventResponse::Consumed;
                         }
@@ -448,14 +534,12 @@ impl CommitGraphView {
                 EventResponse::Ignored
             }
             InputEvent::MouseMove { x, y, .. } => {
-                // Update hover state
+                // Update hover state using binary search
                 self.hovered_commit = None;
                 if content_bounds.contains(*x, *y) {
-                    for (row, commit) in commits.iter().enumerate() {
-                        let commit_y = self.row_y(row, &bounds, header_offset);
-                        if (*y - commit_y).abs() < self.row_height / 2.0 {
+                    if let Some(row) = self.row_at_y(*y, &bounds, header_offset, commits.len()) {
+                        if let Some(commit) = commits.get(row) {
                             self.hovered_commit = Some(commit.id);
-                            break;
                         }
                     }
                 }
@@ -465,7 +549,7 @@ impl CommitGraphView {
             }
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
+                    let max_scroll = (self.total_content_height(commits.len()) - bounds.height + 60.0).max(0.0);
                     self.scroll_offset = (self.scroll_offset - delta_y * 2.0).max(0.0).min(max_scroll);
                     self.check_load_more(commits, bounds);
                     EventResponse::Consumed
@@ -494,9 +578,8 @@ impl CommitGraphView {
             return None;
         }
 
-        for (row, commit) in commits.iter().enumerate() {
-            let commit_y = self.row_y(row, &bounds, header_offset);
-            if (y - commit_y).abs() < self.row_height / 2.0 {
+        if let Some(row) = self.row_at_y(y, &bounds, header_offset, commits.len()) {
+            if let Some(commit) = commits.get(row) {
                 self.selected_commit = Some(commit.id);
 
                 let mut items = vec![
@@ -566,7 +649,8 @@ impl CommitGraphView {
     fn scroll_to_selection(&mut self, commits: &[CommitInfo], bounds: Rect) {
         if let Some(id) = self.selected_commit
             && let Some(idx) = commits.iter().position(|c| c.id == id) {
-                let target_y = idx as f32 * self.row_height;
+                let target_y = self.row_y_offsets.get(idx).copied()
+                    .unwrap_or(idx as f32 * self.row_height);
                 let visible_height = bounds.height - 60.0;
 
                 if target_y < self.scroll_offset {
@@ -588,10 +672,12 @@ impl CommitGraphView {
         let header_offset = 10.0;
         let scrollbar_width = 10.0;
 
-        // Update scrollbar state
+        // Update scrollbar state using total content height (approximate via equivalent row count)
+        let total_h = self.total_content_height(commits.len());
+        let equivalent_total_rows = (total_h / self.row_height).ceil() as usize;
         let visible_rows = (bounds.height / self.row_height).max(1.0) as usize;
         let scroll_offset_items = (self.scroll_offset / self.row_height).round() as usize;
-        self.scrollbar.set_content(commits.len(), visible_rows, scroll_offset_items);
+        self.scrollbar.set_content(equivalent_total_rows, visible_rows, scroll_offset_items);
 
         // Background strip for graph column - subtle elevation
         let graph_bg_width = self.graph_width() + 24.0;
@@ -762,14 +848,14 @@ impl CommitGraphView {
                 vertices.extend(self.create_circle_vertices(
                     x,
                     y,
-                    self.node_radius + 6.0,
+                    self.node_radius + 4.0,
                     theme::ACCENT.with_alpha(0.25).to_array(),
                 ));
                 // Inner glow
                 vertices.extend(self.create_circle_vertices(
                     x,
                     y,
-                    self.node_radius + 3.0,
+                    self.node_radius + 2.0,
                     theme::ACCENT.with_alpha(0.5).to_array(),
                 ));
             }
@@ -778,7 +864,7 @@ impl CommitGraphView {
             vertices.extend(self.create_circle_vertices(
                 x,
                 y,
-                self.node_radius + 1.5,
+                self.node_radius + 1.0,
                 theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
             ));
 
@@ -789,8 +875,8 @@ impl CommitGraphView {
                 vertices.extend(self.create_ring_vertices(
                     x,
                     y,
-                    self.node_radius + 3.5,
-                    2.5,
+                    self.node_radius + 2.5,
+                    1.5,
                     node_color.to_array(),
                 ));
                 // Inner filled circle
