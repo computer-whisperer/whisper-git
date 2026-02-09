@@ -2,7 +2,7 @@
 
 use crate::input::{InputEvent, EventResponse, MouseButton};
 use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetState, WidgetOutput, create_rect_vertices, create_rect_outline_vertices, theme};
+use crate::ui::widget::{Widget, WidgetId, WidgetState, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme};
 
 /// A clickable button with text
 #[allow(dead_code)]
@@ -145,18 +145,22 @@ impl Widget for Button {
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+        let corner_radius = (bounds.height * 0.15).min(6.0);
 
-        // Draw background
+        // Draw background with rounded corners
         let bg_color = self.current_background();
-        output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color.to_array()));
+        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
 
-        // Draw border - brighter on hover
+        // Draw border - brighter on hover (using overlaid rounded rect for outline effect)
         if let Some(border) = self.border_color {
             let border_color = if self.state.hovered {
                 theme::BORDER_LIGHT
             } else {
                 border
             };
+            // Outline via slightly larger rounded rect behind, then inner rect on top is already bg
+            // Use a simple 1px inset approach: render border-color rect, then bg rect inset by 1px
+            // But bg is already drawn, so just draw border edges via thin rects on sides (kept as rect outline for simplicity)
             output.spline_vertices.extend(create_rect_outline_vertices(
                 &bounds,
                 border_color.to_array(),

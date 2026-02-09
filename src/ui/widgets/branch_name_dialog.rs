@@ -4,7 +4,7 @@ use git2::Oid;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -186,6 +186,8 @@ impl Widget for BranchNameDialog {
             [0.0, 0.0, 0.0, 0.8],
         ));
 
+        let corner_radius = 8.0 * scale;
+
         // Drop shadow
         let shadow_offset = 3.0 * scale;
         let shadow_rect = Rect::new(
@@ -194,22 +196,17 @@ impl Widget for BranchNameDialog {
             dialog.width,
             dialog.height,
         );
-        output.spline_vertices.extend(create_rect_vertices(
+        output.spline_vertices.extend(create_rounded_rect_vertices(
             &shadow_rect,
             [0.0, 0.0, 0.0, 0.5],
+            corner_radius,
         ));
 
         // Dialog background
-        output.spline_vertices.extend(create_rect_vertices(
+        output.spline_vertices.extend(create_rounded_rect_vertices(
             &dialog,
             theme::SURFACE_RAISED.lighten(0.06).to_array(),
-        ));
-
-        // Dialog border
-        output.spline_vertices.extend(create_rect_outline_vertices(
-            &dialog,
-            theme::BORDER_LIGHT.lighten(0.05).to_array(),
-            2.0,
+            corner_radius,
         ));
 
         // Title

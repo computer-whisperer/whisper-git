@@ -7,7 +7,7 @@ use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
 use crate::ui::widget::{
-    create_dashed_rect_outline_vertices, create_rect_vertices, theme,
+    create_dashed_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
@@ -1253,10 +1253,10 @@ impl CommitGraphView {
                         label_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                    pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
-                        pill_radius,
                         pill_bg.to_array(),
+                        pill_radius,
                     ));
 
                     // Label text (centered in pill)
@@ -1285,10 +1285,10 @@ impl CommitGraphView {
                         line_height + pill_pad_v * 2.0,
                     );
                     // Tags: amber/yellow
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                    pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
-                        pill_radius,
                         Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
+                        pill_radius,
                     ));
                     vertices.extend(text_renderer.layout_text(
                         &tag_label,
@@ -1312,10 +1312,10 @@ impl CommitGraphView {
                         line_height + pill_pad_v * 2.0,
                     );
                     // HEAD pill: green
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                    pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
-                        pill_radius,
                         Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
+                        pill_radius,
                     ));
                     vertices.extend(text_renderer.layout_text(
                         head_label,
@@ -1412,53 +1412,6 @@ impl CommitGraphView {
         (vertices, pill_vertices, avatar_vertices)
     }
 
-    /// Create vertices for a rounded rectangle (pill shape)
-    fn create_rounded_rect_vertices(
-        &self,
-        rect: &Rect,
-        radius: f32,
-        color: [f32; 4],
-    ) -> Vec<SplineVertex> {
-        let mut vertices = Vec::new();
-        let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
-
-        // Central rectangle (excluding corners)
-        vertices.extend(create_rect_vertices(
-            &Rect::new(rect.x + r, rect.y, rect.width - 2.0 * r, rect.height),
-            color,
-        ));
-        // Left strip
-        vertices.extend(create_rect_vertices(
-            &Rect::new(rect.x, rect.y + r, r, rect.height - 2.0 * r),
-            color,
-        ));
-        // Right strip
-        vertices.extend(create_rect_vertices(
-            &Rect::new(rect.right() - r, rect.y + r, r, rect.height - 2.0 * r),
-            color,
-        ));
-
-        // Corner arcs (quarter circles)
-        let corners = [
-            (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),           // top-left
-            (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),    // top-right
-            (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),                      // bottom-right
-            (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),           // bottom-left
-        ];
-
-        let segments = 6;
-        for (cx, cy, start_angle, end_angle) in corners {
-            for i in 0..segments {
-                let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
-                let a2 = start_angle + (end_angle - start_angle) * ((i + 1) as f32 / segments as f32);
-                vertices.push(SplineVertex { position: [cx, cy], color });
-                vertices.push(SplineVertex { position: [cx + r * a1.cos(), cy + r * a1.sin()], color });
-                vertices.push(SplineVertex { position: [cx + r * a2.cos(), cy + r * a2.sin()], color });
-            }
-        }
-
-        vertices
-    }
 }
 
 /// Author identicon colors - distinct hues for visual differentiation

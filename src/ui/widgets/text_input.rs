@@ -1,7 +1,7 @@
 //! Single-line text input widget
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
 
 /// A single-line text input field
@@ -276,6 +276,7 @@ impl Widget for TextInput {
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let padding = 12.0;
+        let corner_radius = (bounds.height * 0.15).min(5.0);
 
         // Background - slightly raised when focused
         let bg_color = if self.state.focused {
@@ -283,7 +284,7 @@ impl Widget for TextInput {
         } else {
             theme::SURFACE
         };
-        output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color.to_array()));
+        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
 
         // Border - accent color when focused, thicker
         let border_color = if self.state.focused {

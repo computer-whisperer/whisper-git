@@ -143,6 +143,56 @@ pub fn create_rect_vertices(rect: &Rect, color: [f32; 4]) -> Vec<SplineVertex> {
     ]
 }
 
+/// Helper to create filled rounded rectangle vertices
+///
+/// Generates triangles for a rectangle with quarter-circle corner arcs.
+/// Uses center body + 2 side strips + 4 corner fans (6 segments each).
+pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -> Vec<SplineVertex> {
+    let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
+    if r < 0.5 {
+        return create_rect_vertices(rect, color);
+    }
+
+    let mut vertices = Vec::new();
+
+    // Central rectangle (full width, excluding top/bottom corner rows)
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.x + r, rect.y, rect.width - 2.0 * r, rect.height),
+        color,
+    ));
+    // Left strip (between corners)
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.x, rect.y + r, r, rect.height - 2.0 * r),
+        color,
+    ));
+    // Right strip (between corners)
+    vertices.extend(create_rect_vertices(
+        &Rect::new(rect.right() - r, rect.y + r, r, rect.height - 2.0 * r),
+        color,
+    ));
+
+    // Corner arcs (quarter circles): (center_x, center_y, start_angle, end_angle)
+    let corners = [
+        (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
+        (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
+        (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),
+        (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
+    ];
+
+    let segments = 6;
+    for (cx, cy, start_angle, end_angle) in corners {
+        for i in 0..segments {
+            let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
+            let a2 = start_angle + (end_angle - start_angle) * ((i + 1) as f32 / segments as f32);
+            vertices.push(SplineVertex { position: [cx, cy], color });
+            vertices.push(SplineVertex { position: [cx + r * a1.cos(), cy + r * a1.sin()], color });
+            vertices.push(SplineVertex { position: [cx + r * a2.cos(), cy + r * a2.sin()], color });
+        }
+    }
+
+    vertices
+}
+
 /// Helper to create rectangle outline vertices
 pub fn create_rect_outline_vertices(rect: &Rect, color: [f32; 4], thickness: f32) -> Vec<SplineVertex> {
     let mut vertices = Vec::new();

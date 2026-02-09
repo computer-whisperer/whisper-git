@@ -1,7 +1,7 @@
 //! Context menu widget - right-click popup overlay
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widget::{create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
 use crate::ui::{Rect, TextRenderer};
 
 /// A single item in the context menu
@@ -291,18 +291,22 @@ impl ContextMenu {
         let bounds = self.menu_bounds();
         let line_height = text_renderer.line_height();
 
+        let corner_radius = 6.0;
+
         // Shadow (offset dark rect behind menu)
         let shadow_rect = Rect::new(bounds.x + 3.0, bounds.y + 3.0, bounds.width, bounds.height);
-        output.spline_vertices.extend(create_rect_vertices(
+        output.spline_vertices.extend(create_rounded_rect_vertices(
             &shadow_rect,
             [0.0, 0.0, 0.0, 0.4],
+            corner_radius,
         ));
 
         // Menu background
         let bg_color = theme::SURFACE_RAISED.lighten(0.02);
-        output.spline_vertices.extend(create_rect_vertices(
+        output.spline_vertices.extend(create_rounded_rect_vertices(
             &bounds,
             bg_color.to_array(),
+            corner_radius,
         ));
 
         // Menu border

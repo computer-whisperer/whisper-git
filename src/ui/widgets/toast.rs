@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{WidgetOutput, create_rect_vertices, create_rect_outline_vertices};
+use crate::ui::widget::{WidgetOutput, create_rounded_rect_vertices, create_rect_outline_vertices};
 
 /// Severity determines the color scheme
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +135,7 @@ impl ToastManager {
             let rect = Rect::new(toast_x, toast_y, toast_width, toast_height);
 
             // Background
-            output.spline_vertices.extend(create_rect_vertices(&rect, toast.bg_color(opacity)));
+            output.spline_vertices.extend(create_rounded_rect_vertices(&rect, toast.bg_color(opacity), 6.0));
 
             // Border
             output.spline_vertices.extend(create_rect_outline_vertices(
