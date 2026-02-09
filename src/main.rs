@@ -373,8 +373,9 @@ impl App {
         let previous_frame_end = Some(sync::now(ctx.device.clone()).boxed());
 
         // Initialize all tab views
+        let scale = window_scale as f32;
         for (repo_tab, view_state) in &mut self.tabs {
-            init_tab_view(repo_tab, view_state, &text_renderer);
+            init_tab_view(repo_tab, view_state, &text_renderer, scale);
         }
 
         self.state = Some(RenderState {
@@ -818,7 +819,7 @@ impl App {
                 };
 
                 if let Some(ref render_state) = self.state {
-                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer);
+                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32);
                 }
 
                 self.tabs.push((repo_tab, view_state));
@@ -890,10 +891,11 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer) {
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32) {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
+    view_state.staging_well.scale = scale;
 
     if let Some(ref repo) = repo_tab.repo {
         // Set initial repo name in header (refresh_repo_state preserves the existing name)
@@ -957,6 +959,7 @@ impl ApplicationHandler for App {
                 for (_, view_state) in &mut self.tabs {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                     view_state.branch_sidebar.sync_metrics(&state.text_renderer);
+                    view_state.staging_well.scale = scale_factor as f32;
                 }
                 state.surface.needs_recreate = true;
             }
@@ -1029,7 +1032,7 @@ impl ApplicationHandler for App {
                     }
 
                     // Handle global keys first
-                    if let InputEvent::KeyDown { key, modifiers } = &input_event {
+                    if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
                         // Ctrl+O: open repo
                         if *key == Key::O && modifiers.only_ctrl() {
                             self.repo_dialog.show();

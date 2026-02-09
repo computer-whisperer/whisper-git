@@ -17,6 +17,9 @@ pub struct TextArea {
     scroll_offset: usize,
     /// Whether the content was modified
     modified: bool,
+    /// Guard against double-insertion: set when KeyDown inserts text,
+    /// cleared when TextInput fires for the same keystroke
+    inserted_from_key: bool,
 }
 
 impl TextArea {
@@ -29,6 +32,7 @@ impl TextArea {
             cursor_col: 0,
             scroll_offset: 0,
             modified: false,
+            inserted_from_key: false,
         }
     }
 
@@ -185,7 +189,7 @@ impl Widget for TextArea {
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, modifiers } if self.state.focused => {
+            InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
                 match key {
                     Key::Left => {
                         self.move_cursor(-1, 0);
@@ -237,15 +241,31 @@ impl Widget for TextArea {
                         return EventResponse::Consumed;
                     }
                     _ if key.is_printable() && !modifiers.ctrl && !modifiers.alt => {
-                        // Printable keys are handled via TextInput (IME) events.
-                        // Consume to prevent bubbling but don't insert here
-                        // to avoid double insertion with Ime::Commit.
+                        // Insert text from winit's logical key (handles keyboard layouts).
+                        // This is the primary text insertion path on X11/Wayland where
+                        // IME may not fire Ime::Commit for regular ASCII keypresses.
+                        if let Some(t) = text {
+                            for c in t.chars() {
+                                if c == '\n' || c == '\r' {
+                                    self.insert_newline();
+                                } else if !c.is_control() {
+                                    self.insert_char(c);
+                                }
+                            }
+                            self.inserted_from_key = true;
+                        }
                         return EventResponse::Consumed;
                     }
                     _ => {}
                 }
             }
             InputEvent::TextInput(text) if self.state.focused => {
+                // If we already inserted from the KeyDown event for this keystroke,
+                // skip to avoid double-insertion.
+                if self.inserted_from_key {
+                    self.inserted_from_key = false;
+                    return EventResponse::Consumed;
+                }
                 for c in text.chars() {
                     if c == '\n' || c == '\r' {
                         self.insert_newline();

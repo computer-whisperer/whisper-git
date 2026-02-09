@@ -318,7 +318,7 @@ impl CommitGraphView {
         );
 
         // Handle search bar activation via Ctrl+F or /
-        if let InputEvent::KeyDown { key, modifiers } = event {
+        if let InputEvent::KeyDown { key, modifiers, .. } = event {
             if (*key == Key::F && modifiers.only_ctrl()) || (*key == Key::Slash && !modifiers.any() && !self.search_bar.is_active()) {
                 self.search_bar.activate();
                 return EventResponse::Consumed;

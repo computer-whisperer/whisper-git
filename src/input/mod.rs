@@ -18,6 +18,9 @@ pub enum InputEvent {
     KeyDown {
         key: Key,
         modifiers: Modifiers,
+        /// Character text from winit's logical key (for text insertion fallback
+        /// when IME doesn't fire on X11/Wayland)
+        text: Option<String>,
     },
     KeyUp {
         key: Key,
@@ -140,12 +143,21 @@ impl InputState {
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = Key::from_winit(&event.physical_key, &event.logical_key);
 
+                // Extract character text from winit's logical key for text insertion fallback.
+                // This handles keyboard layouts correctly without a manual mapping table.
+                let text = if let winit::keyboard::Key::Character(s) = &event.logical_key {
+                    Some(s.to_string())
+                } else {
+                    None
+                };
+
                 match event.state {
                     winit::event::ElementState::Pressed => {
                         self.keyboard.set_pressed(key, true);
                         Some(InputEvent::KeyDown {
                             key,
                             modifiers: self.modifiers,
+                            text,
                         })
                     }
                     winit::event::ElementState::Released => {

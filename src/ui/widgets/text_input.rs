@@ -20,6 +20,9 @@ pub struct TextInput {
     pub max_length: usize,
     /// Whether the content was modified
     modified: bool,
+    /// Guard against double-insertion: set when KeyDown inserts text,
+    /// cleared when TextInput fires for the same keystroke
+    inserted_from_key: bool,
 }
 
 impl TextInput {
@@ -33,6 +36,7 @@ impl TextInput {
             selection_start: None,
             max_length: 0,
             modified: false,
+            inserted_from_key: false,
         }
     }
 
@@ -137,7 +141,7 @@ impl Widget for TextInput {
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, modifiers } if self.state.focused => {
+            InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
                 match key {
                     Key::Left => {
                         self.move_cursor(-1, modifiers.shift);
@@ -204,15 +208,29 @@ impl Widget for TextInput {
                         return EventResponse::Consumed;
                     }
                     _ if key.is_printable() && !modifiers.ctrl && !modifiers.alt => {
-                        // Printable keys are handled via TextInput (IME) events.
-                        // Consume to prevent bubbling but don't insert here
-                        // to avoid double insertion with Ime::Commit.
+                        // Insert text from winit's logical key (handles keyboard layouts).
+                        // This is the primary text insertion path on X11/Wayland where
+                        // IME may not fire Ime::Commit for regular ASCII keypresses.
+                        if let Some(t) = text {
+                            for c in t.chars() {
+                                if !c.is_control() {
+                                    self.insert_char(c);
+                                }
+                            }
+                            self.inserted_from_key = true;
+                        }
                         return EventResponse::Consumed;
                     }
                     _ => {}
                 }
             }
             InputEvent::TextInput(text) if self.state.focused => {
+                // If we already inserted from the KeyDown event for this keystroke,
+                // skip to avoid double-insertion.
+                if self.inserted_from_key {
+                    self.inserted_from_key = false;
+                    return EventResponse::Consumed;
+                }
                 for c in text.chars() {
                     if !c.is_control() {
                         self.insert_char(c);

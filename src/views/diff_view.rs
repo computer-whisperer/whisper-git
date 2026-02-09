@@ -170,7 +170,7 @@ impl DiffView {
                 self.hovered_hunk_button = found;
                 EventResponse::Ignored
             }
-            InputEvent::KeyDown { key, modifiers } => {
+            InputEvent::KeyDown { key, modifiers, .. } => {
                 if !bounds.contains(0.0, 0.0) && !self.has_content() {
                     return EventResponse::Ignored;
                 }
