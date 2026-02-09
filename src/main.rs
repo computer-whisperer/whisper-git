@@ -1088,9 +1088,10 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale_factor = scale_factor;
                 state.text_renderer.set_render_scale(scale_factor);
-                // Sync metrics on all tabs
-                for (_, view_state) in &mut self.tabs {
+                // Sync metrics on all tabs and recompute layouts
+                for (repo_tab, view_state) in &mut self.tabs {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
+                    view_state.commit_graph_view.update_layout(&repo_tab.commits);
                     view_state.branch_sidebar.sync_metrics(&state.text_renderer);
                     view_state.staging_well.scale = scale_factor as f32;
                 }

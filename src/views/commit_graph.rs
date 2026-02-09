@@ -1074,8 +1074,8 @@ impl CommitGraphView {
 
     /// Generate text vertices for commit info, and spline vertices for label pill backgrounds.
     ///
-    /// Row layout: graph lanes | identicon/avatar | subject line | branch/tag labels | time (dimmer, right-aligned)
-    /// The identicon already communicates authorship; subject gets maximum space.
+    /// Row layout (GitKraken style): graph lanes | branch/tag pills | identicon/avatar | subject line | time (dimmer, right-aligned)
+    /// Labels are rendered right after the graph lanes for maximum visibility.
     pub fn layout_text(
         &self,
         text_renderer: &TextRenderer,
@@ -1095,7 +1095,6 @@ impl CommitGraphView {
         let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 0.6;
 
         // Column layout: fixed-width time column right-aligned
-        // Author column removed - identicon already communicates authorship
         let time_col_width: f32 = 48.0;
         let right_margin: f32 = 8.0;
         let col_gap: f32 = 8.0;
@@ -1135,8 +1134,8 @@ impl CommitGraphView {
             });
 
         let char_width = text_renderer.char_width();
-        let pill_pad_h: f32 = 6.0;
-        let pill_pad_v: f32 = 2.0;
+        let pill_pad_h: f32 = 8.0;
+        let pill_pad_v: f32 = 3.0;
         let pill_radius: f32 = 3.0;
 
         for (row, commit) in commits.iter().enumerate() {
@@ -1169,10 +1168,120 @@ impl CommitGraphView {
                 theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
             ));
 
-            // === Author avatar or identicon fallback ===
+            // === Start rendering from text_x: pills first, then avatar, then subject ===
+            let mut current_x = text_x;
+
+            // === Branch labels with pill backgrounds (GitKraken style: before avatar/subject) ===
+            if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
+                for tip in tips {
+                    let (label_color, pill_bg) = if tip.is_remote {
+                        (
+                            theme::BRANCH_REMOTE,
+                            Color::rgba(0.133, 0.773, 0.369, 0.25),
+                        )
+                    } else if tip.is_head {
+                        (
+                            theme::ACCENT,
+                            Color::rgba(0.231, 0.510, 0.965, 0.3),
+                        )
+                    } else {
+                        (
+                            theme::BRANCH_FEATURE,
+                            Color::rgba(0.231, 0.510, 0.965, 0.3),
+                        )
+                    };
+
+                    let label = &tip.name;
+                    let label_width = text_renderer.measure_text(label);
+
+                    // Don't render if it would overflow into time column
+                    if current_x + label_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
+                        break;
+                    }
+
+                    // Pill background (rounded rect approximation)
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        label_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                        &pill_rect,
+                        pill_radius,
+                        pill_bg.to_array(),
+                    ));
+
+                    // Label text (centered in pill)
+                    vertices.extend(text_renderer.layout_text(
+                        label,
+                        current_x + pill_pad_h,
+                        y,
+                        label_color.to_array(),
+                    ));
+                    current_x += label_width + pill_pad_h * 2.0 + char_width * 0.5;
+                }
+            }
+
+            // === Tag labels with pill backgrounds (after branch pills) ===
+            if let Some(tags) = tags_by_oid.get(&commit.id) {
+                for tag in tags {
+                    let tag_label = format!("\u{25C6} {}", tag.name);
+                    let tag_width = text_renderer.measure_text(&tag_label);
+                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
+                        break;
+                    }
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        tag_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                        &pill_rect,
+                        pill_radius,
+                        Color::rgba(0.961, 0.620, 0.043, 0.3).to_array(),
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        &tag_label,
+                        current_x + pill_pad_h,
+                        y,
+                        theme::BRANCH_RELEASE.to_array(),
+                    ));
+                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
+                }
+            }
+
+            // === HEAD indicator (after branch/tag pills) ===
+            if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
+                let head_label = "HEAD";
+                let head_width = text_renderer.measure_text(head_label);
+                if current_x + head_width + pill_pad_h * 2.0 < time_col_left - col_gap {
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        head_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(self.create_rounded_rect_vertices(
+                        &pill_rect,
+                        pill_radius,
+                        Color::rgba(0.231, 0.510, 0.965, 0.3).to_array(),
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        head_label,
+                        current_x + pill_pad_h,
+                        y,
+                        theme::ACCENT.to_array(),
+                    ));
+                    current_x += head_width + pill_pad_h * 2.0 + char_width * 0.5;
+                }
+            }
+
+            // === Author avatar or identicon fallback (after pills) ===
             let identicon_radius = (line_height * 0.42).max(5.0);
             let avatar_size = identicon_radius * 2.0;
-            let identicon_cx = text_x + identicon_radius;
+            let identicon_cx = current_x + identicon_radius;
             let identicon_cy = y + line_height / 2.0;
 
             // Request avatar download if not already requested
@@ -1217,10 +1326,9 @@ impl CommitGraphView {
             }
 
             let identicon_advance = identicon_radius * 2.0 + 6.0;
+            current_x += identicon_advance;
 
-            // === Subject line (primary content, bright text) ===
-            let mut current_x = text_x + identicon_advance;
-            // The subject occupies the space between graph and the time column
+            // === Subject line (primary content, bright text, in remaining space) ===
             let available_width = (time_col_left - col_gap) - current_x;
             let max_chars = ((available_width / char_width) as usize).max(4);
             let char_count = commit.summary.chars().count();
@@ -1244,114 +1352,6 @@ impl CommitGraphView {
                 y,
                 summary_color.to_array(),
             ));
-            current_x += text_renderer.measure_text(&summary) + char_width;
-
-            // === Branch labels with pill backgrounds ===
-            if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
-                for tip in tips {
-                    let (label_color, pill_bg) = if tip.is_remote {
-                        (
-                            theme::BRANCH_REMOTE,
-                            Color::rgba(0.133, 0.773, 0.369, 0.15),
-                        )
-                    } else if tip.is_head {
-                        (
-                            theme::ACCENT,
-                            Color::rgba(0.231, 0.510, 0.965, 0.2),
-                        )
-                    } else {
-                        (
-                            theme::BRANCH_FEATURE,
-                            Color::rgba(0.231, 0.510, 0.965, 0.2),
-                        )
-                    };
-
-                    let label = &tip.name;
-                    let label_width = text_renderer.measure_text(label);
-
-                    // Don't render if it would overlap author column
-                    if current_x + label_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-
-                    // Pill background (rounded rect approximation)
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        label_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
-                        &pill_rect,
-                        pill_radius,
-                        pill_bg.to_array(),
-                    ));
-
-                    // Label text (centered in pill)
-                    vertices.extend(text_renderer.layout_text(
-                        label,
-                        current_x + pill_pad_h,
-                        y,
-                        label_color.to_array(),
-                    ));
-                    current_x += label_width + pill_pad_h * 2.0 + char_width * 0.5;
-                }
-            }
-
-            // HEAD indicator
-            if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
-                let head_label = "HEAD";
-                let head_width = text_renderer.measure_text(head_label);
-                if current_x + head_width + pill_pad_h * 2.0 < time_col_left - col_gap {
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        head_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
-                        &pill_rect,
-                        pill_radius,
-                        Color::rgba(0.231, 0.510, 0.965, 0.2).to_array(),
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        head_label,
-                        current_x + pill_pad_h,
-                        y,
-                        theme::ACCENT.to_array(),
-                    ));
-                    current_x += head_width + pill_pad_h * 2.0 + char_width * 0.5;
-                }
-            }
-
-            // Tags with pill backgrounds
-            if let Some(tags) = tags_by_oid.get(&commit.id) {
-                for tag in tags {
-                    let tag_label = format!("\u{25C6} {}", tag.name);
-                    let tag_width = text_renderer.measure_text(&tag_label);
-                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        tag_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    pill_vertices.extend(self.create_rounded_rect_vertices(
-                        &pill_rect,
-                        pill_radius,
-                        Color::rgba(0.961, 0.620, 0.043, 0.2).to_array(),
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        &tag_label,
-                        current_x + pill_pad_h,
-                        y,
-                        theme::BRANCH_RELEASE.to_array(),
-                    ));
-                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
-                }
-            }
         }
 
         // Render search bar text overlay

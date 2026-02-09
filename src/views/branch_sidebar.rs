@@ -554,16 +554,14 @@ impl BranchSidebar {
             self.local_branches.len(),
             self.local_collapsed,
             section_header_height,
+            &bounds,
         );
         item_idx += 1; // SectionHeader("LOCAL")
 
         if !self.local_collapsed {
             for branch in &self.local_branches {
-                if y >= bounds.bottom() {
-                    item_idx += 1;
-                    continue;
-                }
-                if y + line_height > bounds.y {
+                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                if visible {
                     let is_current = *branch == self.current_branch;
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
                     let is_hovered = self.hovered_index == Some(item_idx);
@@ -670,6 +668,7 @@ impl BranchSidebar {
             remote_count,
             self.remote_collapsed,
             section_header_height,
+            &bounds,
         );
         item_idx += 1; // SectionHeader("REMOTE")
 
@@ -680,16 +679,12 @@ impl BranchSidebar {
 
             for remote_name in remote_names {
                 let branches = &self.remote_branches[remote_name];
-                if y >= bounds.bottom() {
-                    item_idx += 1; // RemoteHeader
-                    item_idx += branches.len(); // RemoteBranch items
-                    continue;
-                }
 
                 // Remote name sub-header
-                let is_focused = self.focused && self.focused_index == Some(item_idx);
-                let is_hovered = self.hovered_index == Some(item_idx);
-                if y + line_height > bounds.y {
+                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                if visible {
+                    let is_focused = self.focused && self.focused_index == Some(item_idx);
+                    let is_hovered = self.hovered_index == Some(item_idx);
                     if is_hovered && !is_focused {
                         let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
                         output.spline_vertices.extend(create_rect_vertices(
@@ -723,11 +718,8 @@ impl BranchSidebar {
 
                 // Branches under this remote
                 for branch in branches {
-                    if y >= bounds.bottom() {
-                        item_idx += 1;
-                        continue;
-                    }
-                    if y + line_height > bounds.y {
+                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                    if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
                         let is_hovered = self.hovered_index == Some(item_idx);
                         if is_hovered && !is_focused {
@@ -783,16 +775,14 @@ impl BranchSidebar {
             self.tags.len(),
             self.tags_collapsed,
             section_header_height,
+            &bounds,
         );
         item_idx += 1; // SectionHeader("TAGS")
 
         if !self.tags_collapsed {
             for tag in &self.tags {
-                if y >= bounds.bottom() {
-                    item_idx += 1;
-                    continue;
-                }
-                if y + line_height > bounds.y {
+                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                if visible {
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
                     let is_hovered = self.hovered_index == Some(item_idx);
                     if is_hovered && !is_focused {
@@ -848,16 +838,14 @@ impl BranchSidebar {
                 self.submodules.len(),
                 self.submodules_collapsed,
                 section_header_height,
+                &bounds,
             );
             item_idx += 1; // SectionHeader("SUBMODULES")
 
             if !self.submodules_collapsed {
                 for sm_name in self.submodules.iter().map(|s| s.name.clone()).collect::<Vec<_>>() {
-                    if y >= bounds.bottom() {
-                        item_idx += 1;
-                        continue;
-                    }
-                    if y + line_height > bounds.y {
+                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                    if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
                         let is_hovered = self.hovered_index == Some(item_idx);
                         if is_hovered && !is_focused {
@@ -939,16 +927,14 @@ impl BranchSidebar {
                 self.worktrees.len(),
                 self.worktrees_collapsed,
                 section_header_height,
+                &bounds,
             );
             item_idx += 1; // SectionHeader("WORKTREES")
 
             if !self.worktrees_collapsed {
                 for wt_name in self.worktrees.iter().map(|w| w.name.clone()).collect::<Vec<_>>() {
-                    if y >= bounds.bottom() {
-                        item_idx += 1;
-                        continue;
-                    }
-                    if y + line_height > bounds.y {
+                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                    if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
                         let is_hovered = self.hovered_index == Some(item_idx);
 
@@ -1081,7 +1067,8 @@ impl BranchSidebar {
         output
     }
 
-    /// Layout a section header (e.g., "LOCAL  3") and return the new y position
+    /// Layout a section header (e.g., "LOCAL  3") and return the new y position.
+    /// Performs bounds checking to skip rendering if the header is outside visible area.
     #[allow(clippy::too_many_arguments)]
     fn layout_section_header(
         &self,
@@ -1093,40 +1080,44 @@ impl BranchSidebar {
         count: usize,
         collapsed: bool,
         header_height: f32,
+        bounds: &Rect,
     ) -> f32 {
-        // Section header background
-        let header_rect = Rect::new(inner.x, y, inner.width, header_height);
-        output.spline_vertices.extend(create_rect_vertices(
-            &header_rect,
-            theme::SURFACE_RAISED.to_array(),
-        ));
+        let visible = y + header_height >= bounds.y && y < bounds.bottom();
+        if visible {
+            // Section header background
+            let header_rect = Rect::new(inner.x, y, inner.width, header_height);
+            output.spline_vertices.extend(create_rect_vertices(
+                &header_rect,
+                theme::SURFACE_RAISED.to_array(),
+            ));
 
-        // Collapse indicator - Unicode triangle
-        let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
-        output.text_vertices.extend(text_renderer.layout_text(
-            indicator,
-            inner.x + 4.0,
-            y + 4.0,
-            theme::TEXT.to_array(),
-        ));
+            // Collapse indicator - Unicode triangle
+            let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
+            output.text_vertices.extend(text_renderer.layout_text(
+                indicator,
+                inner.x + 4.0,
+                y + 4.0,
+                theme::TEXT.to_array(),
+            ));
 
-        // Section title - brighter than before
-        output.text_vertices.extend(text_renderer.layout_text(
-            title,
-            inner.x + 16.0,
-            y + 4.0,
-            theme::TEXT_BRIGHT.to_array(),
-        ));
+            // Section title - brighter than before
+            output.text_vertices.extend(text_renderer.layout_text(
+                title,
+                inner.x + 16.0,
+                y + 4.0,
+                theme::TEXT_BRIGHT.to_array(),
+            ));
 
-        // Count badge
-        let count_text = format!("{}", count);
-        let title_width = text_renderer.measure_text(title);
-        output.text_vertices.extend(text_renderer.layout_text(
-            &count_text,
-            inner.x + 16.0 + title_width + 8.0,
-            y + 4.0,
-            theme::TEXT_MUTED.to_array(),
-        ));
+            // Count badge
+            let count_text = format!("{}", count);
+            let title_width = text_renderer.measure_text(title);
+            output.text_vertices.extend(text_renderer.layout_text(
+                &count_text,
+                inner.x + 16.0 + title_width + 8.0,
+                y + 4.0,
+                theme::TEXT_MUTED.to_array(),
+            ));
+        }
 
         y + header_height
     }
