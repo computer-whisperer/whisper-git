@@ -30,7 +30,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -197,6 +197,8 @@ struct App {
     tab_bar: TabBar,
     repo_dialog: RepoDialog,
     settings_dialog: SettingsDialog,
+    confirm_dialog: ConfirmDialog,
+    pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
 }
@@ -277,6 +279,8 @@ impl App {
             tab_bar,
             repo_dialog: RepoDialog::new(),
             settings_dialog: SettingsDialog::new(),
+            confirm_dialog: ConfirmDialog::new(),
+            pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
         })
@@ -1050,6 +1054,26 @@ impl ApplicationHandler for App {
                     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
                     let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
 
+                    // Confirm dialog takes highest modal priority
+                    if self.confirm_dialog.is_visible() {
+                        self.confirm_dialog.handle_event(&input_event, screen_bounds);
+                        if let Some(action) = self.confirm_dialog.take_action() {
+                            match action {
+                                ConfirmDialogAction::Confirm => {
+                                    if let Some(msg) = self.pending_confirm_action.take() {
+                                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                            view_state.pending_messages.push(msg);
+                                        }
+                                    }
+                                }
+                                ConfirmDialogAction::Cancel => {
+                                    self.pending_confirm_action = None;
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     // Settings dialog takes priority (modal)
                     if self.settings_dialog.is_visible() {
                         self.settings_dialog.handle_event(&input_event, screen_bounds);
@@ -1078,6 +1102,8 @@ impl ApplicationHandler for App {
                                             &action_id,
                                             view_state,
                                             &mut self.toast_manager,
+                                            &mut self.confirm_dialog,
+                                            &mut self.pending_confirm_action,
                                         );
                                     }
                                 }
@@ -1159,7 +1185,8 @@ impl ApplicationHandler for App {
                                     view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
                                 }
                                 SidebarAction::Delete(name) => {
-                                    view_state.pending_messages.push(AppMessage::DeleteBranch(name));
+                                    self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
+                                    self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
                                 }
                             }
                         }
@@ -1378,6 +1405,8 @@ fn handle_context_menu_action(
     action_id: &str,
     view_state: &mut TabViewState,
     toast_manager: &mut ToastManager,
+    confirm_dialog: &mut ConfirmDialog,
+    pending_confirm_action: &mut Option<AppMessage>,
 ) {
     // Actions may be in format "action:param" or just "action"
     let (action, param) = action_id.split_once(':').unwrap_or((action_id, ""));
@@ -1424,7 +1453,8 @@ fn handle_context_menu_action(
         }
         "delete" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::DeleteBranch(param.to_string()));
+                confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", param));
+                *pending_confirm_action = Some(AppMessage::DeleteBranch(param.to_string()));
             }
         }
         "push" => {
@@ -1517,6 +1547,7 @@ fn build_ui_output(
     toast_manager: &ToastManager,
     repo_dialog: &RepoDialog,
     settings_dialog: &SettingsDialog,
+    confirm_dialog: &ConfirmDialog,
     text_renderer: &TextRenderer,
     scale_factor: f64,
     extent: [u32; 2],
@@ -1602,6 +1633,11 @@ fn build_ui_output(
         chrome_output.extend(settings_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Confirm dialog (chrome layer - on top of everything including settings)
+    if confirm_dialog.is_visible() {
+        chrome_output.extend(confirm_dialog.layout(text_renderer, screen_bounds));
+    }
+
     (graph_output, chrome_output)
 }
 
@@ -1660,7 +1696,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let scale_factor = state.scale_factor;
     let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );
@@ -1785,7 +1821,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let scale_factor = state.scale_factor;
     let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );
@@ -1896,7 +1932,7 @@ fn capture_screenshot_offscreen(
     let scale_factor = state.scale_factor;
     let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );

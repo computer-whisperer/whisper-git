@@ -1,6 +1,7 @@
 //! Widget implementations
 
 mod button;
+pub mod confirm_dialog;
 pub mod context_menu;
 pub mod file_list;
 mod header_bar;
@@ -15,6 +16,7 @@ mod text_input;
 mod toast;
 
 pub use button::Button;
+pub use confirm_dialog::{ConfirmDialog, ConfirmDialogAction};
 pub use context_menu::{ContextMenu, MenuItem, MenuAction};
 pub use file_list::{FileList, FileListAction};
 pub use header_bar::{HeaderBar, HeaderAction};

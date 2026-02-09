@@ -1,7 +1,6 @@
 //! Branch sidebar view - displays local branches, remote branches, and tags
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use crate::git::{BranchTip, TagInfo};
 use crate::input::{EventResponse, InputEvent, Key};
@@ -61,10 +60,6 @@ pub struct BranchSidebar {
     focused_index: Option<usize>,
     /// Flattened list of visible items (rebuilt during layout)
     visible_items: Vec<SidebarItem>,
-    /// Last click time for double-click detection
-    last_click_time: Option<Instant>,
-    /// Last clicked item index for double-click detection
-    last_click_item: Option<usize>,
     /// Index of the item under the mouse cursor
     hovered_index: Option<usize>,
     /// Scrollbar widget
@@ -89,8 +84,6 @@ impl BranchSidebar {
             focused: false,
             focused_index: None,
             visible_items: Vec::new(),
-            last_click_time: None,
-            last_click_item: None,
             hovered_index: None,
             scrollbar: Scrollbar::new(),
         }
@@ -426,21 +419,7 @@ impl BranchSidebar {
                                     return EventResponse::Consumed;
                                 }
                                 SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_) | SidebarItem::RemoteHeader(_) => {
-                                    // Check for double-click
-                                    let now = Instant::now();
-                                    let is_double_click = self.last_click_time
-                                        .map(|t| now.duration_since(t).as_millis() < 400)
-                                        .unwrap_or(false)
-                                        && self.last_click_item == Some(idx);
-
                                     self.focused_index = Some(idx);
-                                    self.last_click_time = Some(now);
-                                    self.last_click_item = Some(idx);
-
-                                    if is_double_click {
-                                        self.activate_focused();
-                                    }
-
                                     return EventResponse::Consumed;
                                 }
                             }
