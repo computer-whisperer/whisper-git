@@ -773,6 +773,14 @@ pub struct WorktreeInfo {
     pub is_current: bool,
 }
 
+/// Stash entry information
+#[derive(Clone, Debug)]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+    pub time: i64,
+}
+
 /// Branch tip for graph labels
 #[derive(Clone, Debug)]
 pub struct BranchTip {
@@ -934,6 +942,33 @@ impl GitRepo {
         self.repo.branch(name, &commit, false)
             .with_context(|| format!("Failed to create branch '{}' at {}", name, oid))?;
         Ok(())
+    }
+
+    /// List all stash entries using git CLI (avoids &mut self requirement of libgit2)
+    pub fn stash_list(&self) -> Vec<StashEntry> {
+        let workdir = match self.repo.workdir().or_else(|| Some(self.repo.path())) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let output = match std::process::Command::new("git")
+            .args(["stash", "list", "--format=%gd%x00%s%x00%ct"])
+            .current_dir(workdir)
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return Vec::new(),
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().enumerate().filter_map(|(i, line)| {
+            let parts: Vec<&str> = line.splitn(3, '\0').collect();
+            if parts.len() >= 2 {
+                let message = parts[1].to_string();
+                let time = parts.get(2).and_then(|t| t.parse::<i64>().ok()).unwrap_or(0);
+                Some(StashEntry { index: i, message, time })
+            } else {
+                None
+            }
+        }).collect()
     }
 
     /// Discard working directory changes for a file by checking out from HEAD
@@ -1204,6 +1239,21 @@ pub fn stash_push_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
 /// Spawn a background thread to pop the most recent stash
 pub fn stash_pop_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["stash".into(), "pop".into()], workdir, "stash pop")
+}
+
+/// Spawn a background thread to apply a stash entry (without removing it)
+pub fn stash_apply_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply")
+}
+
+/// Spawn a background thread to drop a stash entry
+pub fn stash_drop_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop")
+}
+
+/// Spawn a background thread to pop a stash entry by index
+pub fn stash_pop_index_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop")
 }
 
 /// Spawn a background thread to cherry-pick a commit

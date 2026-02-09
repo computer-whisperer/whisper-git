@@ -130,6 +130,9 @@ enum AppMessage {
     CreateBranch(String, Oid),  // (name, at_commit)
     StashPush,
     StashPop,
+    StashApply(usize),
+    StashDrop(usize),
+    StashPopIndex(usize),
     CherryPick(Oid),
 }
 
@@ -909,6 +912,39 @@ impl App {
                         self.toast_manager.push("Popping stash...".to_string(), ToastSeverity::Info);
                     }
                 }
+                AppMessage::StashApply(index) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::stash_apply_async(workdir, index);
+                        view_state.generic_op_receiver = Some((rx, format!("Stash apply @{{{}}}", index)));
+                        self.toast_manager.push(format!("Applying stash@{{{}}}...", index), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::StashDrop(index) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::stash_drop_async(workdir, index);
+                        view_state.generic_op_receiver = Some((rx, format!("Stash drop @{{{}}}", index)));
+                        self.toast_manager.push(format!("Dropping stash@{{{}}}...", index), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::StashPopIndex(index) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::stash_pop_index_async(workdir, index);
+                        view_state.generic_op_receiver = Some((rx, format!("Stash pop @{{{}}}", index)));
+                        self.toast_manager.push(format!("Popping stash@{{{}}}...", index), ToastSeverity::Info);
+                    }
+                }
                 AppMessage::CherryPick(oid) => {
                     if view_state.generic_op_receiver.is_some() {
                         self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
@@ -1002,7 +1038,7 @@ impl App {
                 if result.success {
                     self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
                     refresh_repo_state(repo_tab, view_state);
-                    // Also refresh submodules/worktrees
+                    // Also refresh submodules/worktrees/stashes
                     if let Some(ref repo) = repo_tab.repo {
                         if let Ok(submodules) = repo.submodules() {
                             view_state.secondary_repos_view.set_submodules(submodules.clone());
@@ -1012,6 +1048,7 @@ impl App {
                             view_state.secondary_repos_view.set_worktrees(worktrees.clone());
                             view_state.branch_sidebar.worktrees = worktrees;
                         }
+                        view_state.branch_sidebar.stashes = repo.stash_list();
                     }
                 } else {
                     self.toast_manager.push(
@@ -1147,6 +1184,9 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
             view_state.secondary_repos_view.set_worktrees(worktrees.clone());
             view_state.branch_sidebar.worktrees = worktrees;
         }
+
+        // Load stashes
+        view_state.branch_sidebar.stashes = repo.stash_list();
     }
 
     // Refresh commits, branches, tags, head, and header info
@@ -1530,6 +1570,16 @@ impl ApplicationHandler for App {
                                 }
                                 SidebarAction::OpenWorktreeTerminal(name) => {
                                     self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                }
+                                SidebarAction::ApplyStash(index) => {
+                                    view_state.pending_messages.push(AppMessage::StashApply(index));
+                                }
+                                SidebarAction::PopStash(index) => {
+                                    view_state.pending_messages.push(AppMessage::StashPopIndex(index));
+                                }
+                                SidebarAction::DropStash(index) => {
+                                    self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
+                                    self.pending_confirm_action = Some(AppMessage::StashDrop(index));
                                 }
                             }
                         }
@@ -1951,6 +2001,22 @@ fn handle_context_menu_action(
         }
         "stash_pop" => {
             view_state.pending_messages.push(AppMessage::StashPop);
+        }
+        "apply_stash" => {
+            if let Ok(index) = param.parse::<usize>() {
+                view_state.pending_messages.push(AppMessage::StashApply(index));
+            }
+        }
+        "pop_stash" => {
+            if let Ok(index) = param.parse::<usize>() {
+                view_state.pending_messages.push(AppMessage::StashPopIndex(index));
+            }
+        }
+        "drop_stash" => {
+            if let Ok(index) = param.parse::<usize>() {
+                confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
+                *pending_confirm_action = Some(AppMessage::StashDrop(index));
+            }
         }
         _ => {
             eprintln!("Unknown context menu action: {}", action_id);
