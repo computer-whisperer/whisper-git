@@ -15,6 +15,12 @@ use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, Te
 
 use crate::ui::widget::theme::LANE_COLORS;
 
+/// Actions emitted by the commit graph view
+pub enum GraphAction {
+    /// Request to load more commits (infinite scroll)
+    LoadMore,
+}
+
 /// Layout information for a single commit
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -224,6 +230,10 @@ pub struct CommitGraphView {
     pub search_bar: SearchBar,
     /// Set of commit OIDs that match the current search query
     search_matches: HashSet<Oid>,
+    /// Pending action to be consumed by the app
+    pending_action: Option<GraphAction>,
+    /// Guard to prevent rapid-fire LoadMore requests
+    loading_more: bool,
 }
 
 impl Default for CommitGraphView {
@@ -247,6 +257,8 @@ impl Default for CommitGraphView {
             scrollbar: Scrollbar::new(),
             search_bar: SearchBar::new(),
             search_matches: HashSet::new(),
+            pending_action: None,
+            loading_more: false,
         }
     }
 }
@@ -266,6 +278,29 @@ impl CommitGraphView {
 impl CommitGraphView {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Take the pending action, if any
+    pub fn take_action(&mut self) -> Option<GraphAction> {
+        self.pending_action.take()
+    }
+
+    /// Signal that loading has completed (resets the loading guard)
+    pub fn finish_loading(&mut self) {
+        self.loading_more = false;
+    }
+
+    /// Check if we're near the bottom and should request more commits
+    fn check_load_more(&mut self, commits: &[CommitInfo], bounds: Rect) {
+        if self.loading_more {
+            return;
+        }
+        let visible_rows = (bounds.height / self.row_height).max(1.0) as usize;
+        let scroll_row = (self.scroll_offset / self.row_height) as usize;
+        if scroll_row + visible_rows >= commits.len().saturating_sub(5) {
+            self.loading_more = true;
+            self.pending_action = Some(GraphAction::LoadMore);
+        }
     }
 
     /// Update layout for the given commits
@@ -350,6 +385,7 @@ impl CommitGraphView {
                 let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
                 self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
             }
+            self.check_load_more(commits, bounds);
             return EventResponse::Consumed;
         }
 
@@ -359,6 +395,7 @@ impl CommitGraphView {
                     // Move selection down
                     self.move_selection(1, commits);
                     self.scroll_to_selection(commits, bounds);
+                    self.check_load_more(commits, bounds);
                     EventResponse::Consumed
                 }
                 Key::K | Key::Up => {
@@ -389,6 +426,7 @@ impl CommitGraphView {
                         self.selected_commit = Some(commit.id);
                         self.scroll_to_selection(commits, bounds);
                     }
+                    self.check_load_more(commits, bounds);
                     EventResponse::Consumed
                 }
                 _ => EventResponse::Ignored,
@@ -431,6 +469,7 @@ impl CommitGraphView {
                 if bounds.contains(*x, *y) {
                     let max_scroll = (commits.len() as f32 * self.row_height - bounds.height + 60.0).max(0.0);
                     self.scroll_offset = (self.scroll_offset - delta_y).max(0.0).min(max_scroll);
+                    self.check_load_more(commits, bounds);
                     EventResponse::Consumed
                 } else {
                     EventResponse::Ignored

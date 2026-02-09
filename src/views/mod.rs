@@ -7,7 +7,7 @@ mod staging_well;
 
 pub use branch_sidebar::{BranchSidebar, SidebarAction};
 pub use commit_detail::{CommitDetailView, CommitDetailAction};
-pub use commit_graph::CommitGraphView;
+pub use commit_graph::{CommitGraphView, GraphAction};
 pub use diff_view::{DiffView, DiffAction};
 pub use secondary_repos::SecondaryReposView;
 pub use staging_well::{StagingWell, StagingAction};
