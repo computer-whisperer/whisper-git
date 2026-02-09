@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::git::{BranchTip, TagInfo};
-use crate::input::{EventResponse, InputEvent, Key};
+use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
@@ -389,7 +389,7 @@ impl BranchSidebar {
                     _ => {}
                 }
             }
-            InputEvent::MouseDown { x, y, .. } => {
+            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
                 if bounds.contains(*x, *y) {
                     let padding = 8.0;
                     let inner = bounds.inset(padding);

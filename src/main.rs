@@ -1599,7 +1599,7 @@ fn build_ui_output(
     extent: [u32; 2],
     avatar_cache: &mut AvatarCache,
     avatar_renderer: &AvatarRenderer,
-) -> (WidgetOutput, WidgetOutput) {
+) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
 
@@ -1608,9 +1608,10 @@ fn build_ui_output(
     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
     let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
 
-    // Two layers: graph content renders first, chrome renders on top
+    // Three layers: graph content renders first, chrome on top, overlay on top of everything
     let mut graph_output = WidgetOutput::new();
     let mut chrome_output = WidgetOutput::new();
+    let mut overlay_output = WidgetOutput::new();
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
@@ -1660,31 +1661,31 @@ fn build_ui_output(
         chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
     }
 
-    // Context menu overlay (chrome layer - on top of panels)
+    // Context menu overlay (overlay layer - on top of all panels)
     if let Some((_, view_state)) = tabs.get_mut(active_tab)
         && view_state.context_menu.is_visible() {
-            chrome_output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
+            overlay_output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
         }
 
-    // Toast notifications (chrome layer - on top of context menus)
-    chrome_output.extend(toast_manager.layout(text_renderer, screen_bounds));
+    // Toast notifications (overlay layer - on top of context menus)
+    overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds));
 
-    // Repo dialog (chrome layer - on top of everything including toasts)
+    // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        chrome_output.extend(repo_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(repo_dialog.layout(text_renderer, screen_bounds));
     }
 
-    // Settings dialog (chrome layer - on top of everything)
+    // Settings dialog (overlay layer - on top of everything)
     if settings_dialog.is_visible() {
-        chrome_output.extend(settings_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(settings_dialog.layout(text_renderer, screen_bounds));
     }
 
-    // Confirm dialog (chrome layer - on top of everything including settings)
+    // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
-        chrome_output.extend(confirm_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(confirm_dialog.layout(text_renderer, screen_bounds));
     }
 
-    (graph_output, chrome_output)
+    (graph_output, chrome_output, overlay_output)
 }
 
 fn draw_frame(app: &mut App) -> Result<()> {
@@ -1740,7 +1741,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
-    let (graph_output, chrome_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -1796,7 +1797,8 @@ fn draw_frame(app: &mut App) -> Result<()> {
         .context("Failed to begin render pass")?;
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -1865,7 +1867,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
-    let (graph_output, chrome_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -1926,7 +1928,8 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         .context("Failed to begin render pass")?;
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -1976,7 +1979,7 @@ fn capture_screenshot_offscreen(
 
     let extent = offscreen.extent();
     let scale_factor = state.scale_factor;
-    let (graph_output, chrome_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -2030,7 +2033,8 @@ fn capture_screenshot_offscreen(
         .context("Failed to begin render pass")?;
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
