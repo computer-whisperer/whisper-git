@@ -59,6 +59,12 @@ impl SearchBar {
         self.active = true;
     }
 
+    /// Set the search query text directly
+    pub fn set_query(&mut self, text: &str) {
+        self.query = text.to_string();
+        self.cursor = self.query.len();
+    }
+
     /// Deactivate and clear
     pub fn deactivate(&mut self) {
         self.active = false;

@@ -30,7 +30,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{ContextMenu, MenuAction, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -45,6 +45,7 @@ struct CliArgs {
     screenshot: Option<PathBuf>,
     screenshot_size: Option<(u32, u32)>,
     screenshot_scale: Option<f64>,
+    screenshot_state: Option<String>,
     view: Option<String>,
     repos: Vec<PathBuf>,
 }
@@ -69,6 +70,7 @@ fn parse_args() -> CliArgs {
                     args.screenshot_scale = s.parse().ok();
                 }
             }
+            "--screenshot-state" => args.screenshot_state = iter.next(),
             "--view" => args.view = iter.next(),
             "--repo" => {
                 if let Some(p) = iter.next() {
@@ -981,11 +983,19 @@ impl ApplicationHandler for App {
                 }
 
                 // Screenshot mode
-                let Some(state) = &mut self.state else { return };
                 let screenshot_path = self.cli_args.screenshot.clone();
-                let screenshot_size = self.cli_args.screenshot_size;
-                if let Some(path) = screenshot_path
-                    && state.frame_count == 3 {
+                if let Some(path) = screenshot_path {
+                    let has_state = self.cli_args.screenshot_state.is_some();
+                    let capture_frame = if has_state { 4 } else { 3 };
+                    let frame = self.state.as_ref().unwrap().frame_count;
+
+                    // Apply injected state one frame before capture
+                    if frame == 3 && has_state {
+                        apply_screenshot_state(self);
+                    }
+
+                    if frame == capture_frame {
+                        let screenshot_size = self.cli_args.screenshot_size;
                         let result = if let Some((width, height)) = screenshot_size {
                             capture_screenshot_offscreen(self, width, height)
                         } else {
@@ -1004,7 +1014,9 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                         return;
                     }
+                }
 
+                let Some(state) = &self.state else { return };
                 state.window.request_redraw();
             }
 
@@ -1825,4 +1837,54 @@ fn capture_screenshot_offscreen(
     state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
 
     capture.to_image()
+}
+
+/// Apply a UI state for screenshot capture (e.g., showing dialogs, search bar, context menus).
+fn apply_screenshot_state(app: &mut App) {
+    let Some(ref state_str) = app.cli_args.screenshot_state else { return };
+
+    match state_str.as_str() {
+        "open-dialog" => {
+            app.repo_dialog.show();
+        }
+        "search" => {
+            if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
+                view_state.commit_graph_view.search_bar.activate();
+                view_state.commit_graph_view.search_bar.set_query("example");
+            }
+        }
+        "context-menu" => {
+            let extent = app.state.as_ref().unwrap().surface.extent();
+            let cx = extent[0] as f32 * 0.4;
+            let cy = extent[1] as f32 * 0.3;
+            if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
+                let items = vec![
+                    MenuItem { label: "Copy SHA".to_string(), shortcut: None, action_id: "copy_sha".to_string() },
+                    MenuItem { label: "View Details".to_string(), shortcut: Some("Enter".to_string()), action_id: "view_details".to_string() },
+                    MenuItem { label: "Checkout".to_string(), shortcut: None, action_id: "checkout".to_string() },
+                ];
+                view_state.context_menu.show(items, cx, cy);
+            }
+        }
+        "commit-detail" => {
+            if let Some((repo_tab, view_state)) = app.tabs.get_mut(app.active_tab) {
+                if let Some(first) = repo_tab.commits.first() {
+                    let oid = first.id;
+                    if let Some(ref repo) = repo_tab.repo {
+                        if let Ok(info) = repo.full_commit_info(oid) {
+                            let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
+                            view_state.commit_detail_view.set_commit(info, diff_files.clone());
+                            if let Some(first_file) = diff_files.first() {
+                                let title = first_file.path.clone();
+                                view_state.diff_view.set_diff(vec![first_file.clone()], title);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        other => {
+            eprintln!("Unknown screenshot state: '{}'. Valid states: open-dialog, search, context-menu, commit-detail", other);
+        }
+    }
 }
