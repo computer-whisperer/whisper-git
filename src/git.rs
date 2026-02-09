@@ -31,6 +31,7 @@ pub struct CommitInfo {
     pub short_id: String,
     pub summary: String,
     pub author: String,
+    pub author_email: String,
     pub time: i64,
     pub parent_ids: Vec<Oid>,
 }
@@ -42,6 +43,7 @@ impl CommitInfo {
             short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
             summary: commit.summary().unwrap_or("").to_string(),
             author: commit.author().name().unwrap_or("Unknown").to_string(),
+            author_email: commit.author().email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
             parent_ids: commit.parent_ids().collect(),
         }

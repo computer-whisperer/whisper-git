@@ -5,6 +5,7 @@ use git2::Oid;
 
 use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
 use crate::ui::widget::{
     create_dashed_rect_outline_vertices, create_rect_vertices, theme,
 };
@@ -943,16 +944,19 @@ impl CommitGraphView {
 
     /// Generate text vertices for commit info, and spline vertices for label pill backgrounds.
     ///
-    /// Row layout: graph lanes | identicon | subject line | branch/tag labels | time (dimmer, right-aligned)
+    /// Row layout: graph lanes | identicon/avatar | subject line | branch/tag labels | time (dimmer, right-aligned)
     /// The identicon already communicates authorship; subject gets maximum space.
     pub fn layout_text(
         &self,
         text_renderer: &TextRenderer,
         commits: &[CommitInfo],
         bounds: Rect,
-    ) -> (Vec<TextVertex>, Vec<SplineVertex>) {
+        avatar_cache: &mut AvatarCache,
+        avatar_renderer: &AvatarRenderer,
+    ) -> (Vec<TextVertex>, Vec<SplineVertex>, Vec<TextVertex>) {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
+        let mut avatar_vertices = Vec::new();
         let header_offset = 10.0;
         let line_height = text_renderer.line_height();
         let scrollbar_width = 10.0;
@@ -1035,32 +1039,52 @@ impl CommitGraphView {
                 theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
             ));
 
-            // === Author identicon (small colored circle with initial) ===
+            // === Author avatar or identicon fallback ===
             let identicon_radius = (line_height * 0.42).max(5.0);
+            let avatar_size = identicon_radius * 2.0;
             let identicon_cx = text_x + identicon_radius;
             let identicon_cy = y + line_height / 2.0;
-            let identicon_color_idx = author_color_index(&commit.author);
-            let identicon_color = IDENTICON_COLORS[identicon_color_idx].with_alpha(dim_alpha);
 
-            // Draw filled circle
-            pill_vertices.extend(self.create_circle_vertices(
-                identicon_cx,
-                identicon_cy,
-                identicon_radius,
-                identicon_color.to_array(),
-            ));
+            // Request avatar download if not already requested
+            avatar_cache.request_avatar(&commit.author_email);
 
-            // Draw initial centered in circle
-            let initial = commit.author.chars().next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_else(|| "?".to_string());
-            let initial_width = text_renderer.measure_text(&initial);
-            vertices.extend(text_renderer.layout_text(
-                &initial,
-                identicon_cx - initial_width / 2.0,
-                identicon_cy - line_height / 2.0,
-                theme::TEXT_BRIGHT.with_alpha(dim_alpha).to_array(),
-            ));
+            let mut drew_avatar = false;
+            if let Some(tex_coords) = avatar_renderer.get_tex_coords(&commit.author_email) {
+                // Draw avatar quad
+                let ax = identicon_cx - identicon_radius;
+                let ay = identicon_cy - identicon_radius;
+                let mut quad = avatar::avatar_quad(ax, ay, avatar_size, tex_coords);
+                // Apply dim alpha
+                for v in &mut quad {
+                    v.color[3] = dim_alpha;
+                }
+                avatar_vertices.extend_from_slice(&quad);
+                drew_avatar = true;
+            }
+
+            if !drew_avatar {
+                // Identicon fallback: colored circle with initial
+                let identicon_color_idx = author_color_index(&commit.author);
+                let identicon_color = IDENTICON_COLORS[identicon_color_idx].with_alpha(dim_alpha);
+
+                pill_vertices.extend(self.create_circle_vertices(
+                    identicon_cx,
+                    identicon_cy,
+                    identicon_radius,
+                    identicon_color.to_array(),
+                ));
+
+                let initial = commit.author.chars().next()
+                    .map(|c| c.to_uppercase().to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                let initial_width = text_renderer.measure_text(&initial);
+                vertices.extend(text_renderer.layout_text(
+                    &initial,
+                    identicon_cx - initial_width / 2.0,
+                    identicon_cy - line_height / 2.0,
+                    theme::TEXT_BRIGHT.with_alpha(dim_alpha).to_array(),
+                ));
+            }
 
             let identicon_advance = identicon_radius * 2.0 + 6.0;
 
@@ -1212,7 +1236,7 @@ impl CommitGraphView {
             vertices.extend(search_output.text_vertices);
         }
 
-        (vertices, pill_vertices)
+        (vertices, pill_vertices, avatar_vertices)
     }
 
     /// Create vertices for a rounded rectangle (pill shape)
