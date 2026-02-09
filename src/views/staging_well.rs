@@ -165,6 +165,14 @@ impl StagingWell {
         self.unstaged_list.set_focused(self.focus_section == 3);
     }
 
+    /// Unfocus all text inputs. Call when focus moves away from the staging panel.
+    pub fn unfocus_all(&mut self) {
+        self.subject_input.set_focused(false);
+        self.body_area.set_focused(false);
+        self.staged_list.set_focused(false);
+        self.unstaged_list.set_focused(false);
+    }
+
     /// Sync button styles based on current state. Call before layout.
     pub fn update_button_state(&mut self) {
         let staged_count = self.staged_list.files.len();

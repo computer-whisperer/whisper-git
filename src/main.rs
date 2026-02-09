@@ -31,7 +31,7 @@ use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, Vulkan
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{ContextMenu, MenuAction, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
-use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
+use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
 const MAX_COMMITS: usize = 50;
@@ -115,6 +115,7 @@ enum AppMessage {
     DeleteBranch(String),
     StageHunk(String, usize),    // (file_path, hunk_index)
     UnstageHunk(String, usize),  // (file_path, hunk_index)
+    LoadMoreCommits,
 }
 
 /// Per-tab repository data
@@ -722,6 +723,15 @@ impl App {
                         }
                     }
                 }
+                AppMessage::LoadMoreCommits => {
+                    let current_count = repo_tab.commits.len();
+                    let new_count = current_count + 50;
+                    if let Ok(commits) = repo!().commit_graph(new_count) {
+                        repo_tab.commits = commits;
+                        view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                    }
+                    view_state.commit_graph_view.finish_loading();
+                }
             }
         }
 
@@ -1228,6 +1238,10 @@ impl ApplicationHandler for App {
                         if view_state.focused_panel != FocusedPanel::Sidebar {
                             view_state.branch_sidebar.set_focused(false);
                         }
+                        // Unfocus staging text inputs when focus moves away
+                        if view_state.focused_panel != FocusedPanel::Staging {
+                            view_state.staging_well.unfocus_all();
+                        }
                     }
 
                     // Route to focused panel
@@ -1240,6 +1254,13 @@ impl ApplicationHandler for App {
                                     && view_state.last_diff_commit != Some(oid) {
                                         view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
                                     }
+                            if let Some(action) = view_state.commit_graph_view.take_action() {
+                                match action {
+                                    GraphAction::LoadMore => {
+                                        view_state.pending_messages.push(AppMessage::LoadMoreCommits);
+                                    }
+                                }
+                            }
                             if response.is_consumed() {
                                 return;
                             }
@@ -1288,6 +1309,9 @@ impl ApplicationHandler for App {
                             FocusedPanel::Sidebar => FocusedPanel::Graph,
                         };
                         view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
+                        if view_state.focused_panel != FocusedPanel::Staging {
+                            view_state.staging_well.unfocus_all();
+                        }
                         return;
                     }
 
