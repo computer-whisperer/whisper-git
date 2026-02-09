@@ -20,7 +20,7 @@ use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 use git2::Oid;
@@ -1158,6 +1158,7 @@ impl ApplicationHandler for App {
                         }
 
                     // Route to active tab's views
+                    let tab_count = self.tabs.len();
                     let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
                     // Handle per-tab global keys (except Tab, which is handled after panel routing)
@@ -1378,11 +1379,17 @@ impl ApplicationHandler for App {
                         view_state.header_bar.update_hover(*x, *y, layout.header);
                         view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
                         view_state.staging_well.update_hover(*x, *y, layout.staging);
+
+                        // Determine cursor icon based on hover position
+                        let cursor = determine_cursor(*x, *y, &layout, view_state);
+
                         // Tab bar hover needs text_renderer
-                        if self.tabs.len() > 1
-                            && let Some(ref render_state) = self.state {
+                        if let Some(ref render_state) = self.state {
+                            if tab_count > 1 {
                                 self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
                             }
+                            render_state.window.set_cursor(cursor);
+                        }
                     }
                 }
             }
@@ -1394,6 +1401,35 @@ impl ApplicationHandler for App {
             state.window.request_redraw();
         }
     }
+}
+
+/// Determine which cursor icon to show based on mouse position.
+/// Returns Text cursor over text input areas, Default otherwise.
+fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewState) -> CursorIcon {
+    // Check staging area text inputs (subject line, body area)
+    if layout.staging.contains(x, y) {
+        let (subject_bounds, body_bounds, _, _, _) = view_state.staging_well.compute_regions(layout.staging);
+        if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
+            return CursorIcon::Text;
+        }
+    }
+
+    // Check search bar when active (overlays the graph area)
+    if view_state.commit_graph_view.search_bar.is_active() && layout.graph.contains(x, y) {
+        let scrollbar_width = 8.0;
+        let search_bar_height = 30.0;
+        let search_bounds = Rect::new(
+            layout.graph.x + 40.0,
+            layout.graph.y + 4.0,
+            layout.graph.width - 80.0 - scrollbar_width,
+            search_bar_height,
+        );
+        if search_bounds.contains(x, y) {
+            return CursorIcon::Text;
+        }
+    }
+
+    CursorIcon::Default
 }
 
 // ============================================================================

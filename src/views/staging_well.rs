@@ -110,7 +110,7 @@ impl StagingWell {
 
         // Check staged files
         if staged_bounds.contains(x, y)
-            && let Some(file) = self.file_at_position(&self.staged_list, x, y, staged_bounds) {
+            && let Some(file) = self.staged_list.file_at_y(y, staged_bounds) {
                 let items = vec![
                     MenuItem::new("Unstage File", format!("unstage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
@@ -120,7 +120,7 @@ impl StagingWell {
 
         // Check unstaged files
         if unstaged_bounds.contains(x, y)
-            && let Some(file) = self.file_at_position(&self.unstaged_list, x, y, unstaged_bounds) {
+            && let Some(file) = self.unstaged_list.file_at_y(y, unstaged_bounds) {
                 let items = vec![
                     MenuItem::new("Stage File", format!("stage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
@@ -130,22 +130,6 @@ impl StagingWell {
             }
 
         None
-    }
-
-    /// Find which file is at (x, y) within a file list's bounds
-    fn file_at_position(&self, list: &FileList, _x: f32, y: f32, bounds: Rect) -> Option<String> {
-        // FileList uses a header + items at ~line_height each
-        // The header takes up about 24px, then each file is line_height
-        let header_height = 24.0;
-        let item_height = 20.0; // Approximate; FileList uses line_height
-
-        let rel_y = y - bounds.y - header_height;
-        if rel_y < 0.0 {
-            return None;
-        }
-
-        let idx = (rel_y / item_height) as usize;
-        list.files.get(idx).map(|f| f.path.clone())
     }
 
     fn cycle_focus(&mut self, forward: bool) {
@@ -384,7 +368,7 @@ impl StagingWell {
         (commit_area, subject, body, staged, unstaged, buttons)
     }
 
-    fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+    pub fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let (_, subject, body, staged, unstaged, buttons) = self.compute_regions_full(bounds);
         (subject, body, staged, unstaged, buttons)
     }
