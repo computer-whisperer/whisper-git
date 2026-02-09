@@ -30,6 +30,8 @@ pub struct CommitInfo {
     pub id: Oid,
     pub short_id: String,
     pub summary: String,
+    /// First line of the commit body (after the summary), if any.
+    pub body_excerpt: Option<String>,
     pub author: String,
     pub author_email: String,
     pub time: i64,
@@ -38,10 +40,21 @@ pub struct CommitInfo {
 
 impl CommitInfo {
     fn from_commit(commit: &Commit) -> Self {
+        // Extract the first non-empty body line after the summary
+        let body_excerpt = commit.message().and_then(|msg| {
+            let mut lines = msg.lines();
+            lines.next(); // skip summary
+            // skip blank separator line(s)
+            lines
+                .map(|l| l.trim())
+                .find(|l| !l.is_empty())
+                .map(|l| l.to_string())
+        });
         Self {
             id: commit.id(),
             short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
             summary: commit.summary().unwrap_or("").to_string(),
+            body_excerpt,
             author: commit.author().name().unwrap_or("Unknown").to_string(),
             author_email: commit.author().email().unwrap_or("").to_string(),
             time: commit.time().seconds(),

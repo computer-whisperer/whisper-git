@@ -285,9 +285,15 @@ impl CommitGraphView {
         Self::default()
     }
 
-    /// Header offset above graph content, scales with row_height
+    /// Height of the column header row at the top of the graph panel
+    fn column_header_height(&self) -> f32 {
+        self.row_height
+    }
+
+    /// Header offset above graph content, scales with row_height.
+    /// Includes the column header row.
     fn header_offset(&self) -> f32 {
-        self.row_height * 0.35
+        self.row_height * 0.35 + self.column_header_height()
     }
 
     /// Width reserved for the scrollbar track
@@ -751,6 +757,24 @@ impl CommitGraphView {
             ));
         }
 
+        // === Column header row background ===
+        let col_header_h = self.column_header_height();
+        let col_header_rect = Rect::new(
+            bounds.x,
+            bounds.y,
+            bounds.width - scrollbar_width,
+            col_header_h,
+        );
+        vertices.extend(create_rect_vertices(
+            &col_header_rect,
+            theme::SURFACE_RAISED.with_alpha(0.5).to_array(),
+        ));
+        // Bottom border of column header
+        vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x, bounds.y + col_header_h - 1.0, bounds.width - scrollbar_width, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
             .iter()
@@ -1147,6 +1171,52 @@ impl CommitGraphView {
         let pill_radius: f32 = 3.0;
         let pill_border_thickness: f32 = 1.0;
 
+        // === Column header labels ===
+        {
+            let col_header_h = self.column_header_height();
+            let header_text_y = bounds.y + (col_header_h - line_height) / 2.0;
+            let header_color = theme::TEXT_MUTED.to_array();
+
+            // "GRAPH" label over the graph lanes area
+            let graph_label = "GRAPH";
+            let graph_label_w = text_renderer.measure_text_scaled(graph_label, 0.85);
+            let graph_col_center = bounds.x + self.lane_left_pad() + self.graph_width() / 2.0;
+            vertices.extend(text_renderer.layout_text_small(
+                graph_label,
+                graph_col_center - graph_label_w / 2.0,
+                header_text_y,
+                header_color,
+            ));
+
+            // "BRANCH / TAG" label right after graph column
+            vertices.extend(text_renderer.layout_text_small(
+                "BRANCH / TAG",
+                text_x,
+                header_text_y,
+                header_color,
+            ));
+
+            // "COMMIT MESSAGE" label further right (where subject text starts)
+            // Estimate a position past typical pill area
+            let msg_label_x = text_x + text_renderer.measure_text_scaled("BRANCH / TAG", 0.85) + char_width * 4.0;
+            vertices.extend(text_renderer.layout_text_small(
+                "COMMIT MESSAGE",
+                msg_label_x,
+                header_text_y,
+                header_color,
+            ));
+
+            // "DATE" label right-aligned in the time column
+            let date_label = "DATE";
+            let date_label_w = text_renderer.measure_text_scaled(date_label, 0.85);
+            vertices.extend(text_renderer.layout_text_small(
+                date_label,
+                time_col_right - date_label_w,
+                header_text_y,
+                header_color,
+            ));
+        }
+
         for (row, commit) in commits.iter().enumerate() {
             let Some(_layout) = self.layout.get(&commit.id) else {
                 continue;
@@ -1460,8 +1530,6 @@ impl CommitGraphView {
 
             // === Subject line (primary content, bright text, in remaining space) ===
             let available_width = (time_col_left - col_gap) - current_x;
-            let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
-
             let summary_color = if is_selected {
                 theme::TEXT_BRIGHT
             } else if is_head {
@@ -1469,12 +1537,50 @@ impl CommitGraphView {
             } else {
                 theme::TEXT.with_alpha(dim_alpha)
             };
-            vertices.extend(text_renderer.layout_text(
-                &summary,
-                current_x,
-                y,
-                summary_color.to_array(),
-            ));
+
+            // Check if we have body text and enough space to show it
+            let summary_full_width = text_renderer.measure_text(&commit.summary);
+            if summary_full_width <= available_width {
+                // Subject fits -- render it in full, then try to append body excerpt
+                vertices.extend(text_renderer.layout_text(
+                    &commit.summary,
+                    current_x,
+                    y,
+                    summary_color.to_array(),
+                ));
+
+                if let Some(body) = &commit.body_excerpt {
+                    let separator = " \u{2014} "; // " -- "
+                    let sep_width = text_renderer.measure_text(separator);
+                    let remaining = available_width - summary_full_width - sep_width;
+                    if remaining > char_width * 5.0 {
+                        let body_text = truncate_to_width(body, text_renderer, remaining);
+                        let body_x = current_x + summary_full_width;
+                        let body_color = theme::TEXT_MUTED.with_alpha(0.5 * dim_alpha).to_array();
+                        vertices.extend(text_renderer.layout_text(
+                            separator,
+                            body_x,
+                            y,
+                            body_color,
+                        ));
+                        vertices.extend(text_renderer.layout_text(
+                            &body_text,
+                            body_x + sep_width,
+                            y,
+                            body_color,
+                        ));
+                    }
+                }
+            } else {
+                // Subject too long -- truncate it
+                let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
+                vertices.extend(text_renderer.layout_text(
+                    &summary,
+                    current_x,
+                    y,
+                    summary_color.to_array(),
+                ));
+            }
         }
 
         // Render search bar text overlay
