@@ -533,16 +533,23 @@ impl Widget for FileList {
             } else {
                 "Working tree clean"
             };
+            let hint_text = if self.is_staged {
+                "Stage files to commit them"
+            } else {
+                "Make changes to see them here"
+            };
+
             let full_text = format!("{} {}", check_icon, empty_text);
             let text_width = text_renderer.measure_text(&full_text);
             let center_x = bounds.x + (bounds.width - text_width) / 2.0;
-            let center_y = content_area_top + (content_area_height - line_height) / 2.0;
+            // Offset slightly upward to make room for hint below
+            let center_y = content_area_top + (content_area_height - line_height) / 2.0 - line_height * 0.6;
 
             // Muted green-tinted checkmark
             let check_color = if self.is_staged {
-                theme::STATUS_CLEAN.with_alpha(0.4)
-            } else {
                 theme::STATUS_CLEAN.with_alpha(0.5)
+            } else {
+                theme::STATUS_CLEAN.with_alpha(0.6)
             };
             output.text_vertices.extend(text_renderer.layout_text(
                 check_icon,
@@ -555,7 +562,18 @@ impl Widget for FileList {
                 empty_text,
                 center_x + icon_w,
                 center_y,
-                theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                theme::TEXT_MUTED.with_alpha(0.8).to_array(),
+            ));
+
+            // Hint text below (smaller, more muted)
+            let hint_width = text_renderer.measure_text_scaled(hint_text, 0.85);
+            let hint_x = bounds.x + (bounds.width - hint_width) / 2.0;
+            let hint_y = center_y + line_height * 1.4;
+            output.text_vertices.extend(text_renderer.layout_text_small(
+                hint_text,
+                hint_x,
+                hint_y,
+                theme::TEXT_MUTED.with_alpha(0.5).to_array(),
             ));
         }
 
