@@ -128,6 +128,8 @@ enum AppMessage {
     MergeBranch(String),
     RebaseBranch(String),
     CreateBranch(String, Oid),  // (name, at_commit)
+    CreateTag(String, Oid),     // (name, at_commit)
+    DeleteTag(String),
     StashPush,
     StashPop,
     StashApply(usize),
@@ -915,6 +917,40 @@ impl App {
                         }
                     }
                 }
+                AppMessage::CreateTag(name, oid) => {
+                    match repo!().create_tag(&name, oid) {
+                        Ok(()) => {
+                            refresh_repo_state(repo_tab, view_state);
+                            self.toast_manager.push(
+                                format!("Created tag '{}'", name),
+                                ToastSeverity::Success,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(
+                                format!("Create tag failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                }
+                AppMessage::DeleteTag(name) => {
+                    match repo!().delete_tag(&name) {
+                        Ok(()) => {
+                            refresh_repo_state(repo_tab, view_state);
+                            self.toast_manager.push(
+                                format!("Deleted tag '{}'", name),
+                                ToastSeverity::Success,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(
+                                format!("Delete tag failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                }
                 AppMessage::StashPush => {
                     if view_state.generic_op_receiver.is_some() {
                         self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
@@ -1419,12 +1455,17 @@ impl ApplicationHandler for App {
 
                     // Branch name dialog takes modal priority
                     if self.branch_name_dialog.is_visible() {
+                        let is_tag = self.branch_name_dialog.title().contains("Tag");
                         self.branch_name_dialog.handle_event(&input_event, screen_bounds);
                         if let Some(action) = self.branch_name_dialog.take_action() {
                             match action {
                                 BranchNameDialogAction::Create(name, oid) => {
                                     if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                        view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                                        if is_tag {
+                                            view_state.pending_messages.push(AppMessage::CreateTag(name, oid));
+                                        } else {
+                                            view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                                        }
                                     }
                                 }
                                 BranchNameDialogAction::Cancel => {}
@@ -2149,6 +2190,19 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let default_name = format!("branch-{}", short);
                 branch_name_dialog.show(&default_name, oid);
+            }
+        }
+        "create_tag" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                let default_name = format!("v0.1.0-{}", short);
+                branch_name_dialog.show_with_title("Create Tag", &default_name, oid);
+            }
+        }
+        "delete_tag" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", param));
+                *pending_confirm_action = Some(AppMessage::DeleteTag(param.to_string()));
             }
         }
         "stash_push" => {

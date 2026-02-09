@@ -479,6 +479,17 @@ impl BranchSidebar {
                         }
                         return Some(items);
                     }
+                    SidebarItem::Tag(name) => {
+                        let mut items = vec![
+                            MenuItem::new("Delete Tag", "delete_tag"),
+                        ];
+                        for item in &mut items {
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, name);
+                            }
+                        }
+                        return Some(items);
+                    }
                     SidebarItem::StashEntry(index, _, _) => {
                         let idx_str = index.to_string();
                         let mut items = vec![
