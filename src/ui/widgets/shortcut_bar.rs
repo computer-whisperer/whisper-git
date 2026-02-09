@@ -1,7 +1,7 @@
 //! Keyboard shortcut status bar - shows context-sensitive shortcuts for the focused panel
 
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{WidgetOutput, create_rect_vertices, theme};
+use crate::ui::widget::{WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme};
 
 /// Which panel shortcuts to display
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,26 +62,35 @@ impl ShortcutBar {
         let text_y = bounds.y + (bounds.height - small_lh) / 2.0;
         let mut x = bounds.x + 12.0;
 
-        let key_color = theme::TEXT.to_array();
+        let key_color = theme::TEXT_BRIGHT.to_array();
         let action_color = theme::TEXT_MUTED.to_array();
-        let divider_color = theme::BORDER.to_array();
+        let pill_bg = theme::SURFACE_RAISED.to_array();
+        let pill_radius = 3.0;
+        let pill_pad_h = 4.0;
+        let pill_pad_v = 2.0;
         let char_w = text_renderer.measure_text_scaled(" ", 0.85);
 
         for (i, hint) in hints.iter().enumerate() {
-            // Divider before all but the first hint
+            // Gap between hints
             if i > 0 {
-                x += char_w;
-                output.text_vertices.extend(
-                    text_renderer.layout_text_small("\u{00b7}", x, text_y, divider_color),
-                );
                 x += char_w * 2.0;
             }
 
-            // Key label (brighter, small)
+            // Key pill: rounded rect background behind key text
+            let key_w = text_renderer.measure_text_scaled(hint.key, 0.85);
+            let pill_rect = Rect::new(
+                x - pill_pad_h,
+                text_y - pill_pad_v,
+                key_w + pill_pad_h * 2.0,
+                small_lh + pill_pad_v * 2.0,
+            );
+            output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
+
+            // Key label text inside pill
             output.text_vertices.extend(
                 text_renderer.layout_text_small(hint.key, x, text_y, key_color),
             );
-            x += text_renderer.measure_text_scaled(hint.key, 0.85);
+            x += key_w + pill_pad_h;
 
             // Space
             x += char_w;
@@ -97,15 +106,24 @@ impl ShortcutBar {
         if self.show_new_tab_hint {
             let hint_key = "Ctrl+O";
             let hint_action = "New Tab";
-            let total_width = text_renderer.measure_text_scaled(hint_key, 0.85)
-                + char_w
-                + text_renderer.measure_text_scaled(hint_action, 0.85);
+            let key_w = text_renderer.measure_text_scaled(hint_key, 0.85);
+            let action_w = text_renderer.measure_text_scaled(hint_action, 0.85);
+            let total_width = key_w + pill_pad_h + char_w + action_w;
             let hint_x = bounds.right() - total_width - 12.0;
+
+            // Pill behind key
+            let pill_rect = Rect::new(
+                hint_x - pill_pad_h,
+                text_y - pill_pad_v,
+                key_w + pill_pad_h * 2.0,
+                small_lh + pill_pad_v * 2.0,
+            );
+            output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
 
             output.text_vertices.extend(
                 text_renderer.layout_text_small(hint_key, hint_x, text_y, theme::TEXT_MUTED.to_array()),
             );
-            let action_x = hint_x + text_renderer.measure_text_scaled(hint_key, 0.85) + char_w;
+            let action_x = hint_x + key_w + pill_pad_h + char_w;
             output.text_vertices.extend(
                 text_renderer.layout_text_small(hint_action, action_x, text_y, theme::BORDER.to_array()),
             );

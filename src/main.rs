@@ -559,7 +559,7 @@ impl App {
                         Ok(oid) => {
                             println!("Created commit: {}", oid);
                             refresh_repo_state(repo_tab, view_state);
-                            view_state.staging_well.clear_message();
+                            view_state.staging_well.clear_and_focus();
                             self.toast_manager.push(
                                 format!("Commit {}", &oid.to_string()[..7]),
                                 ToastSeverity::Success,
