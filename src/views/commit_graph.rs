@@ -672,8 +672,9 @@ impl CommitGraphView {
             let x = self.lane_x(layout.lane, &bounds);
             let y = self.row_y(row, &bounds, header_offset);
 
-            // Skip if outside visible area
-            if y < bounds.y - self.row_height || y > bounds.bottom() + self.row_height {
+            // Skip if outside visible area (5-row buffer for stable connection lines)
+            let buffer = self.row_height * 5.0;
+            if y < bounds.y - buffer || y > bounds.bottom() + buffer {
                 continue;
             }
 
@@ -689,20 +690,22 @@ impl CommitGraphView {
 
                         if layout.lane == parent_layout.lane {
                             // Vertical line - same lane
+                            let start_y = (y + self.node_radius).max(bounds.y - buffer);
+                            let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
                             let mut spline = Spline::new(
-                                SplinePoint::new(x, y + self.node_radius),
+                                SplinePoint::new(x, start_y),
                                 color,
                                 self.line_width,
                             );
                             spline.line_to(SplinePoint::new(
                                 parent_x,
-                                parent_y - self.node_radius,
+                                end_y,
                             ));
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         } else {
                             // Bezier curve - different lanes (merge/fork)
-                            let start_y = y + self.node_radius;
-                            let end_y = parent_y - self.node_radius;
+                            let start_y = (y + self.node_radius).max(bounds.y - buffer);
+                            let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
                             let dy = end_y - start_y;
 
                             let mut spline = Spline::new(
@@ -1010,8 +1013,9 @@ impl CommitGraphView {
             // row_y returns the center of the row; offset text to center it vertically
             let y = self.row_y(row, &bounds, header_offset) - line_height / 2.0;
 
-            // Skip if outside visible bounds
-            if y < bounds.y - line_height || y > bounds.bottom() {
+            // Skip if outside visible bounds (2-row buffer for smooth scrolling)
+            let text_buffer = self.row_height * 2.0;
+            if y < bounds.y - text_buffer || y > bounds.bottom() + text_buffer {
                 continue;
             }
 

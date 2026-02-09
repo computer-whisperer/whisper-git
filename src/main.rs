@@ -1526,21 +1526,21 @@ fn build_ui_output(
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
-        // Header bar
-        output.extend(view_state.header_bar.layout(text_renderer, layout.header));
-
-        // Shortcut bar (below header)
-        output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
-
-        // Branch sidebar
-        output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
-
-        // Commit graph
+        // Commit graph (rendered first so header/chrome draws on top)
         let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
         let (text_vertices, pill_vertices) = view_state.commit_graph_view.layout_text(text_renderer, &repo_tab.commits, layout.graph);
         output.spline_vertices.extend(spline_vertices);
         output.spline_vertices.extend(pill_vertices);
         output.text_vertices.extend(text_vertices);
+
+        // Header bar (on top of graph)
+        output.extend(view_state.header_bar.layout(text_renderer, layout.header));
+
+        // Shortcut bar (on top of graph)
+        output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
+
+        // Branch sidebar
+        output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
 
         // Staging well
         output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
