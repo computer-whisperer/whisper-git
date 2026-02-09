@@ -28,8 +28,8 @@ pub struct GraphLayout {
     layouts: HashMap<Oid, CommitLayout>,
     /// Active lanes (which commit ID occupies each lane, if any)
     active_lanes: Vec<Option<Oid>>,
-    /// Maximum lane used
-    max_lane: usize,
+    /// Highest lane index that was active at any point (for graph width)
+    max_active_lane: usize,
 }
 
 impl GraphLayout {
@@ -37,15 +37,40 @@ impl GraphLayout {
         Self {
             layouts: HashMap::new(),
             active_lanes: Vec::new(),
-            max_lane: 0,
+            max_active_lane: 0,
         }
+    }
+
+    /// Update the peak active lane index
+    fn update_peak(&mut self) {
+        // Find the highest occupied lane index
+        for (i, occupant) in self.active_lanes.iter().enumerate().rev() {
+            if occupant.is_some() {
+                if i > self.max_active_lane {
+                    self.max_active_lane = i;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Find the lowest-numbered free lane, or allocate a new one
+    fn lowest_free_lane(&mut self) -> usize {
+        for (lane, occupant) in self.active_lanes.iter().enumerate() {
+            if occupant.is_none() {
+                return lane;
+            }
+        }
+        let lane = self.active_lanes.len();
+        self.active_lanes.push(None);
+        lane
     }
 
     /// Build layout for a list of commits (should be in topological order)
     pub fn build(&mut self, commits: &[CommitInfo]) {
         self.layouts.clear();
         self.active_lanes.clear();
-        self.max_lane = 0;
+        self.max_active_lane = 0;
 
         // Map from commit ID to its index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
@@ -55,55 +80,50 @@ impl GraphLayout {
             .collect();
 
         for (row, commit) in commits.iter().enumerate() {
-            // Find lane for this commit
+            // Step 1: Find lane for this commit (may already be reserved)
             let lane = self.find_or_assign_lane(commit, &commit_indices);
             let color = LANE_COLORS[lane % LANE_COLORS.len()];
 
             self.layouts.insert(commit.id, CommitLayout { lane, row, color });
 
-            // Update active lanes based on parents
+            // Step 2: Free any OTHER lanes that were also tracking this commit
+            // (happens when multiple children pointed to the same parent)
+            for i in 0..self.active_lanes.len() {
+                if i != lane && self.active_lanes[i] == Some(commit.id) {
+                    self.active_lanes[i] = None;
+                }
+            }
+
+            // Step 3: Update active lanes based on this commit's parents
             self.update_lanes_for_parents(commit, lane, &commit_indices);
+
+            // Step 4: Track peak active lanes for graph width
+            self.update_peak();
         }
     }
 
     fn find_or_assign_lane(
         &mut self,
         commit: &CommitInfo,
-        commit_indices: &HashMap<Oid, usize>,
+        _commit_indices: &HashMap<Oid, usize>,
     ) -> usize {
-        // Check if any active lane is waiting for this commit (as a parent)
+        // Check if any active lane is already waiting for this commit
+        // (reserved by a child's update_lanes_for_parents)
         for (lane, occupant) in self.active_lanes.iter().enumerate() {
             if *occupant == Some(commit.id) {
                 return lane;
             }
         }
 
-        // Check if first parent already has a lane we can continue
-        if let Some(&first_parent) = commit.parent_ids.first() {
-            if commit_indices.contains_key(&first_parent) {
-                // First parent is in our commit list; try to continue its lane
-                for (lane, occupant) in self.active_lanes.iter().enumerate() {
-                    if occupant.is_none() {
-                        self.active_lanes[lane] = Some(first_parent);
-                        self.max_lane = self.max_lane.max(lane);
-                        return lane;
-                    }
-                }
-            }
+        // No lane reserved -- this is a branch head (tip) or orphan.
+        // Assign to the lowest free lane for compactness.
+        let lane = self.lowest_free_lane();
+
+        // Ensure the lane exists in the vector
+        while self.active_lanes.len() <= lane {
+            self.active_lanes.push(None);
         }
 
-        // Find an empty lane or create a new one
-        for (lane, occupant) in self.active_lanes.iter().enumerate() {
-            if occupant.is_none() {
-                self.max_lane = self.max_lane.max(lane);
-                return lane;
-            }
-        }
-
-        // No empty lane, create new one
-        let lane = self.active_lanes.len();
-        self.active_lanes.push(None);
-        self.max_lane = self.max_lane.max(lane);
         lane
     }
 
@@ -121,46 +141,36 @@ impl GraphLayout {
         if commit.parent_ids.is_empty() {
             // Root commit - free the lane
             self.active_lanes[commit_lane] = None;
+            return;
+        }
+
+        // First parent continues in the same lane (straight line down)
+        let first_parent = commit.parent_ids[0];
+        if commit_indices.contains_key(&first_parent) {
+            self.active_lanes[commit_lane] = Some(first_parent);
         } else {
-            // First parent continues in the same lane
-            let first_parent = commit.parent_ids[0];
-            if commit_indices.contains_key(&first_parent) {
-                self.active_lanes[commit_lane] = Some(first_parent);
-            } else {
-                self.active_lanes[commit_lane] = None;
+            // Parent not in our visible set - free the lane
+            self.active_lanes[commit_lane] = None;
+        }
+
+        // Secondary parents (merge sources) need their own lanes
+        for &parent_id in commit.parent_ids.iter().skip(1) {
+            if !commit_indices.contains_key(&parent_id) {
+                continue;
             }
 
-            // Additional parents get new lanes (merge sources)
-            for &parent_id in commit.parent_ids.iter().skip(1) {
-                if commit_indices.contains_key(&parent_id) {
-                    // Find or create a lane for this parent
-                    let mut found = false;
-                    for occupant in self.active_lanes.iter() {
-                        if *occupant == Some(parent_id) {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if !found {
-                        // Assign parent to an empty lane or create new one
-                        let mut assigned = false;
-                        for (lane, occupant) in self.active_lanes.iter_mut().enumerate() {
-                            if lane != commit_lane && occupant.is_none() {
-                                *occupant = Some(parent_id);
-                                self.max_lane = self.max_lane.max(lane);
-                                assigned = true;
-                                break;
-                            }
-                        }
-                        if !assigned {
-                            let lane = self.active_lanes.len();
-                            self.active_lanes.push(Some(parent_id));
-                            self.max_lane = self.max_lane.max(lane);
-                        }
-                    }
-                }
+            // Check if another lane is already tracking this parent
+            let already_tracked = self.active_lanes.iter().any(|o| *o == Some(parent_id));
+            if already_tracked {
+                continue;
             }
+
+            // Assign this secondary parent to the lowest free lane
+            let lane = self.lowest_free_lane();
+            while self.active_lanes.len() <= lane {
+                self.active_lanes.push(None);
+            }
+            self.active_lanes[lane] = Some(parent_id);
         }
     }
 
@@ -169,9 +179,9 @@ impl GraphLayout {
         self.layouts.get(id)
     }
 
-    /// Get maximum lane used
+    /// Get maximum lane index that was active at any point
     pub fn max_lane(&self) -> usize {
-        self.max_lane
+        self.max_active_lane
     }
 }
 
