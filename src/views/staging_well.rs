@@ -147,9 +147,20 @@ impl StagingWell {
         let (subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
             self.compute_regions(bounds);
 
-        // Tab to cycle focus
+        // Tab to cycle focus within staging sections.
+        // When cycling past the last section, return Ignored so Tab bubbles up
+        // to the panel-level cycling in main.rs.
         if let InputEvent::KeyDown { key: Key::Tab, modifiers } = event {
-            self.cycle_focus(!modifiers.shift);
+            let forward = !modifiers.shift;
+            let sections = 4;
+            if forward && self.focus_section == sections - 1 {
+                // Would wrap past last section - let it bubble up
+                return EventResponse::Ignored;
+            } else if !forward && self.focus_section == 0 {
+                // Would wrap past first section - let it bubble up
+                return EventResponse::Ignored;
+            }
+            self.cycle_focus(forward);
             return EventResponse::Consumed;
         }
 
@@ -264,9 +275,13 @@ impl StagingWell {
         let padding = 8.0;
         let inner = bounds.inset(padding);
 
+        // Reserve space for "Commit Message" title row
+        let title_height = 22.0;
+        let (_title_row, remaining) = inner.take_top(title_height);
+
         // Subject line: single line (~32px)
         let subject_height = 32.0;
-        let (subject, remaining) = inner.take_top(subject_height);
+        let (subject, remaining) = remaining.take_top(subject_height);
 
         // Gap
         let (_, remaining) = remaining.take_top(padding);
@@ -322,11 +337,11 @@ impl StagingWell {
         let (subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
             self.compute_regions(bounds);
 
-        // Title
-        let title_y = bounds.y + 4.0;
+        // Title (in the reserved title row above the subject input)
+        let title_y = bounds.y + 10.0;
         output.text_vertices.extend(text_renderer.layout_text(
             "Commit Message",
-            bounds.x + 8.0,
+            bounds.x + 10.0,
             title_y,
             theme::TEXT.to_array(),
         ));
@@ -335,7 +350,7 @@ impl StagingWell {
         let char_count = format!("{}/72", self.subject_input.text().len());
         output.text_vertices.extend(text_renderer.layout_text(
             &char_count,
-            bounds.right() - text_renderer.measure_text(&char_count) - 8.0,
+            bounds.right() - text_renderer.measure_text(&char_count) - 10.0,
             title_y,
             theme::TEXT_MUTED.to_array(),
         ));
