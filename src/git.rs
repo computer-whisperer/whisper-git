@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use git2::{Diff, Repository, Commit, Oid, Status, StatusOptions};
+use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -21,6 +21,25 @@ pub fn format_relative_time(timestamp: i64) -> String {
         d if d < 2592000 => format!("{}w", d / 604800),
         d if d < 31536000 => format!("{}mo", d / 2592000),
         d => format!("{}y", d / 31536000),
+    }
+}
+
+/// Convert a `RepositoryState` to a human-readable description.
+/// Returns `None` for the `Clean` state (no operation in progress).
+pub fn repo_state_label(state: RepositoryState) -> Option<&'static str> {
+    match state {
+        RepositoryState::Clean => None,
+        RepositoryState::Merge => Some("MERGE IN PROGRESS"),
+        RepositoryState::Revert => Some("REVERT IN PROGRESS"),
+        RepositoryState::RevertSequence => Some("REVERT SEQUENCE IN PROGRESS"),
+        RepositoryState::CherryPick => Some("CHERRY-PICK IN PROGRESS"),
+        RepositoryState::CherryPickSequence => Some("CHERRY-PICK SEQUENCE IN PROGRESS"),
+        RepositoryState::Bisect => Some("BISECT IN PROGRESS"),
+        RepositoryState::Rebase => Some("REBASE IN PROGRESS"),
+        RepositoryState::RebaseInteractive => Some("INTERACTIVE REBASE IN PROGRESS"),
+        RepositoryState::RebaseMerge => Some("REBASE-MERGE IN PROGRESS"),
+        RepositoryState::ApplyMailbox => Some("APPLY MAILBOX IN PROGRESS"),
+        RepositoryState::ApplyMailboxOrRebase => Some("APPLY MAILBOX/REBASE IN PROGRESS"),
     }
 }
 
@@ -78,6 +97,17 @@ impl GitRepo {
         let repo = Repository::discover(path.as_ref())
             .with_context(|| format!("Failed to open repository at {:?}", path.as_ref()))?;
         Ok(Self { repo })
+    }
+
+    /// Get the current repository state (e.g. merge/rebase in progress)
+    pub fn repo_state(&self) -> RepositoryState {
+        self.repo.state()
+    }
+
+    /// Clean up an in-progress operation (abort merge, cherry-pick, etc.)
+    pub fn cleanup_state(&self) -> Result<()> {
+        self.repo.cleanup_state().context("Failed to clean up repository state")?;
+        Ok(())
     }
 
     /// Get the repository's working directory

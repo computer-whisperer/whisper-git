@@ -789,6 +789,9 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
         ahead,
         behind,
     );
+
+    // Update operation state (merge/rebase/cherry-pick in progress)
+    view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
 }
 
 /// Initialize a tab's view state from its repo data
@@ -1518,6 +1521,9 @@ impl ApplicationHandler for App {
                                 }
                                 HeaderAction::BreadcrumbClose => {
                                     view_state.pending_messages.push(AppMessage::ExitToDepth(0));
+                                }
+                                HeaderAction::AbortOperation => {
+                                    view_state.pending_messages.push(AppMessage::AbortOperation);
                                 }
                             }
                         }
@@ -2356,6 +2362,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
             app.shortcut_bar_visible,
         );
         view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
+        view_state.header_bar.update_abort_bounds(&state.text_renderer, approx_layout.header);
     }
 
     // Update toast manager
