@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::git::{BranchTip, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
+use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
@@ -93,6 +93,18 @@ pub struct BranchSidebar {
     scrollbar: Scrollbar,
     /// Cached bounds for scroll-to-focused calculations
     last_bounds: Option<Rect>,
+    /// Filter query text for searching branches/tags/stashes
+    filter_query: String,
+    /// Cursor position in the filter query
+    filter_cursor: usize,
+    /// Whether the filter input is focused (active)
+    filter_focused: bool,
+    /// Guard against double-insertion from KeyDown + TextInput in filter
+    filter_inserted_from_key: bool,
+    /// Whether the filter cursor is currently visible (for blinking)
+    filter_cursor_visible: bool,
+    /// Last time the filter cursor blink state changed
+    filter_last_blink: std::time::Instant,
 }
 
 impl BranchSidebar {
@@ -122,6 +134,12 @@ impl BranchSidebar {
             hovered_index: None,
             scrollbar: Scrollbar::new(),
             last_bounds: None,
+            filter_query: String::new(),
+            filter_cursor: 0,
+            filter_focused: false,
+            filter_inserted_from_key: false,
+            filter_cursor_visible: true,
+            filter_last_blink: std::time::Instant::now(),
         }
     }
 
@@ -131,10 +149,36 @@ impl BranchSidebar {
         self.section_header_height = text_renderer.line_height() * 1.6;
     }
 
+    /// Update filter cursor blink state. Call once per frame.
+    pub fn update_filter_cursor(&mut self, now: std::time::Instant) {
+        if self.filter_focused {
+            if now.duration_since(self.filter_last_blink).as_millis() >= 530 {
+                self.filter_cursor_visible = !self.filter_cursor_visible;
+                self.filter_last_blink = now;
+            }
+        } else {
+            self.filter_cursor_visible = true;
+            self.filter_last_blink = now;
+        }
+    }
+
+    /// Check if a name matches the current filter query (case-insensitive substring)
+    fn matches_filter(&self, name: &str) -> bool {
+        if self.filter_query.is_empty() {
+            return true;
+        }
+        name.to_lowercase().contains(&self.filter_query.to_lowercase())
+    }
+
     /// Total height consumed by a section header including padding and separator.
     /// Must match `layout_section_header()`: top_pad(4) + header_height + bottom_pad(2) + separator(1).
     fn section_header_total_height(&self) -> f32 {
         self.section_header_height + 7.0
+    }
+
+    /// Height of the filter input bar including padding
+    fn filter_bar_height(&self) -> f32 {
+        self.section_header_height + 8.0 // same as section header height plus some gap
     }
 
     /// Populate from branch tips and tags from the git repo
@@ -211,8 +255,9 @@ impl BranchSidebar {
         let line_height = self.line_height;
         let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
+        let filter_offset = self.filter_bar_height();
 
-        let mut item_y = inner.y - self.scroll_offset;
+        let mut item_y = inner.y + filter_offset - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
             let h = match item {
                 SidebarItem::SectionHeader(_) => section_header_total,
@@ -245,65 +290,118 @@ impl BranchSidebar {
         self.hovered_index = None;
     }
 
-    /// Build the flattened visible_items list based on collapsed state
+    /// Build the flattened visible_items list based on collapsed state and filter
     fn build_visible_items(&mut self) {
         self.visible_items.clear();
+        let filtering = !self.filter_query.is_empty();
 
         // LOCAL section
-        self.visible_items.push(SidebarItem::SectionHeader("LOCAL"));
-        if !self.local_collapsed {
-            for branch in &self.local_branches {
-                self.visible_items.push(SidebarItem::LocalBranch(branch.clone()));
+        let local_filtered: Vec<String> = if filtering {
+            self.local_branches.iter().filter(|b| self.matches_filter(b)).cloned().collect()
+        } else {
+            self.local_branches.clone()
+        };
+        if !filtering || !local_filtered.is_empty() {
+            self.visible_items.push(SidebarItem::SectionHeader("LOCAL"));
+            if !self.local_collapsed {
+                for branch in &local_filtered {
+                    self.visible_items.push(SidebarItem::LocalBranch(branch.clone()));
+                }
             }
         }
 
         // REMOTE section
-        self.visible_items.push(SidebarItem::SectionHeader("REMOTE"));
-        if !self.remote_collapsed {
-            let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
-            remote_names.sort();
-            for remote_name in remote_names {
-                self.visible_items.push(SidebarItem::RemoteHeader(remote_name.clone()));
-                for branch in &self.remote_branches[remote_name] {
-                    self.visible_items.push(SidebarItem::RemoteBranch(remote_name.clone(), branch.clone()));
+        let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
+        remote_names.sort();
+        let mut remote_has_matches = false;
+        let mut remote_filtered: Vec<(String, Vec<String>)> = Vec::new();
+        for remote_name in &remote_names {
+            let branches: Vec<String> = if filtering {
+                self.remote_branches[*remote_name].iter()
+                    .filter(|b| self.matches_filter(b) || self.matches_filter(remote_name))
+                    .cloned().collect()
+            } else {
+                self.remote_branches[*remote_name].clone()
+            };
+            if !branches.is_empty() || !filtering {
+                remote_has_matches = true;
+                remote_filtered.push(((*remote_name).clone(), branches));
+            }
+        }
+        if !filtering || remote_has_matches {
+            self.visible_items.push(SidebarItem::SectionHeader("REMOTE"));
+            if !self.remote_collapsed {
+                for (remote_name, branches) in &remote_filtered {
+                    self.visible_items.push(SidebarItem::RemoteHeader(remote_name.clone()));
+                    for branch in branches {
+                        self.visible_items.push(SidebarItem::RemoteBranch(remote_name.clone(), branch.clone()));
+                    }
                 }
             }
         }
 
         // TAGS section
-        self.visible_items.push(SidebarItem::SectionHeader("TAGS"));
-        if !self.tags_collapsed {
-            for tag in &self.tags {
-                self.visible_items.push(SidebarItem::Tag(tag.clone()));
+        let tags_filtered: Vec<String> = if filtering {
+            self.tags.iter().filter(|t| self.matches_filter(t)).cloned().collect()
+        } else {
+            self.tags.clone()
+        };
+        if !filtering || !tags_filtered.is_empty() {
+            self.visible_items.push(SidebarItem::SectionHeader("TAGS"));
+            if !self.tags_collapsed {
+                for tag in &tags_filtered {
+                    self.visible_items.push(SidebarItem::Tag(tag.clone()));
+                }
             }
         }
 
         // SUBMODULES section (only if any exist)
         if !self.submodules.is_empty() {
-            self.visible_items.push(SidebarItem::SectionHeader("SUBMODULES"));
-            if !self.submodules_collapsed {
-                for sm in &self.submodules {
-                    self.visible_items.push(SidebarItem::SubmoduleEntry(sm.name.clone()));
+            let sm_filtered: Vec<SubmoduleInfo> = if filtering {
+                self.submodules.iter().filter(|s| self.matches_filter(&s.name)).cloned().collect()
+            } else {
+                self.submodules.clone()
+            };
+            if !filtering || !sm_filtered.is_empty() {
+                self.visible_items.push(SidebarItem::SectionHeader("SUBMODULES"));
+                if !self.submodules_collapsed {
+                    for sm in &sm_filtered {
+                        self.visible_items.push(SidebarItem::SubmoduleEntry(sm.name.clone()));
+                    }
                 }
             }
         }
 
         // WORKTREES section (only if any exist)
         if !self.worktrees.is_empty() {
-            self.visible_items.push(SidebarItem::SectionHeader("WORKTREES"));
-            if !self.worktrees_collapsed {
-                for wt in &self.worktrees {
-                    self.visible_items.push(SidebarItem::WorktreeEntry(wt.name.clone()));
+            let wt_filtered: Vec<WorktreeInfo> = if filtering {
+                self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).cloned().collect()
+            } else {
+                self.worktrees.clone()
+            };
+            if !filtering || !wt_filtered.is_empty() {
+                self.visible_items.push(SidebarItem::SectionHeader("WORKTREES"));
+                if !self.worktrees_collapsed {
+                    for wt in &wt_filtered {
+                        self.visible_items.push(SidebarItem::WorktreeEntry(wt.name.clone()));
+                    }
                 }
             }
         }
 
         // STASHES section (only if any exist)
         if !self.stashes.is_empty() {
-            self.visible_items.push(SidebarItem::SectionHeader("STASHES"));
-            if !self.stashes_collapsed {
-                for stash in &self.stashes {
-                    self.visible_items.push(SidebarItem::StashEntry(stash.index, stash.message.clone(), stash.time));
+            let stash_filtered: Vec<StashEntry> = if filtering {
+                self.stashes.iter().filter(|s| self.matches_filter(&s.message)).cloned().collect()
+            } else {
+                self.stashes.clone()
+            };
+            if !filtering || !stash_filtered.is_empty() {
+                self.visible_items.push(SidebarItem::SectionHeader("STASHES"));
+                if !self.stashes_collapsed {
+                    for stash in &stash_filtered {
+                        self.visible_items.push(SidebarItem::StashEntry(stash.index, stash.message.clone(), stash.time));
+                    }
                 }
             }
         }
@@ -360,7 +458,7 @@ impl BranchSidebar {
         }
 
         let item_h = self.line_height;
-        let view_height = bounds.height - padding * 2.0;
+        let view_height = bounds.height - padding * 2.0 - self.filter_bar_height();
 
         // If focused item is above the visible area, scroll up
         if y_offset < self.scroll_offset {
@@ -418,8 +516,9 @@ impl BranchSidebar {
         let line_height = self.line_height;
         let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
+        let filter_offset = self.filter_bar_height();
 
-        let mut item_y = inner.y - self.scroll_offset;
+        let mut item_y = inner.y + filter_offset - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
             let h = match item {
                 SidebarItem::SectionHeader(_) => section_header_total,
@@ -526,9 +625,152 @@ impl BranchSidebar {
         None
     }
 
+    /// Compute the filter bar bounds within the sidebar
+    fn filter_bar_bounds(&self, bounds: &Rect) -> Rect {
+        let padding = 8.0;
+        let filter_h = self.filter_bar_height();
+        Rect::new(
+            bounds.x + padding,
+            bounds.y + padding,
+            bounds.width - padding * 2.0 - 8.0, // 8.0 for scrollbar
+            filter_h - 4.0, // leave a small gap below
+        )
+    }
+
+    /// Handle filter input events. Returns true if consumed.
+    fn handle_filter_event(&mut self, event: &InputEvent, filter_bounds: Rect) -> EventResponse {
+        match event {
+            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+                if filter_bounds.contains(*x, *y) {
+                    self.filter_focused = true;
+                    // Position cursor based on click
+                    return EventResponse::Consumed;
+                } else {
+                    // Click outside filter - defocus it
+                    self.filter_focused = false;
+                }
+            }
+            InputEvent::KeyDown { key, modifiers, text } if self.filter_focused => {
+                match key {
+                    Key::Escape => {
+                        // Clear filter and defocus
+                        self.filter_query.clear();
+                        self.filter_cursor = 0;
+                        self.filter_focused = false;
+                        self.build_visible_items();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Backspace => {
+                        if self.filter_cursor > 0 {
+                            self.filter_cursor -= 1;
+                            self.filter_query.remove(self.filter_cursor);
+                            self.build_visible_items();
+                        }
+                        self.filter_cursor_visible = true;
+                        self.filter_last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Delete => {
+                        if self.filter_cursor < self.filter_query.len() {
+                            self.filter_query.remove(self.filter_cursor);
+                            self.build_visible_items();
+                        }
+                        self.filter_cursor_visible = true;
+                        self.filter_last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Left => {
+                        self.filter_cursor = self.filter_cursor.saturating_sub(1);
+                        return EventResponse::Consumed;
+                    }
+                    Key::Right => {
+                        self.filter_cursor = (self.filter_cursor + 1).min(self.filter_query.len());
+                        return EventResponse::Consumed;
+                    }
+                    Key::Home => {
+                        self.filter_cursor = 0;
+                        return EventResponse::Consumed;
+                    }
+                    Key::End => {
+                        self.filter_cursor = self.filter_query.len();
+                        return EventResponse::Consumed;
+                    }
+                    Key::A if modifiers.only_ctrl() => {
+                        self.filter_cursor = self.filter_query.len();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Down => {
+                        // Move focus from filter to first item
+                        self.filter_focused = false;
+                        if !self.visible_items.is_empty() {
+                            self.focused_index = self.visible_items.iter().position(|item| {
+                                !matches!(item, SidebarItem::SectionHeader(_))
+                            });
+                        }
+                        return EventResponse::Consumed;
+                    }
+                    Key::Enter => {
+                        // Move focus from filter to first item
+                        self.filter_focused = false;
+                        if !self.visible_items.is_empty() {
+                            self.focused_index = self.visible_items.iter().position(|item| {
+                                !matches!(item, SidebarItem::SectionHeader(_))
+                            });
+                        }
+                        return EventResponse::Consumed;
+                    }
+                    _ if key.is_printable() && !modifiers.ctrl && !modifiers.alt => {
+                        if let Some(t) = text {
+                            for c in t.chars() {
+                                if !c.is_control() {
+                                    self.filter_query.insert(self.filter_cursor, c);
+                                    self.filter_cursor += 1;
+                                }
+                            }
+                            self.filter_inserted_from_key = true;
+                            self.filter_cursor_visible = true;
+                            self.filter_last_blink = std::time::Instant::now();
+                            self.build_visible_items();
+                            return EventResponse::Consumed;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            InputEvent::TextInput(text) if self.filter_focused => {
+                if self.filter_inserted_from_key {
+                    self.filter_inserted_from_key = false;
+                    return EventResponse::Consumed;
+                }
+                for c in text.chars() {
+                    if !c.is_control() {
+                        self.filter_query.insert(self.filter_cursor, c);
+                        self.filter_cursor += 1;
+                    }
+                }
+                if !text.is_empty() {
+                    self.filter_cursor_visible = true;
+                    self.filter_last_blink = std::time::Instant::now();
+                    self.build_visible_items();
+                    return EventResponse::Consumed;
+                }
+            }
+            _ => {}
+        }
+        EventResponse::Ignored
+    }
+
     /// Handle input events (scrolling, clicking section headers, keyboard nav)
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         self.last_bounds = Some(bounds);
+
+        // Compute filter bar bounds
+        let filter_bounds = self.filter_bar_bounds(&bounds);
+
+        // Route filter events first
+        if self.handle_filter_event(event, filter_bounds).is_consumed() {
+            return EventResponse::Consumed;
+        }
 
         // Scrollbar on right edge
         let scrollbar_width = 8.0;
@@ -552,7 +794,7 @@ impl BranchSidebar {
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, .. } if self.focused => {
+            InputEvent::KeyDown { key, modifiers, .. } if self.focused && !self.filter_focused => {
                 match key {
                     Key::J | Key::Down => {
                         self.move_focus(1);
@@ -588,6 +830,16 @@ impl BranchSidebar {
                         self.move_focus(-visible_count);
                         return EventResponse::Consumed;
                     }
+                    // Slash key activates the filter
+                    Key::Slash => {
+                        self.filter_focused = true;
+                        return EventResponse::Consumed;
+                    }
+                    // Ctrl+F also activates filter
+                    Key::F if modifiers.only_ctrl() => {
+                        self.filter_focused = true;
+                        return EventResponse::Consumed;
+                    }
                     _ => {}
                 }
             }
@@ -599,8 +851,9 @@ impl BranchSidebar {
                     let section_header_total = self.section_header_total_height();
                     let section_gap = 8.0;
 
-                    // Find which item was clicked
-                    let mut item_y = inner.y - self.scroll_offset;
+                    // Offset start Y by filter bar height
+                    let filter_offset = self.filter_bar_height();
+                    let mut item_y = inner.y + filter_offset - self.scroll_offset;
                     for (idx, item) in self.visible_items.iter().enumerate() {
                         let h = match item {
                             SidebarItem::SectionHeader(_) => section_header_total,
@@ -674,11 +927,145 @@ impl BranchSidebar {
         let section_header_height = self.section_header_height;
         let indent = 12.0;
         let section_gap = 8.0;
+        let filter_bar_h = self.filter_bar_height();
 
-        let mut y = inner.y - self.scroll_offset;
+        // --- Filter bar at the top ---
+        {
+            let fb = self.filter_bar_bounds(&bounds);
+
+            // Filter background
+            let corner_radius = 4.0;
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &fb,
+                theme::SURFACE.to_array(),
+                corner_radius,
+            ));
+
+            // Border
+            let border_color = if self.filter_focused {
+                theme::ACCENT
+            } else {
+                theme::BORDER
+            };
+            let border_thickness = if self.filter_focused { 2.0 } else { 1.0 };
+            output.spline_vertices.extend(create_rect_outline_vertices(
+                &fb,
+                border_color.to_array(),
+                border_thickness,
+            ));
+
+            let text_y = fb.y + (fb.height - text_renderer.line_height()) / 2.0;
+            let text_x = fb.x + 8.0;
+
+            // Search icon
+            let icon = "\u{25CB}"; // ○ as search icon placeholder
+            output.text_vertices.extend(text_renderer.layout_text(
+                icon,
+                text_x,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+            let icon_width = text_renderer.measure_text(icon) + 4.0;
+            let input_x = text_x + icon_width;
+
+            if self.filter_query.is_empty() {
+                output.text_vertices.extend(text_renderer.layout_text(
+                    "Filter branches...",
+                    input_x,
+                    text_y,
+                    theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                ));
+            } else {
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &self.filter_query,
+                    input_x,
+                    text_y,
+                    theme::TEXT_BRIGHT.to_array(),
+                ));
+
+                // Clear "x" on right side
+                let clear_text = "x";
+                let clear_width = text_renderer.measure_text(clear_text);
+                output.text_vertices.extend(text_renderer.layout_text(
+                    clear_text,
+                    fb.right() - clear_width - 8.0,
+                    text_y,
+                    theme::TEXT_MUTED.to_array(),
+                ));
+            }
+
+            // Cursor
+            if self.filter_focused && self.filter_cursor_visible {
+                let cursor_x = input_x + text_renderer.measure_text(&self.filter_query[..self.filter_cursor]);
+                let cursor_rect = Rect::new(cursor_x, fb.y + 4.0, 2.0, fb.height - 8.0);
+                output.spline_vertices.extend(create_rect_vertices(
+                    &cursor_rect,
+                    theme::ACCENT.to_array(),
+                ));
+            }
+        }
+
+        // Pre-compute filtered data for rendering
+        let filtering = !self.filter_query.is_empty();
+        let filtered_local: Vec<String> = if filtering {
+            self.local_branches.iter().filter(|b| self.matches_filter(b)).cloned().collect()
+        } else {
+            self.local_branches.clone()
+        };
+
+        let mut remote_names_sorted: Vec<String> = self.remote_branches.keys().cloned().collect();
+        remote_names_sorted.sort();
+        let filtered_remotes: Vec<(String, Vec<String>)> = remote_names_sorted.iter().filter_map(|rn| {
+            let branches: Vec<String> = if filtering {
+                self.remote_branches[rn].iter()
+                    .filter(|b| self.matches_filter(b) || self.matches_filter(rn))
+                    .cloned().collect()
+            } else {
+                self.remote_branches[rn].clone()
+            };
+            if !branches.is_empty() || !filtering {
+                Some((rn.clone(), branches))
+            } else {
+                None
+            }
+        }).collect();
+
+        let filtered_tags: Vec<String> = if filtering {
+            self.tags.iter().filter(|t| self.matches_filter(t)).cloned().collect()
+        } else {
+            self.tags.clone()
+        };
+
+        let filtered_submodules: Vec<String> = if filtering {
+            self.submodules.iter().filter(|s| self.matches_filter(&s.name)).map(|s| s.name.clone()).collect()
+        } else {
+            self.submodules.iter().map(|s| s.name.clone()).collect()
+        };
+
+        let filtered_worktrees: Vec<String> = if filtering {
+            self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).map(|w| w.name.clone()).collect()
+        } else {
+            self.worktrees.iter().map(|w| w.name.clone()).collect()
+        };
+
+        let filtered_stashes: Vec<(usize, String, i64)> = if filtering {
+            self.stashes.iter().filter(|s| self.matches_filter(&s.message)).map(|s| (s.index, s.message.clone(), s.time)).collect()
+        } else {
+            self.stashes.iter().map(|s| (s.index, s.message.clone(), s.time)).collect()
+        };
+
+        let show_local = !filtering || !filtered_local.is_empty();
+        let show_remote = !filtering || !filtered_remotes.is_empty();
+        let show_tags = !filtering || !filtered_tags.is_empty();
+        let show_submodules = !self.submodules.is_empty() && (!filtering || !filtered_submodules.is_empty());
+        let show_worktrees = !self.worktrees.is_empty() && (!filtering || !filtered_worktrees.is_empty());
+        let show_stashes = !self.stashes.is_empty() && (!filtering || !filtered_stashes.is_empty());
+
+        let mut y = inner.y + filter_bar_h - self.scroll_offset;
         let mut item_idx: usize = 0;
 
         // --- LOCAL section ---
+        if show_local {
         // Section header
         y = self.layout_section_header(
             text_renderer,
@@ -686,7 +1073,7 @@ impl BranchSidebar {
             &inner,
             y,
             "LOCAL",
-            self.local_branches.len(),
+            filtered_local.len(),
             self.local_collapsed,
             section_header_height,
             &bounds,
@@ -694,7 +1081,7 @@ impl BranchSidebar {
         item_idx += 1; // SectionHeader("LOCAL")
 
         if !self.local_collapsed {
-            for branch in &self.local_branches {
+            for branch in &filtered_local {
                 let visible = y + line_height >= bounds.y && y < bounds.bottom();
                 if visible {
                     let is_current = *branch == self.current_branch;
@@ -791,9 +1178,11 @@ impl BranchSidebar {
         }
 
         y += section_gap;
+        } // end show_local
 
         // --- REMOTE section ---
-        let remote_count: usize = self.remote_branches.values().map(|v| v.len()).sum();
+        if show_remote {
+        let remote_count: usize = filtered_remotes.iter().map(|(_, v)| v.len()).sum();
         y = self.layout_section_header(
             text_renderer,
             &mut output,
@@ -808,12 +1197,7 @@ impl BranchSidebar {
         item_idx += 1; // SectionHeader("REMOTE")
 
         if !self.remote_collapsed {
-            // Sort remote names for consistent order
-            let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
-            remote_names.sort();
-
-            for remote_name in remote_names {
-                let branches = &self.remote_branches[remote_name];
+            for (remote_name, branches) in &filtered_remotes {
 
                 // Remote name sub-header
                 let visible = y + line_height >= bounds.y && y < bounds.bottom();
@@ -899,15 +1283,17 @@ impl BranchSidebar {
         }
 
         y += section_gap;
+        } // end show_remote
 
         // --- TAGS section ---
+        if show_tags {
         y = self.layout_section_header(
             text_renderer,
             &mut output,
             &inner,
             y,
             "TAGS",
-            self.tags.len(),
+            filtered_tags.len(),
             self.tags_collapsed,
             section_header_height,
             &bounds,
@@ -915,7 +1301,7 @@ impl BranchSidebar {
         item_idx += 1; // SectionHeader("TAGS")
 
         if !self.tags_collapsed {
-            for tag in &self.tags {
+            for tag in &filtered_tags {
                 let visible = y + line_height >= bounds.y && y < bounds.bottom();
                 if visible {
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -960,8 +1346,10 @@ impl BranchSidebar {
             }
         }
 
+        } // end show_tags
+
         // --- SUBMODULES section (only if any exist) ---
-        if !self.submodules.is_empty() {
+        if show_submodules {
             y += section_gap;
 
             y = self.layout_section_header(
@@ -970,7 +1358,7 @@ impl BranchSidebar {
                 &inner,
                 y,
                 "SUBMODULES",
-                self.submodules.len(),
+                filtered_submodules.len(),
                 self.submodules_collapsed,
                 section_header_height,
                 &bounds,
@@ -978,7 +1366,8 @@ impl BranchSidebar {
             item_idx += 1; // SectionHeader("SUBMODULES")
 
             if !self.submodules_collapsed {
-                for sm_name in self.submodules.iter().map(|s| s.name.clone()).collect::<Vec<_>>() {
+                for sm_name in &filtered_submodules {
+                    let sm_name = sm_name.clone();
                     let visible = y + line_height >= bounds.y && y < bounds.bottom();
                     if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -1050,7 +1439,7 @@ impl BranchSidebar {
         }
 
         // --- WORKTREES section (only if any exist) ---
-        if !self.worktrees.is_empty() {
+        if show_worktrees {
             y += section_gap;
 
             y = self.layout_section_header(
@@ -1059,7 +1448,7 @@ impl BranchSidebar {
                 &inner,
                 y,
                 "WORKTREES",
-                self.worktrees.len(),
+                filtered_worktrees.len(),
                 self.worktrees_collapsed,
                 section_header_height,
                 &bounds,
@@ -1067,7 +1456,8 @@ impl BranchSidebar {
             item_idx += 1; // SectionHeader("WORKTREES")
 
             if !self.worktrees_collapsed {
-                for wt_name in self.worktrees.iter().map(|w| w.name.clone()).collect::<Vec<_>>() {
+                for wt_name in &filtered_worktrees {
+                    let wt_name = wt_name.clone();
                     let visible = y + line_height >= bounds.y && y < bounds.bottom();
                     if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -1165,12 +1555,8 @@ impl BranchSidebar {
         }
 
         // --- STASHES section (only if any exist) ---
-        if !self.stashes.is_empty() {
+        if show_stashes {
             y += section_gap;
-
-            let stash_entries: Vec<(usize, String, i64)> = self.stashes.iter()
-                .map(|s| (s.index, s.message.clone(), s.time))
-                .collect();
 
             y = self.layout_section_header(
                 text_renderer,
@@ -1178,7 +1564,7 @@ impl BranchSidebar {
                 &inner,
                 y,
                 "STASHES",
-                stash_entries.len(),
+                filtered_stashes.len(),
                 self.stashes_collapsed,
                 section_header_height,
                 &bounds,
@@ -1186,7 +1572,7 @@ impl BranchSidebar {
             item_idx += 1; // SectionHeader("STASHES")
 
             if !self.stashes_collapsed {
-                for (stash_index, stash_msg, stash_time) in &stash_entries {
+                for (stash_index, stash_msg, stash_time) in &filtered_stashes {
                     let visible = y + line_height >= bounds.y && y < bounds.bottom();
                     if visible {
                         let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -1264,50 +1650,56 @@ impl BranchSidebar {
         }
 
         // Compute total content height for scroll clamping (independent of early-break rendering)
-        let mut total_h: f32 = 0.0;
+        let mut total_h: f32 = filter_bar_h;
         let section_header_total = self.section_header_total_height();
         // LOCAL section
-        total_h += section_header_total;
-        if !self.local_collapsed {
-            total_h += self.local_branches.len() as f32 * line_height;
+        if show_local {
+            total_h += section_header_total;
+            if !self.local_collapsed {
+                total_h += filtered_local.len() as f32 * line_height;
+            }
+            total_h += section_gap;
         }
-        total_h += section_gap;
         // REMOTE section
-        total_h += section_header_total;
-        if !self.remote_collapsed {
-            for branches in self.remote_branches.values() {
-                total_h += line_height; // remote name sub-header
-                total_h += branches.len() as f32 * line_height;
+        if show_remote {
+            total_h += section_header_total;
+            if !self.remote_collapsed {
+                for (_, branches) in &filtered_remotes {
+                    total_h += line_height; // remote name sub-header
+                    total_h += branches.len() as f32 * line_height;
+                }
+            }
+            total_h += section_gap;
+        }
+        // TAGS section
+        if show_tags {
+            total_h += section_header_total;
+            if !self.tags_collapsed {
+                total_h += filtered_tags.len() as f32 * line_height;
             }
         }
-        total_h += section_gap;
-        // TAGS section
-        total_h += section_header_total;
-        if !self.tags_collapsed {
-            total_h += self.tags.len() as f32 * line_height;
-        }
         // SUBMODULES section
-        if !self.submodules.is_empty() {
+        if show_submodules {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.submodules_collapsed {
-                total_h += self.submodules.len() as f32 * line_height;
+                total_h += filtered_submodules.len() as f32 * line_height;
             }
         }
         // WORKTREES section
-        if !self.worktrees.is_empty() {
+        if show_worktrees {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.worktrees_collapsed {
-                total_h += self.worktrees.len() as f32 * line_height;
+                total_h += filtered_worktrees.len() as f32 * line_height;
             }
         }
         // STASHES section
-        if !self.stashes.is_empty() {
+        if show_stashes {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.stashes_collapsed {
-                total_h += self.stashes.len() as f32 * line_height;
+                total_h += filtered_stashes.len() as f32 * line_height;
             }
         }
         self.content_height = total_h;
@@ -1363,13 +1755,13 @@ impl BranchSidebar {
 
             let text_y = y + top_pad + 4.0;
 
-            // Collapse indicator - Unicode triangle
-            let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
+            // Collapse indicator - Unicode triangle (▶ collapsed / ▼ expanded)
+            let indicator = if collapsed { "\u{25B6}" } else { "\u{25BC}" }; // ▶ / ▼
             output.text_vertices.extend(text_renderer.layout_text(
                 indicator,
                 inner.x + 6.0,
                 text_y,
-                theme::TEXT.to_array(),
+                theme::TEXT_BRIGHT.to_array(),
             ));
 
             // Section title - brighter, slightly more left padding
