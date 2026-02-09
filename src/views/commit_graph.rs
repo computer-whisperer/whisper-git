@@ -8,6 +8,7 @@ use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
     create_dashed_rect_outline_vertices, create_rect_vertices, theme,
 };
+use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::widgets::search_bar::{SearchBar, SearchAction};
 use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
@@ -437,6 +438,46 @@ impl CommitGraphView {
             }
             _ => EventResponse::Ignored,
         }
+    }
+
+    /// Get context menu items for the commit at (x, y), if any.
+    /// Also selects the commit under the cursor. Returns (items, commit_oid).
+    pub fn context_menu_items_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        commits: &[CommitInfo],
+        bounds: Rect,
+    ) -> Option<(Vec<MenuItem>, Oid)> {
+        let header_offset = 10.0;
+        let scrollbar_width = 10.0;
+        let (content_bounds, _) = bounds.take_right(scrollbar_width);
+
+        if !content_bounds.contains(x, y) {
+            return None;
+        }
+
+        for (row, commit) in commits.iter().enumerate() {
+            let commit_y = self.row_y(row, &bounds, header_offset);
+            if (y - commit_y).abs() < self.row_height / 2.0 {
+                self.selected_commit = Some(commit.id);
+
+                let mut items = vec![
+                    MenuItem::new("Copy SHA", "copy_sha"),
+                    MenuItem::new("View Details", "view_details"),
+                ];
+
+                // Check if this commit has any branch labels
+                let has_branch = self.branch_tips.iter().any(|t| t.oid == commit.id && !t.is_remote);
+                if has_branch {
+                    items.push(MenuItem::new("Checkout", "checkout"));
+                }
+
+                return Some((items, commit.id));
+            }
+        }
+
+        None
     }
 
     /// Update search matches based on query

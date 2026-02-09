@@ -1,6 +1,7 @@
 //! Widget implementations
 
 mod button;
+pub mod context_menu;
 pub mod file_list;
 mod header_bar;
 mod label;
@@ -15,6 +16,8 @@ mod text_input;
 mod toast;
 
 pub use button::Button;
+#[allow(unused_imports)]
+pub use context_menu::{ContextMenu, MenuItem, MenuAction};
 pub use file_list::{FileList, FileListAction};
 pub use header_bar::{HeaderBar, HeaderAction};
 pub use repo_dialog::{RepoDialog, RepoDialogAction};
