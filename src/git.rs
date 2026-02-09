@@ -927,6 +927,15 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Create a new branch at a given commit OID
+    pub fn create_branch_at(&self, name: &str, oid: Oid) -> Result<()> {
+        let commit = self.repo.find_commit(oid)
+            .with_context(|| format!("Failed to find commit {}", oid))?;
+        self.repo.branch(name, &commit, false)
+            .with_context(|| format!("Failed to create branch '{}' at {}", name, oid))?;
+        Ok(())
+    }
+
     /// Discard working directory changes for a file by checking out from HEAD
     pub fn discard_file(&self, path: &str) -> Result<()> {
         let mut checkout_builder = git2::build::CheckoutBuilder::new();
@@ -1175,4 +1184,29 @@ pub fn update_submodule_async(workdir: PathBuf, name: String) -> Receiver<Remote
 /// Spawn a background thread to remove a worktree
 pub fn remove_worktree_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["worktree".into(), "remove".into(), name], workdir, "worktree remove")
+}
+
+/// Spawn a background thread to merge a branch into the current branch
+pub fn merge_branch_async(workdir: PathBuf, branch_name: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["merge".into(), branch_name], workdir, "merge")
+}
+
+/// Spawn a background thread to rebase the current branch onto another branch
+pub fn rebase_branch_async(workdir: PathBuf, branch_name: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["rebase".into(), branch_name], workdir, "rebase")
+}
+
+/// Spawn a background thread to stash all changes
+pub fn stash_push_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "push".into()], workdir, "stash push")
+}
+
+/// Spawn a background thread to pop the most recent stash
+pub fn stash_pop_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "pop".into()], workdir, "stash pop")
+}
+
+/// Spawn a background thread to cherry-pick a commit
+pub fn cherry_pick_async(workdir: PathBuf, sha: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["cherry-pick".into(), sha], workdir, "cherry-pick")
 }

@@ -639,6 +639,10 @@ impl CommitGraphView {
                     items.push(MenuItem::new("Checkout", "checkout"));
                 }
 
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Cherry-pick", "cherry_pick"));
+                items.push(MenuItem::new("Create Branch Here", "create_branch"));
+
                 return Some((items, commit.id));
             }
         }

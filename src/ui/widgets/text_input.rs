@@ -358,5 +358,9 @@ impl Widget for TextInput {
     fn set_focused(&mut self, focused: bool) {
         self.state.focused = focused;
     }
+
+    fn is_focused(&self) -> bool {
+        self.state.focused
+    }
 }
 

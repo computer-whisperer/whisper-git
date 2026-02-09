@@ -149,6 +149,11 @@ impl StagingWell {
         self.unstaged_list.set_focused(self.focus_section == 3);
     }
 
+    /// Check if any text input in the staging well has keyboard focus.
+    pub fn has_text_focus(&self) -> bool {
+        self.subject_input.is_focused() || self.body_area.is_focused()
+    }
+
     /// Unfocus all text inputs. Call when focus moves away from the staging panel.
     pub fn unfocus_all(&mut self) {
         self.subject_input.set_focused(false);

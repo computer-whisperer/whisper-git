@@ -123,6 +123,12 @@ enum AppMessage {
     UpdateSubmodule(String),
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
+    MergeBranch(String),
+    RebaseBranch(String),
+    CreateBranch(String, Oid),  // (name, at_commit)
+    StashPush,
+    StashPop,
+    CherryPick(Oid),
 }
 
 /// Per-tab repository data
@@ -829,6 +835,79 @@ impl App {
                         self.toast_manager.push(format!("Removing worktree '{}'...", name), ToastSeverity::Info);
                     }
                 }
+                AppMessage::MergeBranch(name) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::merge_branch_async(workdir, name.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Merge '{}'", name)));
+                        self.toast_manager.push(format!("Merging '{}'...", name), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::RebaseBranch(name) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::rebase_branch_async(workdir, name.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Rebase onto '{}'", name)));
+                        self.toast_manager.push(format!("Rebasing onto '{}'...", name), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::CreateBranch(name, oid) => {
+                    match repo!().create_branch_at(&name, oid) {
+                        Ok(()) => {
+                            refresh_repo_state(repo_tab, view_state);
+                            self.toast_manager.push(
+                                format!("Created branch '{}'", name),
+                                ToastSeverity::Success,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(
+                                format!("Create branch failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                }
+                AppMessage::StashPush => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::stash_push_async(workdir);
+                        view_state.generic_op_receiver = Some((rx, "Stash push".to_string()));
+                        self.toast_manager.push("Stashing changes...".to_string(), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::StashPop => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let rx = crate::git::stash_pop_async(workdir);
+                        view_state.generic_op_receiver = Some((rx, "Stash pop".to_string()));
+                        self.toast_manager.push("Popping stash...".to_string(), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::CherryPick(oid) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let sha = oid.to_string();
+                        let rx = crate::git::cherry_pick_async(workdir, sha.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Cherry-pick {}", &sha[..7])));
+                        self.toast_manager.push(format!("Cherry-picking {}...", &sha[..7]), ToastSeverity::Info);
+                    }
+                }
             }
         }
 
@@ -1350,6 +1429,22 @@ impl ApplicationHandler for App {
                             self.switch_tab(prev);
                             return;
                         }
+                        // Ctrl+S: stash push (only when staging text inputs are not focused)
+                        if *key == Key::S && modifiers.only_ctrl() {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                if !view_state.staging_well.has_text_focus() {
+                                    view_state.pending_messages.push(AppMessage::StashPush);
+                                    return;
+                                }
+                            }
+                        }
+                        // Ctrl+Shift+S: stash pop
+                        if *key == Key::S && modifiers.ctrl_shift() {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state.pending_messages.push(AppMessage::StashPop);
+                                return;
+                            }
+                        }
                     }
 
                     // Route to tab bar (if visible)
@@ -1797,6 +1892,38 @@ fn handle_context_menu_action(
                 confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", param));
                 *pending_confirm_action = Some(AppMessage::RemoveWorktree(param.to_string()));
             }
+        }
+        "merge" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Merge Branch", &format!("Merge '{}' into current branch?", param));
+                *pending_confirm_action = Some(AppMessage::MergeBranch(param.to_string()));
+            }
+        }
+        "rebase" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Rebase Branch", &format!("Rebase current branch onto '{}'?", param));
+                *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+            }
+        }
+        "cherry_pick" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {}?", short));
+                *pending_confirm_action = Some(AppMessage::CherryPick(oid));
+            }
+        }
+        "create_branch" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                let name = format!("branch-{}", short);
+                view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+            }
+        }
+        "stash_push" => {
+            view_state.pending_messages.push(AppMessage::StashPush);
+        }
+        "stash_pop" => {
+            view_state.pending_messages.push(AppMessage::StashPop);
         }
         _ => {
             eprintln!("Unknown context menu action: {}", action_id);
