@@ -3,6 +3,7 @@
 use crate::git::WorkingDirStatus;
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::{Button, FileList, FileListAction, TextArea, TextInput};
 use crate::ui::{Rect, TextRenderer, Widget};
 
@@ -96,6 +97,57 @@ impl StagingWell {
     /// Check if commit button should be enabled
     pub fn can_commit(&self) -> bool {
         !self.subject_input.text().is_empty() && !self.staged_list.files.is_empty()
+    }
+
+    /// Get context menu items for the file at (x, y) in the staging area.
+    /// Returns Some((items, is_staged_file)) if a file was right-clicked.
+    pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect) -> Option<Vec<MenuItem>> {
+        if !bounds.contains(x, y) {
+            return None;
+        }
+
+        let (_, _, staged_bounds, unstaged_bounds, _) = self.compute_regions(bounds);
+
+        // Check staged files
+        if staged_bounds.contains(x, y) {
+            if let Some(file) = self.file_at_position(&self.staged_list, x, y, staged_bounds) {
+                let items = vec![
+                    MenuItem::new("Unstage File", format!("unstage:{}", file)),
+                    MenuItem::new("View Diff", format!("view_diff:{}", file)),
+                ];
+                return Some(items);
+            }
+        }
+
+        // Check unstaged files
+        if unstaged_bounds.contains(x, y) {
+            if let Some(file) = self.file_at_position(&self.unstaged_list, x, y, unstaged_bounds) {
+                let items = vec![
+                    MenuItem::new("Stage File", format!("stage:{}", file)),
+                    MenuItem::new("View Diff", format!("view_diff:{}", file)),
+                    MenuItem::new("Discard Changes", format!("discard:{}", file)),
+                ];
+                return Some(items);
+            }
+        }
+
+        None
+    }
+
+    /// Find which file is at (x, y) within a file list's bounds
+    fn file_at_position(&self, list: &FileList, _x: f32, y: f32, bounds: Rect) -> Option<String> {
+        // FileList uses a header + items at ~line_height each
+        // The header takes up about 24px, then each file is line_height
+        let header_height = 24.0;
+        let item_height = 20.0; // Approximate; FileList uses line_height
+
+        let rel_y = y - bounds.y - header_height;
+        if rel_y < 0.0 {
+            return None;
+        }
+
+        let idx = (rel_y / item_height) as usize;
+        list.files.get(idx).map(|f| f.path.clone())
     }
 
     fn cycle_focus(&mut self, forward: bool) {

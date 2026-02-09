@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{ContextMenu, MenuAction, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -141,6 +141,9 @@ struct TabViewState {
     secondary_repos_view: SecondaryReposView,
     diff_view: DiffView,
     commit_detail_view: CommitDetailView,
+    context_menu: ContextMenu,
+    /// Oid of the commit that was right-clicked for context menu
+    context_menu_commit: Option<Oid>,
     last_diff_commit: Option<Oid>,
     pending_messages: Vec<AppMessage>,
     fetch_receiver: Option<Receiver<RemoteOpResult>>,
@@ -160,6 +163,8 @@ impl TabViewState {
             secondary_repos_view: SecondaryReposView::new(),
             diff_view: DiffView::new(),
             commit_detail_view: CommitDetailView::new(),
+            context_menu: ContextMenu::new(),
+            context_menu_commit: None,
             last_diff_commit: None,
             pending_messages: Vec::new(),
             fetch_receiver: None,
@@ -1031,6 +1036,25 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Context menu takes priority when visible (overlay)
+                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                        if view_state.context_menu.is_visible() {
+                            view_state.context_menu.handle_event(&input_event, screen_bounds);
+                            if let Some(action) = view_state.context_menu.take_action() {
+                                match action {
+                                    MenuAction::Selected(action_id) => {
+                                        handle_context_menu_action(
+                                            &action_id,
+                                            view_state,
+                                            &mut self.toast_manager,
+                                        );
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                    }
+
                     // Handle global keys first
                     if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
                         // Ctrl+O: open repo
@@ -1183,6 +1207,30 @@ impl ApplicationHandler for App {
                         }
                     }
 
+                    // Right-click context menus
+                    if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = &input_event {
+                        // Check which panel was right-clicked and show context menu
+                        if layout.graph.contains(*x, *y) {
+                            if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
+                                *x, *y, &repo_tab.commits, layout.graph,
+                            ) {
+                                view_state.context_menu_commit = Some(oid);
+                                view_state.context_menu.show(items, *x, *y);
+                                return;
+                            }
+                        } else if layout.sidebar.contains(*x, *y) {
+                            if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar) {
+                                view_state.context_menu.show(items, *x, *y);
+                                return;
+                            }
+                        } else if layout.staging.contains(*x, *y) {
+                            if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.staging) {
+                                view_state.context_menu.show(items, *x, *y);
+                                return;
+                            }
+                        }
+                    }
+
                     // Detect clicks on panels to switch focus
                     if let InputEvent::MouseDown { x, y, .. } = &input_event {
                         if layout.staging.contains(*x, *y) {
@@ -1289,6 +1337,99 @@ impl ApplicationHandler for App {
 // ============================================================================
 // Rendering
 // ============================================================================
+
+/// Handle a context menu action by dispatching to the appropriate AppMessage
+fn handle_context_menu_action(
+    action_id: &str,
+    view_state: &mut TabViewState,
+    toast_manager: &mut ToastManager,
+) {
+    // Actions may be in format "action:param" or just "action"
+    let (action, param) = action_id.split_once(':').unwrap_or((action_id, ""));
+
+    match action {
+        // Commit graph actions
+        "copy_sha" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                // Use arboard for clipboard if available, otherwise just print
+                let sha = oid.to_string();
+                // Clipboard integration can be added later (e.g., arboard crate)
+                toast_manager.push(
+                    format!("SHA: {}", &sha[..7]),
+                    ToastSeverity::Info,
+                );
+            }
+        }
+        "view_details" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+            }
+        }
+        "checkout" => {
+            if param.is_empty() {
+                // Commit graph checkout: find the branch at the selected commit
+                if let Some(oid) = view_state.context_menu_commit {
+                    if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
+                        .find(|t| t.oid == oid && !t.is_remote)
+                    {
+                        view_state.pending_messages.push(AppMessage::CheckoutBranch(tip.name.clone()));
+                    }
+                }
+            } else {
+                // Branch sidebar checkout
+                view_state.pending_messages.push(AppMessage::CheckoutBranch(param.to_string()));
+            }
+        }
+        "checkout_remote" => {
+            if let Some((remote, branch)) = param.split_once('/') {
+                view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(
+                    remote.to_string(),
+                    branch.to_string(),
+                ));
+            }
+        }
+        "delete" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::DeleteBranch(param.to_string()));
+            }
+        }
+        "push" => {
+            view_state.pending_messages.push(AppMessage::Push);
+        }
+        // Staging actions
+        "stage" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::StageFile(param.to_string()));
+            }
+        }
+        "unstage" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::UnstageFile(param.to_string()));
+            }
+        }
+        "view_diff" => {
+            if !param.is_empty() {
+                let staged = view_state.staging_well.staged_list.files
+                    .iter().any(|f| f.path == param);
+                view_state.pending_messages.push(AppMessage::ViewDiff(param.to_string(), staged));
+            }
+        }
+        "discard" => {
+            if !param.is_empty() {
+                // Discard changes: checkout the file from HEAD
+                toast_manager.push(
+                    format!("Discard not yet implemented for {}", param),
+                    ToastSeverity::Info,
+                );
+            }
+        }
+        _ => {
+            eprintln!("Unknown context menu action: {}", action_id);
+        }
+    }
+
+    view_state.context_menu_commit = None;
+}
 
 /// Add panel backgrounds, borders, and visual chrome to the output
 fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel) {
@@ -1402,7 +1543,14 @@ fn build_ui_output(
         }
     }
 
-    // Toast notifications (rendered last, on top of everything)
+    // Context menu overlay (on top of panels)
+    if let Some((_, view_state)) = tabs.get_mut(active_tab) {
+        if view_state.context_menu.is_visible() {
+            output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
+        }
+    }
+
+    // Toast notifications (rendered on top of context menus)
     output.extend(toast_manager.layout(text_renderer, screen_bounds));
 
     // Repo dialog (on top of everything including toasts)

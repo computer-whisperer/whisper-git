@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::git::{BranchTip, TagInfo};
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
+use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
 
@@ -291,6 +292,68 @@ impl BranchSidebar {
                 self.pending_action = Some(SidebarAction::DeleteBranch(name.clone()));
             }
         }
+    }
+
+    /// Get context menu items for the branch at (x, y), if any.
+    /// Returns (items, sidebar_action_context) describing what was right-clicked.
+    pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect) -> Option<Vec<MenuItem>> {
+        if !bounds.contains(x, y) {
+            return None;
+        }
+
+        let padding = 8.0;
+        let inner = bounds.inset(padding);
+        let line_height = self.line_height;
+        let section_header_height = self.section_header_height;
+        let section_gap = 8.0;
+
+        let mut item_y = inner.y - self.scroll_offset;
+        for (idx, item) in self.visible_items.iter().enumerate() {
+            let h = match item {
+                SidebarItem::SectionHeader(_) => section_header_height,
+                _ => line_height,
+            };
+
+            if y >= item_y && y < item_y + h {
+                match item {
+                    SidebarItem::LocalBranch(name) => {
+                        let mut items = vec![
+                            MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
+                            MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
+                            MenuItem::new("Push", "push"),
+                        ];
+                        // Tag the action_id with the branch name using a separator
+                        // We'll parse it in main.rs: "checkout:branch_name"
+                        for item in &mut items {
+                            item.action_id = format!("{}:{}", item.action_id, name);
+                        }
+                        return Some(items);
+                    }
+                    SidebarItem::RemoteBranch(remote, branch) => {
+                        let full = format!("{}/{}", remote, branch);
+                        let mut items = vec![
+                            MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
+                        ];
+                        for item in &mut items {
+                            item.action_id = format!("{}:{}", item.action_id, full);
+                        }
+                        return Some(items);
+                    }
+                    _ => return None,
+                }
+            }
+
+            item_y += h;
+            if !matches!(item, SidebarItem::SectionHeader(_)) {
+                if idx + 1 < self.visible_items.len() {
+                    if matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
+                        item_y += section_gap;
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Handle input events (scrolling, clicking section headers, keyboard nav)
