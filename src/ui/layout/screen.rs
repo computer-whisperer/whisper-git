@@ -48,7 +48,7 @@ impl ScreenLayout {
         let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
 
         // Shortcut bar: thin strip below header
-        let shortcut_bar_height = 20.0 * scale;
+        let shortcut_bar_height = 26.0 * scale;
         let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
 
         // Split main area into sidebar and content
@@ -115,7 +115,7 @@ impl ScreenLayout {
         let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
 
         // Shortcut bar: thin strip below header (zero height when hidden)
-        let shortcut_bar_height = if shortcut_bar_visible { 20.0 * scale } else { 0.0 };
+        let shortcut_bar_height = if shortcut_bar_visible { 26.0 * scale } else { 0.0 };
         let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
 
         // Sidebar width: use ratio if provided, otherwise default ~180px

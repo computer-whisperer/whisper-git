@@ -364,7 +364,7 @@ pub mod theme {
     pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0);    // #48484e - emphasized borders
     pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0);            // #e0e0e0 - primary text
     pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0);     // #f0f0f0 - emphasized text
-    pub const TEXT_MUTED: Color = Color::rgba(0.541, 0.541, 0.541, 1.0);      // #8a8a8a - secondary text
+    pub const TEXT_MUTED: Color = Color::rgba(0.635, 0.635, 0.635, 1.0);      // #a2a2a2 - secondary text (brightened for contrast)
 
     // Status colors - slightly desaturated for dark theme
     pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);    // #4CAF50 (Green)
@@ -389,7 +389,7 @@ pub mod theme {
     pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0);   // #1f2430 - staging (slightly lighter)
 
     // Zebra striping for graph rows
-    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.125, 0.145, 0.175, 1.0);   // #20252d - 50% more contrast from PANEL_GRAPH
+    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.145, 0.165, 0.204, 1.0);   // #252a34 - increased zebra stripe contrast (~5-6% luminance diff)
 
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[

@@ -1556,7 +1556,7 @@ impl CommitGraphView {
                     if remaining > char_width * 5.0 {
                         let body_text = truncate_to_width(body, text_renderer, remaining);
                         let body_x = current_x + summary_full_width;
-                        let body_color = theme::TEXT_MUTED.with_alpha(0.5 * dim_alpha).to_array();
+                        let body_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
                         vertices.extend(text_renderer.layout_text(
                             separator,
                             body_x,

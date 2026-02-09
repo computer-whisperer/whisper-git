@@ -79,13 +79,13 @@ impl Button {
         self
     }
 
-    /// Make this a ghost button (transparent bg, text only, subtle hover)
+    /// Make this a ghost button (transparent bg, subtle border for visibility)
     pub fn ghost(mut self) -> Self {
         self.background = Color::rgba(0.0, 0.0, 0.0, 0.0);  // Fully transparent
         self.hover_background = Color::rgba(1.0, 1.0, 1.0, 0.08); // Subtle white overlay on hover
         self.pressed_background = Color::rgba(1.0, 1.0, 1.0, 0.12); // Slightly more visible on press
         self.text_color = theme::TEXT_MUTED;
-        self.border_color = None;
+        self.border_color = Some(theme::BORDER);  // Visible border so ghost buttons look like buttons
         self
     }
 
