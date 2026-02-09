@@ -1,6 +1,6 @@
 //! Header bar widget - repository name, branch, action buttons
 
-use crate::input::{InputEvent, EventResponse, MouseButton};
+use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
 use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, theme};
 use crate::ui::widgets::Button;
@@ -43,6 +43,8 @@ pub struct HeaderBar {
     pull_button: Button,
     push_button: Button,
     commit_button: Button,
+    help_button: Button,
+    settings_button: Button,
 }
 
 impl HeaderBar {
@@ -61,7 +63,9 @@ impl HeaderBar {
             fetch_button: Button::new("Fetch"),
             pull_button: Button::new("Pull"),
             push_button: Button::new("Push"),
-            commit_button: Button::new("Commit"),
+            commit_button: Button::new("Commit").primary(),
+            help_button: Button::new("?").ghost(),
+            settings_button: Button::new("\u{2261}").ghost(),
         }
     }
 
@@ -106,20 +110,12 @@ impl HeaderBar {
             "Push".to_string()
         };
 
-        // Commit button: primary style when has staged changes
-        if self.has_staged {
-            self.commit_button.background = theme::ACCENT;
-            self.commit_button.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
-            self.commit_button.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
-            self.commit_button.text_color = theme::TEXT_BRIGHT;
-            self.commit_button.border_color = None;
-        } else {
-            self.commit_button.background = theme::SURFACE_RAISED;
-            self.commit_button.hover_background = theme::SURFACE_HOVER;
-            self.commit_button.pressed_background = theme::SURFACE;
-            self.commit_button.text_color = theme::TEXT;
-            self.commit_button.border_color = Some(theme::BORDER);
-        }
+        // Commit button: always primary style (blue accent)
+        self.commit_button.background = theme::ACCENT;
+        self.commit_button.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
+        self.commit_button.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+        self.commit_button.text_color = theme::TEXT_BRIGHT;
+        self.commit_button.border_color = None;
     }
 
     /// Compute button bounds within the header (scale-aware)
@@ -197,27 +193,31 @@ impl Widget for HeaderBar {
             return EventResponse::Consumed;
         }
 
-        // Help and settings clicks
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
-            if help_bounds.contains(*x, *y) {
+        if self.help_button.handle_event(event, help_bounds).is_consumed() {
+            if self.help_button.was_clicked() {
                 self.pending_action = Some(HeaderAction::Help);
-                return EventResponse::Consumed;
             }
-            if settings_bounds.contains(*x, *y) {
+            return EventResponse::Consumed;
+        }
+
+        if self.settings_button.handle_event(event, settings_bounds).is_consumed() {
+            if self.settings_button.was_clicked() {
                 self.pending_action = Some(HeaderAction::Settings);
-                return EventResponse::Consumed;
             }
+            return EventResponse::Consumed;
         }
 
         EventResponse::Ignored
     }
 
     fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
-        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, _, _) = self.button_bounds(bounds);
+        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) = self.button_bounds(bounds);
         self.fetch_button.update_hover(x, y, fetch_bounds);
         self.pull_button.update_hover(x, y, pull_bounds);
         self.push_button.update_hover(x, y, push_bounds);
         self.commit_button.update_hover(x, y, commit_bounds);
+        self.help_button.update_hover(x, y, help_bounds);
+        self.settings_button.update_hover(x, y, settings_bounds);
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
@@ -269,42 +269,21 @@ impl Widget for HeaderBar {
         output.extend(self.push_button.layout(text_renderer, push_bounds));
         output.extend(self.commit_button.layout(text_renderer, commit_bounds));
 
-        // Help button - icon style
-        let help_y = help_bounds.y + (help_bounds.height - line_height) / 2.0;
-        output.spline_vertices.extend(create_rect_vertices(
-            &help_bounds,
-            theme::SURFACE.to_array(),
-        ));
-        use crate::ui::widget::create_rect_outline_vertices;
-        output.spline_vertices.extend(create_rect_outline_vertices(
-            &help_bounds,
-            theme::BORDER.to_array(),
-            1.0,
-        ));
-        output.text_vertices.extend(text_renderer.layout_text(
-            "?",
-            help_bounds.x + (help_bounds.width - text_renderer.char_width()) / 2.0,
-            help_y,
-            theme::TEXT_MUTED.to_array(),
-        ));
+        // Help and Settings buttons (ghost style - rendered via Button widget)
+        output.extend(self.help_button.layout(text_renderer, help_bounds));
+        output.extend(self.settings_button.layout(text_renderer, settings_bounds));
 
-        // Settings button - icon style
-        let settings_y = settings_bounds.y + (settings_bounds.height - line_height) / 2.0;
-        output.spline_vertices.extend(create_rect_vertices(
-            &settings_bounds,
-            theme::SURFACE.to_array(),
-        ));
-        output.spline_vertices.extend(create_rect_outline_vertices(
-            &settings_bounds,
-            theme::BORDER.to_array(),
-            1.0,
-        ));
-        output.text_vertices.extend(text_renderer.layout_text(
-            "=",
-            settings_bounds.x + (settings_bounds.width - text_renderer.char_width()) / 2.0,
-            settings_y,
-            theme::TEXT_MUTED.to_array(),
-        ));
+        // Drop shadow below header: 4 strips fading from rgba(0,0,0,0.15) to transparent
+        let shadow_strip_height = 2.0;
+        for i in 0..4u32 {
+            let alpha = 0.15 * (1.0 - i as f32 / 4.0);
+            let strip_y = bounds.bottom() + i as f32 * shadow_strip_height;
+            let strip = Rect::new(bounds.x, strip_y, bounds.width, shadow_strip_height);
+            output.spline_vertices.extend(create_rect_vertices(
+                &strip,
+                [0.0, 0.0, 0.0, alpha],
+            ));
+        }
 
         output
     }
