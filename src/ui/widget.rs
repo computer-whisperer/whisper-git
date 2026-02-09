@@ -242,7 +242,7 @@ pub mod theme {
     pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0);    // #48484e - emphasized borders
     pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0);            // #e0e0e0 - primary text
     pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0);     // #f0f0f0 - emphasized text
-    pub const TEXT_MUTED: Color = Color::rgba(0.502, 0.502, 0.502, 1.0);      // #808080 - secondary text
+    pub const TEXT_MUTED: Color = Color::rgba(0.541, 0.541, 0.541, 1.0);      // #8a8a8a - secondary text
 
     // Status colors - slightly desaturated for dark theme
     pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);    // #4CAF50 (Green)
@@ -262,9 +262,9 @@ pub mod theme {
     pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.3);    // Blue at 30% opacity
 
     // Panel depth - dark blue-gray hierarchy
-    pub const PANEL_SIDEBAR: Color = Color::rgba(0.086, 0.102, 0.125, 1.0);   // #161a20 - sidebar (darkest)
+    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.090, 0.110, 1.0);   // #131720 - sidebar (darkest)
     pub const PANEL_GRAPH: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);     // #1a1e24 - graph (base)
-    pub const PANEL_STAGING: Color = Color::rgba(0.118, 0.133, 0.157, 1.0);   // #1e2228 - staging (slightly lighter)
+    pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0);   // #1f2430 - staging (slightly lighter)
 
     // Zebra striping for graph rows
     pub const GRAPH_ROW_ALT: Color = Color::rgba(0.114, 0.130, 0.157, 1.0);   // #1d2128 - slightly lighter than PANEL_GRAPH

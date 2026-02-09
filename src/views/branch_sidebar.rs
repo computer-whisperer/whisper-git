@@ -1287,6 +1287,7 @@ impl BranchSidebar {
 
     /// Layout a section header (e.g., "LOCAL  3") and return the new y position.
     /// Performs bounds checking to skip rendering if the header is outside visible area.
+    /// Includes extra vertical padding and a 1px separator line below.
     #[allow(clippy::too_many_arguments)]
     fn layout_section_header(
         &self,
@@ -1300,44 +1301,57 @@ impl BranchSidebar {
         header_height: f32,
         bounds: &Rect,
     ) -> f32 {
-        let visible = y + header_height >= bounds.y && y < bounds.bottom();
+        let top_pad = 4.0;
+        let bottom_pad = 2.0;
+        let total_height = top_pad + header_height + bottom_pad + 1.0; // +1 for separator
+        let visible = y + total_height >= bounds.y && y < bounds.bottom();
         if visible {
-            // Section header background
-            let header_rect = Rect::new(inner.x, y, inner.width, header_height);
+            // Section header background (includes padding)
+            let header_rect = Rect::new(inner.x, y + top_pad, inner.width, header_height);
             output.spline_vertices.extend(create_rect_vertices(
                 &header_rect,
                 theme::SURFACE_RAISED.to_array(),
             ));
 
+            let text_y = y + top_pad + 4.0;
+
             // Collapse indicator - Unicode triangle
             let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
             output.text_vertices.extend(text_renderer.layout_text(
                 indicator,
-                inner.x + 4.0,
-                y + 4.0,
+                inner.x + 6.0,
+                text_y,
                 theme::TEXT.to_array(),
             ));
 
-            // Section title - brighter than before
+            // Section title - brighter, slightly more left padding
             output.text_vertices.extend(text_renderer.layout_text(
                 title,
-                inner.x + 16.0,
-                y + 4.0,
+                inner.x + 20.0,
+                text_y,
                 theme::TEXT_BRIGHT.to_array(),
             ));
 
-            // Count badge
+            // Count badge in smaller/muted text
             let count_text = format!("{}", count);
             let title_width = text_renderer.measure_text(title);
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(text_renderer.layout_text_small(
                 &count_text,
-                inner.x + 16.0 + title_width + 8.0,
-                y + 4.0,
+                inner.x + 20.0 + title_width + 8.0,
+                text_y + (text_renderer.line_height() - text_renderer.line_height_small()) * 0.5,
                 theme::TEXT_MUTED.to_array(),
+            ));
+
+            // 1px separator line below header
+            let sep_y = y + top_pad + header_height + bottom_pad;
+            let sep_rect = Rect::new(inner.x, sep_y, inner.width, 1.0);
+            output.spline_vertices.extend(create_rect_vertices(
+                &sep_rect,
+                theme::BORDER.to_array(),
             ));
         }
 
-        y + header_height
+        y + total_height
     }
 }
 

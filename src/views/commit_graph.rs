@@ -1201,14 +1201,16 @@ impl CommitGraphView {
             let is_match = self.is_search_match(&commit.id);
             let dim_alpha = if is_match { 1.0 } else { 0.2 };
 
-            // === Right-aligned time column ===
+            // === Right-aligned time column (small text) ===
             let time_str = commit.relative_time();
-            let time_width = text_renderer.measure_text(&time_str);
+            let time_width = text_renderer.measure_text_scaled(&time_str, 0.85);
             let time_x = time_col_right - time_width;
-            vertices.extend(text_renderer.layout_text(
+            // Vertically center the smaller text within the row
+            let time_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
+            vertices.extend(text_renderer.layout_text_small(
                 &time_str,
                 time_x,
-                y,
+                time_y,
                 theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
             ));
 
