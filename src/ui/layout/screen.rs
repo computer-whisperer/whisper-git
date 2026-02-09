@@ -15,8 +15,8 @@ pub struct ScreenLayout {
     pub graph: Rect,
     /// Staging well region (45% of remaining width, 45% of main height)
     pub staging: Rect,
-    /// Secondary repos region (45% of remaining width, 51% of main height)
-    pub secondary_repos: Rect,
+    /// Right panel region for diff/detail views (45% of remaining width, bottom portion)
+    pub right_panel: Rect,
 }
 
 impl ScreenLayout {
@@ -32,7 +32,7 @@ impl ScreenLayout {
     /// | BAR  |                       |                           |
     /// | 180  |                       +---------------------------+
     /// | px   |                       |                           |
-    /// |      |                       |   SECONDARY (45% x 51%)  |
+    /// |      |                       |   RIGHT PANEL (45% x 55%)|
     /// |      |                       |                           |
     /// +------+---------------------------------------------------+
     /// ```
@@ -64,7 +64,7 @@ impl ScreenLayout {
         let (staging, remaining) = right_panel.take_top(staging_height);
 
         // Secondary repos takes the rest
-        let secondary_repos = remaining;
+        let right_panel = remaining;
 
         Self {
             header,
@@ -72,7 +72,7 @@ impl ScreenLayout {
             sidebar,
             graph,
             staging,
-            secondary_repos,
+            right_panel,
         }
     }
 
@@ -87,7 +87,7 @@ impl ScreenLayout {
             sidebar: base.sidebar.pad(gap, gap, gap / 2.0, gap),
             graph: base.graph.pad(gap / 2.0, gap, gap / 2.0, gap),
             staging: base.staging.pad(gap / 2.0, gap, gap, gap / 2.0),
-            secondary_repos: base.secondary_repos.pad(gap / 2.0, gap / 2.0, gap, gap),
+            right_panel: base.right_panel.pad(gap / 2.0, gap / 2.0, gap, gap),
         }
     }
 }

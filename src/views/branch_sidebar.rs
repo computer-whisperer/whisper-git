@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::git::{BranchTip, TagInfo};
+use crate::git::{BranchTip, SubmoduleInfo, TagInfo, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -26,6 +26,8 @@ enum SidebarItem {
     RemoteHeader(String),         // remote name like "origin"
     RemoteBranch(String, String), // (remote, branch)
     Tag(String),
+    SubmoduleEntry(String),       // submodule name
+    WorktreeEntry(String),        // worktree name
 }
 
 /// A sidebar showing local branches, remote branches, and tags
@@ -38,12 +40,20 @@ pub struct BranchSidebar {
     pub tags: Vec<String>,
     /// Current branch name (for highlighting)
     pub current_branch: String,
+    /// Submodules in the repository
+    pub submodules: Vec<SubmoduleInfo>,
+    /// Worktrees in the repository
+    pub worktrees: Vec<WorktreeInfo>,
     /// Whether the LOCAL section is collapsed
     pub local_collapsed: bool,
     /// Whether the REMOTE section is collapsed
     pub remote_collapsed: bool,
     /// Whether the TAGS section is collapsed
     pub tags_collapsed: bool,
+    /// Whether the SUBMODULES section is collapsed
+    pub submodules_collapsed: bool,
+    /// Whether the WORKTREES section is collapsed
+    pub worktrees_collapsed: bool,
     /// Scroll offset for the sidebar content
     pub scroll_offset: f32,
     /// Total content height (tracked during layout)
@@ -73,9 +83,13 @@ impl BranchSidebar {
             remote_branches: HashMap::new(),
             tags: Vec::new(),
             current_branch: String::new(),
+            submodules: Vec::new(),
+            worktrees: Vec::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
+            submodules_collapsed: false,
+            worktrees_collapsed: false,
             scroll_offset: 0.0,
             content_height: 0.0,
             line_height: 18.0,
@@ -143,7 +157,7 @@ impl BranchSidebar {
         if focused && self.focused_index.is_none() && !self.visible_items.is_empty() {
             // Find the first branch item (skip section headers)
             self.focused_index = self.visible_items.iter().position(|item| {
-                matches!(item, SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_))
+                !matches!(item, SidebarItem::SectionHeader(_))
             });
         }
     }
@@ -235,6 +249,26 @@ impl BranchSidebar {
                 self.visible_items.push(SidebarItem::Tag(tag.clone()));
             }
         }
+
+        // SUBMODULES section (only if any exist)
+        if !self.submodules.is_empty() {
+            self.visible_items.push(SidebarItem::SectionHeader("SUBMODULES"));
+            if !self.submodules_collapsed {
+                for sm in &self.submodules {
+                    self.visible_items.push(SidebarItem::SubmoduleEntry(sm.name.clone()));
+                }
+            }
+        }
+
+        // WORKTREES section (only if any exist)
+        if !self.worktrees.is_empty() {
+            self.visible_items.push(SidebarItem::SectionHeader("WORKTREES"));
+            if !self.worktrees_collapsed {
+                for wt in &self.worktrees {
+                    self.visible_items.push(SidebarItem::WorktreeEntry(wt.name.clone()));
+                }
+            }
+        }
     }
 
     /// Move focus to next/previous navigable item
@@ -247,15 +281,12 @@ impl BranchSidebar {
         // Search in the given direction for a navigable item (skip section headers)
         let mut idx = current as i32 + delta;
         while idx >= 0 && (idx as usize) < len {
-            match &self.visible_items[idx as usize] {
-                SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_) | SidebarItem::RemoteHeader(_) => {
-                    self.focused_index = Some(idx as usize);
-                    return;
-                }
-                SidebarItem::SectionHeader(_) => {
-                    // Skip section headers, continue searching
-                    idx += delta;
-                }
+            if matches!(&self.visible_items[idx as usize], SidebarItem::SectionHeader(_)) {
+                // Skip section headers, continue searching
+                idx += delta;
+            } else {
+                self.focused_index = Some(idx as usize);
+                return;
             }
         }
     }
@@ -413,12 +444,14 @@ impl BranchSidebar {
                                         "LOCAL" => self.local_collapsed = !self.local_collapsed,
                                         "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
                                         "TAGS" => self.tags_collapsed = !self.tags_collapsed,
+                                        "SUBMODULES" => self.submodules_collapsed = !self.submodules_collapsed,
+                                        "WORKTREES" => self.worktrees_collapsed = !self.worktrees_collapsed,
                                         _ => {}
                                     }
                                     self.build_visible_items();
                                     return EventResponse::Consumed;
                                 }
-                                SidebarItem::LocalBranch(_) | SidebarItem::RemoteBranch(_, _) | SidebarItem::Tag(_) | SidebarItem::RemoteHeader(_) => {
+                                _ => {
                                     self.focused_index = Some(idx);
                                     return EventResponse::Consumed;
                                 }
@@ -759,6 +792,192 @@ impl BranchSidebar {
             }
         }
 
+        // --- SUBMODULES section (only if any exist) ---
+        if !self.submodules.is_empty() {
+            y += section_gap;
+
+            y = self.layout_section_header(
+                text_renderer,
+                &mut output,
+                &inner,
+                y,
+                "SUBMODULES",
+                self.submodules.len(),
+                self.submodules_collapsed,
+                section_header_height,
+            );
+            item_idx += 1; // SectionHeader("SUBMODULES")
+
+            if !self.submodules_collapsed {
+                for sm_name in self.submodules.iter().map(|s| s.name.clone()).collect::<Vec<_>>() {
+                    if y >= bounds.bottom() {
+                        item_idx += 1;
+                        continue;
+                    }
+                    if y + line_height > bounds.y {
+                        let is_focused = self.focused && self.focused_index == Some(item_idx);
+                        let is_hovered = self.hovered_index == Some(item_idx);
+                        if is_hovered && !is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                            ));
+                        }
+                        if is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.to_array(),
+                            ));
+                        }
+                        let name_color = if is_hovered || is_focused {
+                            theme::TEXT_BRIGHT.to_array()
+                        } else {
+                            theme::TEXT.to_array()
+                        };
+
+                        // Submodule icon: ■ in green
+                        let icon = "\u{25A0}"; // ■
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            icon,
+                            inner.x + indent,
+                            y + 2.0,
+                            theme::BRANCH_FEATURE.to_array(),
+                        ));
+                        let icon_width = text_renderer.measure_text(icon) + 4.0;
+
+                        // Check dirty status
+                        let is_dirty = self.submodules.iter()
+                            .any(|s| s.name == sm_name && s.is_dirty);
+
+                        // Show dirty indicator after name if dirty
+                        let dirty_marker = " \u{25CF}M"; // ●M
+                        let suffix_width = if is_dirty {
+                            text_renderer.measure_text(dirty_marker)
+                        } else {
+                            0.0
+                        };
+
+                        let display_name = truncate_to_width(&sm_name, text_renderer, inner.width - indent - icon_width - suffix_width);
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            &display_name,
+                            inner.x + indent + icon_width,
+                            y + 2.0,
+                            name_color,
+                        ));
+
+                        if is_dirty {
+                            let name_width = text_renderer.measure_text(&display_name);
+                            output.text_vertices.extend(text_renderer.layout_text(
+                                dirty_marker,
+                                inner.x + indent + icon_width + name_width,
+                                y + 2.0,
+                                theme::STATUS_DIRTY.to_array(),
+                            ));
+                        }
+                    }
+                    y += line_height;
+                    item_idx += 1;
+                }
+            }
+        }
+
+        // --- WORKTREES section (only if any exist) ---
+        if !self.worktrees.is_empty() {
+            y += section_gap;
+
+            y = self.layout_section_header(
+                text_renderer,
+                &mut output,
+                &inner,
+                y,
+                "WORKTREES",
+                self.worktrees.len(),
+                self.worktrees_collapsed,
+                section_header_height,
+            );
+            item_idx += 1; // SectionHeader("WORKTREES")
+
+            if !self.worktrees_collapsed {
+                for wt_name in self.worktrees.iter().map(|w| w.name.clone()).collect::<Vec<_>>() {
+                    if y >= bounds.bottom() {
+                        item_idx += 1;
+                        continue;
+                    }
+                    if y + line_height > bounds.y {
+                        let is_focused = self.focused && self.focused_index == Some(item_idx);
+                        let is_hovered = self.hovered_index == Some(item_idx);
+
+                        let is_current = self.worktrees.iter()
+                            .any(|w| w.name == wt_name && w.is_current);
+
+                        if is_hovered && !is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                            ));
+                        }
+                        if is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.to_array(),
+                            ));
+                        }
+
+                        // Accent highlight for current worktree (like current branch)
+                        if is_current {
+                            let stripe_rect = Rect::new(inner.x, y, 3.0, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &stripe_rect,
+                                theme::ACCENT.to_array(),
+                            ));
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::ACCENT_MUTED.to_array(),
+                            ));
+                        }
+
+                        let name_color = if is_current {
+                            theme::ACCENT.to_array()
+                        } else if is_hovered || is_focused {
+                            theme::TEXT_BRIGHT.to_array()
+                        } else {
+                            theme::TEXT.to_array()
+                        };
+
+                        // Worktree icon: ▣ in orange
+                        let icon = "\u{25A3}"; // ▣
+                        let icon_color = if is_current {
+                            theme::ACCENT.to_array()
+                        } else {
+                            theme::BRANCH_RELEASE.to_array()
+                        };
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            icon,
+                            inner.x + indent,
+                            y + 2.0,
+                            icon_color,
+                        ));
+                        let icon_width = text_renderer.measure_text(icon) + 4.0;
+
+                        let display_name = truncate_to_width(&wt_name, text_renderer, inner.width - indent - icon_width);
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            &display_name,
+                            inner.x + indent + icon_width,
+                            y + 2.0,
+                            name_color,
+                        ));
+                    }
+                    y += line_height;
+                    item_idx += 1;
+                }
+            }
+        }
+
         // Compute total content height for scroll clamping (independent of early-break rendering)
         let mut total_h: f32 = 0.0;
         // LOCAL section
@@ -780,6 +999,22 @@ impl BranchSidebar {
         total_h += section_header_height;
         if !self.tags_collapsed {
             total_h += self.tags.len() as f32 * line_height;
+        }
+        // SUBMODULES section
+        if !self.submodules.is_empty() {
+            total_h += section_gap;
+            total_h += section_header_height;
+            if !self.submodules_collapsed {
+                total_h += self.submodules.len() as f32 * line_height;
+            }
+        }
+        // WORKTREES section
+        if !self.worktrees.is_empty() {
+            total_h += section_gap;
+            total_h += section_header_height;
+            if !self.worktrees_collapsed {
+                total_h += self.worktrees.len() as f32 * line_height;
+            }
         }
         self.content_height = total_h;
 

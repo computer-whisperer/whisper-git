@@ -1,10 +1,13 @@
 //! Secondary repos view - displays submodules and worktrees
+//! Note: This view is no longer rendered in the default layout (data moved to sidebar),
+//! but kept for potential future use.
 
 use crate::git::{SubmoduleInfo, WorktreeInfo};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
 use crate::ui::{Rect, TextRenderer};
 
 /// A view displaying submodules and worktrees
+#[allow(dead_code)]
 pub struct SecondaryReposView {
     /// Submodules in the repository
     pub submodules: Vec<SubmoduleInfo>,
@@ -12,6 +15,7 @@ pub struct SecondaryReposView {
     pub worktrees: Vec<WorktreeInfo>,
 }
 
+#[allow(dead_code)]
 impl SecondaryReposView {
     pub fn new() -> Self {
         Self {
@@ -352,6 +356,7 @@ impl Default for SecondaryReposView {
     }
 }
 
+#[allow(dead_code)]
 /// Truncate text to fit within max_width, adding ellipsis if needed
 fn truncate_text(text: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
     if max_width <= 0.0 {
@@ -386,6 +391,7 @@ fn truncate_text(text: &str, text_renderer: &TextRenderer, max_width: f32) -> St
     ellipsis.to_string()
 }
 
+#[allow(dead_code)]
 /// Truncate a path, preferring to keep the end (filename/leaf)
 fn truncate_path(path: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
     if max_width <= 0.0 {
