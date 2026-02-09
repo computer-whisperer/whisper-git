@@ -134,6 +134,8 @@ enum AppMessage {
     StashDrop(usize),
     StashPopIndex(usize),
     CherryPick(Oid),
+    RevertCommit(Oid),
+    ResetToCommit(Oid, git2::ResetType),
 }
 
 /// Per-tab repository data
@@ -976,6 +978,40 @@ impl App {
                         let rx = crate::git::cherry_pick_async(workdir, sha.clone());
                         view_state.generic_op_receiver = Some((rx, format!("Cherry-pick {}", &sha[..7])));
                         self.toast_manager.push(format!("Cherry-picking {}...", &sha[..7]), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::RevertCommit(oid) => {
+                    if view_state.generic_op_receiver.is_some() {
+                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+                        continue;
+                    }
+                    if let Some(workdir) = repo!().working_dir_path() {
+                        let sha = oid.to_string();
+                        let rx = crate::git::revert_commit_async(workdir, sha.clone());
+                        view_state.generic_op_receiver = Some((rx, format!("Revert {}", &sha[..7])));
+                        self.toast_manager.push(format!("Reverting {}...", &sha[..7]), ToastSeverity::Info);
+                    }
+                }
+                AppMessage::ResetToCommit(oid, mode) => {
+                    let mode_name = match mode {
+                        git2::ResetType::Soft => "soft",
+                        git2::ResetType::Mixed => "mixed",
+                        git2::ResetType::Hard => "hard",
+                    };
+                    match repo!().reset_to_commit(oid, mode) {
+                        Ok(()) => {
+                            refresh_repo_state(repo_tab, view_state);
+                            self.toast_manager.push(
+                                format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
+                                ToastSeverity::Success,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(
+                                format!("Reset failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
                     }
                 }
             }
@@ -2029,6 +2065,34 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {}?", short));
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid));
+            }
+        }
+        "revert_commit" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                confirm_dialog.show("Revert Commit", &format!("Create a new commit that reverts {}?", short));
+                *pending_confirm_action = Some(AppMessage::RevertCommit(oid));
+            }
+        }
+        "reset_soft" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                confirm_dialog.show("Reset (Soft)", &format!("Reset to {}? Changes will be kept staged.", short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft));
+            }
+        }
+        "reset_mixed" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                confirm_dialog.show("Reset (Mixed)", &format!("Reset to {}? Changes will be kept unstaged.", short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed));
+            }
+        }
+        "reset_hard" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                confirm_dialog.show("Reset (Hard)", &format!("Reset to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard));
             }
         }
         "create_branch" => {

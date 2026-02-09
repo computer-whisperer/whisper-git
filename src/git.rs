@@ -935,6 +935,15 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Reset HEAD to a given commit
+    pub fn reset_to_commit(&self, oid: Oid, mode: git2::ResetType) -> Result<()> {
+        let commit = self.repo.find_commit(oid)
+            .with_context(|| format!("Failed to find commit {}", oid))?;
+        self.repo.reset(commit.as_object(), mode, None)
+            .with_context(|| format!("Failed to reset to {}", oid))?;
+        Ok(())
+    }
+
     /// Create a new branch at a given commit OID
     pub fn create_branch_at(&self, name: &str, oid: Oid) -> Result<()> {
         let commit = self.repo.find_commit(oid)
@@ -1259,4 +1268,9 @@ pub fn stash_pop_index_async(workdir: PathBuf, index: usize) -> Receiver<RemoteO
 /// Spawn a background thread to cherry-pick a commit
 pub fn cherry_pick_async(workdir: PathBuf, sha: String) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["cherry-pick".into(), sha], workdir, "cherry-pick")
+}
+
+/// Spawn a background thread to revert a commit
+pub fn revert_commit_async(workdir: PathBuf, sha: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["revert".into(), "--no-edit".into(), sha], workdir, "revert")
 }
