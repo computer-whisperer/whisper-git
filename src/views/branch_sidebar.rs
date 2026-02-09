@@ -22,6 +22,7 @@ pub enum SidebarAction {
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
     OpenWorktreeTerminal(String),
+    SwitchWorktree(String),
     ApplyStash(usize),
     PopStash(usize),
     DropStash(usize),
@@ -386,7 +387,7 @@ impl BranchSidebar {
                         self.pending_action = Some(SidebarAction::CheckoutRemote(remote.clone(), branch.clone()));
                     }
                     SidebarItem::WorktreeEntry(name) => {
-                        self.pending_action = Some(SidebarAction::JumpToWorktreeBranch(name.clone()));
+                        self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
                     }
                     _ => {}
                 }
@@ -467,8 +468,9 @@ impl BranchSidebar {
                     }
                     SidebarItem::WorktreeEntry(name) => {
                         let mut items = vec![
-                            MenuItem::new("Open in Terminal", "open_worktree"),
+                            MenuItem::new("Switch Staging", "switch_worktree"),
                             MenuItem::new("Jump to Branch", "jump_to_worktree"),
+                            MenuItem::new("Open in Terminal", "open_worktree"),
                             MenuItem::separator(),
                             MenuItem::new("Remove Worktree", "remove_worktree"),
                         ];
@@ -619,7 +621,7 @@ impl BranchSidebar {
                                 }
                                 SidebarItem::WorktreeEntry(name) => {
                                     self.focused_index = Some(idx);
-                                    self.pending_action = Some(SidebarAction::JumpToWorktreeBranch(name.clone()));
+                                    self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
                                     return EventResponse::Consumed;
                                 }
                                 _ => {

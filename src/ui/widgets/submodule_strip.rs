@@ -1,22 +1,40 @@
 //! Compact pill bar showing submodule status at the bottom of the commit graph area
 
 use crate::git::SubmoduleInfo;
+use crate::input::{EventResponse, InputEvent, MouseButton};
 use crate::ui::{Color, Rect, TextRenderer};
 use crate::ui::widget::{
     WidgetOutput, create_rect_vertices, create_rounded_rect_vertices,
     create_rounded_rect_outline_vertices, theme,
 };
 
+/// Actions emitted by the submodule strip
+pub enum SubmoduleStripAction {
+    /// Right-click on a pill: open context menu with (name, x, y)
+    OpenContextMenu(String, f32, f32),
+}
+
 /// Horizontal strip of submodule status pills
 pub struct SubmoduleStatusStrip {
     pub submodules: Vec<SubmoduleInfo>,
+    /// Pill bounds for hit testing: (rect, submodule_name)
+    pill_bounds: Vec<(Rect, String)>,
+    /// Pending action to be consumed by the app
+    pending_action: Option<SubmoduleStripAction>,
 }
 
 impl SubmoduleStatusStrip {
     pub fn new() -> Self {
         Self {
             submodules: Vec::new(),
+            pill_bounds: Vec::new(),
+            pending_action: None,
         }
+    }
+
+    /// Take the pending action, if any
+    pub fn take_action(&mut self) -> Option<SubmoduleStripAction> {
+        self.pending_action.take()
     }
 
     /// The height of the strip in pixels (scale-aware)
@@ -41,8 +59,31 @@ impl SubmoduleStatusStrip {
         }
     }
 
+    /// Handle input events for the strip
+    pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        match event {
+            InputEvent::MouseDown { button: MouseButton::Right, x, y, .. } => {
+                if bounds.contains(*x, *y) {
+                    // Check if right-click is on a pill
+                    for (pill_rect, name) in &self.pill_bounds {
+                        if pill_rect.contains(*x, *y) {
+                            self.pending_action = Some(SubmoduleStripAction::OpenContextMenu(
+                                name.clone(), *x, *y,
+                            ));
+                            return EventResponse::Consumed;
+                        }
+                    }
+                }
+                EventResponse::Ignored
+            }
+            _ => EventResponse::Ignored,
+        }
+    }
+
     /// Render the strip into the given bounds
-    pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        self.pill_bounds.clear();
+
         if self.submodules.is_empty() {
             return WidgetOutput::new();
         }
@@ -112,6 +153,9 @@ impl SubmoduleStatusStrip {
                 pill_w,
                 small_lh + pill_pad_v * 2.0,
             );
+
+            // Store pill bounds for hit testing
+            self.pill_bounds.push((pill_rect, sm.name.clone()));
 
             // Pill background (status color at 0.15 alpha)
             let bg = color.with_alpha(0.15).to_array();

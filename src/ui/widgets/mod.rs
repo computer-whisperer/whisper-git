@@ -26,7 +26,7 @@ pub use header_bar::{HeaderBar, HeaderAction};
 pub use repo_dialog::{RepoDialog, RepoDialogAction};
 pub use settings_dialog::{SettingsDialog, SettingsDialogAction};
 pub use shortcut_bar::{ShortcutBar, ShortcutContext};
-pub use submodule_strip::SubmoduleStatusStrip;
+pub use submodule_strip::{SubmoduleStatusStrip, SubmoduleStripAction};
 pub use tab_bar::{TabBar, TabAction};
 pub use text_area::TextArea;
 pub use text_input::TextInput;

@@ -7,7 +7,7 @@ use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus, WorktreeInfo}
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
 use crate::ui::widget::{
-    create_dashed_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices,
+    create_rect_vertices, create_rounded_rect_vertices,
     create_rounded_rect_outline_vertices, theme,
 };
 use crate::ui::widgets::context_menu::MenuItem;
@@ -305,11 +305,6 @@ impl CommitGraphView {
         self.lane_width * 2.0
     }
 
-    /// Extra gap between working directory row and first commit
-    fn working_dir_gap(&self) -> f32 {
-        self.row_height * 0.3
-    }
-
     /// Left padding before the first lane
     fn lane_left_pad(&self) -> f32 {
         self.lane_width * 0.5
@@ -400,16 +395,11 @@ impl CommitGraphView {
         bounds.x + self.lane_left_pad() + lane as f32 * self.lane_width + self.lane_width / 2.0
     }
 
-    /// Get y position for a row (adjusted for scroll and optional working dir node)
+    /// Get y position for a row (adjusted for scroll)
     fn row_y(&self, row: usize, bounds: &Rect, header_offset: f32) -> f32 {
-        let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
-            self.row_height + self.working_dir_gap()
-        } else {
-            0.0
-        };
         let y_offset = self.row_y_offsets.get(row).copied()
             .unwrap_or(row as f32 * self.row_height);
-        bounds.y + header_offset + working_dir_offset + y_offset
+        bounds.y + header_offset + y_offset
             + self.row_height / 2.0
             - self.scroll_offset
     }
@@ -420,13 +410,8 @@ impl CommitGraphView {
         if commit_count == 0 {
             return None;
         }
-        let working_dir_offset = if self.working_dir_status.as_ref().map(|s| !s.is_clean()).unwrap_or(false) {
-            self.row_height + self.working_dir_gap()
-        } else {
-            0.0
-        };
         // Convert screen Y to content-space Y (offset from the top of the content area)
-        let content_y = y - bounds.y - header_offset - working_dir_offset + self.scroll_offset;
+        let content_y = y - bounds.y - header_offset + self.scroll_offset;
 
         if self.row_y_offsets.len() == commit_count {
             // Binary search: find the row whose center (offset + row_height/2) is closest to content_y
@@ -576,16 +561,6 @@ impl CommitGraphView {
                 ..
             } => {
                 if content_bounds.contains(*x, *y) {
-                    // Check if clicking on working directory row (deselects commits)
-                    if let Some(ref status) = self.working_dir_status {
-                        if !status.is_clean() {
-                            let wd_center_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
-                            if (*y - wd_center_y).abs() < self.row_height / 2.0 {
-                                self.selected_commit = None;
-                                return EventResponse::Consumed;
-                            }
-                        }
-                    }
                     // Check for click on a commit using binary search
                     if let Some(row) = self.row_at_y(*y, &bounds, header_offset, commits.len()) {
                         if let Some(commit) = commits.get(row) {
@@ -782,53 +757,6 @@ impl CommitGraphView {
             .enumerate()
             .map(|(i, c)| (c.id, i))
             .collect();
-
-        // Draw working directory node if dirty
-        if let Some(ref status) = self.working_dir_status
-            && !status.is_clean() {
-                let wd_x = self.lane_x(0, &bounds);
-                let wd_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
-                let file_count = status.total_files();
-                let wd_text = format!("Working ({})", file_count);
-                let wd_width = text_renderer.measure_text(&wd_text) + self.lane_width; // padding
-                let wd_height = text_renderer.line_height() + self.working_dir_gap();
-
-                let wd_rect = Rect::new(wd_x - 10.0, wd_y - wd_height / 2.0, wd_width, wd_height);
-
-                // Subtle background fill
-                vertices.extend(create_rect_vertices(
-                    &wd_rect,
-                    theme::STATUS_DIRTY.with_alpha(0.15).to_array(),
-                ));
-
-                // Dashed border for working directory node - thicker
-                vertices.extend(create_dashed_rect_outline_vertices(
-                    &wd_rect,
-                    theme::STATUS_DIRTY.to_array(),
-                    2.0,
-                    8.0,
-                    4.0,
-                ));
-
-                // Dashed line to HEAD - thicker and more visible
-                if !commits.is_empty() {
-                    let head_y = self.row_y(0, &bounds, header_offset);
-                    let dash_length = 8.0;
-                    let gap_length = 6.0;
-                    let total_length = head_y - wd_y - wd_height / 2.0;
-                    let num_dashes = (total_length / (dash_length + gap_length)) as i32;
-
-                    for i in 0..num_dashes {
-                        let y_start = wd_y + wd_height / 2.0 + i as f32 * (dash_length + gap_length);
-                        if y_start + dash_length < head_y - self.node_radius {
-                            vertices.extend(create_rect_vertices(
-                                &Rect::new(wd_x - 1.5, y_start, 3.0, dash_length),
-                                theme::STATUS_DIRTY.with_alpha(0.6).to_array(),
-                            ));
-                        }
-                    }
-                }
-            }
 
         // Pre-pass: render ALL zebra stripes BEFORE connection lines so stripes
         // appear behind everything else (spline vertices render in order).
@@ -1164,22 +1092,6 @@ impl CommitGraphView {
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let time_col_left = time_col_right - time_col_width;
 
-        // Working directory node text
-        if let Some(ref status) = self.working_dir_status
-            && !status.is_clean() {
-                let wd_center_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
-                let text_y = wd_center_y - line_height / 2.0;
-                let file_count = status.total_files();
-                let wd_text = format!("Working ({})", file_count);
-
-                vertices.extend(text_renderer.layout_text(
-                    &wd_text,
-                    self.lane_x(0, &bounds) + self.working_dir_gap(),
-                    text_y,
-                    theme::STATUS_DIRTY.to_array(),
-                ));
-            }
-
         // Branch tip lookup
         let branch_tips_by_oid: HashMap<Oid, Vec<&BranchTip>> = self
             .branch_tips
@@ -1206,6 +1118,28 @@ impl CommitGraphView {
                 acc.entry(oid).or_default().push(wt);
                 acc
             });
+
+        // Dirty worktree lookup — all worktrees (including current) that have dirty files
+        // For the "(Working N)" pill indicators at each dirty worktree's HEAD commit
+        let dirty_worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
+            .worktrees
+            .iter()
+            .filter(|wt| wt.is_dirty && wt.head_oid.is_some())
+            .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
+            .fold(HashMap::new(), |mut acc, (oid, wt)| {
+                acc.entry(oid).or_default().push(wt);
+                acc
+            });
+
+        // Single-worktree fallback: if no linked worktrees exist, use working_dir_status
+        // to show a "Working (N)" pill on the HEAD commit
+        let fallback_dirty_count = if self.worktrees.is_empty() {
+            self.working_dir_status.as_ref()
+                .filter(|s| !s.is_clean())
+                .map(|s| s.total_files())
+        } else {
+            None
+        };
 
         let char_width = text_renderer.char_width();
         let pill_pad_h: f32 = 7.0;
@@ -1383,6 +1317,59 @@ impl CommitGraphView {
                         wt_text_color.to_array(),
                     ));
                     current_x += wt_width + pill_pad_h * 2.0 + char_width * 1.0;
+                }
+            }
+
+            // === "Working (N)" pills for dirty worktrees at their HEAD commits ===
+            {
+                // Collect dirty file counts for this commit
+                let mut dirty_counts: Vec<usize> = Vec::new();
+
+                // From worktree info (multi-worktree case)
+                if let Some(dirty_wts) = dirty_worktrees_by_oid.get(&commit.id) {
+                    for wt in dirty_wts {
+                        dirty_counts.push(wt.dirty_file_count);
+                    }
+                }
+
+                // Fallback for single-worktree repos: show on HEAD commit
+                if is_head {
+                    if let Some(count) = fallback_dirty_count {
+                        dirty_counts.push(count);
+                    }
+                }
+
+                for count in dirty_counts {
+                    let wd_label = format!("Working ({})", count);
+                    let wd_width = text_renderer.measure_text(&wd_label);
+                    if current_x + wd_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
+                        break;
+                    }
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        wd_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    // Red "Working" pill with subtle background and outline
+                    pill_vertices.extend(create_rounded_rect_vertices(
+                        &pill_rect,
+                        theme::STATUS_DIRTY.with_alpha(0.15).to_array(),
+                        pill_radius,
+                    ));
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        theme::STATUS_DIRTY.with_alpha(0.45).to_array(),
+                        pill_radius,
+                        pill_border_thickness,
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        &wd_label,
+                        current_x + pill_pad_h,
+                        y,
+                        theme::STATUS_DIRTY.to_array(),
+                    ));
+                    current_x += wd_width + pill_pad_h * 2.0 + char_width * 1.0;
                 }
             }
 

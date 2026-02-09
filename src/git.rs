@@ -380,7 +380,7 @@ impl GitRepo {
                         .unwrap_or(false);
 
                     // Try to get branch info, HEAD oid, and dirty status
-                    let (branch, head_oid, is_dirty) = if let Ok(wt_repo) = Repository::open(wt_path) {
+                    let (branch, head_oid, is_dirty, dirty_file_count) = if let Ok(wt_repo) = Repository::open(wt_path) {
                         let head_ref = wt_repo.head().ok();
                         let branch = head_ref
                             .as_ref()
@@ -388,18 +388,19 @@ impl GitRepo {
                             .unwrap_or_else(|| "detached".to_string());
                         let head_oid = head_ref.and_then(|h| h.target());
 
-                        let is_dirty = wt_repo
+                        let (is_dirty, dirty_file_count) = wt_repo
                             .statuses(None)
                             .map(|statuses| {
-                                statuses.iter().any(|entry| {
-                                    !entry.status().intersects(Status::IGNORED)
-                                })
+                                let count = statuses.iter()
+                                    .filter(|entry| !entry.status().intersects(Status::IGNORED))
+                                    .count();
+                                (count > 0, count)
                             })
-                            .unwrap_or(false);
+                            .unwrap_or((false, 0));
 
-                        (branch, head_oid, is_dirty)
+                        (branch, head_oid, is_dirty, dirty_file_count)
                     } else {
-                        ("unknown".to_string(), None, false)
+                        ("unknown".to_string(), None, false, 0)
                     };
 
                     infos.push(WorktreeInfo {
@@ -409,6 +410,7 @@ impl GitRepo {
                         head_oid,
                         is_current,
                         is_dirty,
+                        dirty_file_count,
                     });
                 }
         }
@@ -805,6 +807,7 @@ pub struct WorktreeInfo {
     pub head_oid: Option<Oid>,
     pub is_current: bool,
     pub is_dirty: bool,
+    pub dirty_file_count: usize,
 }
 
 /// Stash entry information

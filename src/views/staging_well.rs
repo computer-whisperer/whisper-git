@@ -1,11 +1,25 @@
 //! Staging well view - commit message editor and file staging
 
-use crate::git::WorkingDirStatus;
+use std::path::{Path, PathBuf};
+
+use crate::git::{WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::{Button, FileList, FileListAction, TextArea, TextInput};
 use crate::ui::{Rect, TextRenderer, Widget};
+
+/// Per-worktree state for the staging context switcher
+#[derive(Clone, Debug)]
+pub struct WorktreeContext {
+    pub name: String,
+    pub path: PathBuf,
+    pub branch: String,
+    pub is_current: bool,
+    pub is_dirty: bool,
+    pub subject_draft: String,
+    pub body_draft: String,
+}
 
 /// Actions from the staging well
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +32,7 @@ pub enum StagingAction {
     AmendCommit(String),
     ToggleAmend,
     ViewDiff(String),
+    SwitchWorktree(usize),
 }
 
 /// The staging well view containing commit message and file lists
@@ -46,6 +61,16 @@ pub struct StagingWell {
     focus_section: usize,
     /// Display scale factor for 4K/HiDPI scaling
     pub scale: f32,
+    /// Worktree contexts for multi-worktree repos
+    worktree_contexts: Vec<WorktreeContext>,
+    /// Index of the active worktree in worktree_contexts
+    active_worktree_idx: usize,
+    /// Whether the worktree selector dropdown is open
+    worktree_selector_open: bool,
+    /// Hovered item in the worktree selector dropdown
+    worktree_selector_hover: Option<usize>,
+    /// Bounds of the worktree selector pill (for hit testing)
+    worktree_pill_bounds: Option<Rect>,
 }
 
 impl StagingWell {
@@ -65,6 +90,11 @@ impl StagingWell {
             pending_action: None,
             focus_section: 0,
             scale: 1.0,
+            worktree_contexts: Vec::new(),
+            active_worktree_idx: 0,
+            worktree_selector_open: false,
+            worktree_selector_hover: None,
+            worktree_pill_bounds: None,
         }
     }
 
@@ -257,6 +287,114 @@ impl StagingWell {
         }
     }
 
+    // ---- Worktree context switching ----
+
+    /// Build worktree contexts from the repo's worktree list.
+    /// Only creates contexts when there are 2+ worktrees (including the main one).
+    /// Preserves existing drafts by matching on path.
+    pub fn set_worktrees(&mut self, worktrees: &[WorktreeInfo], _current_workdir: &Path) {
+        // Only show selector when there are linked worktrees (2+)
+        if worktrees.len() < 2 {
+            self.worktree_contexts.clear();
+            self.active_worktree_idx = 0;
+            return;
+        }
+
+        let old_contexts = std::mem::take(&mut self.worktree_contexts);
+        let old_active_path = old_contexts.get(self.active_worktree_idx)
+            .map(|c| c.path.clone());
+
+        let mut new_contexts: Vec<WorktreeContext> = worktrees.iter().map(|wt| {
+            let path = PathBuf::from(&wt.path);
+            // Preserve drafts from existing context with same path
+            let (subject_draft, body_draft) = old_contexts.iter()
+                .find(|c| c.path == path)
+                .map(|c| (c.subject_draft.clone(), c.body_draft.clone()))
+                .unwrap_or_default();
+
+            WorktreeContext {
+                name: wt.name.clone(),
+                path,
+                branch: wt.branch.clone(),
+                is_current: wt.is_current,
+                is_dirty: wt.is_dirty,
+                subject_draft,
+                body_draft,
+            }
+        }).collect();
+
+        // Sort: current worktree first, then alphabetical
+        new_contexts.sort_by(|a, b| b.is_current.cmp(&a.is_current).then(a.name.cmp(&b.name)));
+
+        // Restore active index by path match, or reset to 0
+        self.active_worktree_idx = if let Some(ref old_path) = old_active_path {
+            new_contexts.iter().position(|c| &c.path == old_path).unwrap_or(0)
+        } else {
+            0
+        };
+
+        self.worktree_contexts = new_contexts;
+    }
+
+    /// Switch to a different worktree context, saving/restoring drafts.
+    pub fn switch_worktree(&mut self, index: usize) {
+        if index >= self.worktree_contexts.len() || index == self.active_worktree_idx {
+            self.worktree_selector_open = false;
+            return;
+        }
+
+        // Save current drafts
+        if self.active_worktree_idx < self.worktree_contexts.len() {
+            self.worktree_contexts[self.active_worktree_idx].subject_draft =
+                self.subject_input.text().to_string();
+            self.worktree_contexts[self.active_worktree_idx].body_draft =
+                self.body_area.text().to_string();
+        }
+
+        self.active_worktree_idx = index;
+
+        // Restore drafts from new context
+        let ctx = &self.worktree_contexts[index];
+        self.subject_input.set_text(&ctx.subject_draft);
+        self.body_area.set_text(&ctx.body_draft);
+
+        // Exit amend mode on switch
+        self.amend_mode = false;
+        self.worktree_selector_open = false;
+        self.worktree_selector_hover = None;
+    }
+
+    /// Returns the active worktree path, or None if using default repo.
+    pub fn active_worktree_path(&self) -> Option<&Path> {
+        self.worktree_contexts.get(self.active_worktree_idx)
+            .map(|c| c.path.as_path())
+    }
+
+    /// Returns the active worktree context, if any.
+    pub fn active_worktree_context(&self) -> Option<&WorktreeContext> {
+        self.worktree_contexts.get(self.active_worktree_idx)
+    }
+
+    /// Whether the worktree selector pill should be shown (2+ worktrees).
+    pub fn has_worktree_selector(&self) -> bool {
+        self.worktree_contexts.len() >= 2
+    }
+
+    /// Number of worktree contexts.
+    pub fn worktree_count(&self) -> usize {
+        self.worktree_contexts.len()
+    }
+
+    /// Find a worktree index by name.
+    pub fn worktree_index_by_name(&self, name: &str) -> Option<usize> {
+        self.worktree_contexts.iter().position(|c| c.name == name)
+    }
+
+    /// Whether the worktree selector dropdown is currently open.
+    pub fn is_selector_open(&self) -> bool {
+        self.worktree_selector_open
+    }
+
     /// Update hover state for child widgets based on mouse position
     pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
         let (_, _, staged_bounds, unstaged_bounds, buttons_bounds) =
@@ -268,10 +406,106 @@ impl StagingWell {
         self.unstage_all_btn.update_hover(x, y, self.unstage_all_button_bounds(buttons_bounds));
         self.amend_btn.update_hover(x, y, self.amend_button_bounds(buttons_bounds));
         self.commit_btn.update_hover(x, y, self.commit_button_bounds(buttons_bounds));
+
+        // Update worktree selector hover
+        if self.worktree_selector_open {
+            if let Some(pill_bounds) = self.worktree_pill_bounds {
+                let dropdown_bounds = self.selector_dropdown_bounds(pill_bounds);
+                if dropdown_bounds.contains(x, y) {
+                    let s = self.scale;
+                    let row_height = 24.0 * s;
+                    let padding = 4.0 * s;
+                    let rel_y = y - dropdown_bounds.y - padding;
+                    if rel_y >= 0.0 {
+                        let idx = (rel_y / row_height) as usize;
+                        if idx < self.worktree_contexts.len() {
+                            self.worktree_selector_hover = Some(idx);
+                        } else {
+                            self.worktree_selector_hover = None;
+                        }
+                    }
+                } else {
+                    self.worktree_selector_hover = None;
+                }
+            }
+        }
     }
 
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        // Handle worktree selector dropdown events first (when open)
+        if self.worktree_selector_open {
+            match event {
+                InputEvent::MouseDown { x, y, .. } => {
+                    // Check if click is on a dropdown item
+                    if let Some(pill_bounds) = self.worktree_pill_bounds {
+                        let dropdown_bounds = self.selector_dropdown_bounds(pill_bounds);
+                        if dropdown_bounds.contains(*x, *y) {
+                            let s = self.scale;
+                            let row_height = 24.0 * s;
+                            let padding = 4.0 * s;
+                            let rel_y = y - dropdown_bounds.y - padding;
+                            if rel_y >= 0.0 {
+                                let idx = (rel_y / row_height) as usize;
+                                if idx < self.worktree_contexts.len() {
+                                    self.pending_action = Some(StagingAction::SwitchWorktree(idx));
+                                    self.worktree_selector_open = false;
+                                    return EventResponse::Consumed;
+                                }
+                            }
+                        }
+                    }
+                    // Click outside dropdown closes it
+                    self.worktree_selector_open = false;
+                    self.worktree_selector_hover = None;
+                    // Don't consume - let click fall through to normal handling
+                }
+                InputEvent::KeyDown { key: Key::Escape, .. } => {
+                    self.worktree_selector_open = false;
+                    self.worktree_selector_hover = None;
+                    return EventResponse::Consumed;
+                }
+                InputEvent::KeyDown { key: Key::Enter, .. } => {
+                    if let Some(idx) = self.worktree_selector_hover {
+                        self.pending_action = Some(StagingAction::SwitchWorktree(idx));
+                        self.worktree_selector_open = false;
+                        self.worktree_selector_hover = None;
+                        return EventResponse::Consumed;
+                    }
+                }
+                InputEvent::KeyDown { key, .. } => {
+                    let count = self.worktree_contexts.len();
+                    match key {
+                        Key::J | Key::Down => {
+                            let cur = self.worktree_selector_hover.unwrap_or(0);
+                            self.worktree_selector_hover = Some((cur + 1).min(count - 1));
+                            return EventResponse::Consumed;
+                        }
+                        Key::K | Key::Up => {
+                            let cur = self.worktree_selector_hover.unwrap_or(0);
+                            self.worktree_selector_hover = Some(cur.saturating_sub(1));
+                            return EventResponse::Consumed;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Check for worktree pill click
+        if let InputEvent::MouseDown { x, y, .. } = event {
+            if self.has_worktree_selector() {
+                if let Some(pill_bounds) = self.worktree_pill_bounds {
+                    if pill_bounds.contains(*x, *y) {
+                        self.worktree_selector_open = !self.worktree_selector_open;
+                        self.worktree_selector_hover = None;
+                        return EventResponse::Consumed;
+                    }
+                }
+            }
+        }
+
         // Calculate sub-regions
         let (subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
             self.compute_regions(bounds);
@@ -484,8 +718,24 @@ impl StagingWell {
         Rect::new(buttons.right() - width, buttons.y + 8.0 * s, width, 28.0 * s)
     }
 
+    /// Compute the dropdown bounds below the worktree pill
+    fn selector_dropdown_bounds(&self, pill_bounds: Rect) -> Rect {
+        let s = self.scale;
+        let row_height = 24.0 * s;
+        let padding = 4.0 * s;
+        let count = self.worktree_contexts.len();
+        let dropdown_h = row_height * count as f32 + padding * 2.0;
+        let dropdown_w = 220.0 * s;
+        Rect::new(
+            pill_bounds.x,
+            pill_bounds.bottom() + 2.0 * s,
+            dropdown_w,
+            dropdown_h,
+        )
+    }
+
     /// Layout the staging well
-    pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let s = self.scale;
 
@@ -528,6 +778,47 @@ impl StagingWell {
             title_y,
             title_color.to_array(),
         ));
+
+        // Worktree selector pill (after title text, before char count)
+        if self.has_worktree_selector() {
+            let title_w = text_renderer.measure_text(title_text);
+            let pill_x = bounds.x + 12.0 * s + title_w + 8.0 * s;
+            let pill_h = 18.0 * s;
+            let pill_y = title_y - 1.0 * s;
+
+            let active_name = self.worktree_contexts.get(self.active_worktree_idx)
+                .map(|c| c.name.as_str())
+                .unwrap_or("?");
+            let pill_label = format!("{} \u{25BE}", active_name); // ▾ triangle
+            let pill_text_w = text_renderer.measure_text(&pill_label);
+            let pill_w = pill_text_w + 12.0 * s;
+
+            let pill_rect = Rect::new(pill_x, pill_y, pill_w, pill_h);
+            self.worktree_pill_bounds = Some(pill_rect);
+
+            // Pill background
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                theme::SURFACE_RAISED.to_array(),
+                4.0 * s,
+            ));
+            // Pill border
+            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                theme::BORDER.to_array(),
+                4.0 * s,
+                1.0,
+            ));
+            // Pill text
+            output.text_vertices.extend(text_renderer.layout_text(
+                &pill_label,
+                pill_x + 6.0 * s,
+                pill_y + 2.0 * s,
+                theme::TEXT_MUTED.to_array(),
+            ));
+        } else {
+            self.worktree_pill_bounds = None;
+        }
 
         // Character count for subject - right-aligned on title row
         let char_count = format!("{}/72", self.subject_input.text().len());
@@ -583,6 +874,99 @@ impl StagingWell {
         output.extend(self.commit_btn.layout(text_renderer, commit_bounds));
 
         output
+    }
+
+    /// Layout the worktree selector dropdown for the overlay layer.
+    /// Returns Some(output) when the dropdown is open, None otherwise.
+    pub fn layout_selector_dropdown(&self, text_renderer: &TextRenderer) -> Option<WidgetOutput> {
+        if !self.worktree_selector_open || !self.has_worktree_selector() {
+            return None;
+        }
+        let pill_bounds = self.worktree_pill_bounds?;
+
+        let s = self.scale;
+        let mut output = WidgetOutput::new();
+
+        let dropdown = self.selector_dropdown_bounds(pill_bounds);
+        let row_height = 24.0 * s;
+        let padding = 4.0 * s;
+
+        // Dropdown background
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &dropdown,
+            theme::SURFACE_RAISED.to_array(),
+            4.0 * s,
+        ));
+        // Dropdown border
+        output.spline_vertices.extend(create_rounded_rect_outline_vertices(
+            &dropdown,
+            theme::BORDER.to_array(),
+            4.0 * s,
+            1.0,
+        ));
+
+        for (i, ctx) in self.worktree_contexts.iter().enumerate() {
+            let row_y = dropdown.y + padding + i as f32 * row_height;
+            let row_rect = Rect::new(
+                dropdown.x + 2.0 * s,
+                row_y,
+                dropdown.width - 4.0 * s,
+                row_height,
+            );
+
+            // Hover highlight
+            if self.worktree_selector_hover == Some(i) {
+                output.spline_vertices.extend(create_rounded_rect_vertices(
+                    &row_rect,
+                    theme::SURFACE_HOVER.to_array(),
+                    3.0 * s,
+                ));
+            }
+
+            // Status dot
+            let dot_r = 3.0 * s;
+            let dot_cx = dropdown.x + 12.0 * s;
+            let dot_cy = row_y + row_height / 2.0;
+            let dot_color = if ctx.is_current {
+                theme::STATUS_CLEAN
+            } else if ctx.is_dirty {
+                theme::STATUS_BEHIND
+            } else {
+                theme::TEXT_MUTED
+            };
+            let dot_rect = Rect::new(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2.0, dot_r * 2.0);
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &dot_rect,
+                dot_color.to_array(),
+                dot_r,
+            ));
+
+            // Active checkmark or name
+            let text_x = dropdown.x + 22.0 * s;
+            let text_y = row_y + 4.0 * s;
+
+            let is_active = i == self.active_worktree_idx;
+            let name_color = if is_active { theme::TEXT_BRIGHT } else { theme::TEXT_MUTED };
+            output.text_vertices.extend(text_renderer.layout_text(
+                &ctx.name,
+                text_x,
+                text_y,
+                name_color.to_array(),
+            ));
+
+            // Branch name (right-aligned, muted)
+            let branch_text = &ctx.branch;
+            let branch_w = text_renderer.measure_text(branch_text);
+            let branch_x = dropdown.right() - branch_w - 8.0 * s;
+            output.text_vertices.extend(text_renderer.layout_text(
+                branch_text,
+                branch_x,
+                text_y,
+                theme::TEXT_MUTED.with_alpha(0.6).to_array(),
+            ));
+        }
+
+        Some(output)
     }
 }
 

@@ -88,6 +88,7 @@ pub struct MessageContext {
 pub fn handle_app_message(
     msg: AppMessage,
     repo: &GitRepo,
+    staging_repo: &GitRepo,
     commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
@@ -95,7 +96,7 @@ pub fn handle_app_message(
 ) -> bool {
     match msg {
         AppMessage::StageFile(path) => {
-            if let Err(e) = repo.stage_file(&path) {
+            if let Err(e) = staging_repo.stage_file(&path) {
                 eprintln!("Failed to stage {}: {}", path, e);
                 toast_manager.push(
                     format!("Stage failed: {}", e),
@@ -104,7 +105,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::UnstageFile(path) => {
-            if let Err(e) = repo.unstage_file(&path) {
+            if let Err(e) = staging_repo.unstage_file(&path) {
                 eprintln!("Failed to unstage {}: {}", path, e);
                 toast_manager.push(
                     format!("Unstage failed: {}", e),
@@ -113,21 +114,21 @@ pub fn handle_app_message(
             }
         }
         AppMessage::StageAll => {
-            if let Ok(status) = repo.status() {
+            if let Ok(status) = staging_repo.status() {
                 for file in &status.unstaged {
-                    let _ = repo.stage_file(&file.path);
+                    let _ = staging_repo.stage_file(&file.path);
                 }
             }
         }
         AppMessage::UnstageAll => {
-            if let Ok(status) = repo.status() {
+            if let Ok(status) = staging_repo.status() {
                 for file in &status.staged {
-                    let _ = repo.unstage_file(&file.path);
+                    let _ = staging_repo.unstage_file(&file.path);
                 }
             }
         }
         AppMessage::Commit(message) => {
-            match repo.commit(&message) {
+            match staging_repo.commit(&message) {
                 Ok(oid) => {
                     println!("Created commit: {}", oid);
                     refresh_repo_state(repo, commits, view_state);
@@ -228,7 +229,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::ViewDiff(path, staged) => {
-            match repo.diff_working_file(&path, staged) {
+            match staging_repo.diff_working_file(&path, staged) {
                 Ok(hunks) => {
                     let diff_file = DiffFile::from_hunks(path.clone(), hunks);
                     let title = if staged {
@@ -308,13 +309,13 @@ pub fn handle_app_message(
             }
         }
         AppMessage::StageHunk(path, hunk_idx) => {
-            match repo.stage_hunk(&path, hunk_idx) {
+            match staging_repo.stage_hunk(&path, hunk_idx) {
                 Ok(()) => {
                     toast_manager.push(
                         format!("Staged hunk {} in {}", hunk_idx + 1, path),
                         ToastSeverity::Success,
                     );
-                    if let Ok(hunks) = repo.diff_working_file(&path, false) {
+                    if let Ok(hunks) = staging_repo.diff_working_file(&path, false) {
                         if hunks.is_empty() {
                             view_state.diff_view.clear();
                         } else {
@@ -333,13 +334,13 @@ pub fn handle_app_message(
             }
         }
         AppMessage::UnstageHunk(path, hunk_idx) => {
-            match repo.unstage_hunk(&path, hunk_idx) {
+            match staging_repo.unstage_hunk(&path, hunk_idx) {
                 Ok(()) => {
                     toast_manager.push(
                         format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
                         ToastSeverity::Success,
                     );
-                    if let Ok(hunks) = repo.diff_working_file(&path, true) {
+                    if let Ok(hunks) = staging_repo.diff_working_file(&path, true) {
                         if hunks.is_empty() {
                             view_state.diff_view.clear();
                         } else {
@@ -358,7 +359,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::DiscardFile(path) => {
-            match repo.discard_file(&path) {
+            match staging_repo.discard_file(&path) {
                 Ok(()) => {
                     toast_manager.push(
                         format!("Discarded: {}", path),
@@ -583,7 +584,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::AmendCommit(message) => {
-            match repo.amend_commit(&message) {
+            match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
                     println!("Amended commit: {}", oid);
                     refresh_repo_state(repo, commits, view_state);
@@ -605,7 +606,7 @@ pub fn handle_app_message(
         AppMessage::ToggleAmend => {
             if view_state.staging_well.amend_mode {
                 view_state.staging_well.exit_amend_mode();
-            } else if let Some((subject, body)) = repo.head_commit_message() {
+            } else if let Some((subject, body)) = staging_repo.head_commit_message() {
                 view_state.staging_well.enter_amend_mode(&subject, &body);
             } else {
                 toast_manager.push(
@@ -694,6 +695,8 @@ fn refresh_repo_state(
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+    let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
+    view_state.staging_well.set_worktrees(&worktrees, current_workdir);
     view_state.branch_sidebar.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_default();

@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 
@@ -131,6 +131,8 @@ struct TabViewState {
     /// Generic async receiver for submodule/worktree ops (label for toast)
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String)>,
     submodule_strip: SubmoduleStatusStrip,
+    /// Secondary repo handle for staging in a non-current worktree
+    worktree_repo: Option<GitRepo>,
 }
 
 impl TabViewState {
@@ -153,6 +155,7 @@ impl TabViewState {
             push_receiver: None,
             generic_op_receiver: None,
             submodule_strip: SubmoduleStatusStrip::new(),
+            worktree_repo: None,
         }
     }
 }
@@ -443,14 +446,19 @@ impl App {
         if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
             let Some(ref repo) = repo_tab.repo else { return };
 
-            // Update working directory status
+            // Active worktree status for staging well
+            let staging_repo = view_state.worktree_repo.as_ref().unwrap_or(repo);
+            if let Ok(status) = staging_repo.status() {
+                view_state.staging_well.update_status(&status);
+            }
+
+            // Main worktree status for graph + header (always from main repo)
             if let Ok(status) = repo.status() {
                 view_state.commit_graph_view.working_dir_status = Some(status.clone());
-                view_state.staging_well.update_status(&status);
                 view_state.header_bar.has_staged = !status.staged.is_empty();
             }
 
-            // Update ahead/behind
+            // Ahead/behind always from main repo
             if let Ok((ahead, behind)) = repo.ahead_behind() {
                 view_state.header_bar.ahead = ahead;
                 view_state.header_bar.behind = behind;
@@ -509,18 +517,17 @@ impl App {
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
             };
+            let staging_repo = view_state.worktree_repo.as_ref().unwrap_or(repo);
             handle_app_message(
                 msg,
                 repo,
+                staging_repo,
                 &mut repo_tab.commits,
                 &mut msg_view_state,
                 &mut self.toast_manager,
                 &ctx,
             );
         }
-
-        // Refresh status after processing all messages
-        self.refresh_status();
     }
 
     fn poll_remote_ops(&mut self) {
@@ -700,6 +707,8 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+    let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
+    view_state.staging_well.set_worktrees(&worktrees, current_workdir);
     view_state.branch_sidebar.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_default();
@@ -745,6 +754,8 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
             view_state.branch_sidebar.submodules = submodules;
         }
         if let Ok(worktrees) = repo.worktrees() {
+            let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
+            view_state.staging_well.set_worktrees(&worktrees, current_workdir);
             view_state.branch_sidebar.worktrees = worktrees;
         }
 
@@ -798,6 +809,9 @@ impl ApplicationHandler for App {
                 self.poll_remote_ops();
                 // Process any pending messages
                 self.process_messages();
+                // Refresh working directory status (runs every frame so worktree
+                // switches, external edits, etc. are reflected immediately)
+                self.refresh_status();
 
                 // Check for repo dialog actions
                 if let Some(action) = self.repo_dialog.take_action() {
@@ -1098,6 +1112,38 @@ impl ApplicationHandler for App {
                                 }
                             }
                         }
+                        // Ctrl+1..9: switch worktree context in staging well
+                        if modifiers.only_ctrl() {
+                            let wt_index = match *key {
+                                Key::Num1 => Some(0),
+                                Key::Num2 => Some(1),
+                                Key::Num3 => Some(2),
+                                Key::Num4 => Some(3),
+                                Key::Num5 => Some(4),
+                                Key::Num6 => Some(5),
+                                Key::Num7 => Some(6),
+                                Key::Num8 => Some(7),
+                                Key::Num9 => Some(8),
+                                _ => None,
+                            };
+                            if let Some(idx) = wt_index {
+                                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                    if view_state.staging_well.has_worktree_selector()
+                                        && idx < view_state.staging_well.worktree_count()
+                                    {
+                                        view_state.staging_well.switch_worktree(idx);
+                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                            if wt_ctx.is_current {
+                                                view_state.worktree_repo = None;
+                                            } else {
+                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Route to tab bar (if visible)
@@ -1155,6 +1201,18 @@ impl ApplicationHandler for App {
                                 }
                                 SidebarAction::OpenSubmoduleTerminal(name) => {
                                     self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                }
+                                SidebarAction::SwitchWorktree(name) => {
+                                    if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
+                                        view_state.staging_well.switch_worktree(idx);
+                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                            if wt_ctx.is_current {
+                                                view_state.worktree_repo = None;
+                                            } else {
+                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                            }
+                                        }
+                                    }
                                 }
                                 SidebarAction::JumpToWorktreeBranch(name) => {
                                     view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(name));
@@ -1251,6 +1309,27 @@ impl ApplicationHandler for App {
 
                     // Right-click context menus
                     if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = &input_event {
+                        // Check submodule strip first (it overlays the bottom of the graph area)
+                        if !view_state.submodule_strip.submodules.is_empty() {
+                            let strip_h = SubmoduleStatusStrip::height(scale);
+                            let strip_bounds = Rect::new(
+                                layout.graph.x,
+                                layout.graph.bottom() - strip_h,
+                                layout.graph.width,
+                                strip_h,
+                            );
+                            view_state.submodule_strip.handle_event(&input_event, strip_bounds);
+                            if let Some(SubmoduleStripAction::OpenContextMenu(name, mx, my)) = view_state.submodule_strip.take_action() {
+                                let items = vec![
+                                    MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
+                                    MenuItem::separator(),
+                                    MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
+                                ];
+                                view_state.context_menu.show(items, mx, my);
+                                return;
+                            }
+                        }
+
                         // Check which panel was right-clicked and show context menu
                         if layout.graph.contains(*x, *y) {
                             if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
@@ -1343,6 +1422,16 @@ impl ApplicationHandler for App {
                                         let staged = view_state.staging_well.staged_list.files
                                             .iter().any(|f| f.path == path);
                                         view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                    }
+                                    StagingAction::SwitchWorktree(index) => {
+                                        view_state.staging_well.switch_worktree(index);
+                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                            if wt_ctx.is_current {
+                                                view_state.worktree_repo = None;
+                                            } else {
+                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1562,6 +1651,20 @@ fn handle_context_menu_action(
         }
         "open_submodule" | "open_worktree" => {
             toast_manager.push("Open terminal not yet implemented".to_string(), ToastSeverity::Info);
+        }
+        "switch_worktree" => {
+            if !param.is_empty() {
+                if let Some(idx) = view_state.staging_well.worktree_index_by_name(param) {
+                    view_state.staging_well.switch_worktree(idx);
+                    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                        if wt_ctx.is_current {
+                            view_state.worktree_repo = None;
+                        } else {
+                            view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                        }
+                    }
+                }
+            }
         }
         "jump_to_worktree" => {
             if !param.is_empty() {
@@ -1833,6 +1936,13 @@ fn build_ui_output(
     // Tab bar (chrome layer - rendered after graph so it draws on top)
     if tabs.len() > 1 {
         chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
+    }
+
+    // Worktree selector dropdown (overlay layer - above staging well)
+    if let Some((_, view_state)) = tabs.get_mut(active_tab) {
+        if let Some(dropdown_output) = view_state.staging_well.layout_selector_dropdown(text_renderer) {
+            overlay_output.extend(dropdown_output);
+        }
     }
 
     // Context menu overlay (overlay layer - on top of all panels)
