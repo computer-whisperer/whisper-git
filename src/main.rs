@@ -30,7 +30,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -117,6 +117,7 @@ enum AppMessage {
     DeleteBranch(String),
     StageHunk(String, usize),    // (file_path, hunk_index)
     UnstageHunk(String, usize),  // (file_path, hunk_index)
+    DiscardFile(String),
     LoadMoreCommits,
 }
 
@@ -195,6 +196,7 @@ struct App {
     active_tab: usize,
     tab_bar: TabBar,
     repo_dialog: RepoDialog,
+    settings_dialog: SettingsDialog,
     toast_manager: ToastManager,
     state: Option<RenderState>,
 }
@@ -274,6 +276,7 @@ impl App {
             active_tab: 0,
             tab_bar,
             repo_dialog: RepoDialog::new(),
+            settings_dialog: SettingsDialog::new(),
             toast_manager: ToastManager::new(),
             state: None,
         })
@@ -735,6 +738,22 @@ impl App {
                         }
                     }
                 }
+                AppMessage::DiscardFile(path) => {
+                    match repo!().discard_file(&path) {
+                        Ok(()) => {
+                            self.toast_manager.push(
+                                format!("Discarded: {}", path),
+                                ToastSeverity::Info,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(
+                                format!("Discard failed: {}", e),
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                }
                 AppMessage::LoadMoreCommits => {
                     let current_count = repo_tab.commits.len();
                     let new_count = current_count + 50;
@@ -1052,6 +1071,17 @@ impl ApplicationHandler for App {
                     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
                     let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
 
+                    // Settings dialog takes priority (modal)
+                    if self.settings_dialog.is_visible() {
+                        self.settings_dialog.handle_event(&input_event, screen_bounds);
+                        if let Some(action) = self.settings_dialog.take_action() {
+                            match action {
+                                SettingsDialogAction::Close => {}
+                            }
+                        }
+                        return;
+                    }
+
                     // Dialog takes priority (modal)
                     if self.repo_dialog.is_visible() {
                         self.repo_dialog.handle_event(&input_event, screen_bounds);
@@ -1178,7 +1208,7 @@ impl ApplicationHandler for App {
                                     println!("Help: Tab to switch panels, j/k to navigate, Space to stage/unstage");
                                 }
                                 HeaderAction::Settings => {
-                                    println!("Settings not yet implemented");
+                                    self.settings_dialog.show();
                                 }
                             }
                         }
@@ -1441,11 +1471,7 @@ fn handle_context_menu_action(
         }
         "discard" => {
             if !param.is_empty() {
-                // Discard changes: checkout the file from HEAD
-                toast_manager.push(
-                    format!("Discard not yet implemented for {}", param),
-                    ToastSeverity::Info,
-                );
+                view_state.pending_messages.push(AppMessage::DiscardFile(param.to_string()));
             }
         }
         _ => {
@@ -1511,6 +1537,7 @@ fn build_ui_output(
     tab_bar: &TabBar,
     toast_manager: &ToastManager,
     repo_dialog: &RepoDialog,
+    settings_dialog: &SettingsDialog,
     text_renderer: &TextRenderer,
     scale_factor: f64,
     extent: [u32; 2],
@@ -1589,6 +1616,11 @@ fn build_ui_output(
         output.extend(repo_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Settings dialog (on top of everything)
+    if settings_dialog.is_visible() {
+        output.extend(settings_dialog.layout(text_renderer, screen_bounds));
+    }
+
     output
 }
 
@@ -1644,7 +1676,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let scale_factor = state.scale_factor;
     let output = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );
@@ -1749,7 +1781,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let scale_factor = state.scale_factor;
     let output = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );
@@ -1837,7 +1869,7 @@ fn capture_screenshot_offscreen(
     let scale_factor = state.scale_factor;
     let output = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
     );
@@ -1917,9 +1949,10 @@ fn apply_screenshot_state(app: &mut App) {
             let cy = extent[1] as f32 * 0.3;
             if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
                 let items = vec![
-                    MenuItem { label: "Copy SHA".to_string(), shortcut: None, action_id: "copy_sha".to_string() },
-                    MenuItem { label: "View Details".to_string(), shortcut: Some("Enter".to_string()), action_id: "view_details".to_string() },
-                    MenuItem { label: "Checkout".to_string(), shortcut: None, action_id: "checkout".to_string() },
+                    MenuItem::new("Copy SHA", "copy_sha"),
+                    MenuItem::new("View Details", "view_details").with_shortcut("Enter"),
+                    MenuItem::separator(),
+                    MenuItem::new("Checkout", "checkout"),
                 ];
                 view_state.context_menu.show(items, cx, cy);
             }

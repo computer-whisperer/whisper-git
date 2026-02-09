@@ -1025,6 +1025,15 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Discard working directory changes for a file by checking out from HEAD
+    pub fn discard_file(&self, path: &str) -> Result<()> {
+        let mut checkout_builder = git2::build::CheckoutBuilder::new();
+        checkout_builder.path(path).force();
+        self.repo.checkout_head(Some(&mut checkout_builder))
+            .with_context(|| format!("Failed to discard changes in {}", path))?;
+        Ok(())
+    }
+
     /// Get full commit information for the detail panel
     pub fn full_commit_info(&self, oid: Oid) -> Result<FullCommitInfo> {
         let commit = self.repo.find_commit(oid)
