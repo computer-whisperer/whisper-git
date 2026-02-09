@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::git::{BranchTip, SubmoduleInfo, TagInfo, WorktreeInfo};
+use crate::git::{BranchTip, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -22,6 +22,9 @@ pub enum SidebarAction {
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
     OpenWorktreeTerminal(String),
+    ApplyStash(usize),
+    PopStash(usize),
+    DropStash(usize),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -35,6 +38,7 @@ enum SidebarItem {
     Tag(String),
     SubmoduleEntry(String),       // submodule name
     WorktreeEntry(String),        // worktree name
+    StashEntry(usize, String, i64),  // (index, message, time)
 }
 
 /// A sidebar showing local branches, remote branches, and tags
@@ -51,6 +55,8 @@ pub struct BranchSidebar {
     pub submodules: Vec<SubmoduleInfo>,
     /// Worktrees in the repository
     pub worktrees: Vec<WorktreeInfo>,
+    /// Stash entries
+    pub stashes: Vec<StashEntry>,
     /// Whether the LOCAL section is collapsed
     pub local_collapsed: bool,
     /// Whether the REMOTE section is collapsed
@@ -61,6 +67,8 @@ pub struct BranchSidebar {
     pub submodules_collapsed: bool,
     /// Whether the WORKTREES section is collapsed
     pub worktrees_collapsed: bool,
+    /// Whether the STASHES section is collapsed
+    pub stashes_collapsed: bool,
     /// Scroll offset for the sidebar content
     pub scroll_offset: f32,
     /// Total content height (tracked during layout)
@@ -92,11 +100,13 @@ impl BranchSidebar {
             current_branch: String::new(),
             submodules: Vec::new(),
             worktrees: Vec::new(),
+            stashes: Vec::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
             submodules_collapsed: false,
             worktrees_collapsed: false,
+            stashes_collapsed: false,
             scroll_offset: 0.0,
             content_height: 0.0,
             line_height: 18.0,
@@ -276,6 +286,16 @@ impl BranchSidebar {
                 }
             }
         }
+
+        // STASHES section (only if any exist)
+        if !self.stashes.is_empty() {
+            self.visible_items.push(SidebarItem::SectionHeader("STASHES"));
+            if !self.stashes_collapsed {
+                for stash in &self.stashes {
+                    self.visible_items.push(SidebarItem::StashEntry(stash.index, stash.message.clone(), stash.time));
+                }
+            }
+        }
     }
 
     /// Move focus to next/previous navigable item
@@ -403,6 +423,21 @@ impl BranchSidebar {
                         }
                         return Some(items);
                     }
+                    SidebarItem::StashEntry(index, _, _) => {
+                        let idx_str = index.to_string();
+                        let mut items = vec![
+                            MenuItem::new("Apply Stash", "apply_stash"),
+                            MenuItem::new("Pop Stash", "pop_stash"),
+                            MenuItem::separator(),
+                            MenuItem::new("Drop Stash", "drop_stash"),
+                        ];
+                        for item in &mut items {
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, idx_str);
+                            }
+                        }
+                        return Some(items);
+                    }
                     _ => return None,
                 }
             }
@@ -489,6 +524,7 @@ impl BranchSidebar {
                                         "TAGS" => self.tags_collapsed = !self.tags_collapsed,
                                         "SUBMODULES" => self.submodules_collapsed = !self.submodules_collapsed,
                                         "WORKTREES" => self.worktrees_collapsed = !self.worktrees_collapsed,
+                                        "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
                                         _ => {}
                                     }
                                     self.build_visible_items();
@@ -1012,6 +1048,105 @@ impl BranchSidebar {
             }
         }
 
+        // --- STASHES section (only if any exist) ---
+        if !self.stashes.is_empty() {
+            y += section_gap;
+
+            let stash_entries: Vec<(usize, String, i64)> = self.stashes.iter()
+                .map(|s| (s.index, s.message.clone(), s.time))
+                .collect();
+
+            y = self.layout_section_header(
+                text_renderer,
+                &mut output,
+                &inner,
+                y,
+                "STASHES",
+                stash_entries.len(),
+                self.stashes_collapsed,
+                section_header_height,
+                &bounds,
+            );
+            item_idx += 1; // SectionHeader("STASHES")
+
+            if !self.stashes_collapsed {
+                for (stash_index, stash_msg, stash_time) in &stash_entries {
+                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                    if visible {
+                        let is_focused = self.focused && self.focused_index == Some(item_idx);
+                        let is_hovered = self.hovered_index == Some(item_idx);
+                        if is_hovered && !is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+                            ));
+                        }
+                        if is_focused {
+                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &highlight_rect,
+                                theme::SURFACE_HOVER.to_array(),
+                            ));
+                        }
+                        let name_color = if is_hovered || is_focused {
+                            theme::TEXT_BRIGHT.to_array()
+                        } else {
+                            theme::TEXT.to_array()
+                        };
+
+                        // Stash icon: ⬒ in a muted color
+                        let icon = "\u{25C8}"; // ◈
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            icon,
+                            inner.x + indent,
+                            y + 2.0,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                        let icon_width = text_renderer.measure_text(icon) + 4.0;
+
+                        // Show relative time on the right side
+                        let time_str = if *stash_time > 0 {
+                            format_relative_time(*stash_time)
+                        } else {
+                            String::new()
+                        };
+                        let time_width = if !time_str.is_empty() {
+                            text_renderer.measure_text(&time_str) + 8.0
+                        } else {
+                            0.0
+                        };
+
+                        // Display the stash message (e.g. "stash@{0}: WIP on main")
+                        let label = format!("@{{{}}}: {}", stash_index,
+                            stash_msg.split(": ").skip(1).collect::<Vec<_>>().join(": ")
+                                .chars().take(60).collect::<String>()
+                        );
+                        let display_name = truncate_to_width(&label, text_renderer, inner.width - indent - icon_width - time_width);
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            &display_name,
+                            inner.x + indent + icon_width,
+                            y + 2.0,
+                            name_color,
+                        ));
+
+                        // Right-aligned time
+                        if !time_str.is_empty() {
+                            let time_x = inner.right() - text_renderer.measure_text(&time_str);
+                            output.text_vertices.extend(text_renderer.layout_text(
+                                &time_str,
+                                time_x,
+                                y + 2.0,
+                                theme::TEXT_MUTED.to_array(),
+                            ));
+                        }
+                    }
+                    y += line_height;
+                    item_idx += 1;
+                }
+            }
+        }
+
         // Compute total content height for scroll clamping (independent of early-break rendering)
         let mut total_h: f32 = 0.0;
         // LOCAL section
@@ -1048,6 +1183,14 @@ impl BranchSidebar {
             total_h += section_header_height;
             if !self.worktrees_collapsed {
                 total_h += self.worktrees.len() as f32 * line_height;
+            }
+        }
+        // STASHES section
+        if !self.stashes.is_empty() {
+            total_h += section_gap;
+            total_h += section_header_height;
+            if !self.stashes_collapsed {
+                total_h += self.stashes.len() as f32 * line_height;
             }
         }
         self.content_height = total_h;
