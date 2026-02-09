@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{HeaderBar, RepoDialog, RepoDialogAction, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
@@ -134,6 +134,7 @@ struct RepoTab {
 struct TabViewState {
     focused_panel: FocusedPanel,
     header_bar: HeaderBar,
+    shortcut_bar: ShortcutBar,
     branch_sidebar: BranchSidebar,
     commit_graph_view: CommitGraphView,
     staging_well: StagingWell,
@@ -152,6 +153,7 @@ impl TabViewState {
         Self {
             focused_panel: FocusedPanel::Graph,
             header_bar: HeaderBar::new(),
+            shortcut_bar: ShortcutBar::new(),
             branch_sidebar: BranchSidebar::new(),
             commit_graph_view: CommitGraphView::new(),
             staging_well: StagingWell::new(),
@@ -1267,7 +1269,7 @@ impl ApplicationHandler for App {
 // ============================================================================
 
 /// Add panel backgrounds, borders, and visual chrome to the output
-fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect) {
+fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel) {
     // Panel backgrounds for depth separation
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &layout.graph,
@@ -1282,9 +1284,9 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::PANEL_STAGING.to_array(),
     ));
 
-    // Header bottom border (full width of screen)
+    // Border below shortcut bar (full width of screen)
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(0.0, layout.header.bottom() + 2.0, screen_bounds.width, 1.0),
+        &Rect::new(0.0, layout.shortcut_bar.bottom(), screen_bounds.width, 1.0),
         theme::BORDER.to_array(),
     ));
 
@@ -1298,6 +1300,17 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &Rect::new(layout.graph.right(), layout.graph.y, 1.0, layout.graph.height),
         theme::BORDER.to_array(),
+    ));
+
+    // Focused panel accent top border (2px accent-colored line at top of focused panel)
+    let focused_rect = match focused {
+        FocusedPanel::Graph => &layout.graph,
+        FocusedPanel::Staging => &layout.staging,
+        FocusedPanel::Sidebar => &layout.sidebar,
+    };
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 2.0),
+        theme::ACCENT.to_array(),
     ));
 }
 
@@ -1324,7 +1337,8 @@ fn build_ui_output(
     let mut output = WidgetOutput::new();
 
     // Panel backgrounds and borders
-    add_panel_chrome(&mut output, &layout, &main_bounds);
+    let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
+    add_panel_chrome(&mut output, &layout, &main_bounds, focused);
 
     // Tab bar (only when multiple tabs)
     if tabs.len() > 1 {
@@ -1335,6 +1349,9 @@ fn build_ui_output(
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
         // Header bar
         output.extend(view_state.header_bar.layout(text_renderer, layout.header));
+
+        // Shortcut bar (below header)
+        output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
 
         // Branch sidebar
         output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
@@ -1398,10 +1415,17 @@ fn draw_frame(app: &mut App) -> Result<()> {
         state.surface.needs_recreate = true;
     }
 
-    // Sync button state before layout
+    // Sync button state and shortcut context before layout
+    let single_tab = app.tabs.len() == 1;
     if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
         view_state.header_bar.update_button_state();
         view_state.staging_well.update_button_state();
+        view_state.shortcut_bar.set_context(match view_state.focused_panel {
+            FocusedPanel::Graph => ShortcutContext::Graph,
+            FocusedPanel::Staging => ShortcutContext::Staging,
+            FocusedPanel::Sidebar => ShortcutContext::Sidebar,
+        });
+        view_state.shortcut_bar.show_new_tab_hint = single_tab;
     }
 
     // Update toast manager

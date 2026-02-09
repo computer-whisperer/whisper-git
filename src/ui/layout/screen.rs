@@ -7,6 +7,8 @@ use super::Rect;
 pub struct ScreenLayout {
     /// Header bar region (4% height)
     pub header: Rect,
+    /// Keyboard shortcut status bar (thin bar below header)
+    pub shortcut_bar: Rect,
     /// Branch sidebar region (180px wide, left side)
     pub sidebar: Rect,
     /// Primary commit graph region (55% of remaining width, 96% height)
@@ -42,7 +44,11 @@ impl ScreenLayout {
     pub fn compute_scaled(bounds: Rect, scale: f32) -> Self {
         // Split into header and main area
         let header_height = bounds.height * 0.04;
-        let (header, main) = bounds.take_top(header_height.max(32.0 * scale));
+        let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
+
+        // Shortcut bar: thin strip below header
+        let shortcut_bar_height = 20.0 * scale;
+        let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
 
         // Split main area into sidebar and content
         let sidebar_width = (180.0 * scale).min(main.width * 0.15);
@@ -61,6 +67,7 @@ impl ScreenLayout {
 
         Self {
             header,
+            shortcut_bar,
             sidebar,
             graph,
             staging,
@@ -75,6 +82,7 @@ impl ScreenLayout {
         // Apply gap padding
         Self {
             header: base.header.pad(gap, gap, gap, 0.0),
+            shortcut_bar: base.shortcut_bar, // no padding - full width subtle bar
             sidebar: base.sidebar.pad(gap, gap, gap / 2.0, gap),
             graph: base.graph.pad(gap / 2.0, gap, gap / 2.0, gap),
             staging: base.staging.pad(gap / 2.0, gap, gap, gap / 2.0),
