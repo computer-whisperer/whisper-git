@@ -446,6 +446,11 @@ impl AvatarRenderer {
         self.slots.get(&key).map(|s| s.tex_coords)
     }
 
+    /// Check if the atlas needs re-uploading to the GPU.
+    pub fn needs_upload(&self) -> bool {
+        self.atlas_dirty
+    }
+
     /// Upload dirty atlas data to the GPU. Call this inside a command buffer recording session.
     pub fn upload_atlas(
         &mut self,

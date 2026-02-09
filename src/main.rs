@@ -1543,7 +1543,7 @@ fn build_ui_output(
     extent: [u32; 2],
     avatar_cache: &mut AvatarCache,
     avatar_renderer: &AvatarRenderer,
-) -> WidgetOutput {
+) -> (WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
 
@@ -1552,76 +1552,78 @@ fn build_ui_output(
     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
     let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
 
-    let mut output = WidgetOutput::new();
+    // Two layers: graph content renders first, chrome renders on top
+    let mut graph_output = WidgetOutput::new();
+    let mut chrome_output = WidgetOutput::new();
 
-    // Panel backgrounds and borders
+    // Panel backgrounds and borders (chrome layer)
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
-    add_panel_chrome(&mut output, &layout, &main_bounds, focused);
+    add_panel_chrome(&mut chrome_output, &layout, &main_bounds, focused);
 
-    // Active tab views (graph rendered first so all chrome draws on top)
+    // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
-        // Commit graph (rendered first so header/chrome draws on top)
+        // Commit graph (graph layer - renders first)
         let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
         let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
             text_renderer, &repo_tab.commits, layout.graph,
             avatar_cache, avatar_renderer,
         );
-        output.spline_vertices.extend(spline_vertices);
-        output.spline_vertices.extend(pill_vertices);
-        output.text_vertices.extend(text_vertices);
-        output.avatar_vertices.extend(av_vertices);
+        graph_output.spline_vertices.extend(spline_vertices);
+        graph_output.spline_vertices.extend(pill_vertices);
+        graph_output.text_vertices.extend(text_vertices);
+        graph_output.avatar_vertices.extend(av_vertices);
 
-        // Header bar (on top of graph)
-        output.extend(view_state.header_bar.layout(text_renderer, layout.header));
+        // Header bar (chrome layer - on top of graph)
+        chrome_output.extend(view_state.header_bar.layout(text_renderer, layout.header));
 
-        // Shortcut bar (on top of graph)
-        output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
+        // Shortcut bar (chrome layer - on top of graph)
+        chrome_output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
 
-        // Branch sidebar
-        output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
+        // Branch sidebar (chrome layer)
+        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
 
-        // Staging well
-        output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
+        // Staging well (chrome layer)
+        chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
 
-        // Right panel
+        // Right panel (chrome layer)
         if view_state.commit_detail_view.has_content() {
             let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
-            output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
+            chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
             if view_state.diff_view.has_content() {
-                output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
+                chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
             }
         } else if view_state.diff_view.has_content() {
-            output.extend(view_state.diff_view.layout(text_renderer, layout.secondary_repos));
+            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.secondary_repos));
         } else {
-            output.extend(view_state.secondary_repos_view.layout(text_renderer, layout.secondary_repos));
+            chrome_output.extend(view_state.secondary_repos_view.layout(text_renderer, layout.secondary_repos));
         }
     }
 
-    // Tab bar (rendered after graph so it draws on top)
+    // Tab bar (chrome layer - rendered after graph so it draws on top)
     if tabs.len() > 1 {
-        output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
+        chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
     }
 
-    // Context menu overlay (on top of panels)
+    // Context menu overlay (chrome layer - on top of panels)
     if let Some((_, view_state)) = tabs.get_mut(active_tab)
         && view_state.context_menu.is_visible() {
-            output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
+            chrome_output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
         }
 
-    // Toast notifications (rendered on top of context menus)
-    output.extend(toast_manager.layout(text_renderer, screen_bounds));
+    // Toast notifications (chrome layer - on top of context menus)
+    chrome_output.extend(toast_manager.layout(text_renderer, screen_bounds));
 
-    // Repo dialog (on top of everything including toasts)
+    // Repo dialog (chrome layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        output.extend(repo_dialog.layout(text_renderer, screen_bounds));
+        chrome_output.extend(repo_dialog.layout(text_renderer, screen_bounds));
     }
 
-    // Settings dialog (on top of everything)
+    // Settings dialog (chrome layer - on top of everything)
     if settings_dialog.is_visible() {
-        output.extend(settings_dialog.layout(text_renderer, screen_bounds));
+        chrome_output.extend(settings_dialog.layout(text_renderer, screen_bounds));
     }
 
-    output
+    (graph_output, chrome_output)
 }
 
 fn draw_frame(app: &mut App) -> Result<()> {
@@ -1677,7 +1679,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
-    let output = build_ui_output(
+    let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -1690,6 +1692,28 @@ fn draw_frame(app: &mut App) -> Result<()> {
         depth_range: 0.0..=1.0,
     };
 
+    // Upload avatar atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() {
+        let mut upload_builder = AutoCommandBufferBuilder::primary(
+            state.ctx.command_buffer_allocator.clone(),
+            state.ctx.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .context("Failed to create upload command buffer")?;
+
+        state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+
+        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
+        let upload_future = state.previous_frame_end.take().unwrap()
+            .then_execute(state.ctx.queue.clone(), upload_cb)
+            .context("Failed to execute upload")?
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)
+            .context("Failed to flush upload")?;
+        upload_future.wait(None).context("Failed to wait for upload")?;
+        state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
+    }
+
     // Build command buffer
     let mut builder = AutoCommandBufferBuilder::primary(
         state.ctx.command_buffer_allocator.clone(),
@@ -1697,9 +1721,6 @@ fn draw_frame(app: &mut App) -> Result<()> {
         CommandBufferUsage::OneTimeSubmit,
     )
     .context("Failed to create command buffer")?;
-
-    // Upload avatar atlas if dirty (before render pass)
-    state.avatar_renderer.upload_atlas(&mut builder)?;
 
     builder
         .begin_render_pass(
@@ -1713,7 +1734,8 @@ fn draw_frame(app: &mut App) -> Result<()> {
         )
         .context("Failed to begin render pass")?;
 
-    render_output_to_builder(&mut builder, state, output, viewport)?;
+    render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -1782,7 +1804,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
-    let output = build_ui_output(
+    let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -1795,6 +1817,28 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         extent: [extent[0] as f32, extent[1] as f32],
         depth_range: 0.0..=1.0,
     };
+
+    // Upload avatar atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() {
+        let mut upload_builder = AutoCommandBufferBuilder::primary(
+            state.ctx.command_buffer_allocator.clone(),
+            state.ctx.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .context("Failed to create upload command buffer")?;
+
+        state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+
+        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
+        let upload_future = state.previous_frame_end.take().unwrap()
+            .then_execute(state.ctx.queue.clone(), upload_cb)
+            .context("Failed to execute upload")?
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)
+            .context("Failed to flush upload")?;
+        upload_future.wait(None).context("Failed to wait for upload")?;
+        state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
+    }
 
     // Acquire image
     let (image_index, _, acquire_future) = acquire_next_image(state.surface.swapchain.clone(), None)
@@ -1820,7 +1864,8 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         )
         .context("Failed to begin render pass")?;
 
-    render_output_to_builder(&mut builder, state, output, viewport)?;
+    render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -1870,7 +1915,7 @@ fn capture_screenshot_offscreen(
 
     let extent = offscreen.extent();
     let scale_factor = state.scale_factor;
-    let output = build_ui_output(
+    let (graph_output, chrome_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog,
         &state.text_renderer, scale_factor, extent,
@@ -1883,6 +1928,28 @@ fn capture_screenshot_offscreen(
         extent: [extent[0] as f32, extent[1] as f32],
         depth_range: 0.0..=1.0,
     };
+
+    // Upload avatar atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() {
+        let mut upload_builder = AutoCommandBufferBuilder::primary(
+            state.ctx.command_buffer_allocator.clone(),
+            state.ctx.queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .context("Failed to create upload command buffer")?;
+
+        state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+
+        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
+        let upload_future = state.previous_frame_end.take().unwrap()
+            .then_execute(state.ctx.queue.clone(), upload_cb)
+            .context("Failed to execute upload")?
+            .then_signal_fence_and_flush()
+            .map_err(Validated::unwrap)
+            .context("Failed to flush upload")?;
+        upload_future.wait(None).context("Failed to wait for upload")?;
+        state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
+    }
 
     let mut builder = AutoCommandBufferBuilder::primary(
         state.ctx.command_buffer_allocator.clone(),
@@ -1901,7 +1968,8 @@ fn capture_screenshot_offscreen(
         )
         .context("Failed to begin render pass")?;
 
-    render_output_to_builder(&mut builder, state, output, viewport)?;
+    render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, chrome_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
