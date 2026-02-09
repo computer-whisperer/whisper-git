@@ -229,17 +229,17 @@ pub fn create_dashed_rect_outline_vertices(
     vertices
 }
 
-/// Theme colors - Classic dark mode
+/// Theme colors - Dark blue-gray palette
 pub mod theme {
     use crate::ui::Color;
 
-    // Classic dark theme - neutral grays, no blue tint
-    pub const BACKGROUND: Color = Color::rgba(0.051, 0.051, 0.051, 1.0);      // #0d0d0d - near black
-    pub const SURFACE: Color = Color::rgba(0.102, 0.102, 0.102, 1.0);         // #1a1a1a - panels
-    pub const SURFACE_RAISED: Color = Color::rgba(0.145, 0.145, 0.145, 1.0);  // #252525 - elevated elements
-    pub const SURFACE_HOVER: Color = Color::rgba(0.180, 0.180, 0.180, 1.0);   // #2e2e2e - hover states
-    pub const BORDER: Color = Color::rgba(0.200, 0.200, 0.200, 1.0);          // #333333 - subtle borders
-    pub const BORDER_LIGHT: Color = Color::rgba(0.250, 0.250, 0.250, 1.0);    // #404040 - emphasized borders
+    // Dark blue-gray palette
+    pub const BACKGROUND: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);      // #1a1e24 - dark blue-gray
+    pub const SURFACE: Color = Color::rgba(0.133, 0.149, 0.173, 1.0);         // #222630 - panels
+    pub const SURFACE_RAISED: Color = Color::rgba(0.165, 0.188, 0.251, 1.0);  // #2a3040 - elevated elements
+    pub const SURFACE_HOVER: Color = Color::rgba(0.200, 0.224, 0.290, 1.0);   // #33394a - hover states
+    pub const BORDER: Color = Color::rgba(0.227, 0.227, 0.251, 1.0);          // #3a3a40 - subtle borders
+    pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0);    // #48484e - emphasized borders
     pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0);            // #e0e0e0 - primary text
     pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0);     // #f0f0f0 - emphasized text
     pub const TEXT_MUTED: Color = Color::rgba(0.502, 0.502, 0.502, 1.0);      // #808080 - secondary text
@@ -261,10 +261,13 @@ pub mod theme {
     pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);          // #42A5F5 (Blue)
     pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.3);    // Blue at 30% opacity
 
-    // Panel depth - slightly different backgrounds for visual hierarchy
-    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.075, 0.075, 1.0);   // #131313 - sidebar (darker)
-    pub const PANEL_GRAPH: Color = Color::rgba(0.051, 0.051, 0.051, 1.0);     // #0d0d0d - graph (matches bg)
-    pub const PANEL_STAGING: Color = Color::rgba(0.065, 0.065, 0.065, 1.0);   // #101010 - staging (slightly lighter)
+    // Panel depth - dark blue-gray hierarchy
+    pub const PANEL_SIDEBAR: Color = Color::rgba(0.086, 0.102, 0.125, 1.0);   // #161a20 - sidebar (darkest)
+    pub const PANEL_GRAPH: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);     // #1a1e24 - graph (base)
+    pub const PANEL_STAGING: Color = Color::rgba(0.118, 0.133, 0.157, 1.0);   // #1e2228 - staging (slightly lighter)
+
+    // Zebra striping for graph rows
+    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.114, 0.130, 0.157, 1.0);   // #1d2128 - slightly lighter than PANEL_GRAPH
 
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[

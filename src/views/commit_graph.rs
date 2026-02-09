@@ -812,6 +812,20 @@ impl CommitGraphView {
                 continue;
             }
 
+            // Zebra striping - alternate row backgrounds
+            if row % 2 == 1 {
+                let stripe_rect = Rect::new(
+                    bounds.x,
+                    y - self.row_height / 2.0,
+                    bounds.width - scrollbar_width,
+                    self.row_height,
+                );
+                vertices.extend(create_rect_vertices(
+                    &stripe_rect,
+                    theme::GRAPH_ROW_ALT.to_array(),
+                ));
+            }
+
             // Draw connections to parents
             for &parent_id in commit.parent_ids.iter() {
                 if let Some(&parent_row) = commit_indices.get(&parent_id)
@@ -1098,8 +1112,8 @@ impl CommitGraphView {
         // Graph offset for text - right after the graph column
         let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 0.6;
 
-        // Column layout: fixed-width time column right-aligned
-        let time_col_width: f32 = 48.0;
+        // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
+        let time_col_width: f32 = 80.0;
         let right_margin: f32 = 8.0;
         let col_gap: f32 = 8.0;
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
@@ -1138,8 +1152,8 @@ impl CommitGraphView {
             });
 
         let char_width = text_renderer.char_width();
-        let pill_pad_h: f32 = 8.0;
-        let pill_pad_v: f32 = 3.0;
+        let pill_pad_h: f32 = 5.0;
+        let pill_pad_v: f32 = 2.0;
         let pill_radius: f32 = 3.0;
 
         for (row, commit) in commits.iter().enumerate() {
@@ -1179,19 +1193,22 @@ impl CommitGraphView {
             if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
                 for tip in tips {
                     let (label_color, pill_bg) = if tip.is_remote {
+                        // Remote tracking: teal/cyan
                         (
-                            theme::BRANCH_REMOTE,
-                            Color::rgba(0.133, 0.773, 0.369, 0.25),
+                            Color::rgba(0.149, 0.776, 0.855, 1.0),  // #26C6DA
+                            Color::rgba(0.149, 0.776, 0.855, 0.20),
                         )
                     } else if tip.is_head {
+                        // HEAD pointer: green
                         (
-                            theme::ACCENT,
-                            Color::rgba(0.231, 0.510, 0.965, 0.3),
+                            Color::rgba(0.400, 0.733, 0.416, 1.0),  // #66BB6A
+                            Color::rgba(0.400, 0.733, 0.416, 0.22),
                         )
                     } else {
+                        // Local branches: blue
                         (
-                            theme::BRANCH_FEATURE,
-                            Color::rgba(0.231, 0.510, 0.965, 0.3),
+                            Color::rgba(0.259, 0.647, 0.961, 1.0),  // #42A5F5
+                            Color::rgba(0.259, 0.647, 0.961, 0.22),
                         )
                     };
 
@@ -1241,16 +1258,17 @@ impl CommitGraphView {
                         tag_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    // Tags: amber/yellow
                     pill_vertices.extend(self.create_rounded_rect_vertices(
                         &pill_rect,
                         pill_radius,
-                        Color::rgba(0.961, 0.620, 0.043, 0.3).to_array(),
+                        Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
                     ));
                     vertices.extend(text_renderer.layout_text(
                         &tag_label,
                         current_x + pill_pad_h,
                         y,
-                        theme::BRANCH_RELEASE.to_array(),
+                        Color::rgba(1.0, 0.718, 0.302, 1.0).to_array(),  // #FFB74D text
                     ));
                     current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
                 }
@@ -1267,16 +1285,17 @@ impl CommitGraphView {
                         head_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    // HEAD pill: green
                     pill_vertices.extend(self.create_rounded_rect_vertices(
                         &pill_rect,
                         pill_radius,
-                        Color::rgba(0.231, 0.510, 0.965, 0.3).to_array(),
+                        Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
                     ));
                     vertices.extend(text_renderer.layout_text(
                         head_label,
                         current_x + pill_pad_h,
                         y,
-                        theme::ACCENT.to_array(),
+                        Color::rgba(0.400, 0.733, 0.416, 1.0).to_array(),  // #66BB6A text
                     ));
                     current_x += head_width + pill_pad_h * 2.0 + char_width * 0.5;
                 }
