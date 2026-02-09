@@ -1535,9 +1535,9 @@ fn build_ui_output(
     let mut graph_output = WidgetOutput::new();
     let mut chrome_output = WidgetOutput::new();
 
-    // Panel backgrounds and borders (chrome layer)
+    // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
-    add_panel_chrome(&mut chrome_output, &layout, &main_bounds, focused);
+    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused);
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
