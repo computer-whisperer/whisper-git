@@ -109,6 +109,14 @@ impl StagingWell {
         self.body_area.set_text("");
     }
 
+    /// Clear the commit message and focus the subject input field.
+    /// Call this after a successful commit so the user can immediately type the next one.
+    pub fn clear_and_focus(&mut self) {
+        self.clear_message();
+        self.focus_section = 0;
+        self.update_focus_state();
+    }
+
     /// Check if commit button should be enabled.
     /// In amend mode, we only require a non-empty subject (no staged files needed).
     pub fn can_commit(&self) -> bool {

@@ -2,7 +2,7 @@
 
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, theme};
+use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme};
 use crate::ui::widgets::Button;
 
 /// Actions that can be triggered from the header bar
@@ -241,22 +241,41 @@ impl Widget for HeaderBar {
             theme::TEXT.to_array(),
         ));
 
-        // Separator
-        let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 16.0;
-        output.text_vertices.extend(text_renderer.layout_text(
-            "|",
-            sep_x,
-            text_y,
-            theme::TEXT_MUTED.to_array(),
+        // Thin vertical separator line (1px)
+        let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
+        let sep_height = line_height * 0.8;
+        let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+        output.spline_vertices.extend(create_rect_vertices(
+            &crate::ui::Rect::new(sep_x, sep_y, 1.0, sep_height),
+            theme::BORDER.to_array(),
         ));
 
-        // Branch name
-        let branch_x = sep_x + 24.0;
+        // Branch name inside a tinted pill
+        let branch_x_start = sep_x + 12.0;
+        let branch_text_w = text_renderer.measure_text(&self.branch_name);
+        let pill_pad_h = 10.0;
+        let pill_pad_v = 3.0;
+        let pill_h = line_height + pill_pad_v * 2.0;
+        let pill_w = branch_text_w + pill_pad_h * 2.0;
+        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
+        let pill_rect = crate::ui::Rect::new(branch_x_start, pill_y, pill_w, pill_h);
+        let pill_radius = pill_h / 2.0;
+
+        // Pill background: ACCENT at low alpha
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &pill_rect,
+            theme::ACCENT.with_alpha(0.15).to_array(),
+            pill_radius,
+        ));
+
+        // Branch name text centered in pill
+        let branch_text_x = branch_x_start + pill_pad_h;
+        let branch_text_y = pill_y + pill_pad_v;
         output.text_vertices.extend(text_renderer.layout_text(
             &self.branch_name,
-            branch_x,
-            text_y,
-            theme::BRANCH_FEATURE.to_array(),
+            branch_text_x,
+            branch_text_y,
+            theme::ACCENT.to_array(),
         ));
 
         // Button bounds
