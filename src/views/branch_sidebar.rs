@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::git::{BranchTip, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
+use crate::ui::widget::{create_rect_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
@@ -129,6 +129,12 @@ impl BranchSidebar {
         self.section_header_height = text_renderer.line_height() * 1.6;
     }
 
+    /// Total height consumed by a section header including padding and separator.
+    /// Must match `layout_section_header()`: top_pad(4) + header_height + bottom_pad(2) + separator(1).
+    fn section_header_total_height(&self) -> f32 {
+        self.section_header_height + 7.0
+    }
+
     /// Populate from branch tips and tags from the git repo
     pub fn set_branch_data(
         &mut self,
@@ -201,13 +207,13 @@ impl BranchSidebar {
         let padding = 8.0;
         let inner = bounds.inset(padding);
         let line_height = self.line_height;
-        let section_header_height = self.section_header_height;
+        let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
 
         let mut item_y = inner.y - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
             let h = match item {
-                SidebarItem::SectionHeader(_) => section_header_height,
+                SidebarItem::SectionHeader(_) => section_header_total,
                 _ => line_height,
             };
 
@@ -332,12 +338,13 @@ impl BranchSidebar {
 
         // Compute the Y offset of the focused item relative to the content start
         let mut y_offset: f32 = 0.0;
+        let section_header_total = self.section_header_total_height();
         for (idx, item) in self.visible_items.iter().enumerate() {
             if idx == focused {
                 break;
             }
             let h = match item {
-                SidebarItem::SectionHeader(_) => self.section_header_height,
+                SidebarItem::SectionHeader(_) => section_header_total,
                 _ => self.line_height,
             };
             y_offset += h;
@@ -404,13 +411,13 @@ impl BranchSidebar {
         let padding = 8.0;
         let inner = bounds.inset(padding);
         let line_height = self.line_height;
-        let section_header_height = self.section_header_height;
+        let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
 
         let mut item_y = inner.y - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
             let h = match item {
-                SidebarItem::SectionHeader(_) => section_header_height,
+                SidebarItem::SectionHeader(_) => section_header_total,
                 _ => line_height,
             };
 
@@ -572,14 +579,14 @@ impl BranchSidebar {
                     let padding = 8.0;
                     let inner = bounds.inset(padding);
                     let line_height = self.line_height;
-                    let section_header_height = self.section_header_height;
+                    let section_header_total = self.section_header_total_height();
                     let section_gap = 8.0;
 
                     // Find which item was clicked
                     let mut item_y = inner.y - self.scroll_offset;
                     for (idx, item) in self.visible_items.iter().enumerate() {
                         let h = match item {
-                            SidebarItem::SectionHeader(_) => section_header_height,
+                            SidebarItem::SectionHeader(_) => section_header_total,
                             _ => line_height,
                         };
 
@@ -1219,14 +1226,15 @@ impl BranchSidebar {
 
         // Compute total content height for scroll clamping (independent of early-break rendering)
         let mut total_h: f32 = 0.0;
+        let section_header_total = self.section_header_total_height();
         // LOCAL section
-        total_h += section_header_height;
+        total_h += section_header_total;
         if !self.local_collapsed {
             total_h += self.local_branches.len() as f32 * line_height;
         }
         total_h += section_gap;
         // REMOTE section
-        total_h += section_header_height;
+        total_h += section_header_total;
         if !self.remote_collapsed {
             for branches in self.remote_branches.values() {
                 total_h += line_height; // remote name sub-header
@@ -1235,14 +1243,14 @@ impl BranchSidebar {
         }
         total_h += section_gap;
         // TAGS section
-        total_h += section_header_height;
+        total_h += section_header_total;
         if !self.tags_collapsed {
             total_h += self.tags.len() as f32 * line_height;
         }
         // SUBMODULES section
         if !self.submodules.is_empty() {
             total_h += section_gap;
-            total_h += section_header_height;
+            total_h += section_header_total;
             if !self.submodules_collapsed {
                 total_h += self.submodules.len() as f32 * line_height;
             }
@@ -1250,7 +1258,7 @@ impl BranchSidebar {
         // WORKTREES section
         if !self.worktrees.is_empty() {
             total_h += section_gap;
-            total_h += section_header_height;
+            total_h += section_header_total;
             if !self.worktrees_collapsed {
                 total_h += self.worktrees.len() as f32 * line_height;
             }
@@ -1258,7 +1266,7 @@ impl BranchSidebar {
         // STASHES section
         if !self.stashes.is_empty() {
             total_h += section_gap;
-            total_h += section_header_height;
+            total_h += section_header_total;
             if !self.stashes_collapsed {
                 total_h += self.stashes.len() as f32 * line_height;
             }
@@ -1306,11 +1314,12 @@ impl BranchSidebar {
         let total_height = top_pad + header_height + bottom_pad + 1.0; // +1 for separator
         let visible = y + total_height >= bounds.y && y < bounds.bottom();
         if visible {
-            // Section header background (includes padding)
+            // Section header background (rounded corners)
             let header_rect = Rect::new(inner.x, y + top_pad, inner.width, header_height);
-            output.spline_vertices.extend(create_rect_vertices(
+            output.spline_vertices.extend(create_rounded_rect_vertices(
                 &header_rect,
                 theme::SURFACE_RAISED.to_array(),
+                4.0,
             ));
 
             let text_y = y + top_pad + 4.0;
