@@ -89,6 +89,8 @@ pub struct BranchSidebar {
     hovered_index: Option<usize>,
     /// Scrollbar widget
     scrollbar: Scrollbar,
+    /// Cached bounds for scroll-to-focused calculations
+    last_bounds: Option<Rect>,
 }
 
 impl BranchSidebar {
@@ -117,6 +119,7 @@ impl BranchSidebar {
             visible_items: Vec::new(),
             hovered_index: None,
             scrollbar: Scrollbar::new(),
+            last_bounds: None,
         }
     }
 
@@ -313,9 +316,55 @@ impl BranchSidebar {
                 idx += delta;
             } else {
                 self.focused_index = Some(idx as usize);
+                self.ensure_focus_visible();
                 return;
             }
         }
+    }
+
+    /// Adjust scroll_offset so the focused item is visible within bounds
+    fn ensure_focus_visible(&mut self) {
+        let Some(focused) = self.focused_index else { return };
+        let Some(bounds) = self.last_bounds else { return };
+
+        let padding = 8.0;
+        let section_gap = 8.0;
+
+        // Compute the Y offset of the focused item relative to the content start
+        let mut y_offset: f32 = 0.0;
+        for (idx, item) in self.visible_items.iter().enumerate() {
+            if idx == focused {
+                break;
+            }
+            let h = match item {
+                SidebarItem::SectionHeader(_) => self.section_header_height,
+                _ => self.line_height,
+            };
+            y_offset += h;
+            // Section gaps
+            if !matches!(item, SidebarItem::SectionHeader(_))
+                && idx + 1 < self.visible_items.len()
+                && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_))
+            {
+                y_offset += section_gap;
+            }
+        }
+
+        let item_h = self.line_height;
+        let view_height = bounds.height - padding * 2.0;
+
+        // If focused item is above the visible area, scroll up
+        if y_offset < self.scroll_offset {
+            self.scroll_offset = y_offset;
+        }
+        // If focused item is below the visible area, scroll down
+        else if y_offset + item_h > self.scroll_offset + view_height {
+            self.scroll_offset = y_offset + item_h - view_height;
+        }
+
+        // Clamp scroll
+        let max_scroll = (self.content_height - bounds.height).max(0.0);
+        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
     }
 
     /// Activate the currently focused item (checkout or toggle)
@@ -455,6 +504,8 @@ impl BranchSidebar {
 
     /// Handle input events (scrolling, clicking section headers, keyboard nav)
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        self.last_bounds = Some(bounds);
+
         // Scrollbar on right edge
         let scrollbar_width = 8.0;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
@@ -493,6 +544,24 @@ impl BranchSidebar {
                     }
                     Key::D => {
                         self.delete_focused();
+                        return EventResponse::Consumed;
+                    }
+                    Key::PageDown => {
+                        let visible_count = if self.line_height > 0.0 {
+                            (bounds.height / self.line_height).max(1.0) as i32
+                        } else {
+                            10
+                        };
+                        self.move_focus(visible_count);
+                        return EventResponse::Consumed;
+                    }
+                    Key::PageUp => {
+                        let visible_count = if self.line_height > 0.0 {
+                            (bounds.height / self.line_height).max(1.0) as i32
+                        } else {
+                            10
+                        };
+                        self.move_focus(-visible_count);
                         return EventResponse::Consumed;
                     }
                     _ => {}
@@ -565,6 +634,7 @@ impl BranchSidebar {
     /// Layout the sidebar and produce rendering output
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+        self.last_bounds = Some(bounds);
 
         self.build_visible_items();
 

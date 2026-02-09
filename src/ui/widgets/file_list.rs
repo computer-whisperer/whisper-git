@@ -1,5 +1,7 @@
 //! File list widget for staging area
 
+use std::time::Instant;
+
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
@@ -60,6 +62,12 @@ pub struct FileList {
     hovered_index: Option<usize>,
     /// Scrollbar widget
     scrollbar: Scrollbar,
+    /// Display scale factor for HiDPI
+    scale: f32,
+    /// Last click time for double-click detection
+    last_click_time: Option<Instant>,
+    /// Last clicked file index for double-click detection
+    last_click_index: Option<usize>,
 }
 
 impl FileList {
@@ -75,6 +83,9 @@ impl FileList {
             pending_action: None,
             hovered_index: None,
             scrollbar: Scrollbar::new(),
+            scale: 1.0,
+            last_click_time: None,
+            last_click_index: None,
         }
     }
 
@@ -103,10 +114,23 @@ impl FileList {
         self.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions))
     }
 
+    /// Set the display scale factor for HiDPI scaling
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+    }
+
+    /// Consistent header height used across all methods
+    fn header_height(&self) -> f32 {
+        24.0 * self.scale
+    }
+
+    /// Consistent line/entry height used across all methods
+    fn line_height(&self) -> f32 {
+        22.0 * self.scale
+    }
+
     fn visible_lines(&self, bounds: &Rect) -> usize {
-        let header_height = 28.0; // Match layout header height
-        let line_height = 22.0;   // Slightly tighter line height
-        ((bounds.height - header_height) / line_height).max(1.0) as usize
+        ((bounds.height - self.header_height()) / self.line_height()).max(1.0) as usize
     }
 
     /// Update hover state based on mouse position
@@ -116,9 +140,9 @@ impl FileList {
             return;
         }
 
-        let header_height = 28.0;
-        let entry_height = 22.0;
-        let content_y = bounds.y + header_height + 6.0;
+        let header_height = self.header_height();
+        let entry_height = self.line_height();
+        let content_y = bounds.y + header_height + 6.0 * self.scale;
 
         if y < content_y {
             self.hovered_index = None;
@@ -137,9 +161,9 @@ impl FileList {
     /// Find which file is at the given Y position within these bounds.
     /// Uses the same layout values as update_hover() and layout().
     pub fn file_at_y(&self, y: f32, bounds: Rect) -> Option<String> {
-        let header_height = 28.0;
-        let entry_height = 22.0;
-        let content_y = bounds.y + header_height + 6.0;
+        let header_height = self.header_height();
+        let entry_height = self.line_height();
+        let content_y = bounds.y + header_height + 6.0 * self.scale;
 
         let rel_y = y - content_y;
         if rel_y < 0.0 {
@@ -194,15 +218,31 @@ impl Widget for FileList {
                     self.state.focused = true;
 
                     // Check if clicking on a file
-                    let header_height = 24.0;
-                    let line_height = 24.0;
+                    let header_height = self.header_height();
+                    let entry_height = self.line_height();
                     let content_y = bounds.y + header_height;
 
                     if *y > content_y {
-                        let clicked_line = ((*y - content_y) / line_height) as usize;
+                        let clicked_line = ((*y - content_y) / entry_height) as usize;
                         let file_idx = self.scroll_offset + clicked_line;
                         if file_idx < self.files.len() {
+                            // Double-click detection
+                            let now = Instant::now();
+                            if self.last_click_index == Some(file_idx)
+                                && self.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() < 400)
+                            {
+                                // Double-click: toggle stage
+                                let path = self.files[file_idx].path.clone();
+                                self.pending_action = Some(FileListAction::ToggleStage(path));
+                                self.last_click_time = None;
+                                self.last_click_index = None;
+                                return EventResponse::Consumed;
+                            }
+
+                            // Single click: select and record for double-click
                             self.selected = Some(file_idx);
+                            self.last_click_time = Some(now);
+                            self.last_click_index = Some(file_idx);
                             return EventResponse::Consumed;
                         }
                     }
@@ -348,8 +388,8 @@ impl Widget for FileList {
         ));
 
         // File entries
-        let content_y = sep_y + 6.0;
-        let entry_height = 22.0;
+        let content_y = sep_y + 6.0 * self.scale;
+        let entry_height = self.line_height();
         let visible_lines = self.visible_lines(&bounds);
 
         for (i, file_idx) in (self.scroll_offset..self.files.len())
