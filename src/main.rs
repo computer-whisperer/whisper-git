@@ -940,10 +940,12 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
         // Load submodules and worktrees
         if let Ok(submodules) = repo.submodules() {
-            view_state.secondary_repos_view.set_submodules(submodules);
+            view_state.secondary_repos_view.set_submodules(submodules.clone());
+            view_state.branch_sidebar.submodules = submodules;
         }
         if let Ok(worktrees) = repo.worktrees() {
-            view_state.secondary_repos_view.set_worktrees(worktrees);
+            view_state.secondary_repos_view.set_worktrees(worktrees.clone());
+            view_state.branch_sidebar.worktrees = worktrees;
         }
     }
 
@@ -1234,7 +1236,7 @@ impl ApplicationHandler for App {
 
                     // Route to commit detail view when active
                     if view_state.commit_detail_view.has_content() {
-                        let (detail_rect, _diff_rect) = layout.secondary_repos.split_vertical(0.40);
+                        let (detail_rect, _diff_rect) = layout.right_panel.split_vertical(0.40);
                         if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
                             if let Some(action) = view_state.commit_detail_view.take_action() {
                                 match action {
@@ -1250,10 +1252,10 @@ impl ApplicationHandler for App {
                     // Route scroll events to diff view if it has content
                     if view_state.diff_view.has_content() {
                         let diff_bounds = if view_state.commit_detail_view.has_content() {
-                            let (_detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+                            let (_detail_rect, diff_rect) = layout.right_panel.split_vertical(0.40);
                             diff_rect
                         } else {
-                            layout.secondary_repos
+                            layout.right_panel
                         };
                         if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
                             if let Some(action) = view_state.diff_view.take_action() {
@@ -1549,7 +1551,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::PANEL_STAGING.to_array(),
     ));
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.secondary_repos,
+        &layout.right_panel,
         theme::PANEL_STAGING.to_array(),
     ));
 
@@ -1642,17 +1644,15 @@ fn build_ui_output(
         // Staging well (chrome layer)
         chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
 
-        // Right panel (chrome layer)
+        // Right panel (chrome layer) - only render when diff/detail is active
         if view_state.commit_detail_view.has_content() {
-            let (detail_rect, diff_rect) = layout.secondary_repos.split_vertical(0.40);
+            let (detail_rect, diff_rect) = layout.right_panel.split_vertical(0.40);
             chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
             if view_state.diff_view.has_content() {
                 chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
             }
         } else if view_state.diff_view.has_content() {
-            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.secondary_repos));
-        } else {
-            chrome_output.extend(view_state.secondary_repos_view.layout(text_renderer, layout.secondary_repos));
+            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.right_panel));
         }
     }
 
