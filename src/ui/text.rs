@@ -71,8 +71,8 @@ pub struct TextRenderer {
     descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     glyphs: HashMap<char, GlyphInfo>,
-    atlas_width: f32,
-    atlas_height: f32,
+    _atlas_width: f32,
+    _atlas_height: f32,
     /// Line height in atlas pixels (physical pixels at atlas_scale)
     line_height: f32,
     /// Ascent in atlas pixels
@@ -346,8 +346,8 @@ impl TextRenderer {
             descriptor_set_allocator,
             memory_allocator,
             glyphs,
-            atlas_width: atlas_width as f32,
-            atlas_height: atlas_height as f32,
+            _atlas_width: atlas_width as f32,
+            _atlas_height: atlas_height as f32,
             line_height,
             ascent,
             atlas_scale,

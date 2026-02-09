@@ -9,6 +9,7 @@ use vulkano::{
 use std::sync::Arc;
 
 /// Convert linear color value to sRGB
+#[allow(dead_code)]
 fn linear_to_srgb(linear: f32) -> f32 {
     if linear <= 0.0031308 {
         linear * 12.92

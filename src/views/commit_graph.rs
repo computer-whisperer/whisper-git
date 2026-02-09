@@ -16,6 +16,7 @@ use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, Te
 use crate::ui::widget::theme::LANE_COLORS;
 
 /// Layout information for a single commit
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct CommitLayout {
     pub lane: usize,
@@ -161,7 +162,7 @@ impl GraphLayout {
             }
 
             // Check if another lane is already tracking this parent
-            let already_tracked = self.active_lanes.iter().any(|o| *o == Some(parent_id));
+            let already_tracked = self.active_lanes.contains(&Some(parent_id));
             if already_tracked {
                 continue;
             }
@@ -193,6 +194,7 @@ impl Default for GraphLayout {
 }
 
 /// View for displaying a commit graph with branch visualization
+#[allow(dead_code)]
 pub struct CommitGraphView {
     layout: GraphLayout,
     title_color: Color,
@@ -319,16 +321,15 @@ impl CommitGraphView {
         );
 
         // Handle search bar activation via Ctrl+F or /
-        if let InputEvent::KeyDown { key, modifiers, .. } = event {
-            if (*key == Key::F && modifiers.only_ctrl()) || (*key == Key::Slash && !modifiers.any() && !self.search_bar.is_active()) {
+        if let InputEvent::KeyDown { key, modifiers, .. } = event
+            && ((*key == Key::F && modifiers.only_ctrl()) || (*key == Key::Slash && !modifiers.any() && !self.search_bar.is_active())) {
                 self.search_bar.activate();
                 return EventResponse::Consumed;
             }
-        }
 
         // Route events to search bar first when active
-        if self.search_bar.is_active() {
-            if self.search_bar.handle_event(event, search_bounds).is_consumed() {
+        if self.search_bar.is_active()
+            && self.search_bar.handle_event(event, search_bounds).is_consumed() {
                 // Process search actions
                 if let Some(action) = self.search_bar.take_action() {
                     match action {
@@ -342,7 +343,6 @@ impl CommitGraphView {
                 }
                 return EventResponse::Consumed;
             }
-        }
 
         // Route events to scrollbar
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
@@ -527,8 +527,8 @@ impl CommitGraphView {
     }
 
     fn scroll_to_selection(&mut self, commits: &[CommitInfo], bounds: Rect) {
-        if let Some(id) = self.selected_commit {
-            if let Some(idx) = commits.iter().position(|c| c.id == id) {
+        if let Some(id) = self.selected_commit
+            && let Some(idx) = commits.iter().position(|c| c.id == id) {
                 let target_y = idx as f32 * self.row_height;
                 let visible_height = bounds.height - 60.0;
 
@@ -538,7 +538,6 @@ impl CommitGraphView {
                     self.scroll_offset = target_y - visible_height + self.row_height;
                 }
             }
-        }
     }
 
     /// Generate spline vertices for branch lines and nodes, plus scrollbar and search bar
@@ -580,8 +579,8 @@ impl CommitGraphView {
             .collect();
 
         // Draw working directory node if dirty
-        if let Some(ref status) = self.working_dir_status {
-            if !status.is_clean() {
+        if let Some(ref status) = self.working_dir_status
+            && !status.is_clean() {
                 let wd_x = self.lane_x(0, &bounds);
                 let wd_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
                 let file_count = status.total_files();
@@ -625,7 +624,6 @@ impl CommitGraphView {
                     }
                 }
             }
-        }
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(layout) = self.layout.get(&commit.id) else {
@@ -642,8 +640,8 @@ impl CommitGraphView {
 
             // Draw connections to parents
             for &parent_id in commit.parent_ids.iter() {
-                if let Some(&parent_row) = commit_indices.get(&parent_id) {
-                    if let Some(parent_layout) = self.layout.get(&parent_id) {
+                if let Some(&parent_row) = commit_indices.get(&parent_id)
+                    && let Some(parent_layout) = self.layout.get(&parent_id) {
                         let parent_x = self.lane_x(parent_layout.lane, &bounds);
                         let parent_y = self.row_y(parent_row, &bounds, header_offset);
 
@@ -687,7 +685,6 @@ impl CommitGraphView {
                             vertices.extend(spline.to_vertices(self.segments_per_curve));
                         }
                     }
-                }
             }
 
             // Draw commit node
@@ -934,8 +931,8 @@ impl CommitGraphView {
         let author_col_left = author_col_right - author_col_width;
 
         // Working directory node text
-        if let Some(ref status) = self.working_dir_status {
-            if !status.is_clean() {
+        if let Some(ref status) = self.working_dir_status
+            && !status.is_clean() {
                 let wd_center_y = bounds.y + header_offset + self.row_height / 2.0 - self.scroll_offset;
                 let text_y = wd_center_y - line_height / 2.0;
                 let file_count = status.total_files();
@@ -948,7 +945,6 @@ impl CommitGraphView {
                     theme::STATUS_DIRTY.to_array(),
                 ));
             }
-        }
 
         // Branch tip lookup
         let branch_tips_by_oid: HashMap<Oid, Vec<&BranchTip>> = self

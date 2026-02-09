@@ -1,6 +1,3 @@
-// Allow dead code for APIs intended for future phases
-#![allow(dead_code)]
-
 mod git;
 mod input;
 mod renderer;
@@ -61,13 +58,11 @@ fn parse_args() -> CliArgs {
             "--screenshot" => args.screenshot = iter.next().map(PathBuf::from),
             "--size" => {
                 // Parse WxH format (e.g., "1920x1080")
-                if let Some(size_str) = iter.next() {
-                    if let Some((w, h)) = size_str.split_once('x') {
-                        if let (Ok(width), Ok(height)) = (w.parse(), h.parse()) {
+                if let Some(size_str) = iter.next()
+                    && let Some((w, h)) = size_str.split_once('x')
+                        && let (Ok(width), Ok(height)) = (w.parse(), h.parse()) {
                             args.screenshot_size = Some((width, height));
                         }
-                    }
-                }
             }
             "--scale" => {
                 if let Some(s) = iter.next() {
@@ -127,7 +122,7 @@ struct RepoTab {
     repo: Option<GitRepo>,
     commits: Vec<CommitInfo>,
     name: String,
-    path: PathBuf,
+    _path: PathBuf,
 }
 
 /// Per-tab UI view state
@@ -242,7 +237,7 @@ impl App {
                             repo: Some(repo),
                             commits,
                             name,
-                            path: repo_path.clone(),
+                            _path: repo_path.clone(),
                         },
                         TabViewState::new(),
                     ));
@@ -260,7 +255,7 @@ impl App {
                             repo: None,
                             commits: Vec::new(),
                             name,
-                            path: repo_path.clone(),
+                            _path: repo_path.clone(),
                         },
                         TabViewState::new(),
                     ));
@@ -738,8 +733,8 @@ impl App {
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
         // Poll fetch
-        if let Some(ref rx) = view_state.fetch_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(ref rx) = view_state.fetch_receiver
+            && let Ok(result) = rx.try_recv() {
                 view_state.header_bar.fetching = false;
                 view_state.fetch_receiver = None;
                 if result.success {
@@ -757,11 +752,10 @@ impl App {
                     );
                 }
             }
-        }
 
         // Poll pull
-        if let Some(ref rx) = view_state.pull_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(ref rx) = view_state.pull_receiver
+            && let Ok(result) = rx.try_recv() {
                 view_state.header_bar.pulling = false;
                 view_state.pull_receiver = None;
                 if result.success {
@@ -779,11 +773,10 @@ impl App {
                     );
                 }
             }
-        }
 
         // Poll push (also does full refresh to update ahead/behind and branch state)
-        if let Some(ref rx) = view_state.push_receiver {
-            if let Ok(result) = rx.try_recv() {
+        if let Some(ref rx) = view_state.push_receiver
+            && let Ok(result) = rx.try_recv() {
                 view_state.header_bar.pushing = false;
                 view_state.push_receiver = None;
                 if result.success {
@@ -801,7 +794,6 @@ impl App {
                     );
                 }
             }
-        }
     }
 
     /// Open a new repo and add it as a tab
@@ -820,7 +812,7 @@ impl App {
                     repo: Some(repo),
                     commits,
                     name,
-                    path,
+                    _path: path,
                 };
 
                 if let Some(ref render_state) = self.state {
@@ -934,12 +926,11 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none() {
-            if let Err(e) = self.init_state(event_loop) {
+        if self.state.is_none()
+            && let Err(e) = self.init_state(event_loop) {
                 eprintln!("Failed to initialize: {e:?}");
                 event_loop.exit();
             }
-        }
     }
 
     fn window_event(
@@ -993,8 +984,8 @@ impl ApplicationHandler for App {
                 let Some(state) = &mut self.state else { return };
                 let screenshot_path = self.cli_args.screenshot.clone();
                 let screenshot_size = self.cli_args.screenshot_size;
-                if let Some(path) = screenshot_path {
-                    if state.frame_count == 3 {
+                if let Some(path) = screenshot_path
+                    && state.frame_count == 3 {
                         let result = if let Some((width, height)) = screenshot_size {
                             capture_screenshot_offscreen(self, width, height)
                         } else {
@@ -1013,7 +1004,6 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                         return;
                     }
-                }
 
                 state.window.request_redraw();
             }
@@ -1037,8 +1027,8 @@ impl ApplicationHandler for App {
                     }
 
                     // Context menu takes priority when visible (overlay)
-                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                        if view_state.context_menu.is_visible() {
+                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+                        && view_state.context_menu.is_visible() {
                             view_state.context_menu.handle_event(&input_event, screen_bounds);
                             if let Some(action) = view_state.context_menu.take_action() {
                                 match action {
@@ -1053,7 +1043,6 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
-                    }
 
                     // Handle global keys first
                     if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
@@ -1089,51 +1078,46 @@ impl ApplicationHandler for App {
                     }
 
                     // Route to tab bar (if visible)
-                    if self.tabs.len() > 1 {
-                        if self.tab_bar.handle_event(&input_event, tab_bar_bounds).is_consumed() {
+                    if self.tabs.len() > 1
+                        && self.tab_bar.handle_event(&input_event, tab_bar_bounds).is_consumed() {
                             if let Some(action) = self.tab_bar.take_action() {
                                 match action {
-                                    TabAction::SelectTab(idx) => self.switch_tab(idx),
-                                    TabAction::CloseTab(idx) => self.close_tab(idx),
-                                    TabAction::NewTab => self.repo_dialog.show(),
+                                    TabAction::Select(idx) => self.switch_tab(idx),
+                                    TabAction::Close(idx) => self.close_tab(idx),
+                                    TabAction::New => self.repo_dialog.show(),
                                 }
                             }
                             return;
                         }
-                    }
 
                     // Route to active tab's views
                     let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
                     // Handle per-tab global keys (except Tab, which is handled after panel routing)
-                    if let InputEvent::KeyDown { key, .. } = &input_event {
-                        match key {
-                            Key::Escape => {
-                                if view_state.diff_view.has_content() {
-                                    view_state.diff_view.clear();
-                                    view_state.last_diff_commit = None;
-                                } else if view_state.commit_detail_view.has_content() {
-                                    view_state.commit_detail_view.clear();
-                                } else {
-                                    event_loop.exit();
-                                }
-                                return;
+                    if let InputEvent::KeyDown { key, .. } = &input_event
+                        && key == &Key::Escape {
+                            if view_state.diff_view.has_content() {
+                                view_state.diff_view.clear();
+                                view_state.last_diff_commit = None;
+                            } else if view_state.commit_detail_view.has_content() {
+                                view_state.commit_detail_view.clear();
+                            } else {
+                                event_loop.exit();
                             }
-                            _ => {}
+                            return;
                         }
-                    }
 
                     // Route to branch sidebar
                     if view_state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
                         if let Some(action) = view_state.branch_sidebar.take_action() {
                             match action {
-                                SidebarAction::CheckoutBranch(name) => {
+                                SidebarAction::Checkout(name) => {
                                     view_state.pending_messages.push(AppMessage::CheckoutBranch(name));
                                 }
-                                SidebarAction::CheckoutRemoteBranch(remote, branch) => {
+                                SidebarAction::CheckoutRemote(remote, branch) => {
                                     view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
                                 }
-                                SidebarAction::DeleteBranch(name) => {
+                                SidebarAction::Delete(name) => {
                                     view_state.pending_messages.push(AppMessage::DeleteBranch(name));
                                 }
                             }
@@ -1223,12 +1207,11 @@ impl ApplicationHandler for App {
                                 view_state.context_menu.show(items, *x, *y);
                                 return;
                             }
-                        } else if layout.staging.contains(*x, *y) {
-                            if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.staging) {
+                        } else if layout.staging.contains(*x, *y)
+                            && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.staging) {
                                 view_state.context_menu.show(items, *x, *y);
                                 return;
                             }
-                        }
                     }
 
                     // Detect clicks on panels to switch focus
@@ -1252,13 +1235,11 @@ impl ApplicationHandler for App {
                         FocusedPanel::Graph => {
                             let prev_selected = view_state.commit_graph_view.selected_commit;
                             let response = view_state.commit_graph_view.handle_event(&input_event, &repo_tab.commits, layout.graph);
-                            if view_state.commit_graph_view.selected_commit != prev_selected {
-                                if let Some(oid) = view_state.commit_graph_view.selected_commit {
-                                    if view_state.last_diff_commit != Some(oid) {
+                            if view_state.commit_graph_view.selected_commit != prev_selected
+                                && let Some(oid) = view_state.commit_graph_view.selected_commit
+                                    && view_state.last_diff_commit != Some(oid) {
                                         view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
                                     }
-                                }
-                            }
                             if response.is_consumed() {
                                 return;
                             }
@@ -1316,11 +1297,10 @@ impl ApplicationHandler for App {
                         view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
                         view_state.staging_well.update_hover(*x, *y, layout.staging);
                         // Tab bar hover needs text_renderer
-                        if self.tabs.len() > 1 {
-                            if let Some(ref render_state) = self.state {
+                        if self.tabs.len() > 1
+                            && let Some(ref render_state) = self.state {
                                 self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
                             }
-                        }
                     }
                 }
             }
@@ -1368,13 +1348,12 @@ fn handle_context_menu_action(
         "checkout" => {
             if param.is_empty() {
                 // Commit graph checkout: find the branch at the selected commit
-                if let Some(oid) = view_state.context_menu_commit {
-                    if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
+                if let Some(oid) = view_state.context_menu_commit
+                    && let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
                         .find(|t| t.oid == oid && !t.is_remote)
                     {
                         view_state.pending_messages.push(AppMessage::CheckoutBranch(tip.name.clone()));
                     }
-                }
             } else {
                 // Branch sidebar checkout
                 view_state.pending_messages.push(AppMessage::CheckoutBranch(param.to_string()));
@@ -1479,6 +1458,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
 
 /// Build the UI vertices for the active tab.
 /// Takes separate borrows to avoid conflict between App fields and RenderState.
+#[allow(clippy::too_many_arguments)]
 fn build_ui_output(
     tabs: &mut [(RepoTab, TabViewState)],
     active_tab: usize,
@@ -1544,11 +1524,10 @@ fn build_ui_output(
     }
 
     // Context menu overlay (on top of panels)
-    if let Some((_, view_state)) = tabs.get_mut(active_tab) {
-        if view_state.context_menu.is_visible() {
+    if let Some((_, view_state)) = tabs.get_mut(active_tab)
+        && view_state.context_menu.is_visible() {
             output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
         }
-    }
 
     // Toast notifications (rendered on top of context menus)
     output.extend(toast_manager.layout(text_renderer, screen_bounds));

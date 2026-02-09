@@ -5,6 +5,7 @@ use crate::ui::{Color, Rect, TextRenderer};
 use crate::ui::widget::{Widget, WidgetId, WidgetState, WidgetOutput, create_rect_vertices, create_rect_outline_vertices, theme};
 
 /// A clickable button with text
+#[allow(dead_code)]
 pub struct Button {
     id: WidgetId,
     state: WidgetState,
@@ -46,6 +47,7 @@ impl Button {
     }
 
     /// Set a badge (e.g., count indicator)
+    #[allow(dead_code)]
     pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
         self.badge = Some(badge.into());
         self
@@ -59,6 +61,7 @@ impl Button {
     }
 
     /// Set the background color scheme
+    #[allow(dead_code)]
     pub fn with_colors(mut self, normal: Color, hover: Color, pressed: Color) -> Self {
         self.background = normal;
         self.hover_background = hover;

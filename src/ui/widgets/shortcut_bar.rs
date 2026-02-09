@@ -38,6 +38,7 @@ impl ShortcutBar {
     }
 
     /// The height of the shortcut bar in pixels (scale-aware)
+    #[allow(dead_code)]
     pub fn height(scale: f32) -> f32 {
         20.0 * scale
     }

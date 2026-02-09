@@ -4,7 +4,9 @@ mod button;
 pub mod context_menu;
 pub mod file_list;
 mod header_bar;
+#[allow(dead_code)]
 mod label;
+#[allow(dead_code)]
 mod panel;
 mod repo_dialog;
 pub mod scrollbar;

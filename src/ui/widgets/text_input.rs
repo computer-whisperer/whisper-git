@@ -5,6 +5,7 @@ use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, them
 use crate::ui::{Rect, TextRenderer};
 
 /// A single-line text input field
+#[allow(dead_code)]
 pub struct TextInput {
     id: WidgetId,
     state: WidgetState,
@@ -58,6 +59,7 @@ impl TextInput {
     }
 
     /// Check if the content was modified and clear the flag
+    #[allow(dead_code)]
     pub fn take_modified(&mut self) -> bool {
         let modified = self.modified;
         self.modified = false;

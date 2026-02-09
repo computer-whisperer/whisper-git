@@ -11,6 +11,7 @@ use winit::window::Window;
 use super::VulkanContext;
 
 /// Manages the swapchain and associated framebuffers
+#[allow(dead_code)]
 pub struct SurfaceManager {
     pub surface: Arc<Surface>,
     pub swapchain: Arc<Swapchain>,

@@ -78,6 +78,7 @@ impl SearchBar {
     }
 
     /// Get current match index
+    #[allow(dead_code)]
     pub fn current_match(&self) -> usize {
         self.current_match
     }

@@ -36,6 +36,7 @@ impl ScreenLayout {
     /// |      |                       |                           |
     /// +------+---------------------------------------------------+
     /// ```
+    #[allow(dead_code)]
     pub fn compute(bounds: Rect) -> Self {
         Self::compute_scaled(bounds, 1.0)
     }

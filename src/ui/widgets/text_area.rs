@@ -5,6 +5,7 @@ use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, them
 use crate::ui::{Rect, TextRenderer};
 
 /// A multi-line text editing area
+#[allow(dead_code)]
 pub struct TextArea {
     id: WidgetId,
     state: WidgetState,
@@ -53,6 +54,7 @@ impl TextArea {
     }
 
     /// Check if the content was modified and clear the flag
+    #[allow(dead_code)]
     pub fn take_modified(&mut self) -> bool {
         let modified = self.modified;
         self.modified = false;
@@ -63,6 +65,7 @@ impl TextArea {
         &self.lines[self.cursor_line]
     }
 
+    #[allow(dead_code)]
     fn current_line_mut(&mut self) -> &mut String {
         &mut self.lines[self.cursor_line]
     }

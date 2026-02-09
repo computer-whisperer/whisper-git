@@ -1,5 +1,6 @@
 //! Layout module - rectangle math and flex layout system
 
+#[allow(dead_code)]
 mod flex;
 mod screen;
 
@@ -31,6 +32,7 @@ impl Rect {
         self.y + self.height
     }
 
+    #[allow(dead_code)]
     pub fn center(&self) -> (f32, f32) {
         (self.x + self.width / 2.0, self.y + self.height / 2.0)
     }
@@ -82,6 +84,7 @@ impl Rect {
     }
 
     /// Take a fixed height from the bottom
+    #[allow(dead_code)]
     pub fn take_bottom(&self, height: f32) -> (Rect, Rect) {
         let height = height.min(self.height);
         let top = Rect::new(self.x, self.y, self.width, self.height - height);
@@ -125,6 +128,7 @@ impl Color {
     }
 
     /// Create a color from hex value (e.g., 0x3B82F6 for blue)
+    #[allow(dead_code)]
     pub const fn from_hex(hex: u32) -> Self {
         let r = ((hex >> 16) & 0xFF) as f32 / 255.0;
         let g = ((hex >> 8) & 0xFF) as f32 / 255.0;
@@ -132,7 +136,7 @@ impl Color {
         Self { r, g, b, a: 1.0 }
     }
 
-    pub fn to_array(&self) -> [f32; 4] {
+    pub fn to_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
     }
 
@@ -147,6 +151,7 @@ impl Color {
     }
 
     /// Darken the color
+    #[allow(dead_code)]
     pub fn darken(&self, amount: f32) -> Self {
         Self {
             r: (self.r - amount).max(0.0),
@@ -167,10 +172,15 @@ impl Color {
     }
 
     // Common colors
+    #[allow(dead_code)]
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
+    #[allow(dead_code)]
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
+    #[allow(dead_code)]
     pub const RED: Self = Self::rgb(1.0, 0.0, 0.0);
+    #[allow(dead_code)]
     pub const GREEN: Self = Self::rgb(0.0, 1.0, 0.0);
+    #[allow(dead_code)]
     pub const BLUE: Self = Self::rgb(0.0, 0.0, 1.0);
     pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
 }

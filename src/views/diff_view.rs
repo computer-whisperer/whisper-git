@@ -141,8 +141,8 @@ impl DiffView {
                 }
                 // Check if a hunk stage button was clicked
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
-                    if btn_rect.contains(*x, *y) {
-                        if let Some(file) = self.diff_files.get(file_idx) {
+                    if btn_rect.contains(*x, *y)
+                        && let Some(file) = self.diff_files.get(file_idx) {
                             let path = file.path.clone();
                             if self.showing_staged {
                                 self.pending_action = Some(DiffAction::UnstageHunk(path, hunk_idx));
@@ -151,7 +151,6 @@ impl DiffView {
                             }
                             return EventResponse::Consumed;
                         }
-                    }
                 }
                 EventResponse::Ignored
             }
