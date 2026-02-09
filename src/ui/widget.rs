@@ -112,6 +112,11 @@ pub trait Widget {
         let _ = focused;
     }
 
+    /// Get focus state
+    fn is_focused(&self) -> bool {
+        false
+    }
+
     /// Get the widget's preferred size (for layout calculations)
     fn preferred_size(&self, text_renderer: &TextRenderer) -> (f32, f32) {
         let _ = text_renderer;

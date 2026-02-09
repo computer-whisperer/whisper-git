@@ -352,11 +352,16 @@ impl BranchSidebar {
                             MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
                             MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
                             MenuItem::new("Push", "push"),
+                            MenuItem::separator(),
+                            MenuItem::new("Merge into Current", "merge"),
+                            MenuItem::new("Rebase Current onto", "rebase"),
                         ];
                         // Tag the action_id with the branch name using a separator
                         // We'll parse it in main.rs: "checkout:branch_name"
                         for item in &mut items {
-                            item.action_id = format!("{}:{}", item.action_id, name);
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, name);
+                            }
                         }
                         return Some(items);
                     }
