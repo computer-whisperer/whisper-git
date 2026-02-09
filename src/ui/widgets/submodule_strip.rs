@@ -12,6 +12,8 @@ use crate::ui::widget::{
 pub enum SubmoduleStripAction {
     /// Right-click on a pill: open context menu with (name, x, y)
     OpenContextMenu(String, f32, f32),
+    /// Left-click on a pill: drill into the submodule
+    Open(String),
 }
 
 /// Horizontal strip of submodule status pills
@@ -62,6 +64,20 @@ impl SubmoduleStatusStrip {
     /// Handle input events for the strip
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
+            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+                if bounds.contains(*x, *y) {
+                    // Check if left-click is on a pill → drill in
+                    for (pill_rect, name) in &self.pill_bounds {
+                        if pill_rect.contains(*x, *y) {
+                            self.pending_action = Some(SubmoduleStripAction::Open(
+                                name.clone(),
+                            ));
+                            return EventResponse::Consumed;
+                        }
+                    }
+                }
+                EventResponse::Ignored
+            }
             InputEvent::MouseDown { button: MouseButton::Right, x, y, .. } => {
                 if bounds.contains(*x, *y) {
                     // Check if right-click is on a pill

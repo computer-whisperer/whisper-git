@@ -26,6 +26,7 @@ pub enum SidebarAction {
     ApplyStash(usize),
     PopStash(usize),
     DropStash(usize),
+    OpenSubmodule(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -388,6 +389,9 @@ impl BranchSidebar {
                     }
                     SidebarItem::WorktreeEntry(name) => {
                         self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
+                    }
+                    SidebarItem::SubmoduleEntry(name) => {
+                        self.pending_action = Some(SidebarAction::OpenSubmodule(name.clone()));
                     }
                     _ => {}
                 }

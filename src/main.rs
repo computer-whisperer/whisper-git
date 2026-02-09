@@ -28,7 +28,7 @@ use winit::{
 use git2::Oid;
 
 use crate::config::Config;
-use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
+use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
@@ -102,6 +102,24 @@ enum FocusedPanel {
     Sidebar,
 }
 
+/// Saved parent state when drilling into a submodule
+struct SavedParentState {
+    repo: GitRepo,
+    commits: Vec<CommitInfo>,
+    repo_name: String,
+    graph_scroll_offset: f32,
+    selected_commit: Option<Oid>,
+    sidebar_scroll_offset: f32,
+    submodule_name: String,
+    parent_submodules: Vec<SubmoduleInfo>,
+}
+
+/// Focus state when viewing a submodule (supports nesting via stack)
+struct SubmoduleFocus {
+    parent_stack: Vec<SavedParentState>,
+    current_name: String,
+}
+
 /// Per-tab repository data
 struct RepoTab {
     repo: Option<GitRepo>,
@@ -133,6 +151,8 @@ struct TabViewState {
     submodule_strip: SubmoduleStatusStrip,
     /// Secondary repo handle for staging in a non-current worktree
     worktree_repo: Option<GitRepo>,
+    /// Submodule drill-down state (None when viewing root repo)
+    submodule_focus: Option<SubmoduleFocus>,
 }
 
 impl TabViewState {
@@ -156,6 +176,7 @@ impl TabViewState {
             generic_op_receiver: None,
             submodule_strip: SubmoduleStatusStrip::new(),
             worktree_repo: None,
+            submodule_focus: None,
         }
     }
 }
@@ -477,14 +498,48 @@ impl App {
             return;
         }
 
-        let Some(ref repo) = repo_tab.repo else {
+        // Partition: submodule navigation vs normal messages
+        let mut nav_messages = Vec::new();
+        let mut normal_messages = Vec::new();
+        for msg in messages {
+            match msg {
+                AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_) => {
+                    nav_messages.push(msg);
+                }
+                _ => normal_messages.push(msg),
+            }
+        }
+
+        // Handle submodule navigation first (needs text_renderer from self.state)
+        if !nav_messages.is_empty() {
+            if let Some(ref state) = self.state {
+                let scale = state.scale_factor as f32;
+                for msg in nav_messages {
+                    match msg {
+                        AppMessage::EnterSubmodule(name) => {
+                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
+                        }
+                        AppMessage::ExitSubmodule => {
+                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale);
+                        }
+                        AppMessage::ExitToDepth(depth) => {
+                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        if normal_messages.is_empty() {
             return;
-        };
+        }
+
+        let scale = self.state.as_ref().map(|s| s.scale_factor as f32).unwrap_or(1.0);
 
         // Compute graph bounds for JumpToWorktreeBranch
         let graph_bounds = if let Some(ref state) = self.state {
             let extent = state.surface.extent();
-            let scale = state.scale_factor as f32;
             let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
             let tab_bar_height = if tab_count > 1 { TabBar::height(scale) } else { 0.0 };
             let (_tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
@@ -502,7 +557,11 @@ impl App {
 
         let ctx = MessageContext { graph_bounds };
 
-        for msg in messages {
+        let Some(ref repo) = repo_tab.repo else {
+            return;
+        };
+
+        for msg in normal_messages {
             let mut msg_view_state = MessageViewState {
                 commit_graph_view: &mut view_state.commit_graph_view,
                 staging_well: &mut view_state.staging_well,
@@ -715,6 +774,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
+    // When inside a submodule, override the strip with parent's siblings
+    // so users can navigate between sibling submodules
+    if let Some(ref focus) = view_state.submodule_focus {
+        if let Some(parent) = focus.parent_stack.last() {
+            view_state.submodule_strip.submodules = parent.parent_submodules.clone();
+        }
+    }
+
     let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
     view_state.header_bar.set_repo_info(
         view_state.header_bar.repo_name.clone(),
@@ -765,6 +832,183 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Refresh commits, branches, tags, head, and header info
     refresh_repo_state(repo_tab, view_state);
+}
+
+/// Drill into a named submodule: saves parent state and swaps repo to the submodule.
+/// Returns true on success.
+fn enter_submodule(
+    name: &str,
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    text_renderer: &TextRenderer,
+    scale: f32,
+    toast_manager: &mut ToastManager,
+) -> bool {
+    let Some(ref repo) = repo_tab.repo else { return false };
+
+    // Find the submodule info by name
+    let sm = view_state.submodule_strip.submodules.iter()
+        .find(|s| s.name == name)
+        .cloned();
+    let Some(sm) = sm else {
+        toast_manager.push(format!("Submodule '{}' not found", name), ToastSeverity::Error);
+        return false;
+    };
+
+    // Resolve absolute path
+    let parent_workdir = match repo.workdir() {
+        Some(w) => w.to_path_buf(),
+        None => {
+            toast_manager.push("Cannot determine parent workdir".to_string(), ToastSeverity::Error);
+            return false;
+        }
+    };
+    let sub_path = parent_workdir.join(&sm.path);
+
+    // Open the submodule as a repo
+    let sub_repo = match GitRepo::open(&sub_path) {
+        Ok(r) => r,
+        Err(e) => {
+            toast_manager.push(
+                format!("Cannot open submodule '{}': {}", name, e),
+                ToastSeverity::Error,
+            );
+            return false;
+        }
+    };
+
+    // Save parent state
+    let parent_repo = repo_tab.repo.take().unwrap();
+    let parent_commits = std::mem::take(&mut repo_tab.commits);
+    let parent_name = repo_tab.name.clone();
+    let parent_submodules = view_state.submodule_strip.submodules.clone();
+
+    let saved = SavedParentState {
+        repo: parent_repo,
+        commits: parent_commits,
+        repo_name: parent_name,
+        graph_scroll_offset: view_state.commit_graph_view.scroll_offset,
+        selected_commit: view_state.commit_graph_view.selected_commit,
+        sidebar_scroll_offset: view_state.branch_sidebar.scroll_offset,
+        submodule_name: name.to_string(),
+        parent_submodules,
+    };
+
+    // Clear diff/detail views
+    view_state.diff_view.clear();
+    view_state.commit_detail_view.clear();
+    view_state.last_diff_commit = None;
+    view_state.worktree_repo = None;
+
+    // Swap in submodule data
+    let sub_commits = sub_repo.commit_graph(MAX_COMMITS).unwrap_or_default();
+    repo_tab.name = name.to_string();
+    repo_tab.commits = sub_commits;
+    repo_tab.repo = Some(sub_repo);
+
+    // Build/extend focus state
+    match &mut view_state.submodule_focus {
+        Some(focus) => {
+            focus.parent_stack.push(saved);
+            focus.current_name = name.to_string();
+        }
+        None => {
+            view_state.submodule_focus = Some(SubmoduleFocus {
+                parent_stack: vec![saved],
+                current_name: name.to_string(),
+            });
+        }
+    }
+
+    // Re-init views with the submodule data
+    init_tab_view(repo_tab, view_state, text_renderer, scale);
+
+    true
+}
+
+/// Pop one level from the submodule focus stack, restoring parent state.
+/// Returns true if we popped successfully.
+fn exit_submodule(
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    text_renderer: &TextRenderer,
+    scale: f32,
+) -> bool {
+    // Pop saved state from the focus stack (release borrow before init_tab_view)
+    let saved = {
+        let focus = match &mut view_state.submodule_focus {
+            Some(f) => f,
+            None => return false,
+        };
+        match focus.parent_stack.pop() {
+            Some(s) => s,
+            None => return false,
+        }
+    };
+
+    // Clear diff/detail
+    view_state.diff_view.clear();
+    view_state.commit_detail_view.clear();
+    view_state.last_diff_commit = None;
+    view_state.worktree_repo = None;
+
+    // Restore parent data
+    let scroll_offset = saved.graph_scroll_offset;
+    let selected = saved.selected_commit;
+    let sidebar_scroll = saved.sidebar_scroll_offset;
+    let parent_submodules = saved.parent_submodules;
+
+    repo_tab.repo = Some(saved.repo);
+    repo_tab.commits = saved.commits;
+    repo_tab.name = saved.repo_name;
+
+    // Re-init views with parent data
+    init_tab_view(repo_tab, view_state, text_renderer, scale);
+
+    // Restore scroll/selection
+    view_state.commit_graph_view.scroll_offset = scroll_offset;
+    view_state.commit_graph_view.selected_commit = selected;
+    view_state.branch_sidebar.scroll_offset = sidebar_scroll;
+
+    // Restore submodule strip siblings
+    view_state.submodule_strip.submodules = parent_submodules;
+
+    // If stack is now empty, clear focus entirely
+    let stack_empty = view_state.submodule_focus.as_ref()
+        .map(|f| f.parent_stack.is_empty())
+        .unwrap_or(true);
+    if stack_empty {
+        view_state.submodule_focus = None;
+    } else if let Some(ref mut focus) = view_state.submodule_focus {
+        // Update current_name to the parent that's now active
+        focus.current_name = focus.parent_stack.last()
+            .map(|s| s.submodule_name.clone())
+            .unwrap_or_default();
+    }
+
+    true
+}
+
+/// Pop multiple levels to reach the given depth (0 = root).
+fn exit_to_depth(
+    depth: usize,
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    text_renderer: &TextRenderer,
+    scale: f32,
+) {
+    let current_depth = view_state.submodule_focus.as_ref()
+        .map(|f| f.parent_stack.len())
+        .unwrap_or(0);
+    if depth >= current_depth {
+        return;
+    }
+    let pops = current_depth - depth;
+    for _ in 0..pops {
+        if !exit_submodule(repo_tab, view_state, text_renderer, scale) {
+            break;
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -1172,6 +1416,8 @@ impl ApplicationHandler for App {
                             } else if view_state.commit_detail_view.has_content() {
                                 view_state.commit_detail_view.clear();
                                 view_state.last_diff_commit = None;
+                            } else if view_state.submodule_focus.is_some() {
+                                view_state.pending_messages.push(AppMessage::ExitSubmodule);
                             } else {
                                 event_loop.exit();
                             }
@@ -1201,6 +1447,9 @@ impl ApplicationHandler for App {
                                 }
                                 SidebarAction::OpenSubmoduleTerminal(name) => {
                                     self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                }
+                                SidebarAction::OpenSubmodule(name) => {
+                                    view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
                                 }
                                 SidebarAction::SwitchWorktree(name) => {
                                     if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
@@ -1264,6 +1513,12 @@ impl ApplicationHandler for App {
                                 HeaderAction::Settings => {
                                     self.settings_dialog.show();
                                 }
+                                HeaderAction::BreadcrumbNav(depth) => {
+                                    view_state.pending_messages.push(AppMessage::ExitToDepth(depth));
+                                }
+                                HeaderAction::BreadcrumbClose => {
+                                    view_state.pending_messages.push(AppMessage::ExitToDepth(0));
+                                }
                             }
                         }
                         return;
@@ -1321,6 +1576,8 @@ impl ApplicationHandler for App {
                             view_state.submodule_strip.handle_event(&input_event, strip_bounds);
                             if let Some(SubmoduleStripAction::OpenContextMenu(name, mx, my)) = view_state.submodule_strip.take_action() {
                                 let items = vec![
+                                    MenuItem::new("Open Submodule", format!("enter_submodule:{}", name)),
+                                    MenuItem::separator(),
                                     MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
                                     MenuItem::separator(),
                                     MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
@@ -1349,6 +1606,37 @@ impl ApplicationHandler for App {
                                 view_state.context_menu.show(items, *x, *y);
                                 return;
                             }
+                    }
+
+                    // Route left-clicks to submodule strip (before panel routing)
+                    if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = &input_event {
+                        if !view_state.submodule_strip.submodules.is_empty() {
+                            let strip_h = SubmoduleStatusStrip::height(scale);
+                            let strip_bounds = Rect::new(
+                                layout.graph.x,
+                                layout.graph.bottom() - strip_h,
+                                layout.graph.width,
+                                strip_h,
+                            );
+                            if strip_bounds.contains(*x, *y) {
+                                view_state.submodule_strip.handle_event(&input_event, strip_bounds);
+                                if let Some(action) = view_state.submodule_strip.take_action() {
+                                    match action {
+                                        SubmoduleStripAction::Open(name) => {
+                                            // When in a submodule, exit first then enter sibling
+                                            if view_state.submodule_focus.is_some() {
+                                                view_state.pending_messages.push(AppMessage::ExitSubmodule);
+                                            }
+                                            view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
+                                            return;
+                                        }
+                                        SubmoduleStripAction::OpenContextMenu(..) => {
+                                            // Shouldn't happen on left-click, but handle gracefully
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Detect clicks on panels to switch focus
@@ -1647,6 +1935,11 @@ fn handle_context_menu_action(
         "update_submodule" => {
             if !param.is_empty() {
                 view_state.pending_messages.push(AppMessage::UpdateSubmodule(param.to_string()));
+            }
+        }
+        "enter_submodule" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::EnterSubmodule(param.to_string()));
             }
         }
         "open_submodule" | "open_worktree" => {
@@ -2015,6 +2308,32 @@ fn draw_frame(app: &mut App) -> Result<()> {
             FocusedPanel::Sidebar => ShortcutContext::Sidebar,
         });
         view_state.shortcut_bar.show_new_tab_hint = single_tab;
+
+        // Sync breadcrumb data from submodule focus state
+        if let Some(ref focus) = view_state.submodule_focus {
+            let mut segs: Vec<String> = focus.parent_stack.iter()
+                .map(|s| s.repo_name.clone())
+                .collect();
+            segs.push(focus.current_name.clone());
+            view_state.header_bar.breadcrumb_segments = segs;
+        } else {
+            view_state.header_bar.breadcrumb_segments.clear();
+        }
+
+        // Pre-compute breadcrumb segment bounds for hit testing
+        // (needs approximate header bounds — compute from extent)
+        let extent = state.surface.extent();
+        let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+        let tab_bar_height = if single_tab { 0.0 } else { TabBar::height(state.scale_factor as f32) };
+        let (_tb_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+        let approx_layout = ScreenLayout::compute_with_ratios_and_shortcut(
+            main_bounds, 4.0, state.scale_factor as f32,
+            Some(app.sidebar_ratio),
+            Some(app.graph_ratio),
+            Some(app.staging_ratio),
+            app.shortcut_bar_visible,
+        );
+        view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
     }
 
     // Update toast manager

@@ -50,6 +50,9 @@ pub enum AppMessage {
     ToggleAmend,
     RevertCommit(Oid),
     ResetToCommit(Oid, git2::ResetType),
+    EnterSubmodule(String),
+    ExitSubmodule,
+    ExitToDepth(usize),
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -649,6 +652,12 @@ pub fn handle_app_message(
                     );
                 }
             }
+        }
+
+        // Submodule navigation messages are handled in main.rs process_messages,
+        // not here. If they leak through, just ignore them.
+        AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_) => {
+            return false;
         }
     }
 

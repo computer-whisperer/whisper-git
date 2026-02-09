@@ -6,7 +6,7 @@ use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, cr
 use crate::ui::widgets::Button;
 
 /// Actions that can be triggered from the header bar
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeaderAction {
     Fetch,
     Pull,
@@ -14,6 +14,10 @@ pub enum HeaderAction {
     Commit,
     Help,
     Settings,
+    /// Breadcrumb click: navigate to the given depth (0 = root)
+    BreadcrumbNav(usize),
+    /// Close button in breadcrumb mode: return to root
+    BreadcrumbClose,
 }
 
 /// Header bar widget displaying repo info and action buttons
@@ -45,6 +49,15 @@ pub struct HeaderBar {
     commit_button: Button,
     help_button: Button,
     settings_button: Button,
+    /// Breadcrumb segments: empty = normal mode, non-empty = submodule drill-down
+    /// First segment is the root repo name, last is the current submodule
+    pub breadcrumb_segments: Vec<String>,
+    /// Which breadcrumb segment is hovered (for click highlighting)
+    breadcrumb_hovered: Option<usize>,
+    /// Close button for breadcrumb mode [✕]
+    close_button: Button,
+    /// Cached bounds for each breadcrumb segment (for hit testing)
+    breadcrumb_segment_bounds: Vec<Rect>,
 }
 
 impl HeaderBar {
@@ -66,6 +79,10 @@ impl HeaderBar {
             commit_button: Button::new("Commit").primary(),
             help_button: Button::new("?").ghost(),
             settings_button: Button::new("\u{2261}").ghost(),
+            breadcrumb_segments: Vec::new(),
+            breadcrumb_hovered: None,
+            close_button: Button::new("\u{2715}").ghost(), // ✕
+            breadcrumb_segment_bounds: Vec::new(),
         }
     }
 
@@ -118,6 +135,46 @@ impl HeaderBar {
         self.commit_button.border_color = None;
     }
 
+    /// Compute bounds for the breadcrumb close button [✕]
+    fn close_button_bounds(&self, bounds: Rect, scale: f32) -> Rect {
+        let button_height = bounds.height - 8.0 * scale;
+        let button_y = bounds.y + 4.0 * scale;
+        let icon_w = 28.0 * scale;
+
+        // Position after the last breadcrumb segment text
+        // We use a fixed position relative to the measured breadcrumb text width
+        let mut x = bounds.x + 16.0;
+        // Approximate: we can't call text_renderer here, so use stored bounds
+        if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
+            x = last_bound.right() + 8.0;
+        }
+
+        Rect::new(x, button_y, icon_w, button_height)
+    }
+
+    /// Update breadcrumb segment bounds (call before layout with text_renderer access)
+    pub fn update_breadcrumb_bounds(&mut self, text_renderer: &crate::ui::TextRenderer, bounds: Rect) {
+        self.breadcrumb_segment_bounds.clear();
+        if self.breadcrumb_segments.is_empty() {
+            return;
+        }
+
+        let line_height = text_renderer.line_height();
+        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+        let separator = " > ";
+        let sep_w = text_renderer.measure_text(separator);
+        let mut x = bounds.x + 16.0;
+
+        for (i, segment) in self.breadcrumb_segments.iter().enumerate() {
+            let seg_w = text_renderer.measure_text(segment);
+            self.breadcrumb_segment_bounds.push(Rect::new(x, text_y, seg_w, line_height));
+            x += seg_w;
+            if i < self.breadcrumb_segments.len() - 1 {
+                x += sep_w;
+            }
+        }
+    }
+
     /// Compute button bounds within the header (scale-aware)
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
@@ -163,6 +220,28 @@ impl Widget for HeaderBar {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
+
+        // Handle breadcrumb close button and segment clicks
+        if !self.breadcrumb_segments.is_empty() {
+            let scale = (bounds.height / 32.0).max(1.0);
+            let close_bounds = self.close_button_bounds(bounds, scale);
+            if self.close_button.handle_event(event, close_bounds).is_consumed() {
+                if self.close_button.was_clicked() {
+                    self.pending_action = Some(HeaderAction::BreadcrumbClose);
+                }
+                return EventResponse::Consumed;
+            }
+
+            // Check clicks on breadcrumb segments (non-last are clickable)
+            if let InputEvent::MouseDown { x, y, .. } = event {
+                for (i, seg_bounds) in self.breadcrumb_segment_bounds.iter().enumerate() {
+                    if i < self.breadcrumb_segments.len() - 1 && seg_bounds.contains(*x, *y) {
+                        self.pending_action = Some(HeaderAction::BreadcrumbNav(i));
+                        return EventResponse::Consumed;
+                    }
+                }
+            }
+        }
 
         // Handle button events
         if self.fetch_button.handle_event(event, fetch_bounds).is_consumed() {
@@ -218,6 +297,20 @@ impl Widget for HeaderBar {
         self.commit_button.update_hover(x, y, commit_bounds);
         self.help_button.update_hover(x, y, help_bounds);
         self.settings_button.update_hover(x, y, settings_bounds);
+
+        // Breadcrumb hover tracking
+        if !self.breadcrumb_segments.is_empty() {
+            let scale = (bounds.height / 32.0).max(1.0);
+            self.close_button.update_hover(x, y, self.close_button_bounds(bounds, scale));
+
+            self.breadcrumb_hovered = None;
+            for (i, seg_bounds) in self.breadcrumb_segment_bounds.iter().enumerate() {
+                if i < self.breadcrumb_segments.len() - 1 && seg_bounds.contains(x, y) {
+                    self.breadcrumb_hovered = Some(i);
+                    break;
+                }
+            }
+        }
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
@@ -232,44 +325,114 @@ impl Widget for HeaderBar {
         let line_height = text_renderer.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
-        // Repository name
-        let repo_x = bounds.x + 16.0;
-        output.text_vertices.extend(text_renderer.layout_text(
-            &self.repo_name,
-            repo_x,
-            text_y,
-            theme::TEXT.to_array(),
-        ));
+        // Determine where the branch pill starts (depends on breadcrumb vs normal mode)
+        let branch_pill_x;
 
-        // Thin vertical separator line (1px)
-        let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
-        let sep_height = line_height * 0.8;
-        let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-        output.spline_vertices.extend(create_rect_vertices(
-            &crate::ui::Rect::new(sep_x, sep_y, 1.0, sep_height),
-            theme::BORDER.to_array(),
-        ));
+        if self.breadcrumb_segments.is_empty() {
+            // Normal mode: repo name + separator
+            let repo_x = bounds.x + 16.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &self.repo_name,
+                repo_x,
+                text_y,
+                theme::TEXT.to_array(),
+            ));
+
+            let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
+            let sep_height = line_height * 0.8;
+            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                theme::BORDER.to_array(),
+            ));
+
+            branch_pill_x = sep_x + 12.0;
+        } else {
+            // Breadcrumb mode: segment > segment > ... + close button
+            let scale = (bounds.height / 32.0).max(1.0);
+            let mut x = bounds.x + 16.0;
+            let separator = " > ";
+            let sep_w = text_renderer.measure_text(separator);
+
+            // We need to write segment bounds into a mutable ref via interior mutability workaround
+            // Since layout takes &self, we'll store bounds via the segment_bounds Vec
+            // which was pre-computed. For rendering we just draw based on current positions.
+            let last_idx = self.breadcrumb_segments.len() - 1;
+
+            for (i, segment) in self.breadcrumb_segments.iter().enumerate() {
+                let is_last = i == last_idx;
+                let is_hovered = self.breadcrumb_hovered == Some(i);
+
+                let color = if is_last {
+                    theme::TEXT_BRIGHT.to_array()
+                } else if is_hovered {
+                    theme::TEXT.to_array()
+                } else {
+                    theme::TEXT_MUTED.to_array()
+                };
+
+                output.text_vertices.extend(text_renderer.layout_text(
+                    segment,
+                    x,
+                    text_y,
+                    color,
+                ));
+
+                // Underline hovered non-last segments for clickability affordance
+                if !is_last && is_hovered {
+                    let seg_w = text_renderer.measure_text(segment);
+                    output.spline_vertices.extend(create_rect_vertices(
+                        &Rect::new(x, text_y + line_height - 1.0, seg_w, 1.0),
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                }
+
+                x += text_renderer.measure_text(segment);
+
+                if !is_last {
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        separator,
+                        x,
+                        text_y,
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                    x += sep_w;
+                }
+            }
+
+            // Close button [✕]
+            let close_bounds = self.close_button_bounds(bounds, scale);
+            output.extend(self.close_button.layout(text_renderer, close_bounds));
+
+            // Separator before branch pill
+            let sep_x = close_bounds.right() + 8.0;
+            let sep_height = line_height * 0.8;
+            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                theme::BORDER.to_array(),
+            ));
+
+            branch_pill_x = sep_x + 12.0;
+        }
 
         // Branch name inside a tinted pill
-        let branch_x_start = sep_x + 12.0;
         let branch_text_w = text_renderer.measure_text(&self.branch_name);
         let pill_pad_h = 10.0;
         let pill_pad_v = 3.0;
         let pill_h = line_height + pill_pad_v * 2.0;
         let pill_w = branch_text_w + pill_pad_h * 2.0;
         let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
-        let pill_rect = crate::ui::Rect::new(branch_x_start, pill_y, pill_w, pill_h);
+        let pill_rect = Rect::new(branch_pill_x, pill_y, pill_w, pill_h);
         let pill_radius = pill_h / 2.0;
 
-        // Pill background: ACCENT at low alpha
         output.spline_vertices.extend(create_rounded_rect_vertices(
             &pill_rect,
             theme::ACCENT.with_alpha(0.15).to_array(),
             pill_radius,
         ));
 
-        // Branch name text centered in pill
-        let branch_text_x = branch_x_start + pill_pad_h;
+        let branch_text_x = branch_pill_x + pill_pad_h;
         let branch_text_y = pill_y + pill_pad_v;
         output.text_vertices.extend(text_renderer.layout_text(
             &self.branch_name,
