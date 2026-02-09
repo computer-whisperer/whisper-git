@@ -7,7 +7,8 @@ use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
 use crate::ui::widget::{
-    create_dashed_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme,
+    create_dashed_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices,
+    create_rounded_rect_outline_vertices, theme,
 };
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
@@ -762,6 +763,15 @@ impl CommitGraphView {
             theme::BORDER.with_alpha(0.3).to_array(),
         ));
 
+        // Shadow gradient to the right of the separator (gives graph column depth)
+        let shadow_alphas: &[f32] = &[0.08, 0.05, 0.03, 0.01];
+        for (i, &alpha) in shadow_alphas.iter().enumerate() {
+            vertices.extend(create_rect_vertices(
+                &Rect::new(sep_x + 1.0 + i as f32, bounds.y, 1.0, bounds.height),
+                [0.0, 0.0, 0.0, alpha],
+            ));
+        }
+
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
             .iter()
@@ -1141,7 +1151,7 @@ impl CommitGraphView {
         let scrollbar_width = self.scrollbar_width();
 
         // Graph offset for text - right after the graph column
-        let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 0.6;
+        let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 1.0;
 
         // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
         let time_col_width: f32 = 80.0;
@@ -1183,9 +1193,10 @@ impl CommitGraphView {
             });
 
         let char_width = text_renderer.char_width();
-        let pill_pad_h: f32 = 5.0;
+        let pill_pad_h: f32 = 7.0;
         let pill_pad_v: f32 = 2.0;
         let pill_radius: f32 = 3.0;
+        let pill_border_thickness: f32 = 1.0;
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(_layout) = self.layout.get(&commit.id) else {
@@ -1253,7 +1264,7 @@ impl CommitGraphView {
                         break;
                     }
 
-                    // Pill background (rounded rect approximation)
+                    // Pill background (rounded rect)
                     let pill_rect = Rect::new(
                         current_x,
                         y - pill_pad_v,
@@ -1265,6 +1276,13 @@ impl CommitGraphView {
                         pill_bg.to_array(),
                         pill_radius,
                     ));
+                    // Pill border outline
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        label_color.with_alpha(0.45).to_array(),
+                        pill_radius,
+                        pill_border_thickness,
+                    ));
 
                     // Label text (centered in pill)
                     vertices.extend(text_renderer.layout_text(
@@ -1273,7 +1291,7 @@ impl CommitGraphView {
                         y,
                         label_color.to_array(),
                     ));
-                    current_x += label_width + pill_pad_h * 2.0 + char_width * 0.5;
+                    current_x += label_width + pill_pad_h * 2.0 + char_width * 1.0;
                 }
             }
 
@@ -1291,19 +1309,27 @@ impl CommitGraphView {
                         tag_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    let tag_text_color = Color::rgba(1.0, 0.718, 0.302, 1.0); // #FFB74D
                     // Tags: amber/yellow
                     pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
                         Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
                         pill_radius,
                     ));
+                    // Tag pill border outline
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        tag_text_color.with_alpha(0.45).to_array(),
+                        pill_radius,
+                        pill_border_thickness,
+                    ));
                     vertices.extend(text_renderer.layout_text(
                         &tag_label,
                         current_x + pill_pad_h,
                         y,
-                        Color::rgba(1.0, 0.718, 0.302, 1.0).to_array(),  // #FFB74D text
+                        tag_text_color.to_array(),
                     ));
-                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 0.5;
+                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 1.0;
                 }
             }
 
@@ -1318,19 +1344,27 @@ impl CommitGraphView {
                         head_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    let head_color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A
                     // HEAD pill: green
                     pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
                         Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
                         pill_radius,
                     ));
+                    // HEAD pill border outline
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        head_color.with_alpha(0.45).to_array(),
+                        pill_radius,
+                        pill_border_thickness,
+                    ));
                     vertices.extend(text_renderer.layout_text(
                         head_label,
                         current_x + pill_pad_h,
                         y,
-                        Color::rgba(0.400, 0.733, 0.416, 1.0).to_array(),  // #66BB6A text
+                        head_color.to_array(),
                     ));
-                    current_x += head_width + pill_pad_h * 2.0 + char_width * 0.5;
+                    current_x += head_width + pill_pad_h * 2.0 + char_width * 1.0;
                 }
             }
 
