@@ -388,7 +388,9 @@ impl App {
 
         // Initialize all tab views
         let scale = window_scale as f32;
+        let row_scale = self.settings_dialog.row_scale;
         for (repo_tab, view_state) in &mut self.tabs {
+            view_state.commit_graph_view.row_scale = row_scale;
             init_tab_view(repo_tab, view_state, &text_renderer, scale);
         }
 
@@ -836,6 +838,7 @@ impl App {
                 };
 
                 if let Some(ref render_state) = self.state {
+                    view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
                     init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32);
                 }
 
@@ -1055,7 +1058,14 @@ impl ApplicationHandler for App {
                         self.settings_dialog.handle_event(&input_event, screen_bounds);
                         if let Some(action) = self.settings_dialog.take_action() {
                             match action {
-                                SettingsDialogAction::Close => {}
+                                SettingsDialogAction::Close => {
+                                    // Apply row scale to all graph views
+                                    let row_scale = self.settings_dialog.row_scale;
+                                    for (_, view_state) in &mut self.tabs {
+                                        view_state.commit_graph_view.row_scale = row_scale;
+                                        view_state.commit_graph_view.sync_metrics(&state.text_renderer);
+                                    }
+                                }
                             }
                         }
                         return;

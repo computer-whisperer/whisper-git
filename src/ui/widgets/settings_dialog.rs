@@ -24,6 +24,7 @@ pub struct SettingsDialog {
     // Settings state:
     pub show_avatars: bool,
     pub scroll_speed: f32, // 1.0 = normal, 2.0 = fast
+    pub row_scale: f32,    // 1.0 = normal, 2.0 = large
 }
 
 impl SettingsDialog {
@@ -36,6 +37,7 @@ impl SettingsDialog {
             pending_action: None,
             show_avatars: true,
             scroll_speed: 1.0,
+            row_scale: 2.0,
         }
     }
 
@@ -58,7 +60,7 @@ impl SettingsDialog {
     /// Compute dialog bounds centered in screen
     fn dialog_bounds(&self, screen: Rect, scale: f32) -> Rect {
         let dialog_w = (450.0 * scale).min(screen.width * 0.8);
-        let dialog_h = (300.0 * scale).min(screen.height * 0.6);
+        let dialog_h = (380.0 * scale).min(screen.height * 0.7);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
@@ -101,10 +103,12 @@ impl Widget for SettingsDialog {
         // Row positions
         let row1_y = dialog.y + title_h + padding;
         let row2_y = row1_y + line_h + 12.0 * scale;
+        let row3_y = row2_y + line_h + 12.0 * scale;
 
         // Toggle bounds
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
         let (sp_normal, sp_fast) = self.toggle_bounds(&dialog, row2_y, line_h, scale);
+        let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
 
         // Close button bounds
         let button_y = dialog.bottom() - padding - line_h;
@@ -139,6 +143,15 @@ impl Widget for SettingsDialog {
             }
             if sp_fast.contains(*x, *y) {
                 self.scroll_speed = 2.0;
+                return EventResponse::Consumed;
+            }
+            // Row size toggles
+            if rs_normal.contains(*x, *y) {
+                self.row_scale = 1.0;
+                return EventResponse::Consumed;
+            }
+            if rs_large.contains(*x, *y) {
+                self.row_scale = 2.0;
                 return EventResponse::Consumed;
             }
         }
@@ -223,6 +236,7 @@ impl Widget for SettingsDialog {
         // --- Setting rows ---
         let row1_y = dialog.y + title_h + padding;
         let row2_y = row1_y + line_h + 12.0 * scale;
+        let row3_y = row2_y + line_h + 12.0 * scale;
 
         // Row 1: Show Avatars
         let label_y = row1_y + (line_h - line_height) / 2.0;
@@ -237,6 +251,13 @@ impl Widget for SettingsDialog {
         self.render_toggle_option(&mut output, text_renderer, &av_on, "ON", self.show_avatars);
         self.render_toggle_option(&mut output, text_renderer, &av_off, "OFF", !self.show_avatars);
 
+        // Separator between row 1 and row 2
+        let sep1_y = row1_y + line_h + 5.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep1_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
         // Row 2: Scroll Speed
         let label_y2 = row2_y + (line_h - line_height) / 2.0;
         output.text_vertices.extend(text_renderer.layout_text(
@@ -250,12 +271,41 @@ impl Widget for SettingsDialog {
         self.render_toggle_option(&mut output, text_renderer, &sp_normal, "Normal", self.scroll_speed < 1.5);
         self.render_toggle_option(&mut output, text_renderer, &sp_fast, "Fast", self.scroll_speed >= 1.5);
 
+        // Separator between row 2 and row 3
+        let sep2_y = row2_y + line_h + 5.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep2_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // Row 3: Row Size
+        let label_y3 = row3_y + (line_h - line_height) / 2.0;
+        output.text_vertices.extend(text_renderer.layout_text(
+            "Row Size",
+            dialog.x + padding,
+            label_y3,
+            theme::TEXT.to_array(),
+        ));
+
+        let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
+        self.render_toggle_option(&mut output, text_renderer, &rs_normal, "Normal", self.row_scale < 1.5);
+        self.render_toggle_option(&mut output, text_renderer, &rs_large, "Large", self.row_scale >= 1.5);
+
         // Close button at bottom
         let button_y = dialog.bottom() - padding - line_h;
         let button_w = 80.0 * scale;
         let close_x = dialog.right() - padding - button_w;
         let close_bounds = Rect::new(close_x, button_y, button_w, line_h);
         output.extend(self.close_button.layout(text_renderer, close_bounds));
+
+        // Version text at bottom-left
+        let version_y = button_y + (line_h - line_height) / 2.0;
+        output.text_vertices.extend(text_renderer.layout_text(
+            "whisper-git v0.1.0",
+            dialog.x + padding,
+            version_y,
+            theme::TEXT_MUTED.to_array(),
+        ));
 
         output
     }
