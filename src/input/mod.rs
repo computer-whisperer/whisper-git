@@ -12,6 +12,7 @@ pub use mouse::{MouseButton, MouseState};
 use crate::ui::Rect;
 
 /// A unified input event for the application
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum InputEvent {
     /// A key was pressed or released
@@ -76,6 +77,7 @@ impl InputEvent {
     }
 
     /// Check if this event is within a given rect
+    #[allow(dead_code)]
     pub fn is_within(&self, rect: &Rect) -> bool {
         if let Some((x, y)) = self.position() {
             rect.contains(x, y)
@@ -85,6 +87,7 @@ impl InputEvent {
     }
 
     /// Get modifiers for this event
+    #[allow(dead_code)]
     pub fn modifiers(&self) -> Modifiers {
         match self {
             InputEvent::KeyDown { modifiers, .. }

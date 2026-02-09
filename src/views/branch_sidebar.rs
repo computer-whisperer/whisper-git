@@ -13,12 +13,13 @@ use crate::ui::{Rect, TextRenderer};
 /// Actions that can be triggered from the sidebar
 #[derive(Clone, Debug)]
 pub enum SidebarAction {
-    CheckoutBranch(String),
-    CheckoutRemoteBranch(String, String), // (remote, branch)
-    DeleteBranch(String),
+    Checkout(String),
+    CheckoutRemote(String, String), // (remote, branch)
+    Delete(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SidebarItem {
     SectionHeader(&'static str),
@@ -199,13 +200,11 @@ impl BranchSidebar {
             item_y += h;
 
             // Section gaps
-            if !matches!(item, SidebarItem::SectionHeader(_)) {
-                if idx + 1 < self.visible_items.len() {
-                    if matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
+            if !matches!(item, SidebarItem::SectionHeader(_))
+                && idx + 1 < self.visible_items.len()
+                    && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
                         item_y += section_gap;
                     }
-                }
-            }
         }
 
         self.hovered_index = None;
@@ -270,28 +269,26 @@ impl BranchSidebar {
 
     /// Activate the currently focused item (checkout or toggle)
     fn activate_focused(&mut self) {
-        if let Some(idx) = self.focused_index {
-            if let Some(item) = self.visible_items.get(idx) {
+        if let Some(idx) = self.focused_index
+            && let Some(item) = self.visible_items.get(idx) {
                 match item {
                     SidebarItem::LocalBranch(name) => {
-                        self.pending_action = Some(SidebarAction::CheckoutBranch(name.clone()));
+                        self.pending_action = Some(SidebarAction::Checkout(name.clone()));
                     }
                     SidebarItem::RemoteBranch(remote, branch) => {
-                        self.pending_action = Some(SidebarAction::CheckoutRemoteBranch(remote.clone(), branch.clone()));
+                        self.pending_action = Some(SidebarAction::CheckoutRemote(remote.clone(), branch.clone()));
                     }
                     _ => {}
                 }
             }
-        }
     }
 
     /// Delete the currently focused branch (only local branches)
     fn delete_focused(&mut self) {
-        if let Some(idx) = self.focused_index {
-            if let Some(SidebarItem::LocalBranch(name)) = self.visible_items.get(idx) {
-                self.pending_action = Some(SidebarAction::DeleteBranch(name.clone()));
+        if let Some(idx) = self.focused_index
+            && let Some(SidebarItem::LocalBranch(name)) = self.visible_items.get(idx) {
+                self.pending_action = Some(SidebarAction::Delete(name.clone()));
             }
-        }
     }
 
     /// Get context menu items for the branch at (x, y), if any.
@@ -344,13 +341,11 @@ impl BranchSidebar {
             }
 
             item_y += h;
-            if !matches!(item, SidebarItem::SectionHeader(_)) {
-                if idx + 1 < self.visible_items.len() {
-                    if matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
+            if !matches!(item, SidebarItem::SectionHeader(_))
+                && idx + 1 < self.visible_items.len()
+                    && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
                         item_y += section_gap;
                     }
-                }
-            }
         }
 
         None
@@ -457,11 +452,10 @@ impl BranchSidebar {
                         // We detect this by checking if the next item is a section header
                         if let SidebarItem::SectionHeader(_) = item {
                             // No extra gap right after header
-                        } else if idx + 1 < self.visible_items.len() {
-                            if let SidebarItem::SectionHeader(_) = &self.visible_items[idx + 1] {
+                        } else if idx + 1 < self.visible_items.len()
+                            && let SidebarItem::SectionHeader(_) = &self.visible_items[idx + 1] {
                                 item_y += section_gap;
                             }
-                        }
                     }
 
                     return EventResponse::Consumed;
@@ -797,7 +791,7 @@ impl BranchSidebar {
         // REMOTE section
         total_h += section_header_height;
         if !self.remote_collapsed {
-            for (_remote, branches) in &self.remote_branches {
+            for branches in self.remote_branches.values() {
                 total_h += line_height; // remote name sub-header
                 total_h += branches.len() as f32 * line_height;
             }
@@ -831,6 +825,7 @@ impl BranchSidebar {
     }
 
     /// Layout a section header (e.g., "LOCAL  3") and return the new y position
+    #[allow(clippy::too_many_arguments)]
     fn layout_section_header(
         &self,
         text_renderer: &TextRenderer,

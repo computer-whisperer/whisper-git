@@ -3,6 +3,27 @@ use git2::{Diff, Repository, Commit, Oid, Status, StatusOptions};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
+/// Byte offset ranges for intra-line diff highlighting
+type DiffRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
+
+/// Format a Unix timestamp as a human-readable relative time string.
+pub fn format_relative_time(timestamp: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let diff = (now - timestamp).max(0);
+    match diff {
+        d if d < 60 => "just now".to_string(),
+        d if d < 3600 => format!("{}m", d / 60),
+        d if d < 86400 => format!("{}h", d / 3600),
+        d if d < 604800 => format!("{}d", d / 86400),
+        d if d < 2592000 => format!("{}w", d / 604800),
+        d if d < 31536000 => format!("{}mo", d / 2592000),
+        d => format!("{}y", d / 31536000),
+    }
+}
+
 /// Information about a single commit
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -27,20 +48,7 @@ impl CommitInfo {
     }
 
     pub fn relative_time(&self) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let diff = (now - self.time).max(0);
-        match diff {
-            d if d < 60 => "just now".to_string(),
-            d if d < 3600 => format!("{}m", d / 60),
-            d if d < 86400 => format!("{}h", d / 3600),
-            d if d < 604800 => format!("{}d", d / 86400),
-            d if d < 2592000 => format!("{}w", d / 604800),
-            d if d < 31536000 => format!("{}mo", d / 2592000),
-            d => format!("{}y", d / 31536000),
-        }
+        format_relative_time(self.time)
     }
 }
 
@@ -63,11 +71,13 @@ impl GitRepo {
     }
 
     /// Whether this is a bare repository
+    #[allow(dead_code)]
     pub fn is_bare(&self) -> bool {
         self.repo.is_bare()
     }
 
     /// Get recent commits from HEAD, falling back to branch tips if HEAD is invalid
+    #[allow(dead_code)]
     pub fn recent_commits(&self, count: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
 
@@ -75,14 +85,12 @@ impl GitRepo {
         if revwalk.push_head().is_err() {
             let mut found_any = false;
             for branch in self.repo.branches(Some(git2::BranchType::Local))? {
-                if let Ok((branch, _)) = branch {
-                    if let Ok(reference) = branch.get().resolve() {
-                        if let Some(oid) = reference.target() {
+                if let Ok((branch, _)) = branch
+                    && let Ok(reference) = branch.get().resolve()
+                        && let Some(oid) = reference.target() {
                             let _ = revwalk.push(oid);
                             found_any = true;
                         }
-                    }
-                }
             }
             if !found_any {
                 return Ok(Vec::new());
@@ -102,6 +110,7 @@ impl GitRepo {
     }
 
     /// Get all branch names
+    #[allow(dead_code)]
     pub fn branches(&self) -> Result<Vec<String>> {
         let branches = self.repo.branches(None).context("Failed to get branches")?;
         let names: Vec<String> = branches
@@ -119,13 +128,11 @@ impl GitRepo {
 
         // Include all branches
         for branch in self.repo.branches(None)? {
-            if let Ok((branch, _)) = branch {
-                if let Ok(reference) = branch.get().resolve() {
-                    if let Some(oid) = reference.target() {
+            if let Ok((branch, _)) = branch
+                && let Ok(reference) = branch.get().resolve()
+                    && let Some(oid) = reference.target() {
                         let _ = revwalk.push(oid);
                     }
-                }
-            }
         }
 
         // Sort topologically for better graph layout
@@ -186,11 +193,10 @@ impl GitRepo {
                 // Fall back to the first local branch we can find.
                 if let Ok(branches) = self.repo.branches(Some(git2::BranchType::Local)) {
                     for branch in branches {
-                        if let Ok((branch, _)) = branch {
-                            if let Ok(Some(name)) = branch.name() {
+                        if let Ok((branch, _)) = branch
+                            && let Ok(Some(name)) = branch.name() {
                                 return Ok(name.to_string());
                             }
-                        }
                     }
                 }
                 Ok("HEAD".to_string())
@@ -200,20 +206,17 @@ impl GitRepo {
 
     /// Get the head commit OID (falls back to first local branch tip for bare repos)
     pub fn head_oid(&self) -> Result<Oid> {
-        if let Ok(head) = self.repo.head() {
-            if let Some(oid) = head.target() {
+        if let Ok(head) = self.repo.head()
+            && let Some(oid) = head.target() {
                 return Ok(oid);
             }
-        }
         // Fallback: first local branch tip
         for branch in self.repo.branches(Some(git2::BranchType::Local))? {
-            if let Ok((branch, _)) = branch {
-                if let Ok(reference) = branch.get().resolve() {
-                    if let Some(oid) = reference.target() {
+            if let Ok((branch, _)) = branch
+                && let Ok(reference) = branch.get().resolve()
+                    && let Some(oid) = reference.target() {
                         return Ok(oid);
                     }
-                }
-            }
         }
         anyhow::bail!("No HEAD or branch tips found")
     }
@@ -320,7 +323,7 @@ impl GitRepo {
         let head = self.repo.head().context("Failed to get HEAD")?;
         let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
         self.repo
-            .reset_default(Some(&head_commit.as_object()), [Path::new(path)])
+            .reset_default(Some(head_commit.as_object()), [Path::new(path)])
             .context("Failed to unstage file")?;
 
         Ok(())
@@ -355,6 +358,7 @@ impl GitRepo {
     }
 
     /// Get diff stats for a file
+    #[allow(dead_code)]
     pub fn diff_file_stats(&self, path: &str, staged: bool) -> Result<(usize, usize)> {
         let diff = if staged {
             let head = self.repo.head().context("Failed to get HEAD")?;
@@ -441,8 +445,8 @@ impl GitRepo {
 
         let mut infos = Vec::new();
         for name in worktrees.iter() {
-            if let Some(name) = name {
-                if let Ok(wt) = self.repo.find_worktree(name) {
+            if let Some(name) = name
+                && let Ok(wt) = self.repo.find_worktree(name) {
                     let wt_path = wt.path();
                     let path = wt_path.to_string_lossy().to_string();
 
@@ -470,7 +474,6 @@ impl GitRepo {
                         is_current,
                     });
                 }
-            }
         }
 
         Ok(infos)
@@ -482,9 +485,9 @@ impl GitRepo {
         let mut tips = Vec::new();
 
         for branch in self.repo.branches(None)? {
-            if let Ok((branch, branch_type)) = branch {
-                if let Ok(reference) = branch.get().resolve() {
-                    if let Some(oid) = reference.target() {
+            if let Ok((branch, branch_type)) = branch
+                && let Ok(reference) = branch.get().resolve()
+                    && let Some(oid) = reference.target() {
                         let name = branch.name().ok().flatten().unwrap_or("").to_string();
                         let is_remote = branch_type == git2::BranchType::Remote;
                         let is_head = head_oid == Some(oid);
@@ -496,8 +499,6 @@ impl GitRepo {
                             is_head,
                         });
                     }
-                }
-            }
         }
 
         Ok(tips)
@@ -625,7 +626,7 @@ impl GitRepo {
     /// Compute the differing byte ranges between two strings.
     /// Returns (old_ranges, new_ranges) where each range is a (start, end) byte offset
     /// into the respective string's content (excluding trailing newline).
-    fn diff_chars(old: &str, new: &str) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
+    fn diff_chars(old: &str, new: &str) -> DiffRanges {
         let old = old.trim_end_matches('\n');
         let new = new.trim_end_matches('\n');
 
@@ -834,6 +835,7 @@ impl FileStatusKind {
         }
     }
 
+    #[allow(dead_code)]
     pub fn symbol(&self) -> char {
         match self {
             FileStatusKind::New => 'A',
@@ -880,6 +882,7 @@ pub struct TagInfo {
 }
 
 /// Result of a remote git operation (fetch, push, pull)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RemoteOpResult {
     pub success: bool,
@@ -888,6 +891,7 @@ pub struct RemoteOpResult {
 }
 
 /// Full commit information for the detail panel
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FullCommitInfo {
     pub id: Oid,
@@ -906,20 +910,7 @@ pub struct FullCommitInfo {
 
 impl FullCommitInfo {
     pub fn relative_author_time(&self) -> String {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let diff = (now - self.author_time).max(0);
-        match diff {
-            d if d < 60 => "just now".to_string(),
-            d if d < 3600 => format!("{}m", d / 60),
-            d if d < 86400 => format!("{}h", d / 3600),
-            d if d < 604800 => format!("{}d", d / 86400),
-            d if d < 2592000 => format!("{}w", d / 604800),
-            d if d < 31536000 => format!("{}mo", d / 2592000),
-            d => format!("{}y", d / 31536000),
-        }
+        format_relative_time(self.author_time)
     }
 }
 
@@ -932,20 +923,16 @@ impl GitRepo {
     /// Find the default remote name (usually "origin")
     pub fn default_remote(&self) -> Result<String> {
         // Try to find the upstream remote for the current branch
-        if let Ok(head) = self.repo.head() {
-            if let Some(name) = head.shorthand() {
-                if let Ok(branch) = self.repo.find_branch(name, git2::BranchType::Local) {
-                    if let Ok(upstream) = branch.upstream() {
-                        if let Ok(Some(upstream_name)) = upstream.name() {
+        if let Ok(head) = self.repo.head()
+            && let Some(name) = head.shorthand()
+                && let Ok(branch) = self.repo.find_branch(name, git2::BranchType::Local)
+                    && let Ok(upstream) = branch.upstream()
+                        && let Ok(Some(upstream_name)) = upstream.name() {
                             // upstream name is like "origin/main", extract remote part
                             if let Some(remote) = upstream_name.split('/').next() {
                                 return Ok(remote.to_string());
                             }
                         }
-                    }
-                }
-            }
-        }
         // Fallback: try "origin"
         if self.repo.find_remote("origin").is_ok() {
             return Ok("origin".to_string());
@@ -1014,6 +1001,7 @@ impl GitRepo {
     }
 
     /// Create a new branch at HEAD
+    #[allow(dead_code)]
     pub fn create_branch(&self, name: &str) -> Result<()> {
         let head = self.repo.head().context("Failed to get HEAD")?;
         let commit = head.peel_to_commit().context("Failed to get HEAD commit")?;

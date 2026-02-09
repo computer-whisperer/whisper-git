@@ -109,19 +109,18 @@ impl StagingWell {
         let (_, _, staged_bounds, unstaged_bounds, _) = self.compute_regions(bounds);
 
         // Check staged files
-        if staged_bounds.contains(x, y) {
-            if let Some(file) = self.file_at_position(&self.staged_list, x, y, staged_bounds) {
+        if staged_bounds.contains(x, y)
+            && let Some(file) = self.file_at_position(&self.staged_list, x, y, staged_bounds) {
                 let items = vec![
                     MenuItem::new("Unstage File", format!("unstage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
                 ];
                 return Some(items);
             }
-        }
 
         // Check unstaged files
-        if unstaged_bounds.contains(x, y) {
-            if let Some(file) = self.file_at_position(&self.unstaged_list, x, y, unstaged_bounds) {
+        if unstaged_bounds.contains(x, y)
+            && let Some(file) = self.file_at_position(&self.unstaged_list, x, y, unstaged_bounds) {
                 let items = vec![
                     MenuItem::new("Stage File", format!("stage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
@@ -129,7 +128,6 @@ impl StagingWell {
                 ];
                 return Some(items);
             }
-        }
 
         None
     }
@@ -223,12 +221,11 @@ impl StagingWell {
         }
 
         // Ctrl+Enter to commit
-        if let InputEvent::KeyDown { key: Key::Enter, modifiers, .. } = event {
-            if modifiers.only_ctrl() && self.can_commit() {
+        if let InputEvent::KeyDown { key: Key::Enter, modifiers, .. } = event
+            && modifiers.only_ctrl() && self.can_commit() {
                 self.pending_action = Some(StagingAction::Commit(self.commit_message()));
                 return EventResponse::Consumed;
             }
-        }
 
         // Handle button clicks first (they sit outside the focus sections)
         if self.stage_all_btn.handle_event(event, self.stage_all_button_bounds(buttons_bounds)).is_consumed() {

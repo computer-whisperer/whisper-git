@@ -14,6 +14,7 @@ use vulkano::{
 use winit::event_loop::EventLoop;
 
 /// Core Vulkan context - created once at startup
+#[allow(dead_code)]
 pub struct VulkanContext {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
@@ -22,6 +23,7 @@ pub struct VulkanContext {
     pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
+#[allow(dead_code)]
 impl VulkanContext {
     /// Create a new Vulkan context
     pub fn new(event_loop: &EventLoop<()>) -> Result<Self> {
@@ -39,7 +41,7 @@ impl VulkanContext {
         )
         .context("Failed to create Vulkan instance")?;
 
-        Ok(Self::with_instance(instance)?)
+        Self::with_instance(instance)
     }
 
     /// Create context with an existing instance (for when we need surface first)

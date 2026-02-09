@@ -81,14 +81,13 @@ impl CommitDetailView {
 
     /// Emit action for the currently selected file
     fn emit_file_action(&mut self) {
-        if let (Some(info), Some(idx)) = (&self.commit_info, self.selected_file) {
-            if let Some(file) = self.changed_files.get(idx) {
+        if let (Some(info), Some(idx)) = (&self.commit_info, self.selected_file)
+            && let Some(file) = self.changed_files.get(idx) {
                 self.pending_action = Some(CommitDetailAction::ViewFileDiff(
                     info.id,
                     file.path.clone(),
                 ));
             }
-        }
     }
 
     /// Handle input events
@@ -123,12 +122,11 @@ impl CommitDetailView {
                         return EventResponse::Consumed;
                     }
                     Key::K | Key::Up => {
-                        if let Some(idx) = self.selected_file {
-                            if idx > 0 {
+                        if let Some(idx) = self.selected_file
+                            && idx > 0 {
                                 self.selected_file = Some(idx - 1);
                                 self.emit_file_action();
                             }
-                        }
                         return EventResponse::Consumed;
                     }
                     Key::Enter => {

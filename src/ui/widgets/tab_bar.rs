@@ -10,11 +10,11 @@ use crate::ui::{Rect, TextRenderer};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabAction {
     /// User clicked on a tab to select it
-    SelectTab(usize),
+    Select(usize),
     /// User wants to close a tab (x button or middle-click)
-    CloseTab(usize),
+    Close(usize),
     /// User wants to open a new tab (clicked "+")
-    NewTab,
+    New,
 }
 
 /// Data for a single tab
@@ -30,6 +30,7 @@ struct CachedBounds {
 }
 
 /// A horizontal tab bar displayed at the top of the window
+#[allow(dead_code)]
 pub struct TabBar {
     id: WidgetId,
     state: WidgetState,
@@ -68,15 +69,18 @@ impl TabBar {
         }
     }
 
+    #[allow(dead_code)]
     pub fn active_index(&self) -> usize {
         self.active
     }
 
+    #[allow(dead_code)]
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }
 
     /// Update tab name (e.g. when repo info changes)
+    #[allow(dead_code)]
     pub fn set_tab_name(&mut self, index: usize, name: String) {
         if let Some(tab) = self.tabs.get_mut(index) {
             tab.name = name;
@@ -87,9 +91,7 @@ impl TabBar {
     pub fn remove_tab(&mut self, index: usize) -> usize {
         if index < self.tabs.len() {
             self.tabs.remove(index);
-            if self.active >= self.tabs.len() && self.active > 0 {
-                self.active -= 1;
-            } else if self.active > index {
+            if (self.active >= self.tabs.len() || self.active > index) && self.active > 0 {
                 self.active -= 1;
             }
         }
@@ -196,19 +198,19 @@ impl Widget for TabBar {
                     // Check close buttons first
                     for (i, close_rect) in cached.close_rects.iter().enumerate() {
                         if close_rect.contains(*x, *y) {
-                            self.pending_action = Some(TabAction::CloseTab(i));
+                            self.pending_action = Some(TabAction::Close(i));
                             return EventResponse::Consumed;
                         }
                     }
                     // Check new tab button
                     if cached.new_rect.contains(*x, *y) {
-                        self.pending_action = Some(TabAction::NewTab);
+                        self.pending_action = Some(TabAction::New);
                         return EventResponse::Consumed;
                     }
                     // Check tab selection
                     for (i, tab_rect) in cached.tab_rects.iter().enumerate() {
                         if tab_rect.contains(*x, *y) && i != self.active {
-                            self.pending_action = Some(TabAction::SelectTab(i));
+                            self.pending_action = Some(TabAction::Select(i));
                             return EventResponse::Consumed;
                         }
                     }
@@ -222,7 +224,7 @@ impl Widget for TabBar {
                 if let Some(ref cached) = self.cached {
                     for (i, tab_rect) in cached.tab_rects.iter().enumerate() {
                         if tab_rect.contains(*x, *y) {
-                            self.pending_action = Some(TabAction::CloseTab(i));
+                            self.pending_action = Some(TabAction::Close(i));
                             return EventResponse::Consumed;
                         }
                     }

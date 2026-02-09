@@ -40,6 +40,7 @@ pub enum FileListAction {
 }
 
 /// A scrollable list of files with status indicators
+#[allow(dead_code)]
 pub struct FileList {
     id: WidgetId,
     state: WidgetState,
@@ -81,11 +82,10 @@ impl FileList {
     pub fn set_files(&mut self, files: Vec<FileEntry>) {
         self.files = files;
         // Adjust selection if needed
-        if let Some(idx) = self.selected {
-            if idx >= self.files.len() {
+        if let Some(idx) = self.selected
+            && idx >= self.files.len() {
                 self.selected = if self.files.is_empty() { None } else { Some(self.files.len() - 1) };
             }
-        }
     }
 
     /// Get the selected file path

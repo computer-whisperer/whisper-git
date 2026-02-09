@@ -17,6 +17,7 @@ pub enum HeaderAction {
 }
 
 /// Header bar widget displaying repo info and action buttons
+#[allow(dead_code)]
 pub struct HeaderBar {
     id: WidgetId,
     /// Repository name
@@ -197,18 +198,15 @@ impl Widget for HeaderBar {
         }
 
         // Help and settings clicks
-        match event {
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
-                if help_bounds.contains(*x, *y) {
-                    self.pending_action = Some(HeaderAction::Help);
-                    return EventResponse::Consumed;
-                }
-                if settings_bounds.contains(*x, *y) {
-                    self.pending_action = Some(HeaderAction::Settings);
-                    return EventResponse::Consumed;
-                }
+        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+            if help_bounds.contains(*x, *y) {
+                self.pending_action = Some(HeaderAction::Help);
+                return EventResponse::Consumed;
             }
-            _ => {}
+            if settings_bounds.contains(*x, *y) {
+                self.pending_action = Some(HeaderAction::Settings);
+                return EventResponse::Consumed;
+            }
         }
 
         EventResponse::Ignored

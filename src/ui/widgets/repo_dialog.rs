@@ -17,6 +17,7 @@ pub enum RepoDialogAction {
 }
 
 /// A modal dialog for opening a repository by path
+#[allow(dead_code)]
 pub struct RepoDialog {
     id: WidgetId,
     state: WidgetState,
@@ -166,13 +167,12 @@ impl Widget for RepoDialog {
         }
 
         // Click outside dialog dismisses
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
-            if !dialog.contains(*x, *y) {
+        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
+            && !dialog.contains(*x, *y) {
                 self.pending_action = Some(RepoDialogAction::Cancel);
                 self.hide();
                 return EventResponse::Consumed;
             }
-        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed

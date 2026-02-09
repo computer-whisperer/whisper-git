@@ -79,6 +79,7 @@ impl Default for WidgetOutput {
 }
 
 /// The core widget trait
+#[allow(dead_code)]
 pub trait Widget {
     /// Get this widget's unique ID
     fn id(&self) -> WidgetId;
