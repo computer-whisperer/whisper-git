@@ -1,6 +1,7 @@
 mod config;
 mod git;
 mod input;
+mod messages;
 mod renderer;
 mod ui;
 mod views;
@@ -33,7 +34,8 @@ use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, Vulkan
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
-use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
+use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
+use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 
 /// Maximum number of commits to load into the graph view.
 const MAX_COMMITS: usize = 50;
@@ -100,48 +102,6 @@ enum FocusedPanel {
     Sidebar,
 }
 
-/// Application-level messages for state changes
-#[derive(Clone, Debug)]
-enum AppMessage {
-    StageFile(String),
-    UnstageFile(String),
-    StageAll,
-    UnstageAll,
-    Commit(String),
-    Fetch,
-    Pull,
-    Push,
-    SelectedCommit(Oid),
-    ViewCommitFileDiff(Oid, String),
-    ViewDiff(String, bool), // (path, staged)
-    CheckoutBranch(String),
-    CheckoutRemoteBranch(String, String),
-    DeleteBranch(String),
-    StageHunk(String, usize),    // (file_path, hunk_index)
-    UnstageHunk(String, usize),  // (file_path, hunk_index)
-    DiscardFile(String),
-    LoadMoreCommits,
-    DeleteSubmodule(String),
-    UpdateSubmodule(String),
-    JumpToWorktreeBranch(String),
-    RemoveWorktree(String),
-    MergeBranch(String),
-    RebaseBranch(String),
-    CreateBranch(String, Oid),  // (name, at_commit)
-    CreateTag(String, Oid),     // (name, at_commit)
-    DeleteTag(String),
-    StashPush,
-    StashPop,
-    StashApply(usize),
-    StashDrop(usize),
-    StashPopIndex(usize),
-    CherryPick(Oid),
-    AmendCommit(String),
-    ToggleAmend,
-    RevertCommit(Oid),
-    ResetToCommit(Oid, git2::ResetType),
-}
-
 /// Per-tab repository data
 struct RepoTab {
     repo: Option<GitRepo>,
@@ -158,7 +118,6 @@ struct TabViewState {
     branch_sidebar: BranchSidebar,
     commit_graph_view: CommitGraphView,
     staging_well: StagingWell,
-    secondary_repos_view: SecondaryReposView,
     diff_view: DiffView,
     commit_detail_view: CommitDetailView,
     context_menu: ContextMenu,
@@ -182,7 +141,6 @@ impl TabViewState {
             branch_sidebar: BranchSidebar::new(),
             commit_graph_view: CommitGraphView::new(),
             staging_well: StagingWell::new(),
-            secondary_repos_view: SecondaryReposView::new(),
             diff_view: DiffView::new(),
             commit_detail_view: CommitDetailView::new(),
             context_menu: ContextMenu::new(),
@@ -509,582 +467,53 @@ impl App {
             return;
         }
 
-        if repo_tab.repo.is_none() {
+        let Some(ref repo) = repo_tab.repo else {
             return;
-        }
+        };
 
-        // Helper macro to borrow repo immutably within a match arm.
-        // Each arm re-borrows so the immutable borrow ends before the next arm
-        // that might need a mutable borrow of repo_tab.
-        macro_rules! repo {
-            () => {
-                repo_tab.repo.as_ref().unwrap()
-            };
-        }
+        // Compute graph bounds for JumpToWorktreeBranch
+        let graph_bounds = if let Some(ref state) = self.state {
+            let extent = state.surface.extent();
+            let scale = state.scale_factor as f32;
+            let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+            let tab_bar_height = if tab_count > 1 { TabBar::height(scale) } else { 0.0 };
+            let (_tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+            let layout = ScreenLayout::compute_with_ratios_and_shortcut(
+                main_bounds, 4.0, scale,
+                Some(self.sidebar_ratio),
+                Some(self.graph_ratio),
+                Some(self.staging_ratio),
+                self.shortcut_bar_visible,
+            );
+            layout.graph
+        } else {
+            Rect::new(0.0, 0.0, 1920.0, 1080.0)
+        };
+
+        let ctx = MessageContext { graph_bounds };
 
         for msg in messages {
-            match msg {
-                AppMessage::StageFile(path) => {
-                    if let Err(e) = repo!().stage_file(&path) {
-                        eprintln!("Failed to stage {}: {}", path, e);
-                        self.toast_manager.push(
-                            format!("Stage failed: {}", e),
-                            ToastSeverity::Error,
-                        );
-                    }
-                }
-                AppMessage::UnstageFile(path) => {
-                    if let Err(e) = repo!().unstage_file(&path) {
-                        eprintln!("Failed to unstage {}: {}", path, e);
-                        self.toast_manager.push(
-                            format!("Unstage failed: {}", e),
-                            ToastSeverity::Error,
-                        );
-                    }
-                }
-                AppMessage::StageAll => {
-                    if let Ok(status) = repo!().status() {
-                        for file in &status.unstaged {
-                            let _ = repo!().stage_file(&file.path);
-                        }
-                    }
-                }
-                AppMessage::UnstageAll => {
-                    if let Ok(status) = repo!().status() {
-                        for file in &status.staged {
-                            let _ = repo!().unstage_file(&file.path);
-                        }
-                    }
-                }
-                AppMessage::Commit(message) => {
-                    match repo!().commit(&message) {
-                        Ok(oid) => {
-                            println!("Created commit: {}", oid);
-                            refresh_repo_state(repo_tab, view_state);
-                            view_state.staging_well.clear_and_focus();
-                            self.toast_manager.push(
-                                format!("Commit {}", &oid.to_string()[..7]),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to commit: {}", e);
-                            self.toast_manager.push(
-                                format!("Commit failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::Fetch => {
-                    if view_state.fetch_receiver.is_some() {
-                        eprintln!("Fetch already in progress");
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let remote = repo!().default_remote().unwrap_or_else(|_| "origin".to_string());
-                        println!("Fetching from {}...", remote);
-                        let rx = crate::git::fetch_remote_async(workdir, remote);
-                        view_state.fetch_receiver = Some(rx);
-                        view_state.header_bar.fetching = true;
-                    } else {
-                        eprintln!("No working directory for fetch");
-                    }
-                }
-                AppMessage::Pull => {
-                    if view_state.pull_receiver.is_some() {
-                        eprintln!("Pull already in progress");
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let remote = repo!().default_remote().unwrap_or_else(|_| "origin".to_string());
-                        let branch = repo!().current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        println!("Pulling {} from {}...", branch, remote);
-                        let rx = crate::git::pull_remote_async(workdir, remote, branch);
-                        view_state.pull_receiver = Some(rx);
-                        view_state.header_bar.pulling = true;
-                    } else {
-                        eprintln!("No working directory for pull");
-                    }
-                }
-                AppMessage::Push => {
-                    if view_state.push_receiver.is_some() {
-                        eprintln!("Push already in progress");
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let remote = repo!().default_remote().unwrap_or_else(|_| "origin".to_string());
-                        let branch = repo!().current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        println!("Pushing {} to {}...", branch, remote);
-                        let rx = crate::git::push_remote_async(workdir, remote, branch);
-                        view_state.push_receiver = Some(rx);
-                        view_state.header_bar.pushing = true;
-                    } else {
-                        eprintln!("No working directory for push");
-                    }
-                }
-                AppMessage::SelectedCommit(oid) => {
-                    let full_info = repo!().full_commit_info(oid);
-                    match repo!().diff_for_commit(oid) {
-                        Ok(diff_files) => {
-                            if let Ok(info) = full_info {
-                                view_state.commit_detail_view.set_commit(info, diff_files.clone());
-                            }
-                            if let Some(first_file) = diff_files.first() {
-                                let title = first_file.path.clone();
-                                view_state.diff_view.set_diff(vec![first_file.clone()], title);
-                            } else {
-                                let title = repo_tab.commits.iter()
-                                    .find(|c| c.id == oid)
-                                    .map(|c| format!("{} {}", c.short_id, c.summary))
-                                    .unwrap_or_else(|| oid.to_string());
-                                view_state.diff_view.set_diff(diff_files, title);
-                            }
-                            view_state.last_diff_commit = Some(oid);
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load diff for {}: {}", oid, e);
-                        }
-                    }
-                }
-                AppMessage::ViewCommitFileDiff(oid, path) => {
-                    match repo!().diff_file_in_commit(oid, &path) {
-                        Ok(diff_files) => {
-                            view_state.diff_view.set_diff(diff_files, path);
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load diff for file '{}': {}", path, e);
-                        }
-                    }
-                }
-                AppMessage::ViewDiff(path, staged) => {
-                    match repo!().diff_working_file(&path, staged) {
-                        Ok(hunks) => {
-                            let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
-                            let title = if staged {
-                                format!("Staged: {}", path)
-                            } else {
-                                format!("Unstaged: {}", path)
-                            };
-                            if staged {
-                                view_state.diff_view.set_staged_diff(vec![diff_file], title);
-                            } else {
-                                view_state.diff_view.set_diff(vec![diff_file], title);
-                            }
-                            view_state.last_diff_commit = None;
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load diff for {}: {}", path, e);
-                        }
-                    }
-                }
-                AppMessage::CheckoutBranch(name) => {
-                    match repo!().checkout_branch(&name) {
-                        Ok(()) => {
-                            println!("Checked out branch: {}", name);
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Switched to {}", name),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to checkout branch '{}': {}", name, e);
-                            self.toast_manager.push(
-                                format!("Checkout failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::CheckoutRemoteBranch(remote, branch) => {
-                    match repo!().checkout_remote_branch(&remote, &branch) {
-                        Ok(()) => {
-                            println!("Checked out remote branch: {}/{}", remote, branch);
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Switched to {}/{}", remote, branch),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to checkout remote branch '{}/{}': {}", remote, branch, e);
-                            self.toast_manager.push(
-                                format!("Checkout failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::DeleteBranch(name) => {
-                    match repo!().delete_branch(&name) {
-                        Ok(()) => {
-                            println!("Deleted branch: {}", name);
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Deleted branch {}", name),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to delete branch '{}': {}", name, e);
-                            // Show root cause for a cleaner message
-                            let root = e.root_cause().to_string();
-                            self.toast_manager.push(
-                                format!("Cannot delete '{}': {}", name, root),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::StageHunk(path, hunk_idx) => {
-                    match repo!().stage_hunk(&path, hunk_idx) {
-                        Ok(()) => {
-                            self.toast_manager.push(
-                                format!("Staged hunk {} in {}", hunk_idx + 1, path),
-                                ToastSeverity::Success,
-                            );
-                            if let Ok(hunks) = repo!().diff_working_file(&path, false) {
-                                if hunks.is_empty() {
-                                    view_state.diff_view.clear();
-                                } else {
-                                    let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
-                                    view_state.diff_view.set_diff(vec![diff_file], path);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to stage hunk: {}", e);
-                            self.toast_manager.push(
-                                format!("Stage hunk failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::UnstageHunk(path, hunk_idx) => {
-                    match repo!().unstage_hunk(&path, hunk_idx) {
-                        Ok(()) => {
-                            self.toast_manager.push(
-                                format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
-                                ToastSeverity::Success,
-                            );
-                            if let Ok(hunks) = repo!().diff_working_file(&path, true) {
-                                if hunks.is_empty() {
-                                    view_state.diff_view.clear();
-                                } else {
-                                    let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
-                                    view_state.diff_view.set_staged_diff(vec![diff_file], path);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to unstage hunk: {}", e);
-                            self.toast_manager.push(
-                                format!("Unstage hunk failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::DiscardFile(path) => {
-                    match repo!().discard_file(&path) {
-                        Ok(()) => {
-                            self.toast_manager.push(
-                                format!("Discarded: {}", path),
-                                ToastSeverity::Info,
-                            );
-                        }
-                        Err(e) => {
-                            self.toast_manager.push(
-                                format!("Discard failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::LoadMoreCommits => {
-                    let current_count = repo_tab.commits.len();
-                    let new_count = current_count + 50;
-                    if let Ok(commits) = repo!().commit_graph(new_count) {
-                        repo_tab.commits = commits;
-                        view_state.commit_graph_view.update_layout(&repo_tab.commits);
-                    }
-                    view_state.commit_graph_view.finish_loading();
-                }
-                AppMessage::DeleteSubmodule(name) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::remove_submodule_async(workdir, name.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Delete submodule '{}'", name)));
-                        self.toast_manager.push(format!("Removing submodule '{}'...", name), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::UpdateSubmodule(name) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::update_submodule_async(workdir, name.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Update submodule '{}'", name)));
-                        self.toast_manager.push(format!("Updating submodule '{}'...", name), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::JumpToWorktreeBranch(name) => {
-                    // Find the worktree by name, get its branch, find the branch tip, select it
-                    if let Some(wt) = view_state.branch_sidebar.worktrees.iter().find(|w| w.name == name) {
-                        let branch_name = wt.branch.clone();
-                        if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
-                            .find(|t| t.name == branch_name && !t.is_remote) {
-                                view_state.commit_graph_view.selected_commit = Some(tip.oid);
-                                let graph_bounds = if let Some(ref state) = self.state {
-                                    let extent = state.surface.extent();
-                                    let scale = state.scale_factor as f32;
-                                    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-                                    let tab_bar_height = if tab_count > 1 { TabBar::height(scale) } else { 0.0 };
-                                    let (_tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-                                    let layout = ScreenLayout::compute_with_ratios_and_shortcut(
-                                        main_bounds, 4.0, scale,
-                                        Some(self.sidebar_ratio),
-                                        Some(self.graph_ratio),
-                                        Some(self.staging_ratio),
-                                        self.shortcut_bar_visible,
-                                    );
-                                    layout.graph
-                                } else {
-                                    Rect::new(0.0, 0.0, 1920.0, 1080.0)
-                                };
-                                view_state.commit_graph_view.scroll_to_selection(&repo_tab.commits, graph_bounds);
-                                self.toast_manager.push(format!("Jumped to branch '{}'", branch_name), ToastSeverity::Info);
-                        } else {
-                            self.toast_manager.push(format!("Branch '{}' not found in graph", branch_name), ToastSeverity::Error);
-                        }
-                    } else {
-                        self.toast_manager.push(format!("Worktree '{}' not found", name), ToastSeverity::Error);
-                    }
-                }
-                AppMessage::RemoveWorktree(name) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::remove_worktree_async(workdir, name.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Remove worktree '{}'", name)));
-                        self.toast_manager.push(format!("Removing worktree '{}'...", name), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::MergeBranch(name) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::merge_branch_async(workdir, name.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Merge '{}'", name)));
-                        self.toast_manager.push(format!("Merging '{}'...", name), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::RebaseBranch(name) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::rebase_branch_async(workdir, name.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Rebase onto '{}'", name)));
-                        self.toast_manager.push(format!("Rebasing onto '{}'...", name), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::CreateBranch(name, oid) => {
-                    match repo!().create_branch_at(&name, oid) {
-                        Ok(()) => {
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Created branch '{}'", name),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            self.toast_manager.push(
-                                format!("Create branch failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::CreateTag(name, oid) => {
-                    match repo!().create_tag(&name, oid) {
-                        Ok(()) => {
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Created tag '{}'", name),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            self.toast_manager.push(
-                                format!("Create tag failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::DeleteTag(name) => {
-                    match repo!().delete_tag(&name) {
-                        Ok(()) => {
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Deleted tag '{}'", name),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            self.toast_manager.push(
-                                format!("Delete tag failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::StashPush => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::stash_push_async(workdir);
-                        view_state.generic_op_receiver = Some((rx, "Stash push".to_string()));
-                        self.toast_manager.push("Stashing changes...".to_string(), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::StashPop => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::stash_pop_async(workdir);
-                        view_state.generic_op_receiver = Some((rx, "Stash pop".to_string()));
-                        self.toast_manager.push("Popping stash...".to_string(), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::StashApply(index) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::stash_apply_async(workdir, index);
-                        view_state.generic_op_receiver = Some((rx, format!("Stash apply @{{{}}}", index)));
-                        self.toast_manager.push(format!("Applying stash@{{{}}}...", index), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::StashDrop(index) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::stash_drop_async(workdir, index);
-                        view_state.generic_op_receiver = Some((rx, format!("Stash drop @{{{}}}", index)));
-                        self.toast_manager.push(format!("Dropping stash@{{{}}}...", index), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::StashPopIndex(index) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let rx = crate::git::stash_pop_index_async(workdir, index);
-                        view_state.generic_op_receiver = Some((rx, format!("Stash pop @{{{}}}", index)));
-                        self.toast_manager.push(format!("Popping stash@{{{}}}...", index), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::CherryPick(oid) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let sha = oid.to_string();
-                        let rx = crate::git::cherry_pick_async(workdir, sha.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Cherry-pick {}", &sha[..7])));
-                        self.toast_manager.push(format!("Cherry-picking {}...", &sha[..7]), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::AmendCommit(message) => {
-                    match repo!().amend_commit(&message) {
-                        Ok(oid) => {
-                            println!("Amended commit: {}", oid);
-                            refresh_repo_state(repo_tab, view_state);
-                            view_state.staging_well.exit_amend_mode();
-                            self.toast_manager.push(
-                                format!("Amended {}", &oid.to_string()[..7]),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to amend: {}", e);
-                            self.toast_manager.push(
-                                format!("Amend failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-                AppMessage::ToggleAmend => {
-                    if view_state.staging_well.amend_mode {
-                        view_state.staging_well.exit_amend_mode();
-                    } else if let Some((subject, body)) = repo!().head_commit_message() {
-                        view_state.staging_well.enter_amend_mode(&subject, &body);
-                    } else {
-                        self.toast_manager.push(
-                            "No HEAD commit to amend".to_string(),
-                            ToastSeverity::Error,
-                        );
-                    }
-                }
-                AppMessage::RevertCommit(oid) => {
-                    if view_state.generic_op_receiver.is_some() {
-                        self.toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
-                        continue;
-                    }
-                    if let Some(workdir) = repo!().working_dir_path() {
-                        let sha = oid.to_string();
-                        let rx = crate::git::revert_commit_async(workdir, sha.clone());
-                        view_state.generic_op_receiver = Some((rx, format!("Revert {}", &sha[..7])));
-                        self.toast_manager.push(format!("Reverting {}...", &sha[..7]), ToastSeverity::Info);
-                    }
-                }
-                AppMessage::ResetToCommit(oid, mode) => {
-                    let mode_name = match mode {
-                        git2::ResetType::Soft => "soft",
-                        git2::ResetType::Mixed => "mixed",
-                        git2::ResetType::Hard => "hard",
-                    };
-                    match repo!().reset_to_commit(oid, mode) {
-                        Ok(()) => {
-                            refresh_repo_state(repo_tab, view_state);
-                            self.toast_manager.push(
-                                format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
-                                ToastSeverity::Success,
-                            );
-                        }
-                        Err(e) => {
-                            self.toast_manager.push(
-                                format!("Reset failed: {}", e),
-                                ToastSeverity::Error,
-                            );
-                        }
-                    }
-                }
-            }
+            let mut msg_view_state = MessageViewState {
+                commit_graph_view: &mut view_state.commit_graph_view,
+                staging_well: &mut view_state.staging_well,
+                diff_view: &mut view_state.diff_view,
+                commit_detail_view: &mut view_state.commit_detail_view,
+                branch_sidebar: &mut view_state.branch_sidebar,
+                header_bar: &mut view_state.header_bar,
+                last_diff_commit: &mut view_state.last_diff_commit,
+                fetch_receiver: &mut view_state.fetch_receiver,
+                pull_receiver: &mut view_state.pull_receiver,
+                push_receiver: &mut view_state.push_receiver,
+                generic_op_receiver: &mut view_state.generic_op_receiver,
+            };
+            handle_app_message(
+                msg,
+                repo,
+                &mut repo_tab.commits,
+                &mut msg_view_state,
+                &mut self.toast_manager,
+                &ctx,
+            );
         }
 
         // Refresh status after processing all messages
@@ -1168,11 +597,9 @@ impl App {
                     // Also refresh submodules/worktrees/stashes
                     if let Some(ref repo) = repo_tab.repo {
                         if let Ok(submodules) = repo.submodules() {
-                            view_state.secondary_repos_view.set_submodules(submodules.clone());
                             view_state.branch_sidebar.submodules = submodules;
                         }
                         if let Ok(worktrees) = repo.worktrees() {
-                            view_state.secondary_repos_view.set_worktrees(worktrees.clone());
                             view_state.branch_sidebar.worktrees = worktrees;
                         }
                         view_state.branch_sidebar.stashes = repo.stash_list();
@@ -1304,11 +731,9 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
         // Load submodules and worktrees
         if let Ok(submodules) = repo.submodules() {
-            view_state.secondary_repos_view.set_submodules(submodules.clone());
             view_state.branch_sidebar.submodules = submodules;
         }
         if let Ok(worktrees) = repo.worktrees() {
-            view_state.secondary_repos_view.set_worktrees(worktrees.clone());
             view_state.branch_sidebar.worktrees = worktrees;
         }
 
