@@ -365,15 +365,26 @@ impl GitRepo {
                         .map(|cwd| cwd == wt_path)
                         .unwrap_or(false);
 
-                    // Try to get branch info
-                    let branch = if let Ok(wt_repo) = Repository::open(wt_path) {
-                        wt_repo
+                    // Try to get branch info and dirty status
+                    let (branch, is_dirty) = if let Ok(wt_repo) = Repository::open(wt_path) {
+                        let branch = wt_repo
                             .head()
                             .ok()
                             .and_then(|h| h.shorthand().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "detached".to_string())
+                            .unwrap_or_else(|| "detached".to_string());
+
+                        let is_dirty = wt_repo
+                            .statuses(None)
+                            .map(|statuses| {
+                                statuses.iter().any(|entry| {
+                                    !entry.status().intersects(Status::IGNORED)
+                                })
+                            })
+                            .unwrap_or(false);
+
+                        (branch, is_dirty)
                     } else {
-                        "unknown".to_string()
+                        ("unknown".to_string(), false)
                     };
 
                     infos.push(WorktreeInfo {
@@ -381,6 +392,7 @@ impl GitRepo {
                         path,
                         branch,
                         is_current,
+                        is_dirty,
                     });
                 }
         }
@@ -771,6 +783,7 @@ pub struct WorktreeInfo {
     pub path: String,
     pub branch: String,
     pub is_current: bool,
+    pub is_dirty: bool,
 }
 
 /// Stash entry information
