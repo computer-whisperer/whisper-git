@@ -58,56 +58,56 @@ impl ShortcutBar {
         ));
 
         let hints = self.hints_for_context();
-        let line_height = text_renderer.line_height();
-        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+        let small_lh = text_renderer.line_height_small();
+        let text_y = bounds.y + (bounds.height - small_lh) / 2.0;
         let mut x = bounds.x + 12.0;
 
         let key_color = theme::TEXT.to_array();
         let action_color = theme::TEXT_MUTED.to_array();
         let divider_color = theme::BORDER.to_array();
-        let char_w = text_renderer.char_width();
+        let char_w = text_renderer.measure_text_scaled(" ", 0.85);
 
         for (i, hint) in hints.iter().enumerate() {
             // Divider before all but the first hint
             if i > 0 {
                 x += char_w;
                 output.text_vertices.extend(
-                    text_renderer.layout_text("\u{00b7}", x, text_y, divider_color),
+                    text_renderer.layout_text_small("\u{00b7}", x, text_y, divider_color),
                 );
                 x += char_w * 2.0;
             }
 
-            // Key label (brighter)
+            // Key label (brighter, small)
             output.text_vertices.extend(
-                text_renderer.layout_text(hint.key, x, text_y, key_color),
+                text_renderer.layout_text_small(hint.key, x, text_y, key_color),
             );
-            x += text_renderer.measure_text(hint.key);
+            x += text_renderer.measure_text_scaled(hint.key, 0.85);
 
             // Space
             x += char_w;
 
-            // Action description (muted)
+            // Action description (muted, small)
             output.text_vertices.extend(
-                text_renderer.layout_text(hint.action, x, text_y, action_color),
+                text_renderer.layout_text_small(hint.action, x, text_y, action_color),
             );
-            x += text_renderer.measure_text(hint.action);
+            x += text_renderer.measure_text_scaled(hint.action, 0.85);
         }
 
         // Right-aligned "Ctrl+O New Tab" hint when only one tab is open
         if self.show_new_tab_hint {
             let hint_key = "Ctrl+O";
             let hint_action = "New Tab";
-            let total_width = text_renderer.measure_text(hint_key)
+            let total_width = text_renderer.measure_text_scaled(hint_key, 0.85)
                 + char_w
-                + text_renderer.measure_text(hint_action);
+                + text_renderer.measure_text_scaled(hint_action, 0.85);
             let hint_x = bounds.right() - total_width - 12.0;
 
             output.text_vertices.extend(
-                text_renderer.layout_text(hint_key, hint_x, text_y, theme::TEXT_MUTED.to_array()),
+                text_renderer.layout_text_small(hint_key, hint_x, text_y, theme::TEXT_MUTED.to_array()),
             );
-            let action_x = hint_x + text_renderer.measure_text(hint_key) + char_w;
+            let action_x = hint_x + text_renderer.measure_text_scaled(hint_key, 0.85) + char_w;
             output.text_vertices.extend(
-                text_renderer.layout_text(hint_action, action_x, text_y, theme::BORDER.to_array()),
+                text_renderer.layout_text_small(hint_action, action_x, text_y, theme::BORDER.to_array()),
             );
         }
 

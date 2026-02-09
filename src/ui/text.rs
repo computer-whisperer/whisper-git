@@ -422,6 +422,63 @@ impl TextRenderer {
         self.line_height * self.scale_ratio()
     }
 
+    /// Get line height for small (secondary) text - 85% of normal
+    pub fn line_height_small(&self) -> f32 {
+        self.line_height() * 0.85
+    }
+
+    /// Layout text at a smaller (secondary) size - 85% of normal.
+    /// Reuses the existing atlas, just renders smaller quads.
+    pub fn layout_text_small(&self, text: &str, x: f32, y: f32, color: [f32; 4]) -> Vec<TextVertex> {
+        self.layout_text_scaled(text, x, y, color, 0.85)
+    }
+
+    /// Layout text at a custom scale factor relative to normal size.
+    /// Reuses the existing atlas, rendering smaller or larger quads.
+    pub fn layout_text_scaled(&self, text: &str, x: f32, y: f32, color: [f32; 4], text_scale: f32) -> Vec<TextVertex> {
+        let ratio = self.scale_ratio() * text_scale;
+        let mut vertices = Vec::new();
+        let mut cursor_x = x;
+        let baseline_y = y + self.ascent * ratio;
+
+        for c in text.chars() {
+            if let Some(glyph) = self.glyphs.get(&c) {
+                if glyph.width > 0.0 {
+                    let x0 = cursor_x + glyph.bearing_x * ratio;
+                    let y0 = baseline_y + glyph.bearing_y * ratio;
+                    let x1 = x0 + glyph.width * ratio;
+                    let y1 = y0 + glyph.height * ratio;
+
+                    let u0 = glyph.tex_x;
+                    let v0 = glyph.tex_y;
+                    let u1 = glyph.tex_x + glyph.tex_w;
+                    let v1 = glyph.tex_y + glyph.tex_h;
+
+                    vertices.push(TextVertex { position: [x0, y0], tex_coord: [u0, v0], color });
+                    vertices.push(TextVertex { position: [x1, y0], tex_coord: [u1, v0], color });
+                    vertices.push(TextVertex { position: [x0, y1], tex_coord: [u0, v1], color });
+
+                    vertices.push(TextVertex { position: [x1, y0], tex_coord: [u1, v0], color });
+                    vertices.push(TextVertex { position: [x1, y1], tex_coord: [u1, v1], color });
+                    vertices.push(TextVertex { position: [x0, y1], tex_coord: [u0, v1], color });
+                }
+
+                cursor_x += glyph.advance * ratio;
+            }
+        }
+
+        vertices
+    }
+
+    /// Measure the width of a text string at a custom scale factor
+    pub fn measure_text_scaled(&self, text: &str, text_scale: f32) -> f32 {
+        let ratio = self.scale_ratio() * text_scale;
+        text.chars()
+            .filter_map(|c| self.glyphs.get(&c))
+            .map(|g| g.advance * ratio)
+            .sum()
+    }
+
     /// Get character width (advance) for a monospace font (scaled to current display)
     pub fn char_width(&self) -> f32 {
         self.glyphs
