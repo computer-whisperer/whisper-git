@@ -76,18 +76,62 @@ impl ScreenLayout {
         }
     }
 
-    /// Create a layout with a gap between sections
+    /// Create a layout with a gap between sections (convenience wrapper using default ratios)
+    #[allow(dead_code)]
     pub fn compute_with_gap(bounds: Rect, gap: f32, scale: f32) -> Self {
-        let base = Self::compute_scaled(bounds, scale);
+        Self::compute_with_ratios(bounds, gap, scale, None, None, None)
+    }
+
+    /// Create the screen layout with custom panel ratios and gap padding.
+    ///
+    /// - `sidebar_ratio`: fraction of total width for sidebar (default ~0.14, clamped 0.05..0.30)
+    /// - `graph_ratio`: fraction of content width (after sidebar) for graph (default 0.55, clamped 0.30..0.80)
+    /// - `staging_ratio`: fraction of right panel height for staging (default 0.45, clamped 0.15..0.85)
+    ///
+    /// Pass `None` for any ratio to use the default value.
+    pub fn compute_with_ratios(
+        bounds: Rect,
+        gap: f32,
+        scale: f32,
+        sidebar_ratio: Option<f32>,
+        graph_ratio: Option<f32>,
+        staging_ratio: Option<f32>,
+    ) -> Self {
+        // Split into header and main area
+        let header_height = bounds.height * 0.04;
+        let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
+
+        // Shortcut bar: thin strip below header
+        let shortcut_bar_height = 20.0 * scale;
+        let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
+
+        // Sidebar width: use ratio if provided, otherwise default ~180px
+        let sidebar_width = if let Some(ratio) = sidebar_ratio {
+            let clamped = ratio.clamp(0.05, 0.30);
+            main.width * clamped
+        } else {
+            (180.0 * scale).min(main.width * 0.15)
+        };
+        let (sidebar, content) = main.take_left(sidebar_width);
+
+        // Graph / right panel split
+        let graph_frac = graph_ratio.unwrap_or(0.55).clamp(0.30, 0.80);
+        let (graph, right_panel) = content.split_horizontal(graph_frac);
+
+        // Staging / right_panel vertical split
+        let staging_frac = staging_ratio.unwrap_or(0.45).clamp(0.15, 0.85);
+        let staging_height = right_panel.height * staging_frac;
+        let (staging, remaining) = right_panel.take_top(staging_height);
+        let right_panel = remaining;
 
         // Apply gap padding
         Self {
-            header: base.header.pad(gap, gap, gap, 0.0),
-            shortcut_bar: base.shortcut_bar, // no padding - full width subtle bar
-            sidebar: base.sidebar.pad(gap, gap, gap / 2.0, gap),
-            graph: base.graph.pad(gap / 2.0, gap, gap / 2.0, gap),
-            staging: base.staging.pad(gap / 2.0, gap, gap, gap / 2.0),
-            right_panel: base.right_panel.pad(gap / 2.0, gap / 2.0, gap, gap),
+            header: header.pad(gap, gap, gap, 0.0),
+            shortcut_bar, // no padding - full width subtle bar
+            sidebar: sidebar.pad(gap, gap, gap / 2.0, gap),
+            graph: graph.pad(gap / 2.0, gap, gap / 2.0, gap),
+            staging: staging.pad(gap / 2.0, gap, gap, gap / 2.0),
+            right_panel: right_panel.pad(gap / 2.0, gap / 2.0, gap, gap),
         }
     }
 }

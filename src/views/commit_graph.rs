@@ -351,7 +351,12 @@ impl CommitGraphView {
 
     /// Compute accumulated Y offsets for each row based on time deltas between
     /// consecutive commits. Adjacent commits get minimal spacing; distant commits
-    /// get proportionally more gap (log-scaled, capped at 3x row_height).
+    /// get proportionally more gap (log-scaled, capped at 2x row_height).
+    ///
+    /// The max_gap multiplier is kept at 2.0 (rather than 3.0) so the spacing
+    /// difference between adjacent and distant commits is less dramatic, and the
+    /// base_seconds reference is 7200 (2 hours) to further smooth the log curve
+    /// and reduce sensitivity to small time differences.
     fn compute_row_offsets(&mut self, commits: &[CommitInfo]) {
         self.row_y_offsets.clear();
         if commits.is_empty() {
@@ -359,8 +364,8 @@ impl CommitGraphView {
         }
 
         let min_gap = self.row_height;
-        let max_gap = self.row_height * 3.0;
-        let base_seconds: f64 = 3600.0; // 1 hour reference
+        let max_gap = self.row_height * 2.0;
+        let base_seconds: f64 = 7200.0; // 2 hour reference (smooths log curve)
         let max_delta: f64 = 30.0 * 24.0 * 3600.0; // 30 days caps scaling
         let log_max = (1.0 + max_delta / base_seconds).ln();
 

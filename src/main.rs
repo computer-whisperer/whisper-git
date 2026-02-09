@@ -190,6 +190,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Which divider is currently being dragged
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DividerDrag {
+    /// Vertical divider between sidebar and graph
+    SidebarGraph,
+    /// Vertical divider between graph and right panel
+    GraphRight,
+    /// Horizontal divider between staging and right panel (diff/detail)
+    StagingRight,
+}
+
 struct App {
     cli_args: CliArgs,
     tabs: Vec<(RepoTab, TabViewState)>,
@@ -201,6 +212,14 @@ struct App {
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
+    /// Which divider is currently being dragged, if any
+    divider_drag: Option<DividerDrag>,
+    /// Fraction of total width for sidebar (default ~0.14)
+    sidebar_ratio: f32,
+    /// Fraction of content width (after sidebar) for graph (default 0.55)
+    graph_ratio: f32,
+    /// Fraction of right panel height for staging (default 0.45)
+    staging_ratio: f32,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -283,6 +302,10 @@ impl App {
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
+            divider_drag: None,
+            sidebar_ratio: 0.14,
+            graph_ratio: 0.55,
+            staging_ratio: 0.45,
         })
     }
 
@@ -1059,7 +1082,12 @@ impl ApplicationHandler for App {
                     let scale = state.scale_factor as f32;
                     let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
                     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-                    let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
+                    let layout = ScreenLayout::compute_with_ratios(
+                        main_bounds, 4.0, scale,
+                        Some(self.sidebar_ratio),
+                        Some(self.graph_ratio),
+                        Some(self.staging_ratio),
+                    );
 
                     // Confirm dialog takes highest modal priority
                     if self.confirm_dialog.is_visible() {
@@ -1124,6 +1152,88 @@ impl ApplicationHandler for App {
                             }
                             return;
                         }
+
+                    // ---- Divider drag handling ----
+                    // Handle ongoing drag (MouseMove / MouseUp) before anything else
+                    if self.divider_drag.is_some() {
+                        match &input_event {
+                            InputEvent::MouseMove { x, y, .. } => {
+                                match self.divider_drag.unwrap() {
+                                    DividerDrag::SidebarGraph => {
+                                        // Convert mouse x to sidebar ratio of main_bounds width
+                                        let ratio = (*x - main_bounds.x) / main_bounds.width;
+                                        self.sidebar_ratio = ratio.clamp(0.05, 0.30);
+                                    }
+                                    DividerDrag::GraphRight => {
+                                        // Content area starts after sidebar
+                                        let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
+                                        let content_x = main_bounds.x + sidebar_w;
+                                        let content_w = main_bounds.width - sidebar_w;
+                                        if content_w > 0.0 {
+                                            let ratio = (*x - content_x) / content_w;
+                                            self.graph_ratio = ratio.clamp(0.30, 0.80);
+                                        }
+                                    }
+                                    DividerDrag::StagingRight => {
+                                        // Staging ratio is fraction of right panel height
+                                        // Right panel starts after header + shortcut bar
+                                        let rp_y = layout.staging.y;
+                                        let rp_h = layout.staging.height + layout.right_panel.height;
+                                        if rp_h > 0.0 {
+                                            let ratio = (*y - rp_y) / rp_h;
+                                            self.staging_ratio = ratio.clamp(0.15, 0.85);
+                                        }
+                                    }
+                                }
+                                // Set appropriate cursor while dragging
+                                if let Some(ref render_state) = self.state {
+                                    let cursor = match self.divider_drag.unwrap() {
+                                        DividerDrag::SidebarGraph | DividerDrag::GraphRight => CursorIcon::ColResize,
+                                        DividerDrag::StagingRight => CursorIcon::RowResize,
+                                    };
+                                    render_state.window.set_cursor(cursor);
+                                }
+                                return;
+                            }
+                            InputEvent::MouseUp { .. } => {
+                                self.divider_drag = None;
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Start divider drag on MouseDown near divider edges
+                    if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = &input_event {
+                        let hit_tolerance = 5.0;
+
+                        // Only check dividers in the main content area (below header)
+                        if *y > layout.shortcut_bar.bottom() {
+                            // Divider 1: sidebar | graph (vertical)
+                            let sidebar_edge = layout.sidebar.right();
+                            if (*x - sidebar_edge).abs() < hit_tolerance {
+                                self.divider_drag = Some(DividerDrag::SidebarGraph);
+                                return;
+                            }
+
+                            // Divider 2: graph | right panel (vertical)
+                            let graph_edge = layout.graph.right();
+                            if (*x - graph_edge).abs() < hit_tolerance {
+                                self.divider_drag = Some(DividerDrag::GraphRight);
+                                return;
+                            }
+
+                            // Divider 3: staging | right panel (horizontal, only in right column)
+                            let staging_edge = layout.staging.bottom();
+                            if (*y - staging_edge).abs() < hit_tolerance
+                                && *x >= layout.staging.x
+                                && *x <= layout.staging.right()
+                            {
+                                self.divider_drag = Some(DividerDrag::StagingRight);
+                                return;
+                            }
+                        }
+                    }
 
                     // Handle global keys first
                     if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
@@ -1418,8 +1528,34 @@ impl ApplicationHandler for App {
 }
 
 /// Determine which cursor icon to show based on mouse position.
-/// Returns Text cursor over text input areas, Default otherwise.
+/// Returns resize cursors near divider edges, Text cursor over text inputs, Default otherwise.
 fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewState) -> CursorIcon {
+    let hit_tolerance = 5.0;
+
+    // Check divider hover zones (only below shortcut bar)
+    if y > layout.shortcut_bar.bottom() {
+        // Divider 1: sidebar | graph (vertical)
+        let sidebar_edge = layout.sidebar.right();
+        if (x - sidebar_edge).abs() < hit_tolerance {
+            return CursorIcon::ColResize;
+        }
+
+        // Divider 2: graph | right panel (vertical)
+        let graph_edge = layout.graph.right();
+        if (x - graph_edge).abs() < hit_tolerance {
+            return CursorIcon::ColResize;
+        }
+
+        // Divider 3: staging | right panel (horizontal, only in right column)
+        let staging_edge = layout.staging.bottom();
+        if (y - staging_edge).abs() < hit_tolerance
+            && x >= layout.staging.x
+            && x <= layout.staging.right()
+        {
+            return CursorIcon::RowResize;
+        }
+    }
+
     // Check staging area text inputs (subject line, body area)
     if layout.staging.contains(x, y) {
         let (subject_bounds, body_bounds, _, _, _) = view_state.staging_well.compute_regions(layout.staging);
@@ -1563,15 +1699,21 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::BORDER.to_array(),
     ));
 
-    // Vertical border: sidebar | graph
+    // Vertical border: sidebar | graph (2px for drag affordance)
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(layout.sidebar.right(), layout.sidebar.y, 1.0, layout.sidebar.height),
+        &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
         theme::BORDER.to_array(),
     ));
 
-    // Vertical border: graph | staging/secondary
+    // Vertical border: graph | staging/secondary (2px for drag affordance)
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(layout.graph.right(), layout.graph.y, 1.0, layout.graph.height),
+        &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
+        theme::BORDER.to_array(),
+    ));
+
+    // Horizontal border: staging | right panel (2px for drag affordance)
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 2.0),
         theme::BORDER.to_array(),
     ));
 
@@ -1603,6 +1745,9 @@ fn build_ui_output(
     extent: [u32; 2],
     avatar_cache: &mut AvatarCache,
     avatar_renderer: &AvatarRenderer,
+    sidebar_ratio: f32,
+    graph_ratio: f32,
+    staging_ratio: f32,
 ) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
@@ -1610,7 +1755,12 @@ fn build_ui_output(
     // Tab bar takes space at top when multiple tabs
     let tab_bar_height = if tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-    let layout = ScreenLayout::compute_with_gap(main_bounds, 4.0, scale);
+    let layout = ScreenLayout::compute_with_ratios(
+        main_bounds, 4.0, scale,
+        Some(sidebar_ratio),
+        Some(graph_ratio),
+        Some(staging_ratio),
+    );
 
     // Three layers: graph content renders first, chrome on top, overlay on top of everything
     let mut graph_output = WidgetOutput::new();
@@ -1743,11 +1893,13 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
+    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
+        sidebar_ratio, graph_ratio, staging_ratio,
     );
 
     let viewport = Viewport {
@@ -1869,11 +2021,13 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
+    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
+        sidebar_ratio, graph_ratio, staging_ratio,
     );
 
     let state = app.state.as_mut().unwrap();
@@ -1981,11 +2135,13 @@ fn capture_screenshot_offscreen(
 
     let extent = offscreen.extent();
     let scale_factor = state.scale_factor;
+    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog,
         &state.text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
+        sidebar_ratio, graph_ratio, staging_ratio,
     );
 
     let state = app.state.as_mut().unwrap();
