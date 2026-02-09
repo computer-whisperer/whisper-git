@@ -140,9 +140,7 @@ impl ContextMenu {
             Some(idx) => {
                 if forward {
                     if idx + 1 < self.items.len() { idx + 1 } else { idx }
-                } else {
-                    if idx > 0 { idx - 1 } else { idx }
-                }
+                } else if idx > 0 { idx - 1 } else { idx }
             }
             None => 0,
         };
@@ -242,12 +240,12 @@ impl ContextMenu {
                 EventResponse::Consumed
             }
             InputEvent::KeyDown { key: Key::Enter | Key::Space, .. } => {
-                if let Some(idx) = self.hovered_index {
-                    if idx < self.items.len() && !self.items[idx].is_separator {
-                        let action_id = self.items[idx].action_id.clone();
-                        self.pending_action = Some(MenuAction::Selected(action_id));
-                        self.hide();
-                    }
+                if let Some(idx) = self.hovered_index
+                    && idx < self.items.len() && !self.items[idx].is_separator
+                {
+                    let action_id = self.items[idx].action_id.clone();
+                    self.pending_action = Some(MenuAction::Selected(action_id));
+                    self.hide();
                 }
                 EventResponse::Consumed
             }

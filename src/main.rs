@@ -592,14 +592,7 @@ impl App {
                 AppMessage::ViewDiff(path, staged) => {
                     match repo!().diff_working_file(&path, staged) {
                         Ok(hunks) => {
-                            let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-                            let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-                            let diff_file = crate::git::DiffFile {
-                                path: path.clone(),
-                                hunks,
-                                additions,
-                                deletions,
-                            };
+                            let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
                             let title = if staged {
                                 format!("Staged: {}", path)
                             } else {
@@ -685,14 +678,7 @@ impl App {
                                 if hunks.is_empty() {
                                     view_state.diff_view.clear();
                                 } else {
-                                    let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-                                    let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-                                    let diff_file = crate::git::DiffFile {
-                                        path: path.clone(),
-                                        hunks,
-                                        additions,
-                                        deletions,
-                                    };
+                                    let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
                                     view_state.diff_view.set_diff(vec![diff_file], path);
                                 }
                             }
@@ -717,14 +703,7 @@ impl App {
                                 if hunks.is_empty() {
                                     view_state.diff_view.clear();
                                 } else {
-                                    let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-                                    let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-                                    let diff_file = crate::git::DiffFile {
-                                        path: path.clone(),
-                                        hunks,
-                                        additions,
-                                        deletions,
-                                    };
+                                    let diff_file = crate::git::DiffFile::from_hunks(path.clone(), hunks);
                                     view_state.diff_view.set_staged_diff(vec![diff_file], path);
                                 }
                             }
@@ -2029,18 +2008,18 @@ fn apply_screenshot_state(app: &mut App) {
             }
         }
         "commit-detail" => {
-            if let Some((repo_tab, view_state)) = app.tabs.get_mut(app.active_tab) {
-                if let Some(first) = repo_tab.commits.first() {
-                    let oid = first.id;
-                    if let Some(ref repo) = repo_tab.repo {
-                        if let Ok(info) = repo.full_commit_info(oid) {
-                            let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
-                            view_state.commit_detail_view.set_commit(info, diff_files.clone());
-                            if let Some(first_file) = diff_files.first() {
-                                let title = first_file.path.clone();
-                                view_state.diff_view.set_diff(vec![first_file.clone()], title);
-                            }
-                        }
+            if let Some((repo_tab, view_state)) = app.tabs.get_mut(app.active_tab)
+                && let Some(first) = repo_tab.commits.first()
+            {
+                let oid = first.id;
+                if let Some(ref repo) = repo_tab.repo
+                    && let Ok(info) = repo.full_commit_info(oid)
+                {
+                    let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
+                    view_state.commit_detail_view.set_commit(info, diff_files.clone());
+                    if let Some(first_file) = diff_files.first() {
+                        let title = first_file.path.clone();
+                        view_state.diff_view.set_diff(vec![first_file.clone()], title);
                     }
                 }
             }

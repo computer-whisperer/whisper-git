@@ -158,12 +158,12 @@ fn download_avatar(email: &str) -> Option<(Vec<u8>, u32)> {
     let cache_file = cache_dir.join(format!("{hash}.png"));
 
     // Check disk cache first
-    if cache_file.exists() {
-        if let Ok(img) = image::open(&cache_file) {
-            let rgba_img = img.to_rgba8();
-            let size = rgba_img.width();
-            return Some((rgba_img.into_raw(), size));
-        }
+    if cache_file.exists()
+        && let Ok(img) = image::open(&cache_file)
+    {
+        let rgba_img = img.to_rgba8();
+        let size = rgba_img.width();
+        return Some((rgba_img.into_raw(), size));
     }
 
     // Download from Gravatar
