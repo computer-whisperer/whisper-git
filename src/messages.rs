@@ -53,6 +53,7 @@ pub enum AppMessage {
     EnterSubmodule(String),
     ExitSubmodule,
     ExitToDepth(usize),
+    AbortOperation,
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -648,6 +649,21 @@ pub fn handle_app_message(
                 Err(e) => {
                     toast_manager.push(
                         format!("Reset failed: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::AbortOperation => {
+            match repo.cleanup_state() {
+                Ok(()) => {
+                    refresh_repo_state(repo, commits, view_state);
+                    toast_manager.push("Operation aborted", ToastSeverity::Success);
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Abort failed: {}", e),
                         ToastSeverity::Error,
                     );
                 }

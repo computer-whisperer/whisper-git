@@ -18,6 +18,8 @@ pub enum HeaderAction {
     BreadcrumbNav(usize),
     /// Close button in breadcrumb mode: return to root
     BreadcrumbClose,
+    /// Abort an in-progress git operation (merge, rebase, etc.)
+    AbortOperation,
 }
 
 /// Header bar widget displaying repo info and action buttons
@@ -58,6 +60,12 @@ pub struct HeaderBar {
     close_button: Button,
     /// Cached bounds for each breadcrumb segment (for hit testing)
     breadcrumb_segment_bounds: Vec<Rect>,
+    /// Operation state label (e.g. "MERGE IN PROGRESS"), None when clean
+    pub operation_state_label: Option<&'static str>,
+    /// Abort button for in-progress operations
+    abort_button: Button,
+    /// Cached abort button bounds (computed during update_breadcrumb_bounds)
+    abort_button_bounds: Option<Rect>,
 }
 
 impl HeaderBar {
@@ -83,6 +91,9 @@ impl HeaderBar {
             breadcrumb_hovered: None,
             close_button: Button::new("\u{2715}").ghost(), // ✕
             breadcrumb_segment_bounds: Vec::new(),
+            operation_state_label: None,
+            abort_button: Button::new("Abort"),
+            abort_button_bounds: None,
         }
     }
 
@@ -126,6 +137,13 @@ impl HeaderBar {
         } else {
             "^ Push".to_string()
         };
+
+        // Abort button: amber/warning color scheme
+        self.abort_button.background = crate::ui::Color::rgba(0.35, 0.25, 0.10, 1.0);
+        self.abort_button.hover_background = crate::ui::Color::rgba(0.45, 0.32, 0.12, 1.0);
+        self.abort_button.pressed_background = crate::ui::Color::rgba(0.30, 0.20, 0.08, 1.0);
+        self.abort_button.text_color = crate::ui::Color::rgba(1.0, 0.718, 0.302, 1.0); // amber
+        self.abort_button.border_color = Some(crate::ui::Color::rgba(1.0, 0.718, 0.302, 0.5));
 
         // Commit button: always primary style (blue accent)
         self.commit_button.background = theme::ACCENT;
@@ -173,6 +191,41 @@ impl HeaderBar {
                 x += sep_w;
             }
         }
+    }
+
+    /// Pre-compute abort button bounds (call from the pre-draw phase with text_renderer access).
+    pub fn update_abort_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
+        if self.operation_state_label.is_none() {
+            self.abort_button_bounds = None;
+            return;
+        }
+        let scale = (bounds.height / 32.0).max(1.0);
+        let button_height = bounds.height - 8.0 * scale;
+        let button_y = bounds.y + 4.0 * scale;
+        let abort_w = 80.0 * scale;
+
+        // Compute branch pill end position
+        let branch_pill_x = if self.breadcrumb_segments.is_empty() {
+            let repo_x = bounds.x + 16.0;
+            let repo_w = text_renderer.measure_text(&self.repo_name);
+            let sep_x = repo_x + repo_w + 12.0;
+            sep_x + 12.0
+        } else if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
+            last_bound.right() + 8.0 + 28.0 * scale + 8.0 + 12.0
+        } else {
+            bounds.x + 16.0
+        };
+
+        let branch_text_w = text_renderer.measure_text(&self.branch_name);
+        let pill_pad_h = 10.0;
+        let pill_w = branch_text_w + pill_pad_h * 2.0;
+
+        // Place operation label + abort button after branch pill
+        let label_text = self.operation_state_label.unwrap_or("");
+        let label_w = text_renderer.measure_text(label_text);
+        let abort_x = branch_pill_x + pill_w + 12.0 + label_w + 8.0;
+
+        self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
     }
 
     /// Compute button bounds within the header (scale-aware)
@@ -243,6 +296,16 @@ impl Widget for HeaderBar {
             }
         }
 
+        // Handle abort button (when operation in progress)
+        if let Some(abort_bounds) = self.abort_button_bounds {
+            if self.abort_button.handle_event(event, abort_bounds).is_consumed() {
+                if self.abort_button.was_clicked() {
+                    self.pending_action = Some(HeaderAction::AbortOperation);
+                }
+                return EventResponse::Consumed;
+            }
+        }
+
         // Handle button events
         if self.fetch_button.handle_event(event, fetch_bounds).is_consumed() {
             if self.fetch_button.was_clicked() {
@@ -297,6 +360,11 @@ impl Widget for HeaderBar {
         self.commit_button.update_hover(x, y, commit_bounds);
         self.help_button.update_hover(x, y, help_bounds);
         self.settings_button.update_hover(x, y, settings_bounds);
+
+        // Abort button hover
+        if let Some(abort_bounds) = self.abort_button_bounds {
+            self.abort_button.update_hover(x, y, abort_bounds);
+        }
 
         // Breadcrumb hover tracking
         if !self.breadcrumb_segments.is_empty() {
@@ -440,6 +508,24 @@ impl Widget for HeaderBar {
             branch_text_y,
             theme::ACCENT.to_array(),
         ));
+
+        // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
+        if let Some(label) = self.operation_state_label {
+            // Amber warning text after the branch pill
+            let label_x = branch_pill_x + pill_w + 12.0;
+            let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
+            output.text_vertices.extend(text_renderer.layout_text(
+                label,
+                label_x,
+                text_y,
+                label_color,
+            ));
+
+            // Abort button (pre-computed bounds)
+            if let Some(abort_bounds) = self.abort_button_bounds {
+                output.extend(self.abort_button.layout(text_renderer, abort_bounds));
+            }
+        }
 
         // Button bounds
         let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
