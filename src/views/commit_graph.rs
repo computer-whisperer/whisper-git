@@ -525,6 +525,19 @@ impl CommitGraphView {
                     self.scroll_to_selection(commits, bounds);
                     EventResponse::Consumed
                 }
+                Key::PageDown => {
+                    let visible_rows = (bounds.height / self.row_height).max(1.0) as i32;
+                    self.move_selection(visible_rows, commits);
+                    self.scroll_to_selection(commits, bounds);
+                    self.check_load_more(commits, bounds);
+                    EventResponse::Consumed
+                }
+                Key::PageUp => {
+                    let visible_rows = (bounds.height / self.row_height).max(1.0) as i32;
+                    self.move_selection(-visible_rows, commits);
+                    self.scroll_to_selection(commits, bounds);
+                    EventResponse::Consumed
+                }
                 Key::G => {
                     // Go to HEAD
                     if let Some(head) = self.head_oid {
@@ -798,6 +811,33 @@ impl CommitGraphView {
                 }
             }
 
+        // Pre-pass: render ALL zebra stripes BEFORE connection lines so stripes
+        // appear behind everything else (spline vertices render in order).
+        for (row, commit) in commits.iter().enumerate() {
+            if row % 2 == 0 {
+                continue;
+            }
+            let y = self.row_y(row, &bounds, header_offset);
+            let buffer = self.row_height * 5.0;
+            if y < bounds.y - buffer || y > bounds.bottom() + buffer {
+                continue;
+            }
+            // Only render if this commit has a layout entry
+            if self.layout.get(&commit.id).is_none() {
+                continue;
+            }
+            let stripe_rect = Rect::new(
+                bounds.x,
+                y - self.row_height / 2.0,
+                bounds.width - scrollbar_width,
+                self.row_height,
+            );
+            vertices.extend(create_rect_vertices(
+                &stripe_rect,
+                theme::GRAPH_ROW_ALT.to_array(),
+            ));
+        }
+
         for (row, commit) in commits.iter().enumerate() {
             let Some(layout) = self.layout.get(&commit.id) else {
                 continue;
@@ -810,20 +850,6 @@ impl CommitGraphView {
             let buffer = self.row_height * 5.0;
             if y < bounds.y - buffer || y > bounds.bottom() + buffer {
                 continue;
-            }
-
-            // Zebra striping - alternate row backgrounds
-            if row % 2 == 1 {
-                let stripe_rect = Rect::new(
-                    bounds.x,
-                    y - self.row_height / 2.0,
-                    bounds.width - scrollbar_width,
-                    self.row_height,
-                );
-                vertices.extend(create_rect_vertices(
-                    &stripe_rect,
-                    theme::GRAPH_ROW_ALT.to_array(),
-                ));
             }
 
             // Draw connections to parents
