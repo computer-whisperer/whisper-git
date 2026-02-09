@@ -134,6 +134,22 @@ impl FileList {
         }
     }
 
+    /// Find which file is at the given Y position within these bounds.
+    /// Uses the same layout values as update_hover() and layout().
+    pub fn file_at_y(&self, y: f32, bounds: Rect) -> Option<String> {
+        let header_height = 28.0;
+        let entry_height = 22.0;
+        let content_y = bounds.y + header_height + 6.0;
+
+        let rel_y = y - content_y;
+        if rel_y < 0.0 {
+            return None;
+        }
+
+        let idx = self.scroll_offset + (rel_y / entry_height) as usize;
+        self.files.get(idx).map(|f| f.path.clone())
+    }
+
     fn ensure_selection_visible(&mut self, bounds: &Rect) {
         if let Some(idx) = self.selected {
             let visible = self.visible_lines(bounds);
