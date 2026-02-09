@@ -1,3 +1,4 @@
+mod config;
 mod git;
 mod input;
 mod renderer;
@@ -25,6 +26,7 @@ use winit::{
 
 use git2::Oid;
 
+use crate::config::Config;
 use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
@@ -216,6 +218,7 @@ enum DividerDrag {
 
 struct App {
     cli_args: CliArgs,
+    config: Config,
     tabs: Vec<(RepoTab, TabViewState)>,
     active_tab: usize,
     tab_bar: TabBar,
@@ -252,6 +255,7 @@ struct RenderState {
 
 impl App {
     fn new(cli_args: CliArgs) -> Result<Self> {
+        let config = Config::load();
         let mut tabs = Vec::new();
         let mut tab_bar = TabBar::new();
 
@@ -304,13 +308,19 @@ impl App {
             }
         }
 
+        let mut settings_dialog = SettingsDialog::new();
+        settings_dialog.show_avatars = config.avatars_enabled;
+        settings_dialog.scroll_speed = if config.fast_scroll { 2.0 } else { 1.0 };
+        settings_dialog.row_scale = config.row_scale;
+
         Ok(Self {
             cli_args,
+            config,
             tabs,
             active_tab: 0,
             tab_bar,
             repo_dialog: RepoDialog::new(),
-            settings_dialog: SettingsDialog::new(),
+            settings_dialog,
             confirm_dialog: ConfirmDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
@@ -1284,6 +1294,11 @@ impl ApplicationHandler for App {
                                         view_state.commit_graph_view.row_scale = row_scale;
                                         view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                                     }
+                                    // Persist settings to disk
+                                    self.config.avatars_enabled = self.settings_dialog.show_avatars;
+                                    self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
+                                    self.config.row_scale = self.settings_dialog.row_scale;
+                                    self.config.save();
                                 }
                             }
                         }
@@ -1800,13 +1815,21 @@ fn handle_context_menu_action(
         // Commit graph actions
         "copy_sha" => {
             if let Some(oid) = view_state.context_menu_commit {
-                // Use arboard for clipboard if available, otherwise just print
                 let sha = oid.to_string();
-                // Clipboard integration can be added later (e.g., arboard crate)
-                toast_manager.push(
-                    format!("SHA: {}", &sha[..7]),
-                    ToastSeverity::Info,
-                );
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&sha)) {
+                    Ok(()) => {
+                        toast_manager.push(
+                            format!("Copied: {}", &sha[..7]),
+                            ToastSeverity::Success,
+                        );
+                    }
+                    Err(e) => {
+                        toast_manager.push(
+                            format!("Clipboard error: {e}"),
+                            ToastSeverity::Error,
+                        );
+                    }
+                }
             }
         }
         "view_details" => {
