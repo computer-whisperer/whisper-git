@@ -36,12 +36,6 @@ impl Modifiers {
         self.shift || self.ctrl || self.alt || self.super_key
     }
 
-    /// Check if only shift is pressed (for Shift+Tab, etc.)
-    #[allow(dead_code)]
-    pub fn only_shift(&self) -> bool {
-        self.shift && !self.ctrl && !self.alt && !self.super_key
-    }
-
     /// Check if only ctrl is pressed (for Ctrl+C, etc.)
     pub fn only_ctrl(&self) -> bool {
         self.ctrl && !self.shift && !self.alt && !self.super_key
@@ -223,25 +217,9 @@ impl Key {
         )
     }
 
-    /// Check if this is a navigation key
-    #[allow(dead_code)]
-    pub fn is_navigation(&self) -> bool {
-        matches!(
-            self,
-            Key::Up | Key::Down | Key::Left | Key::Right |
-            Key::Home | Key::End | Key::PageUp | Key::PageDown
-        )
-    }
-
-    /// Check if this is a modifier key
-    #[allow(dead_code)]
-    pub fn is_modifier(&self) -> bool {
-        matches!(self, Key::Shift | Key::Ctrl | Key::Alt | Key::Super)
-    }
 }
 
 /// Tracks which keys are currently pressed
-#[allow(dead_code)]
 pub struct KeyState {
     pressed: HashSet<Key>,
 }
@@ -261,15 +239,6 @@ impl KeyState {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_pressed(&self, key: Key) -> bool {
-        self.pressed.contains(&key)
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.pressed.clear();
-    }
 }
 
 impl Default for KeyState {

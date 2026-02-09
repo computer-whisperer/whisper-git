@@ -72,58 +72,6 @@ impl GitRepo {
         self.repo.workdir()
     }
 
-    /// Whether this is a bare repository
-    #[allow(dead_code)]
-    pub fn is_bare(&self) -> bool {
-        self.repo.is_bare()
-    }
-
-    /// Get recent commits from HEAD, falling back to branch tips if HEAD is invalid
-    #[allow(dead_code)]
-    pub fn recent_commits(&self, count: usize) -> Result<Vec<CommitInfo>> {
-        let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
-
-        // Try push_head first; if it fails (e.g. bare repo with stale HEAD), fall back to branches
-        if revwalk.push_head().is_err() {
-            let mut found_any = false;
-            for branch in self.repo.branches(Some(git2::BranchType::Local))? {
-                if let Ok((branch, _)) = branch
-                    && let Ok(reference) = branch.get().resolve()
-                        && let Some(oid) = reference.target() {
-                            let _ = revwalk.push(oid);
-                            found_any = true;
-                        }
-            }
-            if !found_any {
-                return Ok(Vec::new());
-            }
-        }
-
-        let commits: Vec<CommitInfo> = revwalk
-            .take(count)
-            .filter_map(|oid| {
-                let oid = oid.ok()?;
-                let commit = self.repo.find_commit(oid).ok()?;
-                Some(CommitInfo::from_commit(&commit))
-            })
-            .collect();
-
-        Ok(commits)
-    }
-
-    /// Get all branch names
-    #[allow(dead_code)]
-    pub fn branches(&self) -> Result<Vec<String>> {
-        let branches = self.repo.branches(None).context("Failed to get branches")?;
-        let names: Vec<String> = branches
-            .filter_map(|b| {
-                let (branch, _) = b.ok()?;
-                branch.name().ok()?.map(|s| s.to_string())
-            })
-            .collect();
-        Ok(names)
-    }
-
     /// Get commits for building a graph (includes all branches)
     pub fn commit_graph(&self, max_commits: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
@@ -357,47 +305,6 @@ impl GitRepo {
             .context("Failed to create commit")?;
 
         Ok(commit_oid)
-    }
-
-    /// Get diff stats for a file
-    #[allow(dead_code)]
-    pub fn diff_file_stats(&self, path: &str, staged: bool) -> Result<(usize, usize)> {
-        let diff = if staged {
-            let head = self.repo.head().context("Failed to get HEAD")?;
-            let head_tree = head.peel_to_tree().context("Failed to get HEAD tree")?;
-            self.repo.diff_tree_to_index(
-                Some(&head_tree),
-                Some(&self.repo.index()?),
-                None,
-            )?
-        } else {
-            self.repo.diff_index_to_workdir(None, None)?
-        };
-
-        let mut additions = 0;
-        let mut deletions = 0;
-
-        diff.foreach(
-            &mut |delta, _| {
-                let check_path = |p: Option<&Path>| p.and_then(|p| p.to_str()) == Some(path);
-                check_path(delta.new_file().path()) || check_path(delta.old_file().path())
-            },
-            None,
-            None,
-            Some(&mut |delta, _hunk, line| {
-                let check_path = |p: Option<&Path>| p.and_then(|p| p.to_str()) == Some(path);
-                if check_path(delta.new_file().path()) || check_path(delta.old_file().path()) {
-                    match line.origin() {
-                        '+' => additions += 1,
-                        '-' => deletions += 1,
-                        _ => {}
-                    }
-                }
-                true
-            }),
-        )?;
-
-        Ok((additions, deletions))
     }
 
     /// Get submodules
@@ -755,6 +662,15 @@ pub struct DiffFile {
     pub deletions: usize,
 }
 
+impl DiffFile {
+    /// Build a DiffFile from a path and hunks, computing addition/deletion counts.
+    pub fn from_hunks(path: String, hunks: Vec<DiffHunk>) -> Self {
+        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
+        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
+        Self { path, hunks, additions, deletions }
+    }
+}
+
 /// A hunk within a diff file
 #[derive(Clone, Debug)]
 pub struct DiffHunk {
@@ -837,16 +753,6 @@ impl FileStatusKind {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn symbol(&self) -> char {
-        match self {
-            FileStatusKind::New => 'A',
-            FileStatusKind::Modified => 'M',
-            FileStatusKind::Deleted => 'D',
-            FileStatusKind::Renamed => 'R',
-            FileStatusKind::TypeChange => 'T',
-        }
-    }
 }
 
 /// Submodule information
@@ -884,10 +790,10 @@ pub struct TagInfo {
 }
 
 /// Result of a remote git operation (fetch, push, pull)
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RemoteOpResult {
     pub success: bool,
+    #[allow(dead_code)]
     pub output: String,
     pub error: String,
 }
@@ -999,16 +905,6 @@ impl GitRepo {
         let refname = format!("refs/heads/{}", branch);
         self.repo.set_head(&refname)?;
 
-        Ok(())
-    }
-
-    /// Create a new branch at HEAD
-    #[allow(dead_code)]
-    pub fn create_branch(&self, name: &str) -> Result<()> {
-        let head = self.repo.head().context("Failed to get HEAD")?;
-        let commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
-        self.repo.branch(name, &commit, false)
-            .with_context(|| format!("Failed to create branch '{}'", name))?;
         Ok(())
     }
 

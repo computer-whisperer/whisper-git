@@ -113,12 +113,12 @@ impl Widget for SettingsDialog {
         let close_bounds = Rect::new(close_x, button_y, button_w, line_h);
 
         // Handle keyboard shortcuts
-        if let InputEvent::KeyDown { key, .. } = event {
-            if *key == Key::Escape {
-                self.pending_action = Some(SettingsDialogAction::Close);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::KeyDown { key, .. } = event
+            && *key == Key::Escape
+        {
+            self.pending_action = Some(SettingsDialogAction::Close);
+            self.hide();
+            return EventResponse::Consumed;
         }
 
         // Handle clicks on toggle options

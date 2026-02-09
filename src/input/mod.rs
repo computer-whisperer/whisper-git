@@ -9,8 +9,6 @@ mod mouse;
 pub use keyboard::{Key, KeyState, Modifiers};
 pub use mouse::{MouseButton, MouseState};
 
-use crate::ui::Rect;
-
 /// A unified input event for the application
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -76,29 +74,6 @@ impl InputEvent {
         }
     }
 
-    /// Check if this event is within a given rect
-    #[allow(dead_code)]
-    pub fn is_within(&self, rect: &Rect) -> bool {
-        if let Some((x, y)) = self.position() {
-            rect.contains(x, y)
-        } else {
-            false
-        }
-    }
-
-    /// Get modifiers for this event
-    #[allow(dead_code)]
-    pub fn modifiers(&self) -> Modifiers {
-        match self {
-            InputEvent::KeyDown { modifiers, .. }
-            | InputEvent::KeyUp { modifiers, .. }
-            | InputEvent::MouseDown { modifiers, .. }
-            | InputEvent::MouseUp { modifiers, .. }
-            | InputEvent::MouseMove { modifiers, .. }
-            | InputEvent::Scroll { modifiers, .. } => *modifiers,
-            InputEvent::TextInput(_) => Modifiers::empty(),
-        }
-    }
 }
 
 /// Response from handling an input event

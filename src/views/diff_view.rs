@@ -388,7 +388,7 @@ impl DiffView {
                         }
 
                         // Origin character (+, -, space) - not affected by h_scroll
-                        let origin_str = format!("{}", line.origin);
+                        let origin_str: String = line.origin.into();
                         let origin_color = match line.origin {
                             '+' => diff_colors::ADDITION_TEXT,
                             '-' => diff_colors::DELETION_TEXT,

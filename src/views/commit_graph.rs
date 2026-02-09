@@ -23,11 +23,9 @@ pub enum GraphAction {
 }
 
 /// Layout information for a single commit
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct CommitLayout {
     pub lane: usize,
-    pub row: usize,
     pub color: Color,
 }
 
@@ -88,12 +86,12 @@ impl GraphLayout {
             .map(|(i, c)| (c.id, i))
             .collect();
 
-        for (row, commit) in commits.iter().enumerate() {
+        for commit in commits.iter() {
             // Step 1: Find lane for this commit (may already be reserved)
             let lane = self.find_or_assign_lane(commit, &commit_indices);
             let color = LANE_COLORS[lane % LANE_COLORS.len()];
 
-            self.layouts.insert(commit.id, CommitLayout { lane, row, color });
+            self.layouts.insert(commit.id, CommitLayout { lane, color });
 
             // Step 2: Free any OTHER lanes that were also tracking this commit
             // (happens when multiple children pointed to the same parent)
@@ -201,11 +199,8 @@ impl Default for GraphLayout {
 }
 
 /// View for displaying a commit graph with branch visualization
-#[allow(dead_code)]
 pub struct CommitGraphView {
     layout: GraphLayout,
-    title_color: Color,
-    text_color: Color,
     line_width: f32,
     lane_width: f32,
     row_height: f32,
@@ -241,8 +236,6 @@ impl Default for CommitGraphView {
     fn default() -> Self {
         Self {
             layout: GraphLayout::new(),
-            title_color: theme::TEXT_BRIGHT,
-            text_color: theme::TEXT,
             line_width: 2.0,
             lane_width: 22.0,
             row_height: 24.0,

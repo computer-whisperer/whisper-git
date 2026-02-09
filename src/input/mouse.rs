@@ -27,7 +27,6 @@ impl MouseButton {
 }
 
 /// Tracks mouse state (position and button states)
-#[allow(dead_code)]
 pub struct MouseState {
     x: f32,
     y: f32,
@@ -76,44 +75,6 @@ impl MouseState {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_pressed(&self, button: MouseButton) -> bool {
-        self.pressed.contains(&button)
-    }
-
-    /// Check if currently dragging (button held and moved beyond threshold)
-    #[allow(dead_code)]
-    pub fn is_dragging(&self) -> bool {
-        if let Some((start_x, start_y)) = self.drag_start {
-            let dx = self.x - start_x;
-            let dy = self.y - start_y;
-            let distance = (dx * dx + dy * dy).sqrt();
-            distance > 5.0 // 5 pixel threshold
-        } else {
-            false
-        }
-    }
-
-    /// Get drag delta if dragging
-    #[allow(dead_code)]
-    pub fn drag_delta(&self) -> Option<(f32, f32)> {
-        self.drag_start.map(|(start_x, start_y)| {
-            (self.x - start_x, self.y - start_y)
-        })
-    }
-
-    /// Get the button being used for dragging
-    #[allow(dead_code)]
-    pub fn drag_button(&self) -> Option<MouseButton> {
-        self.drag_button
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.pressed.clear();
-        self.drag_start = None;
-        self.drag_button = None;
-    }
 }
 
 impl Default for MouseState {
