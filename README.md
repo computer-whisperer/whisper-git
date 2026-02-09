@@ -6,11 +6,11 @@ A GPU-accelerated Git client built in Rust with Vulkan. Designed for power users
 
 ### Rendering Engine
 - **GPU-accelerated via Vulkan** using vulkano 0.35 -- no egui, no immediate-mode GUI frameworks
-- **Custom text rendering** with a font atlas built from DejaVu Sans Mono (monospace) via ab_glyph
+- **Custom text rendering** with a font atlas built from Roboto Regular (proportional) via ab_glyph
 - **Spline rendering** for commit graph connections using CPU-tessellated Bezier curves
 - **Avatar rendering** with a dedicated GPU atlas for Gravatar images
-- **Three-pass render pipeline**: splines (backgrounds/shapes) -> avatars -> text
-- **Dark theme** with a consistent color palette
+- **Three-layer render pipeline**: graph layer → chrome layer → overlay layer, each with splines → avatars → text passes
+- **Dark blue-gray theme** (#1a1e24 family) with rounded corners, pill outlines, and drop shadows
 - **HiDPI/4K aware** -- all layouts scale with the display scale factor
 - **Continuous redraw** for smooth cursor blink and toast animations
 
@@ -20,30 +20,37 @@ A GPU-accelerated Git client built in Rust with Vulkan. Designed for power users
 - Smooth S-curve Bezier merge/fork connection lines
 - 24-segment circle nodes at each commit
 - Each row displays: graph lanes | commit subject | author (dimmed) | relative time (right-aligned)
-- Pill-style branch labels at branch tips
-- Row hover highlighting
+- Color-coded pill labels at branch tips: local (blue), remote (cyan), tag (amber), HEAD (green) with outlines
+- Time-based variable row spacing (log-scaled gaps between commit groups)
+- Zebra striping and row hover highlighting
+- Graph column shadow on right edge of lane area
 - Click to select a commit and view its diff
 - Infinite scroll -- loads more commits as you scroll down
 - Working directory status row at the top when changes exist
+- Right-click context menu: Copy SHA, View Details, Checkout, Create Branch, Create Tag, Cherry-pick, Revert, Reset (Soft/Mixed/Hard)
 
 ### Branch Sidebar
-- Three collapsible sections: LOCAL, REMOTE, TAGS
-- Unicode collapse arrows and branch type icons
+- Six collapsible sections: LOCAL, REMOTE, TAGS, SUBMODULES, WORKTREES, STASHES
+- Rounded section headers with collapse arrows and item count badges
 - Current branch highlighted with accent color and left stripe
-- Keyboard navigation (j/k) and selection (Enter to checkout)
-- Delete branches with `d`
-- Right-click context menu (Checkout, Delete, Push)
-- Scrollbar with proportional thumb
+- Keyboard navigation (j/k, PageUp/PageDown) and selection (Enter to checkout)
+- Delete branches with `d`, create tags from context menu
+- Right-click context menus: Checkout, Delete, Push, Merge into Current, Rebase Current onto
+- Submodule context menu: Open in Terminal, Update, Delete
+- Worktree context menu: Open in Terminal, Jump to Branch, Remove
+- Stash context menu: Apply, Pop, Drop
+- Scrollbar with proportional thumb and auto-scroll on keyboard navigation
 
 ### Staging Area
 - Split view: commit message editor (subject + body) and file lists
 - Subject line input with 72-character limit and placeholder text
 - Multi-line body text area
-- Separate staged and unstaged file lists with colored status indicators
-- Stage/unstage individual files or all files at once
+- Separate staged and unstaged file lists with styled headers and colored status indicators
+- Stage/unstage individual files (double-click) or all files at once
 - Click files to view their diff
-- Ctrl+Enter to commit
+- Ctrl+Enter to commit, amend mode (Ctrl+Shift+A) pre-fills from last commit
 - Right-click context menu (Stage, Unstage, View Diff, Discard)
+- Auto-focus subject input after successful commit
 
 ### Diff Viewer
 - Color-coded diff display (green additions, red deletions, purple hunk headers)
@@ -102,17 +109,34 @@ A GPU-accelerated Git client built in Rust with Vulkan. Designed for power users
 - Modal overlay triggered from the header bar Settings button
 - **Show Avatars**: toggle Gravatar avatar display on/off
 - **Scroll Speed**: Normal or Fast (2x)
+- **Row Size**: Normal or Large (1.5x)
+- Settings persisted to `~/.config/whisper-git/settings.json`
 - Escape or click outside to close
 
+### Git Operations
+- **Commit**: Stage files, write message, Ctrl+Enter to commit
+- **Amend Commit**: Ctrl+Shift+A toggles amend mode, pre-fills subject/body from HEAD
+- **Revert Commit**: Context menu with confirmation dialog
+- **Reset to Commit**: Soft, Mixed, or Hard reset with confirmation (Hard has strong warning)
+- **Create/Delete Branch**: From graph or sidebar context menus with name dialog
+- **Create/Delete Tag**: From graph or sidebar context menus with name dialog
+- **Merge/Rebase**: Sidebar context menu "Merge into Current" / "Rebase Current onto"
+- **Cherry-pick**: Graph context menu with confirmation
+- **Stash**: Ctrl+S push, Ctrl+Shift+S pop, sidebar context menu for Apply/Pop/Drop
+- **Clipboard**: Copy SHA to system clipboard via arboard
+
 ### UI Polish
-- Panel backgrounds with 1px borders for depth separation
+- **Rounded corners** on buttons, pills, inputs, dialogs, context menus, toasts
+- Panel backgrounds with 1px borders for depth separation, drag-resizable dividers
 - Focused panel indicator (2px accent-colored top border)
-- Context-sensitive keyboard shortcut bar below the header
+- Context-sensitive shortcut bar with key pills below the header (toggleable)
+- Header bar with branch name pill, primary Commit button, ghost secondary buttons, drop shadow
 - Scrollbars with proportional thumb, drag support, and accent hover color
 - Hover highlighting on buttons, sidebar items, file list items, and graph rows
-- Cursor blinking in text inputs at approximately 1Hz
+- Cursor blinking in text inputs at approximately 1Hz, accent border on focus
 - Empty state messages ("Working tree clean" with a checkmark)
 - Colored file status dots (green for Added, yellow for Modified, red for Deleted)
+- Confirmation dialogs for all destructive operations
 
 ## Keyboard Shortcuts
 
@@ -124,29 +148,35 @@ A GPU-accelerated Git client built in Rust with Vulkan. Designed for power users
 | `Ctrl+Tab` | Switch to the next tab |
 | `Ctrl+Shift+Tab` | Switch to the previous tab |
 | `Tab` | Cycle focus: Graph -> Staging -> Sidebar -> Graph |
+| `Ctrl+S` | Stash push (when text input not focused) |
+| `Ctrl+Shift+S` | Stash pop |
 | `Escape` | Close diff view, then commit detail, then exit |
 
 ### Commit Graph (when focused)
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate commits up/down |
+| `PageUp` / `PageDown` | Navigate commits by page |
 | `Enter` | Select commit (view details and diff) |
 | `Ctrl+F` or `/` | Open search/filter bar |
-| Right-click | Context menu: Copy SHA, View Details, Checkout |
+| Right-click | Context menu: Copy SHA, View Details, Checkout, Create Branch, Create Tag, Cherry-pick, Revert, Reset |
 
 ### Branch Sidebar (when focused)
 | Key | Action |
 |-----|--------|
-| `j` / `k` | Navigate branches up/down |
-| `Enter` | Checkout the selected branch |
+| `j` / `k` | Navigate items up/down (with auto-scroll) |
+| `PageUp` / `PageDown` | Navigate by page |
+| `Enter` | Checkout branch / Apply stash / Jump to worktree branch |
 | `d` | Delete the selected branch |
-| Right-click | Context menu: Checkout, Delete, Push |
+| Right-click | Context menu varies by item type |
 
 ### Staging Area (when focused)
 | Key | Action |
 |-----|--------|
 | `Tab` | Cycle between subject, body, staged list, unstaged list |
 | `Ctrl+Enter` | Create commit with current message |
+| `Ctrl+Shift+A` | Toggle amend mode |
+| Double-click file | Stage/unstage individual file |
 | Right-click | Context menu: Stage/Unstage, View Diff, Discard |
 
 ### Diff Viewer
@@ -174,7 +204,7 @@ cargo build --release
 ### Requirements
 - Rust 2024 edition
 - Vulkan-capable GPU with drivers installed
-- System font: `/usr/share/fonts/TTF/DejaVuSansMono.ttf`
+- System font: `/usr/share/fonts/TTF/Roboto-Regular.ttf`
 - Linux (tested on Arch Linux)
 
 ### Dependencies
@@ -191,6 +221,8 @@ cargo build --release
 | bytemuck | 1.21 | Safe transmute for vertex data |
 | anyhow | 1.0 | Error handling |
 | half | 2.4 | f16 conversion for AMD swapchain formats |
+| serde / serde_json | 1 | Settings persistence to JSON |
+| arboard | 3 | System clipboard access |
 
 ## Usage
 
@@ -225,8 +257,9 @@ cargo run -- --screenshot output.png --scale 2.0
 
 ```
 src/
-├── main.rs                     # App struct, event loop, draw pipeline, CLI
-├── git.rs                      # Git operations (git2 + CLI wrappers)
+├── main.rs                     # App struct, event loop, draw pipeline, CLI (~2,850 lines)
+├── git.rs                      # Git operations (git2 + CLI wrappers, ~1,330 lines)
+├── config.rs                   # Settings persistence (serde_json → ~/.config/whisper-git/)
 ├── input/
 │   ├── mod.rs                  # InputState, InputEvent types
 │   ├── keyboard.rs             # Key definitions and modifier tracking
@@ -252,61 +285,70 @@ src/
 │       ├── button.rs           # Clickable button with hover/press states
 │       ├── context_menu.rs     # Right-click popup overlay with keyboard nav
 │       ├── file_list.rs        # File list with staging toggle and status dots
-│       ├── header_bar.rs       # Top bar: repo name, branch, Fetch/Pull/Push/Commit buttons
+│       ├── header_bar.rs       # Top bar: branch pill, Fetch/Pull/Push/Commit buttons, drop shadow
 │       ├── label.rs            # Text label
 │       ├── panel.rs            # Container widget
 │       ├── repo_dialog.rs      # Modal dialog for opening repositories
 │       ├── scrollbar.rs        # Proportional scrollbar with drag support
 │       ├── search_bar.rs       # Search/filter input bar
-│       ├── settings_dialog.rs  # Settings modal (avatar toggle, scroll speed)
+│       ├── settings_dialog.rs  # Settings modal (avatars, scroll speed, row size)
 │       ├── shortcut_bar.rs     # Context-sensitive keyboard shortcut hints
 │       ├── tab_bar.rs          # Tab bar for multi-repository support
 │       ├── text_area.rs        # Multi-line text editor
 │       ├── text_input.rs       # Single-line text input with cursor
+│       ├── branch_name_dialog.rs # Branch/tag creation name input modal
+│       ├── confirm_dialog.rs  # Confirmation dialog for destructive operations
 │       └── toast.rs            # Toast notification manager
 └── views/
     ├── mod.rs                  # View re-exports
-    ├── branch_sidebar.rs       # Branch/tag sidebar with collapsible sections
+    ├── branch_sidebar.rs       # Sidebar: branches/tags/submodules/worktrees/stashes (~1,415 lines)
     ├── commit_detail.rs        # Full commit metadata and file list
-    ├── commit_graph.rs         # Commit graph with spline branches and search
+    ├── commit_graph.rs         # Commit graph with spline branches and search (~1,504 lines)
     ├── diff_view.rs            # Color-coded diff with word-level highlights
-    ├── secondary_repos.rs      # Submodule and worktree status cards
-    └── staging_well.rs         # Staging panel with commit message editor
+    ├── secondary_repos.rs      # (Legacy) Submodule/worktree cards - data moved to sidebar
+    └── staging_well.rs         # Staging panel with commit message editor + amend mode
 ```
 
 ## Architecture
 
 ### Screen Layout
 
-The screen is divided into fixed regions by `ScreenLayout`:
+The screen is divided into drag-resizable regions by `ScreenLayout`:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ [Tab Bar]  (only visible when multiple tabs are open)    │
 ├──────────────────────────────────────────────────────────┤
-│ [Header Bar]  repo name | branch | Fetch Pull Push Commit│
+│ [Header Bar]  branch pill | Fetch Pull Push | Commit  ?= │
 ├──────────────────────────────────────────────────────────┤
-│ [Shortcut Bar]  context-sensitive keyboard hints         │
+│ [Shortcut Bar]  context-sensitive key pills (toggleable) │
 ├─────────┬──────────────────────┬─────────────────────────┤
-│         │                      │   Staging Well          │
-│ Branch  │   Commit Graph       │   (subject, body,       │
-│ Sidebar │   (55% width)        │    file lists)          │
-│ (180px) │                      ├─────────────────────────┤
-│         │                      │   Diff / Detail /       │
-│         │                      │   Secondary Repos       │
+│ Branch  │                      │   Staging Well          │
+│ Sidebar │   Commit Graph       │   (subject, body,       │
+│ LOCAL   │   (drag-resizable)   │    staged/unstaged)     │
+│ REMOTE  │                      ├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┤
+│ TAGS    │                      │   Diff / Detail View    │
+│ SUBMODS │                      │   (drag-resizable       │
+│ WORKTRS │                      │    vertical split)      │
+│ STASHES │                      │                         │
 ├─────────┴──────────────────────┴─────────────────────────┤
 │ [Toast Notifications]  (bottom-center overlay)           │
 └──────────────────────────────────────────────────────────┘
 ```
 
+Panel dividers are drag-resizable with configurable ratios (sidebar 5-30%, graph 30-80%, staging 15-85%).
+
 ### Render Pipeline
 
-Each frame generates vertex data through an immediate-mode pattern:
+Each frame generates vertex data through an immediate-mode pattern with three z-ordered layers:
 
 1. Views and widgets produce `WidgetOutput` containing `text_vertices`, `spline_vertices`, and `avatar_vertices`
-2. All outputs are collected into a single `WidgetOutput`
-3. Three draw calls render the frame:
-   - **Spline pass**: backgrounds, borders, shapes, graph lines, diff highlights
+2. Outputs are collected into three layers for correct z-ordering:
+   - **Graph layer**: panel backgrounds + commit graph (splines, nodes, pills, text)
+   - **Chrome layer**: header bar, shortcut bar, sidebar, staging well, diff viewer
+   - **Overlay layer**: context menus, toasts, confirmation dialogs, modal dialogs
+3. Each layer renders three passes in order:
+   - **Spline pass**: backgrounds, borders, shapes, graph lines, rounded rects
    - **Avatar pass**: Gravatar images from the avatar atlas
    - **Text pass**: all text content from the font atlas
 
@@ -360,6 +402,8 @@ Available screenshot states: `open-dialog`, `search`, `context-menu`, `commit-de
 
 - [docs/render_engine.md](docs/render_engine.md) -- Rendering architecture, Vulkan pipeline, vertex generation
 - [docs/ux-design-2026-02.md](docs/ux-design-2026-02.md) -- UI/UX specification and design rationale
+- [docs/user_needs.md](docs/user_needs.md) -- Core user needs and feature priorities
+- [docs/design_feedback_feb2026.md](docs/design_feedback_feb2026.md) -- Design review and strategic recommendations
 
 ## License
 

@@ -65,16 +65,20 @@ Use a cheap LLM (Claude Haiku or local model) to generate abbreviated descriptio
 ## Feature Priorities
 
 ### Top Priority (Lesser-Known Git Features)
-- Worktrees
-- Submodules
+- Worktrees — sidebar section with Jump to Branch, Remove, Open Terminal (partial)
+- Submodules — sidebar section with Update, Delete, Open Terminal (partial)
+- **Next:** Deeper worktree/submodule interaction (see design work ahead)
 
-### Standard Features
-- Commit graph visualization
-- Branch/tag management
-- Staging workflow
-- Push/pull/fetch operations
+### Standard Features (All Shipped)
+- Commit graph visualization (topology, time-based spacing, pills, search)
+- Branch/tag management (create, delete, checkout, merge, rebase, cherry-pick)
+- Staging workflow (file/hunk staging, commit, amend, revert, reset)
+- Push/pull/fetch operations (async with toast notifications)
+- Stash management (push/pop/apply/drop via keyboard and sidebar)
 
 ### Deferred
 - Merge conflict resolution
 - Interactive rebase
 - Pull request integration
+- LLM-generated commit messages
+- Command palette

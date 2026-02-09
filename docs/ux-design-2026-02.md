@@ -1,6 +1,6 @@
 # Whisper-Git UX Design
 
-**Version:** 1.4
+**Version:** 1.5
 **Date:** February 2026
 
 ---
@@ -19,7 +19,7 @@
 | **File List** | Done | Staged/unstaged with toggle, colored status dots |
 | **Staging Well** | Done | Full layout with subject, body, file lists, hunk-level staging |
 | **Commit Graph** | Done | Spline-rendered topology, lane reuse, search/filter, infinite scroll |
-| **Branch Sidebar** | Done | LOCAL/REMOTE/TAGS sections, collapsible, keyboard nav, context menu |
+| **Branch Sidebar** | Done | LOCAL/REMOTE/TAGS/SUBMODULES/WORKTREES/STASHES sections, collapsible, keyboard nav, context menus, rounded headers |
 | **Diff Viewer** | Done | Color-coded, word-level highlights, horizontal scroll, hunk staging |
 | **Commit Detail View** | Done | Full metadata, clickable file list with per-file diffs |
 | **Context Menus** | Done | Right-click on graph/sidebar/staging, keyboard nav, separators |
@@ -27,11 +27,21 @@
 | **Search/Filter** | Done | Ctrl+F or `/`, matches subject/author/SHA, dims non-matches |
 | **Tab Bar + Multi-Repo** | Done | Ctrl+O open, Ctrl+W close, Ctrl+Tab cycle, per-tab state |
 | **Gravatar Avatars** | Done | Background download, disk cache, GPU atlas, identicon fallback |
-| **Settings Dialog** | Done | Avatar toggle, scroll speed (Normal/Fast) |
-| **Shortcut Bar** | Done | Context-sensitive keyboard hints below header |
+| **Settings Dialog** | Done | Avatar toggle, scroll speed, row size; persisted to ~/.config/whisper-git/ |
+| **Shortcut Bar** | Done | Context-sensitive key pills below header, toggleable |
 | **Scrollbars** | Done | Proportional thumb, drag support, accent hover colors |
 | **Remote Operations** | Done | Fetch/Pull/Push in background threads, auto-refresh |
-| **Secondary Repos Panel** | Partial | Cards with accent borders, branch info; no interactivity yet |
+| **Amend Commit** | Done | Ctrl+Shift+A toggle, pre-fills subject/body from HEAD |
+| **Revert/Reset Commit** | Done | Graph context menu, soft/mixed/hard reset with confirmation |
+| **Branch/Tag Ops** | Done | Create/delete branches and tags via context menus with name dialog |
+| **Merge/Rebase** | Done | Sidebar context menu, async CLI operations |
+| **Cherry-pick** | Done | Graph context menu with confirmation |
+| **Stash Management** | Done | Ctrl+S/Ctrl+Shift+S, sidebar STASHES section with Apply/Pop/Drop |
+| **Drag-Resizable Panels** | Done | Sidebar, graph, staging dividers with ratio persistence |
+| **Rounded Corners** | Done | Buttons, pills, inputs, dialogs, context menus, toasts |
+| **Pill Outlines** | Done | Branch/tag pills with subtle border outlines |
+| **Clipboard** | Done | Copy SHA to system clipboard via arboard |
+| **Secondary Repos Panel** | Legacy | Data moved to sidebar; card view kept for potential future use |
 | **LLM Suggestions** | Planned | Auto-generated commit messages |
 | **Command Palette** | Planned | Fuzzy command search |
 
