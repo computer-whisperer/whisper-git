@@ -316,8 +316,11 @@ impl GitRepo {
             let name = sm.name().unwrap_or("unknown").to_string();
             let path = sm.path().to_string_lossy().to_string();
 
+            let head_oid = sm.head_id();
+            let workdir_oid = sm.workdir_id();
+
             // Try to open the submodule to get more info
-            let (branch, is_dirty) = if let Ok(sub_repo) = sm.open() {
+            let (branch, is_dirty, ahead, behind) = if let Ok(sub_repo) = sm.open() {
                 let branch = sub_repo
                     .head()
                     .ok()
@@ -329,9 +332,16 @@ impl GitRepo {
                     .map(|s| !s.is_empty())
                     .unwrap_or(false);
 
-                (branch, is_dirty)
+                let (ahead, behind) = match (workdir_oid, head_oid) {
+                    (Some(w), Some(h)) if w != h => {
+                        sub_repo.graph_ahead_behind(w, h).unwrap_or((0, 0))
+                    }
+                    _ => (0, 0),
+                };
+
+                (branch, is_dirty, ahead, behind)
             } else {
-                ("unknown".to_string(), false)
+                ("unknown".to_string(), false, 0, 0)
             };
 
             infos.push(SubmoduleInfo {
@@ -339,6 +349,10 @@ impl GitRepo {
                 path,
                 branch,
                 is_dirty,
+                head_oid,
+                workdir_oid,
+                ahead,
+                behind,
             });
         }
 
@@ -776,6 +790,10 @@ pub struct SubmoduleInfo {
     pub path: String,
     pub branch: String,
     pub is_dirty: bool,
+    pub head_oid: Option<Oid>,     // what parent's HEAD pins (sm.head_id())
+    pub workdir_oid: Option<Oid>,  // what's actually checked out (sm.workdir_id())
+    pub ahead: usize,              // commits workdir is ahead of pinned
+    pub behind: usize,             // commits workdir is behind pinned
 }
 
 /// Worktree information

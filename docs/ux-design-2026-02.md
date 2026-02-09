@@ -41,7 +41,11 @@
 | **Rounded Corners** | Done | Buttons, pills, inputs, dialogs, context menus, toasts |
 | **Pill Outlines** | Done | Branch/tag pills with subtle border outlines |
 | **Clipboard** | Done | Copy SHA to system clipboard via arboard |
-| **Secondary Repos Panel** | Legacy | Data moved to sidebar; card view kept for potential future use |
+| **Secondary Repos Panel** | Legacy | Data moved to sidebar; replaced by submodule/worktree integration |
+| **Worktree Graph Pills** | Planned | Orange WT: pills on commits where worktree HEADs point |
+| **Staging Context Switching** | Planned | Per-worktree staging with draft preservation |
+| **Submodule Status Strip** | Planned | Compact pill bar with status dots and ahead/behind counts |
+| **Submodule Drill-Down** | Planned | Focus mode with breadcrumb nav and parent context strip |
 | **LLM Suggestions** | Planned | Auto-generated commit messages |
 | **Command Palette** | Planned | Fuzzy command search |
 
@@ -563,10 +567,10 @@ The LLM receives:
 
 These features require separate design efforts:
 
-1. **Merge conflict resolution** — three-way diff visualization
-2. **Interactive rebase** — drag-and-drop commit reordering
-3. **Blame view** — per-line history
-4. **Settings panel** — preferences and configuration
+1. **Submodule & worktree deep integration** — See `docs/design-submodule-worktree-integration.md`
+2. **Merge conflict resolution** — three-way diff visualization
+3. **Interactive rebase** — drag-and-drop commit reordering
+4. **Blame view** — per-line history
 5. **Pull request integration** — GitHub/GitLab workflows
 
 ---

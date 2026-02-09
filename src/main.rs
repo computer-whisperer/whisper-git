@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 
@@ -130,6 +130,7 @@ struct TabViewState {
     push_receiver: Option<Receiver<RemoteOpResult>>,
     /// Generic async receiver for submodule/worktree ops (label for toast)
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String)>,
+    submodule_strip: SubmoduleStatusStrip,
 }
 
 impl TabViewState {
@@ -151,6 +152,7 @@ impl TabViewState {
             pull_receiver: None,
             push_receiver: None,
             generic_op_receiver: None,
+            submodule_strip: SubmoduleStatusStrip::new(),
         }
     }
 }
@@ -500,6 +502,7 @@ impl App {
                 commit_detail_view: &mut view_state.commit_detail_view,
                 branch_sidebar: &mut view_state.branch_sidebar,
                 header_bar: &mut view_state.header_bar,
+                submodule_strip: &mut view_state.submodule_strip,
                 last_diff_commit: &mut view_state.last_diff_commit,
                 fetch_receiver: &mut view_state.fetch_receiver,
                 pull_receiver: &mut view_state.pull_receiver,
@@ -699,6 +702,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
     view_state.branch_sidebar.worktrees = worktrees;
 
+    let submodules = repo.submodules().unwrap_or_default();
+    view_state.submodule_strip.submodules = submodules.clone();
+    view_state.branch_sidebar.submodules = submodules;
+
     let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
     view_state.header_bar.set_repo_info(
         view_state.header_bar.repo_name.clone(),
@@ -734,6 +741,7 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
         // Load submodules and worktrees
         if let Ok(submodules) = repo.submodules() {
+            view_state.submodule_strip.submodules = submodules.clone();
             view_state.branch_sidebar.submodules = submodules;
         }
         if let Ok(worktrees) = repo.worktrees() {
@@ -1772,6 +1780,18 @@ fn build_ui_output(
         graph_output.spline_vertices.extend(pill_vertices);
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
+
+        // Submodule status strip (chrome layer, bottom of graph area)
+        if !view_state.submodule_strip.submodules.is_empty() {
+            let strip_h = SubmoduleStatusStrip::height(scale);
+            let strip_bounds = Rect::new(
+                layout.graph.x,
+                layout.graph.bottom() - strip_h,
+                layout.graph.width,
+                strip_h,
+            );
+            chrome_output.extend(view_state.submodule_strip.layout(text_renderer, strip_bounds));
+        }
 
         // Header bar (chrome layer - on top of graph)
         chrome_output.extend(view_state.header_bar.layout(text_renderer, layout.header));

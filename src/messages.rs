@@ -666,6 +666,7 @@ pub struct MessageViewState<'a> {
     pub commit_detail_view: &'a mut CommitDetailView,
     pub branch_sidebar: &'a mut BranchSidebar,
     pub header_bar: &'a mut crate::ui::widgets::HeaderBar,
+    pub submodule_strip: &'a mut crate::ui::widgets::SubmoduleStatusStrip,
     pub last_diff_commit: &'a mut Option<Oid>,
     pub fetch_receiver: &'a mut Option<Receiver<RemoteOpResult>>,
     pub pull_receiver: &'a mut Option<Receiver<RemoteOpResult>>,
@@ -694,6 +695,10 @@ fn refresh_repo_state(
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
     view_state.branch_sidebar.worktrees = worktrees;
+
+    let submodules = repo.submodules().unwrap_or_default();
+    view_state.submodule_strip.submodules = submodules.clone();
+    view_state.branch_sidebar.submodules = submodules;
 
     let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
     view_state.header_bar.set_repo_info(
