@@ -290,13 +290,25 @@ impl Widget for FileList {
             theme::SURFACE_RAISED.to_array(),
         ));
 
-        // Header with title and file count
-        let title_text = format!("{} ({} files)", self.title, self.files.len());
+        // Header with arrow icon, title and file count
+        let arrow = if self.is_staged { "\u{25B2}" } else { "\u{25BC}" }; // ▲ Staged / ▼ Unstaged
+        let title_text = format!("{} {} ({} files)", arrow, self.title, self.files.len());
         output.text_vertices.extend(text_renderer.layout_text(
             &title_text,
             bounds.x + 10.0,
             bounds.y + 6.0,
             theme::TEXT_BRIGHT.to_array(),
+        ));
+
+        // Underline accent on header (thin line at bottom of header bg)
+        let accent_color = if self.is_staged {
+            theme::STATUS_CLEAN.with_alpha(0.4)
+        } else {
+            theme::STATUS_BEHIND.with_alpha(0.4)
+        };
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 1.0, header_rect.bottom() - 2.0, bounds.width - 2.0, 2.0),
+            accent_color.to_array(),
         ));
 
         // Totals on the right side of header
@@ -403,8 +415,11 @@ impl Widget for FileList {
             }
         }
 
-        // Empty state - centered with checkmark
+        // Empty state - vertically centered in the content area below header
         if self.files.is_empty() {
+            let content_area_top = sep_y + 1.0;
+            let content_area_height = bounds.bottom() - content_area_top;
+
             let check_icon = "\u{2713}"; // ✓
             let empty_text = if self.is_staged {
                 "No staged changes"
@@ -414,20 +429,26 @@ impl Widget for FileList {
             let full_text = format!("{} {}", check_icon, empty_text);
             let text_width = text_renderer.measure_text(&full_text);
             let center_x = bounds.x + (bounds.width - text_width) / 2.0;
-            let center_y = bounds.y + bounds.height / 2.0 - entry_height;
-            // Checkmark in green
+            let center_y = content_area_top + (content_area_height - line_height) / 2.0;
+
+            // Muted green-tinted checkmark
+            let check_color = if self.is_staged {
+                theme::STATUS_CLEAN.with_alpha(0.4)
+            } else {
+                theme::STATUS_CLEAN.with_alpha(0.5)
+            };
             output.text_vertices.extend(text_renderer.layout_text(
                 check_icon,
                 center_x,
                 center_y,
-                theme::STATUS_CLEAN.with_alpha(0.5).to_array(),
+                check_color.to_array(),
             ));
             let icon_w = text_renderer.measure_text(check_icon) + 4.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 empty_text,
                 center_x + icon_w,
                 center_y,
-                theme::TEXT_MUTED.to_array(),
+                theme::TEXT_MUTED.with_alpha(0.7).to_array(),
             ));
         }
 

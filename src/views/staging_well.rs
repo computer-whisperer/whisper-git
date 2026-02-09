@@ -169,17 +169,20 @@ impl StagingWell {
 
     /// Sync button styles based on current state. Call before layout.
     pub fn update_button_state(&mut self) {
+        let staged_count = self.staged_list.files.len();
         if self.can_commit() {
+            self.commit_btn.label = format!("Commit ({})", staged_count);
             self.commit_btn.background = theme::ACCENT;
             self.commit_btn.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
             self.commit_btn.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
             self.commit_btn.text_color = theme::TEXT_BRIGHT;
             self.commit_btn.border_color = None;
         } else {
+            self.commit_btn.label = "Commit".to_string();
             self.commit_btn.background = theme::SURFACE_RAISED;
             self.commit_btn.hover_background = theme::SURFACE_HOVER;
             self.commit_btn.pressed_background = theme::SURFACE;
-            self.commit_btn.text_color = theme::TEXT;
+            self.commit_btn.text_color = theme::TEXT_MUTED;
             self.commit_btn.border_color = Some(theme::BORDER);
         }
     }
@@ -326,7 +329,9 @@ impl StagingWell {
         EventResponse::Ignored
     }
 
-    fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+    /// Compute regions including the commit message wrapper area for background rendering.
+    /// Returns (commit_area, subject, body, staged, unstaged, buttons)
+    fn compute_regions_full(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         let s = self.scale;
         let padding = 8.0 * s;
         let inner = bounds.inset(padding);
@@ -340,25 +345,36 @@ impl StagingWell {
         let (subject, remaining) = remaining.take_top(subject_height);
 
         // Gap
-        let (_, remaining) = remaining.take_top(padding);
+        let (_, remaining) = remaining.take_top(padding * 0.5);
 
         // Body area
         let body_height = 80.0 * s;
         let (body, remaining) = remaining.take_top(body_height);
 
-        // Gap
-        let (_, remaining) = remaining.take_top(padding);
+        // The commit area wraps title + subject + body
+        let commit_area_height = title_height + subject_height + padding * 0.5 + body_height;
+        let commit_area = Rect::new(inner.x, inner.y, inner.width, commit_area_height);
+
+        // Divider gap
+        let divider_gap = 8.0 * s;
+        let (_, remaining) = remaining.take_top(divider_gap);
 
         // Split remaining between staged and unstaged lists
         let button_area_height = 40.0 * s;
         let list_area_height = remaining.height - button_area_height;
         let (lists_area, buttons) = remaining.take_top(list_area_height);
 
-        // Split lists area
-        let (staged, unstaged) = lists_area.split_vertical(0.5);
-        let staged = staged.pad(0.0, 0.0, 0.0, padding / 2.0);
-        let unstaged = unstaged.pad(0.0, padding / 2.0, 0.0, 0.0);
+        // Split lists area with a small gap between them
+        let gap = 4.0 * s;
+        let half_width = (lists_area.width - gap) / 2.0;
+        let staged = Rect::new(lists_area.x, lists_area.y, half_width, lists_area.height);
+        let unstaged = Rect::new(lists_area.x + half_width + gap, lists_area.y, half_width, lists_area.height);
 
+        (commit_area, subject, body, staged, unstaged, buttons)
+    }
+
+    fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
+        let (_, subject, body, staged, unstaged, buttons) = self.compute_regions_full(bounds);
         (subject, body, staged, unstaged, buttons)
     }
 
@@ -380,6 +396,7 @@ impl StagingWell {
     /// Layout the staging well
     pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+        let s = self.scale;
 
         // Background - elevated surface for panel
         output.spline_vertices.extend(create_rect_vertices(
@@ -394,26 +411,45 @@ impl StagingWell {
             1.0,
         ));
 
-        let (subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
-            self.compute_regions(bounds);
+        let (commit_area, subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
+            self.compute_regions_full(bounds);
 
-        // Title (in the reserved title row above the subject input)
-        let s = self.scale;
+        // --- Commit Message Area ---
+        // Subtle background for the commit area
+        let commit_bg = commit_area.inset(-2.0 * s);
+        output.spline_vertices.extend(create_rect_vertices(
+            &commit_bg,
+            theme::SURFACE_RAISED.with_alpha(0.5).to_array(),
+        ));
+        output.spline_vertices.extend(create_rect_outline_vertices(
+            &commit_bg,
+            theme::BORDER.to_array(),
+            1.0,
+        ));
+
+        // Title in bright text
         let title_y = bounds.y + 10.0 * s;
         output.text_vertices.extend(text_renderer.layout_text(
             "Commit Message",
-            bounds.x + 10.0 * s,
+            bounds.x + 12.0 * s,
             title_y,
-            theme::TEXT.to_array(),
+            theme::TEXT_BRIGHT.to_array(),
         ));
 
-        // Character count for subject
+        // Character count for subject - right-aligned on title row
         let char_count = format!("{}/72", self.subject_input.text().len());
+        let count_color = if self.subject_input.text().len() > 72 {
+            theme::STATUS_DIRTY // Red when over limit
+        } else if self.subject_input.text().len() > 50 {
+            theme::STATUS_BEHIND // Orange when getting close
+        } else {
+            theme::TEXT_MUTED
+        };
         output.text_vertices.extend(text_renderer.layout_text(
             &char_count,
-            bounds.right() - text_renderer.measure_text(&char_count) - 10.0 * s,
+            bounds.right() - text_renderer.measure_text(&char_count) - 12.0 * s,
             title_y,
-            theme::TEXT_MUTED.to_array(),
+            count_color.to_array(),
         ));
 
         // Subject input
@@ -422,11 +458,25 @@ impl StagingWell {
         // Body area
         output.extend(self.body_area.layout(text_renderer, body_bounds));
 
+        // --- Divider between commit area and file lists ---
+        let divider_y = commit_bg.bottom() + 3.0 * s;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 8.0 * s, divider_y, bounds.width - 16.0 * s, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
         // Staged files list
         output.extend(self.staged_list.layout(text_renderer, staged_bounds));
 
         // Unstaged files list
         output.extend(self.unstaged_list.layout(text_renderer, unstaged_bounds));
+
+        // --- Divider between file lists and buttons ---
+        let btn_divider_y = buttons_bounds.y;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 8.0 * s, btn_divider_y, bounds.width - 16.0 * s, 1.0),
+            theme::BORDER.to_array(),
+        ));
 
         // Buttons
         output.extend(self.stage_all_btn.layout(text_renderer, self.stage_all_button_bounds(buttons_bounds)));
