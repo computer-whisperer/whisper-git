@@ -10,11 +10,18 @@ use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions that can be triggered from the sidebar
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum SidebarAction {
     Checkout(String),
     CheckoutRemote(String, String), // (remote, branch)
     Delete(String),
+    DeleteSubmodule(String),
+    UpdateSubmodule(String),
+    OpenSubmoduleTerminal(String),
+    JumpToWorktreeBranch(String),
+    RemoveWorktree(String),
+    OpenWorktreeTerminal(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -302,6 +309,9 @@ impl BranchSidebar {
                     SidebarItem::RemoteBranch(remote, branch) => {
                         self.pending_action = Some(SidebarAction::CheckoutRemote(remote.clone(), branch.clone()));
                     }
+                    SidebarItem::WorktreeEntry(name) => {
+                        self.pending_action = Some(SidebarAction::JumpToWorktreeBranch(name.clone()));
+                    }
                     _ => {}
                 }
             }
@@ -357,6 +367,34 @@ impl BranchSidebar {
                         ];
                         for item in &mut items {
                             item.action_id = format!("{}:{}", item.action_id, full);
+                        }
+                        return Some(items);
+                    }
+                    SidebarItem::SubmoduleEntry(name) => {
+                        let mut items = vec![
+                            MenuItem::new("Open in Terminal", "open_submodule"),
+                            MenuItem::new("Update Submodule", "update_submodule"),
+                            MenuItem::separator(),
+                            MenuItem::new("Delete Submodule", "delete_submodule"),
+                        ];
+                        for item in &mut items {
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, name);
+                            }
+                        }
+                        return Some(items);
+                    }
+                    SidebarItem::WorktreeEntry(name) => {
+                        let mut items = vec![
+                            MenuItem::new("Open in Terminal", "open_worktree"),
+                            MenuItem::new("Jump to Branch", "jump_to_worktree"),
+                            MenuItem::separator(),
+                            MenuItem::new("Remove Worktree", "remove_worktree"),
+                        ];
+                        for item in &mut items {
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, name);
+                            }
                         }
                         return Some(items);
                     }
@@ -449,6 +487,11 @@ impl BranchSidebar {
                                         _ => {}
                                     }
                                     self.build_visible_items();
+                                    return EventResponse::Consumed;
+                                }
+                                SidebarItem::WorktreeEntry(name) => {
+                                    self.focused_index = Some(idx);
+                                    self.pending_action = Some(SidebarAction::JumpToWorktreeBranch(name.clone()));
                                     return EventResponse::Consumed;
                                 }
                                 _ => {

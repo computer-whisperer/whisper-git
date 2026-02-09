@@ -1117,3 +1117,62 @@ pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Re
 pub fn pull_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["pull".into(), remote, branch], workdir, "pull")
 }
+
+/// Spawn a background thread to remove a submodule (deinit + rm)
+pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Step 1: deinit
+        let deinit = std::process::Command::new("git")
+            .args(["submodule", "deinit", "-f", &name])
+            .current_dir(&workdir)
+            .output();
+        match deinit {
+            Ok(output) if output.status.success() => {
+                // Step 2: rm
+                let rm = std::process::Command::new("git")
+                    .args(["rm", "-f", &name])
+                    .current_dir(&workdir)
+                    .output();
+                let op_result = match rm {
+                    Ok(output) => RemoteOpResult {
+                        success: output.status.success(),
+                        output: String::from_utf8_lossy(&output.stdout).to_string(),
+                        error: String::from_utf8_lossy(&output.stderr).to_string(),
+                    },
+                    Err(e) => RemoteOpResult {
+                        success: false,
+                        output: String::new(),
+                        error: format!("Failed to run git rm: {}", e),
+                    },
+                };
+                let _ = tx.send(op_result);
+            }
+            Ok(output) => {
+                let _ = tx.send(RemoteOpResult {
+                    success: false,
+                    output: String::from_utf8_lossy(&output.stdout).to_string(),
+                    error: String::from_utf8_lossy(&output.stderr).to_string(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(RemoteOpResult {
+                    success: false,
+                    output: String::new(),
+                    error: format!("Failed to run git submodule deinit: {}", e),
+                });
+            }
+        }
+    });
+    rx
+}
+
+/// Spawn a background thread to update a submodule
+pub fn update_submodule_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["submodule".into(), "update".into(), "--init".into(), name], workdir, "submodule update")
+}
+
+/// Spawn a background thread to remove a worktree
+pub fn remove_worktree_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["worktree".into(), "remove".into(), name], workdir, "worktree remove")
+}
