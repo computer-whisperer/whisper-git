@@ -2067,8 +2067,9 @@ fn handle_context_menu_action(
     view_state.context_menu_commit = None;
 }
 
-/// Add panel backgrounds, borders, and visual chrome to the output
-fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel) {
+/// Add panel backgrounds, borders, and visual chrome to the output.
+/// `mouse_pos` is used to highlight dividers on hover for drag affordance.
+fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel, mouse_pos: (f32, f32)) {
     // Panel backgrounds for depth separation
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &layout.graph,
@@ -2089,22 +2090,42 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::BORDER.to_array(),
     ));
 
+    // Divider hover detection: brighten divider when mouse is within 4px
+    let (mx, my) = mouse_pos;
+    let hit_tolerance = 4.0;
+    let in_content_area = my > layout.shortcut_bar.bottom();
+
+    let sidebar_edge = layout.sidebar.right();
+    let sidebar_graph_hover = in_content_area && (mx - sidebar_edge).abs() < hit_tolerance;
+
+    let graph_edge = layout.graph.right();
+    let graph_right_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
+
+    let staging_edge = layout.staging.bottom();
+    let staging_right_hover = in_content_area
+        && (my - staging_edge).abs() < hit_tolerance
+        && mx >= layout.staging.x
+        && mx <= layout.staging.right();
+
     // Vertical border: sidebar | graph (2px for drag affordance)
+    let sidebar_graph_color = if sidebar_graph_hover { theme::BORDER_LIGHT } else { theme::BORDER };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
-        theme::BORDER.to_array(),
+        sidebar_graph_color.to_array(),
     ));
 
     // Vertical border: graph | staging/secondary (2px for drag affordance)
+    let graph_right_color = if graph_right_hover { theme::BORDER_LIGHT } else { theme::BORDER };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
-        theme::BORDER.to_array(),
+        graph_right_color.to_array(),
     ));
 
     // Horizontal border: staging | right panel (2px for drag affordance)
+    let staging_right_color = if staging_right_hover { theme::BORDER_LIGHT } else { theme::BORDER };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 2.0),
-        theme::BORDER.to_array(),
+        staging_right_color.to_array(),
     ));
 
     // Focused panel accent top border (2px accent-colored line at top of focused panel)
@@ -2140,6 +2161,7 @@ fn build_ui_output(
     graph_ratio: f32,
     staging_ratio: f32,
     shortcut_bar_visible: bool,
+    mouse_pos: (f32, f32),
 ) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
@@ -2162,7 +2184,7 @@ fn build_ui_output(
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
-    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused);
+    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused, mouse_pos);
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
@@ -2349,6 +2371,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
+    let mouse_pos = state.input_state.mouse.position();
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
@@ -2357,6 +2380,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
+        mouse_pos,
     );
 
     let viewport = Viewport {
@@ -2486,6 +2510,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
+        (0.0, 0.0), // No mouse interaction for screenshots
     );
 
     let state = app.state.as_mut().unwrap();
@@ -2601,6 +2626,7 @@ fn capture_screenshot_offscreen(
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
+        (0.0, 0.0), // No mouse interaction for offscreen screenshots
     );
 
     let state = app.state.as_mut().unwrap();
