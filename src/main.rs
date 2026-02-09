@@ -28,7 +28,7 @@ use git2::Oid;
 use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
-use crate::ui::{Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
+use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, SecondaryReposView, StagingWell, StagingAction, SidebarAction};
@@ -206,6 +206,8 @@ struct RenderState {
     surface: SurfaceManager,
     text_renderer: TextRenderer,
     spline_renderer: SplineRenderer,
+    avatar_renderer: AvatarRenderer,
+    avatar_cache: AvatarCache,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
     scale_factor: f64,
@@ -363,6 +365,12 @@ impl App {
         )
         .context("Failed to create spline renderer")?;
 
+        let avatar_renderer = AvatarRenderer::new(
+            ctx.memory_allocator.clone(),
+            render_pass.clone(),
+        )
+        .context("Failed to create avatar renderer")?;
+
         // Submit font atlas upload
         let upload_buffer = upload_builder.build().context("Failed to build upload buffer")?;
         let upload_future = sync::now(ctx.device.clone())
@@ -387,6 +395,8 @@ impl App {
             surface: surface_mgr,
             text_renderer,
             spline_renderer,
+            avatar_renderer,
+            avatar_cache: AvatarCache::new(),
             previous_frame_end,
             frame_count: 0,
             scale_factor: window_scale,
@@ -1504,6 +1514,8 @@ fn build_ui_output(
     text_renderer: &TextRenderer,
     scale_factor: f64,
     extent: [u32; 2],
+    avatar_cache: &mut AvatarCache,
+    avatar_renderer: &AvatarRenderer,
 ) -> WidgetOutput {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
@@ -1537,10 +1549,14 @@ fn build_ui_output(
 
         // Commit graph
         let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
-        let (text_vertices, pill_vertices) = view_state.commit_graph_view.layout_text(text_renderer, &repo_tab.commits, layout.graph);
+        let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
+            text_renderer, &repo_tab.commits, layout.graph,
+            avatar_cache, avatar_renderer,
+        );
         output.spline_vertices.extend(spline_vertices);
         output.spline_vertices.extend(pill_vertices);
         output.text_vertices.extend(text_vertices);
+        output.avatar_vertices.extend(av_vertices);
 
         // Staging well
         output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
@@ -1616,12 +1632,21 @@ fn draw_frame(app: &mut App) -> Result<()> {
     // Update toast manager
     app.toast_manager.update(Instant::now());
 
+    // Poll avatar downloads and pack newly loaded ones into the atlas
+    let newly_loaded = state.avatar_cache.poll_downloads();
+    for email in &newly_loaded {
+        if let Some((rgba, size)) = state.avatar_cache.get_loaded(email) {
+            state.avatar_renderer.pack_avatar(email, rgba, size);
+        }
+    }
+
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
     let output = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog,
         &state.text_renderer, scale_factor, extent,
+        &mut state.avatar_cache, &state.avatar_renderer,
     );
 
     let viewport = Viewport {
@@ -1637,6 +1662,9 @@ fn draw_frame(app: &mut App) -> Result<()> {
         CommandBufferUsage::OneTimeSubmit,
     )
     .context("Failed to create command buffer")?;
+
+    // Upload avatar atlas if dirty (before render pass)
+    state.avatar_renderer.upload_atlas(&mut builder)?;
 
     builder
         .begin_render_pass(
@@ -1702,6 +1730,10 @@ fn render_output_to_builder(
         let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
         state.spline_renderer.draw(builder, spline_buffer, viewport.clone())?;
     }
+    if !output.avatar_vertices.is_empty() {
+        let avatar_buffer = state.avatar_renderer.create_vertex_buffer(output.avatar_vertices)?;
+        state.avatar_renderer.draw(builder, avatar_buffer, viewport.clone())?;
+    }
     if !output.text_vertices.is_empty() {
         let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
         state.text_renderer.draw(builder, vertex_buffer, viewport)?;
@@ -1719,6 +1751,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog,
         &state.text_renderer, scale_factor, extent,
+        &mut state.avatar_cache, &state.avatar_renderer,
     );
 
     let state = app.state.as_mut().unwrap();
@@ -1806,6 +1839,7 @@ fn capture_screenshot_offscreen(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog,
         &state.text_renderer, scale_factor, extent,
+        &mut state.avatar_cache, &state.avatar_renderer,
     );
 
     let state = app.state.as_mut().unwrap();

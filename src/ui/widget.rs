@@ -56,6 +56,8 @@ pub struct WidgetOutput {
     pub spline_vertices: Vec<SplineVertex>,
     /// Vertices for text rendering
     pub text_vertices: Vec<TextVertex>,
+    /// Vertices for avatar rendering (separate texture atlas)
+    pub avatar_vertices: Vec<TextVertex>,
 }
 
 impl WidgetOutput {
@@ -63,12 +65,14 @@ impl WidgetOutput {
         Self {
             spline_vertices: Vec::new(),
             text_vertices: Vec::new(),
+            avatar_vertices: Vec::new(),
         }
     }
 
     pub fn extend(&mut self, other: WidgetOutput) {
         self.spline_vertices.extend(other.spline_vertices);
         self.text_vertices.extend(other.text_vertices);
+        self.avatar_vertices.extend(other.avatar_vertices);
     }
 }
 
