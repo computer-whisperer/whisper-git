@@ -692,9 +692,12 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
     let tags = repo.tags().unwrap_or_default();
     let current = repo.current_branch().unwrap_or_default();
 
+    let worktrees = repo.worktrees().unwrap_or_default();
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
+    view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+    view_state.branch_sidebar.worktrees = worktrees;
 
     let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
     view_state.header_bar.set_repo_info(

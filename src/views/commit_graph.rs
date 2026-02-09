@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use git2::Oid;
 
-use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus};
+use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
 use crate::ui::widget::{
@@ -219,6 +219,8 @@ pub struct CommitGraphView {
     pub branch_tips: Vec<BranchTip>,
     /// Tags
     pub tags: Vec<TagInfo>,
+    /// Worktrees (for WT: pills on commits)
+    pub worktrees: Vec<WorktreeInfo>,
     /// Row scale factor (1.0 = normal, 1.5 = large)
     pub row_scale: f32,
     /// Scroll offset
@@ -253,6 +255,7 @@ impl Default for CommitGraphView {
             head_oid: None,
             branch_tips: Vec::new(),
             tags: Vec::new(),
+            worktrees: Vec::new(),
             scroll_offset: 0.0,
             scrollbar: Scrollbar::new(),
             search_bar: SearchBar::new(),
@@ -1193,6 +1196,17 @@ impl CommitGraphView {
                 acc
             });
 
+        // Worktree lookup (non-current only — current worktree HEAD is already shown via branch pills)
+        let worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
+            .worktrees
+            .iter()
+            .filter(|wt| !wt.is_current)
+            .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
+            .fold(HashMap::new(), |mut acc, (oid, wt)| {
+                acc.entry(oid).or_default().push(wt);
+                acc
+            });
+
         let char_width = text_renderer.char_width();
         let pill_pad_h: f32 = 7.0;
         let pill_pad_v: f32 = 2.0;
@@ -1334,7 +1348,45 @@ impl CommitGraphView {
                 }
             }
 
-            // === HEAD indicator (after branch/tag pills) ===
+            // === Worktree labels with pill backgrounds (after tag pills) ===
+            if let Some(wts) = worktrees_by_oid.get(&commit.id) {
+                for wt in wts {
+                    let wt_label = format!("WT:{}", wt.name);
+                    let wt_width = text_renderer.measure_text(&wt_label);
+                    if current_x + wt_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
+                        break;
+                    }
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_pad_v,
+                        wt_width + pill_pad_h * 2.0,
+                        line_height + pill_pad_v * 2.0,
+                    );
+                    let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
+                    // Worktrees: orange
+                    pill_vertices.extend(create_rounded_rect_vertices(
+                        &pill_rect,
+                        Color::rgba(1.0, 0.596, 0.0, 0.20).to_array(),  // #FF9800 bg
+                        pill_radius,
+                    ));
+                    // Worktree pill border outline
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        wt_text_color.with_alpha(0.45).to_array(),
+                        pill_radius,
+                        pill_border_thickness,
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        &wt_label,
+                        current_x + pill_pad_h,
+                        y,
+                        wt_text_color.to_array(),
+                    ));
+                    current_x += wt_width + pill_pad_h * 2.0 + char_width * 1.0;
+                }
+            }
+
+            // === HEAD indicator (after branch/tag/worktree pills) ===
             if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
                 let head_label = "HEAD";
                 let head_width = text_renderer.measure_text(head_label);

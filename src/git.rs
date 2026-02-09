@@ -365,13 +365,14 @@ impl GitRepo {
                         .map(|cwd| cwd == wt_path)
                         .unwrap_or(false);
 
-                    // Try to get branch info and dirty status
-                    let (branch, is_dirty) = if let Ok(wt_repo) = Repository::open(wt_path) {
-                        let branch = wt_repo
-                            .head()
-                            .ok()
+                    // Try to get branch info, HEAD oid, and dirty status
+                    let (branch, head_oid, is_dirty) = if let Ok(wt_repo) = Repository::open(wt_path) {
+                        let head_ref = wt_repo.head().ok();
+                        let branch = head_ref
+                            .as_ref()
                             .and_then(|h| h.shorthand().map(|s| s.to_string()))
                             .unwrap_or_else(|| "detached".to_string());
+                        let head_oid = head_ref.and_then(|h| h.target());
 
                         let is_dirty = wt_repo
                             .statuses(None)
@@ -382,15 +383,16 @@ impl GitRepo {
                             })
                             .unwrap_or(false);
 
-                        (branch, is_dirty)
+                        (branch, head_oid, is_dirty)
                     } else {
-                        ("unknown".to_string(), false)
+                        ("unknown".to_string(), None, false)
                     };
 
                     infos.push(WorktreeInfo {
                         name: name.to_string(),
                         path,
                         branch,
+                        head_oid,
                         is_current,
                         is_dirty,
                     });
@@ -782,6 +784,7 @@ pub struct WorktreeInfo {
     pub name: String,
     pub path: String,
     pub branch: String,
+    pub head_oid: Option<Oid>,
     pub is_current: bool,
     pub is_dirty: bool,
 }
