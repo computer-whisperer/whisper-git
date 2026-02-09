@@ -953,6 +953,22 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Create a lightweight tag at a given commit OID
+    pub fn create_tag(&self, name: &str, oid: Oid) -> Result<()> {
+        let commit = self.repo.find_commit(oid)
+            .with_context(|| format!("Failed to find commit {}", oid))?;
+        self.repo.tag_lightweight(name, commit.as_object(), false)
+            .with_context(|| format!("Failed to create tag '{}' at {}", name, oid))?;
+        Ok(())
+    }
+
+    /// Delete a tag by name
+    pub fn delete_tag(&self, name: &str) -> Result<()> {
+        self.repo.tag_delete(name)
+            .with_context(|| format!("Failed to delete tag '{}'", name))?;
+        Ok(())
+    }
+
     /// List all stash entries using git CLI (avoids &mut self requirement of libgit2)
     pub fn stash_list(&self) -> Vec<StashEntry> {
         let workdir = match self.repo.workdir().or_else(|| Some(self.repo.path())) {

@@ -16,7 +16,7 @@ pub enum BranchNameDialogAction {
     Cancel,
 }
 
-/// A modal dialog for entering a new branch name
+/// A modal dialog for entering a new branch or tag name
 #[allow(dead_code)]
 pub struct BranchNameDialog {
     id: WidgetId,
@@ -27,6 +27,8 @@ pub struct BranchNameDialog {
     cancel_button: Button,
     target_oid: Option<Oid>,
     pending_action: Option<BranchNameDialogAction>,
+    /// Title shown in the dialog (e.g. "Create Branch" or "Create Tag")
+    title: String,
 }
 
 impl BranchNameDialog {
@@ -40,15 +42,26 @@ impl BranchNameDialog {
             cancel_button: Button::new("Cancel"),
             target_oid: None,
             pending_action: None,
+            title: "Create Branch".to_string(),
         }
     }
 
     pub fn show(&mut self, default_name: &str, oid: Oid) {
+        self.show_with_title("Create Branch", default_name, oid);
+    }
+
+    pub fn show_with_title(&mut self, title: &str, default_name: &str, oid: Oid) {
         self.visible = true;
+        self.title = title.to_string();
         self.name_input.set_text(default_name);
         self.name_input.set_focused(true);
         self.target_oid = Some(oid);
         self.pending_action = None;
+    }
+
+    /// Returns the current dialog title (e.g. "Create Branch" or "Create Tag")
+    pub fn title(&self) -> &str {
+        &self.title
     }
 
     pub fn hide(&mut self) {
@@ -212,7 +225,7 @@ impl Widget for BranchNameDialog {
         // Title
         let title_y = dialog.y + padding;
         output.text_vertices.extend(text_renderer.layout_text(
-            "Create Branch",
+            &self.title,
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),

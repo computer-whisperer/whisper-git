@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
 
@@ -339,21 +339,54 @@ impl Widget for FileList {
         let line_height = text_renderer.line_height();
         let header_height = line_height + 12.0;
 
-        // Header background - slightly elevated
+        // Header background - slightly elevated with subtle tint
         let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
-        output.spline_vertices.extend(create_rect_vertices(
+        output.spline_vertices.extend(create_rounded_rect_vertices(
             &header_rect,
-            theme::SURFACE_RAISED.to_array(),
+            theme::SURFACE_RAISED.lighten(0.03).to_array(),
+            3.0,
         ));
 
-        // Header with arrow icon, title and file count
+        // Header: arrow icon and title text
         let arrow = if self.is_staged { "\u{25B2}" } else { "\u{25BC}" }; // ▲ Staged / ▼ Unstaged
-        let title_text = format!("{} {} ({} files)", arrow, self.title, self.files.len());
+        let title_text = format!("{} {}", arrow, self.title);
         output.text_vertices.extend(text_renderer.layout_text(
             &title_text,
             bounds.x + 10.0,
             bounds.y + 6.0,
             theme::TEXT_BRIGHT.to_array(),
+        ));
+
+        // File count pill badge (right of title)
+        let count_text = format!("{}", self.files.len());
+        let title_width = text_renderer.measure_text(&title_text);
+        let count_width = text_renderer.measure_text(&count_text);
+        let pill_pad_h = 6.0;
+        let pill_pad_v = 2.0;
+        let pill_x = bounds.x + 10.0 + title_width + 8.0;
+        let pill_y = bounds.y + 6.0 - pill_pad_v;
+        let pill_w = count_width + pill_pad_h * 2.0;
+        let pill_h = line_height + pill_pad_v * 2.0;
+        let pill_color = if self.is_staged {
+            theme::STATUS_CLEAN.with_alpha(0.20)
+        } else {
+            theme::STATUS_BEHIND.with_alpha(0.20)
+        };
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &Rect::new(pill_x, pill_y, pill_w, pill_h),
+            pill_color.to_array(),
+            3.0,
+        ));
+        let pill_text_color = if self.is_staged {
+            theme::STATUS_CLEAN
+        } else {
+            theme::STATUS_BEHIND
+        };
+        output.text_vertices.extend(text_renderer.layout_text(
+            &count_text,
+            pill_x + pill_pad_h,
+            bounds.y + 6.0,
+            pill_text_color.to_array(),
         ));
 
         // Underline accent on header (thin line at bottom of header bg)
@@ -380,7 +413,7 @@ impl Widget for FileList {
             ));
         }
 
-        // Separator line
+        // 1px separator line below header
         let sep_y = bounds.y + header_height;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
