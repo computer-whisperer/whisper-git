@@ -119,9 +119,39 @@ impl FileList {
         self.scale = scale;
     }
 
-    /// Consistent header height used across all methods
+    /// Consistent header height used across all methods.
+    /// Includes space for the summary line when there are files.
     fn header_height(&self) -> f32 {
+        if self.files.is_empty() {
+            24.0 * self.scale
+        } else {
+            // Extra row for summary line
+            38.0 * self.scale
+        }
+    }
+
+    /// Base header height (title row only, without summary line)
+    fn title_row_height(&self) -> f32 {
         24.0 * self.scale
+    }
+
+    /// Count files by status kind
+    fn status_counts(&self) -> (usize, usize, usize, usize, usize) {
+        let mut modified = 0;
+        let mut added = 0;
+        let mut deleted = 0;
+        let mut renamed = 0;
+        let mut type_change = 0;
+        for f in &self.files {
+            match f.status {
+                FileStatusKind::Modified => modified += 1,
+                FileStatusKind::New => added += 1,
+                FileStatusKind::Deleted => deleted += 1,
+                FileStatusKind::Renamed => renamed += 1,
+                FileStatusKind::TypeChange => type_change += 1,
+            }
+        }
+        (modified, added, deleted, renamed, type_change)
     }
 
     /// Consistent line/entry height used across all methods
@@ -337,9 +367,10 @@ impl Widget for FileList {
         ));
 
         let line_height = text_renderer.line_height();
-        let header_height = line_height + 12.0;
+        let header_height = self.header_height();
+        let title_row_h = self.title_row_height();
 
-        // Header background - slightly elevated with subtle tint
+        // Header background - slightly elevated with subtle tint (covers full header including summary)
         let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
         output.spline_vertices.extend(create_rounded_rect_vertices(
             &header_rect,
@@ -389,18 +420,19 @@ impl Widget for FileList {
             pill_text_color.to_array(),
         ));
 
-        // Underline accent on header (thin line at bottom of header bg)
+        // Underline accent on title row (thin line at bottom of title row, above summary)
         let accent_color = if self.is_staged {
             theme::STATUS_CLEAN.with_alpha(0.4)
         } else {
             theme::STATUS_BEHIND.with_alpha(0.4)
         };
+        let accent_y = bounds.y + 1.0 + title_row_h - 2.0;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x + 1.0, header_rect.bottom() - 2.0, bounds.width - 2.0, 2.0),
+            &Rect::new(bounds.x + 1.0, accent_y, bounds.width - 2.0, 2.0),
             accent_color.to_array(),
         ));
 
-        // Totals on the right side of header
+        // Totals on the right side of title row
         let (total_add, total_del) = self.totals();
         if total_add > 0 || total_del > 0 {
             let stats_text = format!("+{} -{}", total_add, total_del);
@@ -413,7 +445,66 @@ impl Widget for FileList {
             ));
         }
 
-        // 1px separator line below header
+        // File change summary line below title row (when files exist)
+        if !self.files.is_empty() {
+            let (modified, added, deleted, renamed, type_change) = self.status_counts();
+            let summary_y = bounds.y + title_row_h + 1.0;
+            let mut sx = bounds.x + 10.0;
+            let small_scale = 0.85;
+
+            // Color constants matching file_list status colors
+            let green = Color::rgba(0.400, 0.733, 0.416, 1.0);    // M green
+            let blue = Color::rgba(0.259, 0.647, 0.961, 1.0);     // A blue
+            let red = Color::rgba(0.937, 0.325, 0.314, 1.0);      // D red
+            let cyan = Color::rgba(0.149, 0.776, 0.855, 1.0);     // R cyan
+            let amber = Color::rgba(1.000, 0.718, 0.302, 1.0);    // T amber
+
+            let mut parts: Vec<(&str, usize, Color)> = Vec::new();
+            if modified > 0 { parts.push(("modified", modified, green)); }
+            if added > 0 { parts.push(("added", added, blue)); }
+            if deleted > 0 { parts.push(("deleted", deleted, red)); }
+            if renamed > 0 { parts.push(("renamed", renamed, cyan)); }
+            if type_change > 0 { parts.push(("typechange", type_change, amber)); }
+
+            for (i, (label, count, color)) in parts.iter().enumerate() {
+                let count_str = format!("{}", count);
+                // Render count in color
+                output.text_vertices.extend(text_renderer.layout_text_scaled(
+                    &count_str,
+                    sx,
+                    summary_y,
+                    color.to_array(),
+                    small_scale,
+                ));
+                sx += text_renderer.measure_text_scaled(&count_str, small_scale);
+
+                // Render label in muted text
+                let label_str = format!(" {}", label);
+                output.text_vertices.extend(text_renderer.layout_text_scaled(
+                    &label_str,
+                    sx,
+                    summary_y,
+                    theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                    small_scale,
+                ));
+                sx += text_renderer.measure_text_scaled(&label_str, small_scale);
+
+                // Comma separator
+                if i + 1 < parts.len() {
+                    let sep = ", ";
+                    output.text_vertices.extend(text_renderer.layout_text_scaled(
+                        sep,
+                        sx,
+                        summary_y,
+                        theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                        small_scale,
+                    ));
+                    sx += text_renderer.measure_text_scaled(sep, small_scale);
+                }
+            }
+        }
+
+        // 1px separator line below header (including summary line)
         let sep_y = bounds.y + header_height;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
