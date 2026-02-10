@@ -821,10 +821,11 @@ impl StagingWell {
         }
 
         // Character count for subject - right-aligned on title row
-        let char_count = format!("{}/72", self.subject_input.text().len());
-        let count_color = if self.subject_input.text().len() > 72 {
+        let subject_len = self.subject_input.text().len();
+        let char_count = format!("{}/72", subject_len);
+        let count_color = if subject_len > 72 {
             theme::STATUS_DIRTY // Red when over limit
-        } else if self.subject_input.text().len() > 50 {
+        } else if subject_len > 50 {
             theme::STATUS_BEHIND // Orange when getting close
         } else {
             theme::TEXT_MUTED
@@ -839,6 +840,33 @@ impl StagingWell {
         // Subject input
         output.extend(self.subject_input.layout(text_renderer, subject_bounds));
 
+        // Character limit progress bar below subject input
+        if subject_len > 0 {
+            let bar_height = 2.0;
+            let bar_y = subject_bounds.bottom();
+            let bar_x = subject_bounds.x;
+            let bar_max_w = subject_bounds.width;
+            let ratio = (subject_len as f32 / 72.0).min(1.0);
+            let bar_w = bar_max_w * ratio;
+            let bar_color = if subject_len > 72 {
+                theme::STATUS_DIRTY
+            } else if subject_len > 50 {
+                theme::STATUS_BEHIND
+            } else {
+                theme::STATUS_CLEAN
+            };
+            // Background track
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(bar_x, bar_y, bar_max_w, bar_height),
+                theme::BORDER.with_alpha(0.3).to_array(),
+            ));
+            // Filled portion
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(bar_x, bar_y, bar_w, bar_height),
+                bar_color.with_alpha(0.6).to_array(),
+            ));
+        }
+
         // Body area
         output.extend(self.body_area.layout(text_renderer, body_bounds));
 
@@ -849,8 +877,27 @@ impl StagingWell {
             theme::BORDER.to_array(),
         ));
 
+        // Subtle background tint for staged area (green tint)
+        output.spline_vertices.extend(create_rect_vertices(
+            &staged_bounds,
+            theme::STATUS_CLEAN.with_alpha(0.03).to_array(),
+        ));
+
+        // Subtle background tint for unstaged area (orange tint)
+        output.spline_vertices.extend(create_rect_vertices(
+            &unstaged_bounds,
+            theme::STATUS_BEHIND.with_alpha(0.03).to_array(),
+        ));
+
         // Staged files list
         output.extend(self.staged_list.layout(text_renderer, staged_bounds));
+
+        // Vertical separator between staged and unstaged sections
+        let sep_x = staged_bounds.right() + (unstaged_bounds.x - staged_bounds.right()) / 2.0 - 0.5;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(sep_x, staged_bounds.y + 4.0 * s, 1.0, staged_bounds.height - 8.0 * s),
+            theme::BORDER.to_array(),
+        ));
 
         // Unstaged files list
         output.extend(self.unstaged_list.layout(text_renderer, unstaged_bounds));
