@@ -181,6 +181,17 @@ impl BranchSidebar {
         self.section_header_height + 8.0 // same as section header height plus some gap
     }
 
+    /// Returns true if a clickable sidebar item is currently hovered
+    pub fn is_item_hovered(&self) -> bool {
+        self.hovered_index.is_some()
+    }
+
+    /// Returns true if the given position is over the filter bar input area
+    pub fn is_over_filter_bar(&self, x: f32, y: f32, bounds: Rect) -> bool {
+        let fb = self.filter_bar_bounds(&bounds);
+        fb.contains(x, y)
+    }
+
     /// Populate from branch tips and tags from the git repo
     pub fn set_branch_data(
         &mut self,

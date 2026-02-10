@@ -46,6 +46,16 @@ impl Button {
         }
     }
 
+    /// Returns true if the button is currently in hovered state
+    pub fn is_hovered(&self) -> bool {
+        self.state.hovered
+    }
+
+    /// Returns true if the button is currently pressed
+    pub fn is_pressed(&self) -> bool {
+        self.state.pressed
+    }
+
     /// Set a badge (e.g., count indicator)
     #[allow(dead_code)]
     pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
@@ -147,35 +157,41 @@ impl Widget for Button {
         let mut output = WidgetOutput::new();
         let corner_radius = (bounds.height * 0.20).min(8.0);
 
+        // Press offset: shift content down 1px for tactile press feedback
+        let press_offset = if self.state.pressed { 1.0 } else { 0.0 };
+        let draw_bounds = Rect::new(bounds.x, bounds.y + press_offset, bounds.width, bounds.height);
+
         // Draw background with rounded corners
         let bg_color = self.current_background();
-        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
+        output.spline_vertices.extend(create_rounded_rect_vertices(&draw_bounds, bg_color.to_array(), corner_radius));
 
         // Draw border - brighter on hover (using overlaid rounded rect for outline effect)
         if let Some(border) = self.border_color {
-            let border_color = if self.state.hovered {
+            let border_color = if self.state.pressed {
+                border // Normal border when pressed (inset look)
+            } else if self.state.hovered {
                 theme::BORDER_LIGHT
             } else {
                 border
             };
             output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &bounds,
+                &draw_bounds,
                 border_color.to_array(),
                 corner_radius,
                 1.0,
             ));
         }
 
-        // Top highlight line when hovered (subtle depth effect)
-        if self.state.hovered && self.border_color.is_some() {
-            let highlight_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, 1.0);
+        // Top highlight line when hovered but NOT pressed (subtle depth effect)
+        if self.state.hovered && !self.state.pressed && self.border_color.is_some() {
+            let highlight_rect = Rect::new(draw_bounds.x + 1.0, draw_bounds.y + 1.0, draw_bounds.width - 2.0, 1.0);
             output.spline_vertices.extend(create_rect_vertices(
                 &highlight_rect,
                 theme::BORDER_LIGHT.with_alpha(0.7).to_array(),
             ));
         }
 
-        // Draw label text - brighter on hover
+        // Draw label text - brighter on hover/press
         let line_height = text_renderer.line_height();
         let display_text = if let Some(ref badge) = self.badge {
             format!("{} ({})", self.label, badge)
@@ -184,8 +200,8 @@ impl Widget for Button {
         };
 
         let text_width = text_renderer.measure_text(&display_text);
-        let text_x = bounds.x + (bounds.width - text_width) / 2.0;
-        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+        let text_x = draw_bounds.x + (draw_bounds.width - text_width) / 2.0;
+        let text_y = draw_bounds.y + (draw_bounds.height - line_height) / 2.0;
 
         let text_color = if self.state.hovered || self.state.pressed {
             theme::TEXT_BRIGHT

@@ -116,6 +116,19 @@ impl StagingWell {
         self.unstaged_list.set_files(unstaged);
     }
 
+    /// Returns true if any button in the staging well is hovered
+    pub fn is_any_button_hovered(&self) -> bool {
+        self.stage_all_btn.is_hovered()
+            || self.unstage_all_btn.is_hovered()
+            || self.commit_btn.is_hovered()
+            || self.amend_btn.is_hovered()
+    }
+
+    /// Returns true if a file in either list is hovered
+    pub fn is_file_hovered(&self) -> bool {
+        self.staged_list.is_item_hovered() || self.unstaged_list.is_item_hovered()
+    }
+
     /// Get and clear any pending action
     pub fn take_action(&mut self) -> Option<StagingAction> {
         self.pending_action.take()

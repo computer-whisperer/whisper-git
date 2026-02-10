@@ -228,6 +228,20 @@ impl HeaderBar {
         self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
     }
 
+    /// Returns true if any interactive element in the header is currently hovered
+    /// (buttons, breadcrumb links, close button, abort button).
+    pub fn is_any_interactive_hovered(&self) -> bool {
+        self.fetch_button.is_hovered()
+            || self.pull_button.is_hovered()
+            || self.push_button.is_hovered()
+            || self.commit_button.is_hovered()
+            || self.help_button.is_hovered()
+            || self.settings_button.is_hovered()
+            || self.close_button.is_hovered()
+            || self.abort_button.is_hovered()
+            || self.breadcrumb_hovered.is_some()
+    }
+
     /// Compute button bounds within the header (scale-aware)
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
