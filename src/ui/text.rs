@@ -139,11 +139,41 @@ impl TextRenderer {
         command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         scale_factor: f64,
     ) -> Result<Self> {
+        Self::new_with_font(
+            memory_allocator,
+            render_pass,
+            command_buffer_builder,
+            scale_factor,
+            include_bytes!("/usr/share/fonts/TTF/Roboto-Regular.ttf"),
+        )
+    }
+
+    /// Create a bold text renderer using Roboto-Bold
+    pub fn new_bold(
+        memory_allocator: Arc<StandardMemoryAllocator>,
+        render_pass: Arc<RenderPass>,
+        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        scale_factor: f64,
+    ) -> Result<Self> {
+        Self::new_with_font(
+            memory_allocator,
+            render_pass,
+            command_buffer_builder,
+            scale_factor,
+            include_bytes!("/usr/share/fonts/TTF/Roboto-Bold.ttf"),
+        )
+    }
+
+    fn new_with_font(
+        memory_allocator: Arc<StandardMemoryAllocator>,
+        render_pass: Arc<RenderPass>,
+        command_buffer_builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        scale_factor: f64,
+        font_bytes: &[u8],
+    ) -> Result<Self> {
         let device = memory_allocator.device().clone();
 
-        // Load embedded font (DejaVu Sans Mono or similar)
-        let font_data = include_bytes!("/usr/share/fonts/TTF/Roboto-Regular.ttf");
-        let font = FontRef::try_from_slice(font_data).context("Failed to load font")?;
+        let font = FontRef::try_from_slice(font_bytes).context("Failed to load font")?;
 
         // Build atlas at the given scale factor (should be the max across all monitors).
         // Runtime scaling is handled by render_scale / atlas_scale ratio.

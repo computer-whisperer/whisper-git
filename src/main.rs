@@ -240,6 +240,7 @@ struct RenderState {
     ctx: VulkanContext,
     surface: SurfaceManager,
     text_renderer: TextRenderer,
+    bold_text_renderer: TextRenderer,
     spline_renderer: SplineRenderer,
     avatar_renderer: AvatarRenderer,
     avatar_cache: AvatarCache,
@@ -411,6 +412,14 @@ impl App {
         )
         .context("Failed to create text renderer")?;
 
+        let bold_text_renderer = TextRenderer::new_bold(
+            ctx.memory_allocator.clone(),
+            render_pass.clone(),
+            &mut upload_builder,
+            max_scale,
+        )
+        .context("Failed to create bold text renderer")?;
+
         let spline_renderer = SplineRenderer::new(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
@@ -448,6 +457,7 @@ impl App {
             ctx,
             surface: surface_mgr,
             text_renderer,
+            bold_text_renderer,
             spline_renderer,
             avatar_renderer,
             avatar_cache: AvatarCache::new(),
@@ -1041,6 +1051,7 @@ impl ApplicationHandler for App {
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale_factor = scale_factor;
                 state.text_renderer.set_render_scale(scale_factor);
+                state.bold_text_renderer.set_render_scale(scale_factor);
                 // Sync metrics on all tabs and recompute layouts
                 for (repo_tab, view_state) in &mut self.tabs {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
@@ -2159,6 +2170,7 @@ fn build_ui_output(
     confirm_dialog: &ConfirmDialog,
     branch_name_dialog: &BranchNameDialog,
     text_renderer: &TextRenderer,
+    bold_text_renderer: &TextRenderer,
     scale_factor: f64,
     extent: [u32; 2],
     avatar_cache: &mut AvatarCache,
@@ -2218,7 +2230,7 @@ fn build_ui_output(
         }
 
         // Header bar (chrome layer - on top of graph)
-        chrome_output.extend(view_state.header_bar.layout(text_renderer, layout.header));
+        chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header));
 
         // Shortcut bar (chrome layer - on top of graph) - only when visible
         if shortcut_bar_visible {
@@ -2226,7 +2238,7 @@ fn build_ui_output(
         }
 
         // Branch sidebar (chrome layer)
-        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, layout.sidebar));
+        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, bold_text_renderer, layout.sidebar));
 
         // Staging well (chrome layer)
         chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
@@ -2363,7 +2375,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
             app.shortcut_bar_visible,
         );
         view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
-        view_state.header_bar.update_abort_bounds(&state.text_renderer, approx_layout.header);
+        view_state.header_bar.update_abort_bounds(&state.bold_text_renderer, approx_layout.header);
     }
 
     // Update toast manager
@@ -2384,7 +2396,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
-        &state.text_renderer, scale_factor, extent,
+        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
@@ -2499,7 +2511,11 @@ fn render_output_to_builder(
     }
     if !output.text_vertices.is_empty() {
         let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
-        state.text_renderer.draw(builder, vertex_buffer, viewport)?;
+        state.text_renderer.draw(builder, vertex_buffer, viewport.clone())?;
+    }
+    if !output.bold_text_vertices.is_empty() {
+        let bold_buffer = state.bold_text_renderer.create_vertex_buffer(output.bold_text_vertices)?;
+        state.bold_text_renderer.draw(builder, bold_buffer, viewport)?;
     }
     Ok(())
 }
@@ -2514,7 +2530,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
-        &state.text_renderer, scale_factor, extent,
+        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
@@ -2630,7 +2646,7 @@ fn capture_screenshot_offscreen(
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
-        &state.text_renderer, scale_factor, extent,
+        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,

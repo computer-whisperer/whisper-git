@@ -171,7 +171,7 @@ impl HeaderBar {
     }
 
     /// Update breadcrumb segment bounds (call before layout with text_renderer access)
-    pub fn update_breadcrumb_bounds(&mut self, text_renderer: &crate::ui::TextRenderer, bounds: Rect) {
+    pub fn update_breadcrumb_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
         self.breadcrumb_segment_bounds.clear();
         if self.breadcrumb_segments.is_empty() {
             return;
@@ -194,7 +194,8 @@ impl HeaderBar {
     }
 
     /// Pre-compute abort button bounds (call from the pre-draw phase with text_renderer access).
-    pub fn update_abort_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
+    /// `bold_renderer` is used for measuring repo name and branch name (rendered bold in layout).
+    pub fn update_abort_bounds(&mut self, bold_renderer: &TextRenderer, bounds: Rect) {
         if self.operation_state_label.is_none() {
             self.abort_button_bounds = None;
             return;
@@ -207,7 +208,7 @@ impl HeaderBar {
         // Compute branch pill end position
         let branch_pill_x = if self.breadcrumb_segments.is_empty() {
             let repo_x = bounds.x + 16.0;
-            let repo_w = text_renderer.measure_text(&self.repo_name);
+            let repo_w = bold_renderer.measure_text(&self.repo_name);
             let sep_x = repo_x + repo_w + 12.0;
             sep_x + 12.0
         } else if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
@@ -216,13 +217,13 @@ impl HeaderBar {
             bounds.x + 16.0
         };
 
-        let branch_text_w = text_renderer.measure_text(&self.branch_name);
+        let branch_text_w = bold_renderer.measure_text(&self.branch_name);
         let pill_pad_h = 10.0;
         let pill_w = branch_text_w + pill_pad_h * 2.0;
 
         // Place operation label + abort button after branch pill
         let label_text = self.operation_state_label.unwrap_or("");
-        let label_w = text_renderer.measure_text(label_text);
+        let label_w = bold_renderer.measure_text(label_text);
         let abort_x = branch_pill_x + pill_w + 12.0 + label_w + 8.0;
 
         self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
@@ -262,6 +263,176 @@ impl HeaderBar {
 impl Default for HeaderBar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl HeaderBar {
+    /// Layout with bold text support. Renders branch name and button labels in bold.
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+
+        // Background - elevated surface for header prominence
+        output.spline_vertices.extend(create_rect_vertices(
+            &bounds,
+            theme::SURFACE_RAISED.to_array(),
+        ));
+
+        let line_height = text_renderer.line_height();
+        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+
+        // Determine where the branch pill starts (depends on breadcrumb vs normal mode)
+        let branch_pill_x;
+
+        if self.breadcrumb_segments.is_empty() {
+            // Normal mode: repo name in bold + separator
+            let repo_x = bounds.x + 16.0;
+            output.bold_text_vertices.extend(bold_renderer.layout_text(
+                &self.repo_name,
+                repo_x,
+                text_y,
+                theme::TEXT.to_array(),
+            ));
+
+            let sep_x = repo_x + bold_renderer.measure_text(&self.repo_name) + 12.0;
+            let sep_height = line_height * 0.8;
+            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                theme::BORDER.to_array(),
+            ));
+
+            branch_pill_x = sep_x + 12.0;
+        } else {
+            // Breadcrumb mode: segment > segment > ... + close button
+            let scale = (bounds.height / 32.0).max(1.0);
+            let mut x = bounds.x + 16.0;
+            let separator = " > ";
+            let sep_w = text_renderer.measure_text(separator);
+
+            let last_idx = self.breadcrumb_segments.len() - 1;
+
+            for (i, segment) in self.breadcrumb_segments.iter().enumerate() {
+                let is_last = i == last_idx;
+                let is_hovered = self.breadcrumb_hovered == Some(i);
+
+                let color = if is_last {
+                    theme::TEXT_BRIGHT.to_array()
+                } else if is_hovered {
+                    theme::TEXT.to_array()
+                } else {
+                    theme::TEXT_MUTED.to_array()
+                };
+
+                // Last segment (current) in bold, others in regular
+                if is_last {
+                    output.bold_text_vertices.extend(bold_renderer.layout_text(
+                        segment, x, text_y, color,
+                    ));
+                } else {
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        segment, x, text_y, color,
+                    ));
+                }
+
+                if !is_last && is_hovered {
+                    let seg_w = text_renderer.measure_text(segment);
+                    output.spline_vertices.extend(create_rect_vertices(
+                        &Rect::new(x, text_y + line_height - 1.0, seg_w, 1.0),
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                }
+
+                x += text_renderer.measure_text(segment);
+
+                if !is_last {
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        separator, x, text_y, theme::TEXT_MUTED.to_array(),
+                    ));
+                    x += sep_w;
+                }
+            }
+
+            // Close button [✕]
+            let close_bounds = self.close_button_bounds(bounds, scale);
+            output.extend(self.close_button.layout(text_renderer, close_bounds));
+
+            // Separator before branch pill
+            let sep_x = close_bounds.right() + 8.0;
+            let sep_height = line_height * 0.8;
+            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                theme::BORDER.to_array(),
+            ));
+
+            branch_pill_x = sep_x + 12.0;
+        }
+
+        // Branch name inside a tinted pill - bold text
+        let branch_text_w = bold_renderer.measure_text(&self.branch_name);
+        let pill_pad_h = 10.0;
+        let pill_pad_v = 3.0;
+        let pill_h = line_height + pill_pad_v * 2.0;
+        let pill_w = branch_text_w + pill_pad_h * 2.0;
+        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
+        let pill_rect = Rect::new(branch_pill_x, pill_y, pill_w, pill_h);
+        let pill_radius = pill_h / 2.0;
+
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &pill_rect,
+            theme::ACCENT.with_alpha(0.15).to_array(),
+            pill_radius,
+        ));
+
+        let branch_text_x = branch_pill_x + pill_pad_h;
+        let branch_text_y = pill_y + pill_pad_v;
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
+            &self.branch_name,
+            branch_text_x,
+            branch_text_y,
+            theme::ACCENT.to_array(),
+        ));
+
+        // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
+        if let Some(label) = self.operation_state_label {
+            let label_x = branch_pill_x + pill_w + 12.0;
+            let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
+            output.bold_text_vertices.extend(bold_renderer.layout_text(
+                label, label_x, text_y, label_color,
+            ));
+
+            if let Some(abort_bounds) = self.abort_button_bounds {
+                output.extend(self.abort_button.layout_with_bold(text_renderer, bold_renderer, abort_bounds));
+            }
+        }
+
+        // Button bounds
+        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+            self.button_bounds(bounds);
+
+        // Render stored buttons with bold labels
+        output.extend(self.fetch_button.layout_with_bold(text_renderer, bold_renderer, fetch_bounds));
+        output.extend(self.pull_button.layout_with_bold(text_renderer, bold_renderer, pull_bounds));
+        output.extend(self.push_button.layout_with_bold(text_renderer, bold_renderer, push_bounds));
+        output.extend(self.commit_button.layout_with_bold(text_renderer, bold_renderer, commit_bounds));
+
+        // Help and Settings buttons (ghost style - keep regular weight)
+        output.extend(self.help_button.layout(text_renderer, help_bounds));
+        output.extend(self.settings_button.layout(text_renderer, settings_bounds));
+
+        // Drop shadow below header
+        let shadow_strip_height = 2.0;
+        for i in 0..4u32 {
+            let alpha = 0.15 * (1.0 - i as f32 / 4.0);
+            let strip_y = bounds.bottom() + i as f32 * shadow_strip_height;
+            let strip = Rect::new(bounds.x, strip_y, bounds.width, shadow_strip_height);
+            output.spline_vertices.extend(create_rect_vertices(
+                &strip,
+                [0.0, 0.0, 0.0, alpha],
+            ));
+        }
+
+        output
     }
 }
 

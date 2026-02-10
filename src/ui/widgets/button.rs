@@ -100,6 +100,69 @@ impl Button {
     }
 }
 
+impl Button {
+    /// Layout with bold text for the label.
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+        let corner_radius = (bounds.height * 0.20).min(8.0);
+
+        // Draw background with rounded corners
+        let bg_color = self.current_background();
+        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
+
+        // Draw border
+        if let Some(border) = self.border_color {
+            let border_color = if self.state.hovered {
+                theme::BORDER_LIGHT
+            } else {
+                border
+            };
+            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
+                &bounds,
+                border_color.to_array(),
+                corner_radius,
+                1.0,
+            ));
+        }
+
+        // Top highlight line when hovered
+        if self.state.hovered && self.border_color.is_some() {
+            let highlight_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, 1.0);
+            output.spline_vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                theme::BORDER_LIGHT.with_alpha(0.7).to_array(),
+            ));
+        }
+
+        // Draw label text in bold
+        let line_height = text_renderer.line_height();
+        let display_text = if let Some(ref badge) = self.badge {
+            format!("{} ({})", self.label, badge)
+        } else {
+            self.label.clone()
+        };
+
+        let text_width = bold_renderer.measure_text(&display_text);
+        let text_x = bounds.x + (bounds.width - text_width) / 2.0;
+        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+
+        let text_color = if self.state.hovered || self.state.pressed {
+            theme::TEXT_BRIGHT
+        } else {
+            self.text_color
+        };
+
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
+            &display_text,
+            text_x,
+            text_y,
+            text_color.to_array(),
+        ));
+
+        output
+    }
+}
+
 impl Widget for Button {
     fn id(&self) -> WidgetId {
         self.id

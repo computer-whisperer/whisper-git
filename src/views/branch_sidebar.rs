@@ -908,8 +908,9 @@ impl BranchSidebar {
         EventResponse::Ignored
     }
 
-    /// Layout the sidebar and produce rendering output
-    pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    /// Layout the sidebar and produce rendering output.
+    /// `bold_renderer` is used for section headers (LOCAL, REMOTE, etc.).
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         self.last_bounds = Some(bounds);
 
@@ -1069,6 +1070,7 @@ impl BranchSidebar {
         // Section header
         y = self.layout_section_header(
             text_renderer,
+            bold_renderer,
             &mut output,
             &inner,
             y,
@@ -1165,12 +1167,22 @@ impl BranchSidebar {
                     let icon_width = text_renderer.measure_text(icon) + 4.0;
 
                     let display_name = truncate_to_width(branch, text_renderer, inner.width - indent - icon_width);
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        &display_name,
-                        inner.x + indent + icon_width,
-                        y + 2.0,
-                        color,
-                    ));
+                    if is_current {
+                        // Active branch in bold
+                        output.bold_text_vertices.extend(bold_renderer.layout_text(
+                            &display_name,
+                            inner.x + indent + icon_width,
+                            y + 2.0,
+                            color,
+                        ));
+                    } else {
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            &display_name,
+                            inner.x + indent + icon_width,
+                            y + 2.0,
+                            color,
+                        ));
+                    }
                 }
                 y += line_height;
                 item_idx += 1;
@@ -1185,6 +1197,7 @@ impl BranchSidebar {
         let remote_count: usize = filtered_remotes.iter().map(|(_, v)| v.len()).sum();
         y = self.layout_section_header(
             text_renderer,
+            bold_renderer,
             &mut output,
             &inner,
             y,
@@ -1289,6 +1302,7 @@ impl BranchSidebar {
         if show_tags {
         y = self.layout_section_header(
             text_renderer,
+            bold_renderer,
             &mut output,
             &inner,
             y,
@@ -1354,6 +1368,7 @@ impl BranchSidebar {
 
             y = self.layout_section_header(
                 text_renderer,
+                bold_renderer,
                 &mut output,
                 &inner,
                 y,
@@ -1444,6 +1459,7 @@ impl BranchSidebar {
 
             y = self.layout_section_header(
                 text_renderer,
+                bold_renderer,
                 &mut output,
                 &inner,
                 y,
@@ -1560,6 +1576,7 @@ impl BranchSidebar {
 
             y = self.layout_section_header(
                 text_renderer,
+                bold_renderer,
                 &mut output,
                 &inner,
                 y,
@@ -1727,10 +1744,12 @@ impl BranchSidebar {
     /// Layout a section header (e.g., "LOCAL  3") and return the new y position.
     /// Performs bounds checking to skip rendering if the header is outside visible area.
     /// Includes extra vertical padding and a 1px separator line below.
+    /// Uses `bold_renderer` for the section title text.
     #[allow(clippy::too_many_arguments)]
     fn layout_section_header(
         &self,
         text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
         output: &mut WidgetOutput,
         inner: &Rect,
         y: f32,
@@ -1757,24 +1776,24 @@ impl BranchSidebar {
 
             // Collapse indicator - Unicode triangle (▶ collapsed / ▼ expanded)
             let indicator = if collapsed { "\u{25B6}" } else { "\u{25BC}" }; // ▶ / ▼
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.bold_text_vertices.extend(bold_renderer.layout_text(
                 indicator,
                 inner.x + 6.0,
                 text_y,
                 theme::TEXT_BRIGHT.to_array(),
             ));
 
-            // Section title - brighter, slightly more left padding
-            output.text_vertices.extend(text_renderer.layout_text(
+            // Section title in bold
+            output.bold_text_vertices.extend(bold_renderer.layout_text(
                 title,
                 inner.x + 20.0,
                 text_y,
                 theme::TEXT_BRIGHT.to_array(),
             ));
 
-            // Count badge in smaller/muted text
+            // Count badge in smaller/muted text (regular weight)
             let count_text = format!("{}", count);
-            let title_width = text_renderer.measure_text(title);
+            let title_width = bold_renderer.measure_text(title);
             output.text_vertices.extend(text_renderer.layout_text_small(
                 &count_text,
                 inner.x + 20.0 + title_width + 8.0,
