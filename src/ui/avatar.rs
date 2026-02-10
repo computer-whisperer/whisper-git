@@ -356,7 +356,10 @@ impl AvatarRenderer {
                     ..Default::default()
                 }),
                 rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
+                multisample_state: Some(MultisampleState {
+                    rasterization_samples: vulkano::image::SampleCount::Sample4,
+                    ..Default::default()
+                }),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState {

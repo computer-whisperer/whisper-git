@@ -12,8 +12,8 @@ winit = "0.30"
 # Git
 git2 = "0.20"
 
-# Text rendering
-ab_glyph = "0.2"
+# Text rendering (SDF via EDT from fontdue coverage)
+fontdue = "0.9"
 
 # Screenshot/image output
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

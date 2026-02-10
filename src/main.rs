@@ -365,21 +365,29 @@ impl App {
 
         let ctx = VulkanContext::with_surface(instance, &surface)?;
 
-        // Create render pass
+        // Create render pass with MSAA 4x
+        let image_format = ctx.device.physical_device()
+            .surface_formats(&surface, Default::default())
+            .unwrap()[0].0;
         let render_pass = vulkano::single_pass_renderpass!(
             ctx.device.clone(),
             attachments: {
-                color: {
-                    format: ctx.device.physical_device()
-                        .surface_formats(&surface, Default::default())
-                        .unwrap()[0].0,
-                    samples: 1,
+                msaa_color: {
+                    format: image_format,
+                    samples: 4,
                     load_op: Clear,
+                    store_op: DontCare,
+                },
+                resolve_target: {
+                    format: image_format,
+                    samples: 1,
+                    load_op: DontCare,
                     store_op: Store,
                 },
             },
             pass: {
-                color: [color],
+                color: [msaa_color],
+                color_resolve: [resolve_target],
                 depth_stencil: {},
             },
         )
@@ -2494,7 +2502,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into())],
+                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -2633,7 +2641,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into())],
+                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -2744,7 +2752,7 @@ fn capture_screenshot_offscreen(
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into())],
+                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
                 ..RenderPassBeginInfo::framebuffer(offscreen.framebuffer.clone())
             },
             Default::default(),

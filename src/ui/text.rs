@@ -1,6 +1,6 @@
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
+use fontdue::Font;
 use std::collections::HashMap;
 use std::sync::Arc;
 use vulkano::{
@@ -59,11 +59,15 @@ struct GlyphInfo {
     advance: f32,
 }
 
-/// Simple text renderer using a font atlas
+/// SDF text renderer using a font atlas
 ///
 /// The atlas is built at `atlas_scale` (typically the highest DPI monitor).
 /// At runtime, `render_scale` can be changed (e.g. when moving between monitors).
 /// All public metrics and glyph positions are scaled by `render_scale / atlas_scale`.
+///
+/// Uses fontdue for coverage rasterization, then computes a signed distance field
+/// via Euclidean distance transform. The fragment shader uses smoothstep for
+/// crisp, resolution-independent antialiased edges.
 pub struct TextRenderer {
     pipeline: Arc<GraphicsPipeline>,
     font_texture: Arc<ImageView>,
@@ -125,7 +129,9 @@ mod fs {
             layout(set = 0, binding = 0) uniform sampler2D font_atlas;
 
             void main() {
-                float alpha = texture(font_atlas, v_tex_coord).r;
+                float d = texture(font_atlas, v_tex_coord).r;
+                float aa_width = fwidth(d) * 0.75;
+                float alpha = smoothstep(0.5 - aa_width, 0.5 + aa_width, d);
                 f_color = vec4(v_color.rgb, v_color.a * alpha);
             }
         ",
@@ -173,80 +179,102 @@ impl TextRenderer {
     ) -> Result<Self> {
         let device = memory_allocator.device().clone();
 
-        let font = FontRef::try_from_slice(font_bytes).context("Failed to load font")?;
+        let font = Font::from_bytes(font_bytes, fontdue::FontSettings::default())
+            .map_err(|e| anyhow::anyhow!(e))?;
 
-        // Build atlas at the given scale factor (should be the max across all monitors).
-        // Runtime scaling is handled by render_scale / atlas_scale ratio.
+        // Build the atlas at 2x display resolution for high-quality SDF.
+        // We rasterize coverage with fontdue at 2x, threshold to binary,
+        // then compute a signed distance field via EDT. The 2x oversample
+        // gives the binary mask sub-pixel resolution so the EDT produces
+        // smooth edges. The smoothstep shader handles the 2x minification
+        // cleanly via fwidth-based AA.
         let base_font_size = 14.0_f64;
-        let atlas_scale = scale_factor as f32;
-        let scale = PxScale::from((base_font_size * scale_factor) as f32);
-        let scaled_font = font.as_scaled(scale);
-        let line_height = scaled_font.height();
-        let ascent = scaled_font.ascent();
+        let atlas_oversample = 2.0_f32;
+        let display_font_size = (base_font_size * scale_factor) as f32;
+        let font_size_px = display_font_size * atlas_oversample;
+        let atlas_scale = scale_factor as f32 * atlas_oversample;
+
+        // SDF spread: how many atlas pixels of distance gradient around the glyph edge.
+        // Each glyph gets `spread` pixels of padding on each side.
+        let sdf_spread: u32 = 4;
+
+        // Get line metrics from fontdue
+        let line_metrics = font.horizontal_line_metrics(font_size_px)
+            .context("Failed to get line metrics")?;
+        let line_height = line_metrics.new_line_size;
+        let ascent = line_metrics.ascent;
 
         // Characters to include in atlas
         let chars: Vec<char> = (32u8..127u8).map(|c| c as char).collect();
 
-        // First pass: calculate atlas size
+        // First pass: calculate atlas size (including SDF padding)
         let mut total_width = 0u32;
         let mut max_height = 0u32;
         let padding = 2u32;
 
         for &c in &chars {
-            if let Some(glyph) = scaled_font.outline_glyph(scaled_font.scaled_glyph(c)) {
-                let bounds = glyph.px_bounds();
-                total_width += bounds.width() as u32 + padding;
-                max_height = max_height.max(bounds.height() as u32 + padding);
+            let metrics = font.metrics(c, font_size_px);
+            if metrics.width > 0 && metrics.height > 0 {
+                let sdf_w = metrics.width as u32 + 2 * sdf_spread;
+                let sdf_h = metrics.height as u32 + 2 * sdf_spread;
+                total_width += sdf_w + padding;
+                max_height = max_height.max(sdf_h + padding);
             } else {
-                // Space or non-renderable char
-                total_width += (scaled_font.h_advance(scaled_font.glyph_id(c)) as u32).max(8) + padding;
+                total_width += (metrics.advance_width as u32).max(8) + padding;
             }
         }
 
         let atlas_width = total_width.next_power_of_two().max(256);
         let atlas_height = max_height.next_power_of_two().max(64);
 
-        // Create atlas pixel data
+        // Create atlas pixel data (SDF: 128 = edge, >128 = inside, <128 = outside)
         let mut atlas_data = vec![0u8; (atlas_width * atlas_height) as usize];
         let mut glyphs = HashMap::new();
         let mut x_offset = 0u32;
 
         for &c in &chars {
-            let glyph_id = scaled_font.glyph_id(c);
-            let advance = scaled_font.h_advance(glyph_id);
+            let (metrics, bitmap) = font.rasterize(c, font_size_px);
 
-            if let Some(outlined) = scaled_font.outline_glyph(scaled_font.scaled_glyph(c)) {
-                let bounds = outlined.px_bounds();
-                let glyph_width = bounds.width() as u32;
-                let glyph_height = bounds.height() as u32;
+            if metrics.width > 0 && metrics.height > 0 {
+                let cov_w = metrics.width;
+                let cov_h = metrics.height;
 
-                // Rasterize glyph into atlas
-                outlined.draw(|x, y, coverage| {
-                    let px = x_offset + x;
-                    let py = y;
-                    if px < atlas_width && py < atlas_height {
-                        atlas_data[(py * atlas_width + px) as usize] = (coverage * 255.0) as u8;
+                // Compute SDF from coverage bitmap via EDT
+                let (sdf_bitmap, sdf_w, sdf_h) =
+                    coverage_to_sdf(&bitmap, cov_w, cov_h, sdf_spread as usize);
+
+                // Copy SDF into atlas
+                for row in 0..sdf_h {
+                    for col in 0..sdf_w {
+                        let px = x_offset + col as u32;
+                        let py = row as u32;
+                        if px < atlas_width && py < atlas_height {
+                            atlas_data[(py * atlas_width + px) as usize] =
+                                sdf_bitmap[row * sdf_w + col];
+                        }
                     }
-                });
+                }
+
+                // bearing_y: convert fontdue Y-up to screen Y-down, then expand by spread
+                let bearing_y = -((metrics.ymin as f32) + (cov_h as f32)) - sdf_spread as f32;
 
                 glyphs.insert(
                     c,
                     GlyphInfo {
                         tex_x: x_offset as f32 / atlas_width as f32,
                         tex_y: 0.0,
-                        tex_w: glyph_width as f32 / atlas_width as f32,
-                        tex_h: glyph_height as f32 / atlas_height as f32,
-                        width: glyph_width as f32,
-                        height: glyph_height as f32,
-                        bearing_x: bounds.min.x,
-                        bearing_y: bounds.min.y,
-                        advance,
+                        tex_w: sdf_w as f32 / atlas_width as f32,
+                        tex_h: sdf_h as f32 / atlas_height as f32,
+                        width: sdf_w as f32,
+                        height: sdf_h as f32,
+                        bearing_x: metrics.xmin as f32 - sdf_spread as f32,
+                        bearing_y,
+                        advance: metrics.advance_width,
                     },
                 );
 
-                x_offset += glyph_width + padding;
+                x_offset += sdf_w as u32 + padding;
             } else {
-                // Space or non-renderable - just store advance
                 glyphs.insert(
                     c,
                     GlyphInfo {
@@ -258,7 +286,7 @@ impl TextRenderer {
                         height: 0.0,
                         bearing_x: 0.0,
                         bearing_y: 0.0,
-                        advance,
+                        advance: metrics.advance_width,
                     },
                 );
             }
@@ -349,7 +377,10 @@ impl TextRenderer {
                     ..Default::default()
                 }),
                 rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
+                multisample_state: Some(MultisampleState {
+                    rasterization_samples: vulkano::image::SampleCount::Sample4,
+                    ..Default::default()
+                }),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState {
@@ -594,5 +625,140 @@ impl TextRenderer {
         }
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SDF generation from coverage bitmap via Euclidean Distance Transform (EDT)
+// ---------------------------------------------------------------------------
+
+/// Convert a fontdue coverage bitmap into a signed distance field.
+///
+/// 1. Threshold coverage at 128 → binary inside/outside
+/// 2. Compute exact Euclidean distance to nearest opposite-class pixel (EDT)
+/// 3. Encode as SDF: 128 = edge, >128 = inside, <128 = outside
+///
+/// Returns `(sdf_bytes, padded_width, padded_height)`.
+/// The output is padded by `spread` pixels on each side so the SDF gradient
+/// extends beyond the glyph boundary.
+fn coverage_to_sdf(
+    coverage: &[u8],
+    cov_w: usize,
+    cov_h: usize,
+    spread: usize,
+) -> (Vec<u8>, usize, usize) {
+    let w = cov_w + 2 * spread;
+    let h = cov_h + 2 * spread;
+    let size = w * h;
+    let inf = (w * w + h * h) as f32; // larger than any possible squared distance
+
+    // Build binary mask (padded with "outside")
+    let mut inside = vec![false; size];
+    for y in 0..cov_h {
+        for x in 0..cov_w {
+            if coverage[y * cov_w + x] > 128 {
+                inside[(y + spread) * w + (x + spread)] = true;
+            }
+        }
+    }
+
+    // Distance from each pixel to nearest INSIDE pixel (seeds = inside pixels)
+    let mut dist_to_inside = vec![inf; size];
+    for i in 0..size {
+        if inside[i] { dist_to_inside[i] = 0.0; }
+    }
+    edt_2d(&mut dist_to_inside, w, h);
+
+    // Distance from each pixel to nearest OUTSIDE pixel (seeds = outside pixels)
+    let mut dist_to_outside = vec![inf; size];
+    for i in 0..size {
+        if !inside[i] { dist_to_outside[i] = 0.0; }
+    }
+    edt_2d(&mut dist_to_outside, w, h);
+
+    // Combine into SDF: positive inside, negative outside
+    let spread_f = spread as f32;
+    let mut sdf = vec![128u8; size];
+    for i in 0..size {
+        let signed_dist = if inside[i] {
+            dist_to_outside[i].sqrt() // inside: distance to edge (positive)
+        } else {
+            -dist_to_inside[i].sqrt() // outside: distance to edge (negative)
+        };
+        // Map [-spread, +spread] → [0, 255] with 128 = edge
+        let val = (signed_dist / spread_f) * 127.0 + 128.0;
+        sdf[i] = val.clamp(0.0, 255.0) as u8;
+    }
+
+    (sdf, w, h)
+}
+
+/// 2D Euclidean distance transform (separable: rows then columns).
+/// Input/output: grid of SQUARED distances (0.0 for seed pixels, large for others).
+fn edt_2d(grid: &mut [f32], w: usize, h: usize) {
+    let max_dim = w.max(h);
+    let mut f = vec![0.0_f32; max_dim];
+    let mut d = vec![0.0_f32; max_dim];
+    let mut v = vec![0usize; max_dim];
+    let mut z = vec![0.0_f32; max_dim + 1];
+
+    // Transform rows
+    for y in 0..h {
+        let off = y * w;
+        f[..w].copy_from_slice(&grid[off..off + w]);
+        edt_1d(&f, &mut d, &mut v, &mut z, w);
+        grid[off..off + w].copy_from_slice(&d[..w]);
+    }
+
+    // Transform columns
+    let mut col = vec![0.0_f32; h];
+    for x in 0..w {
+        for y in 0..h { col[y] = grid[y * w + x]; }
+        f[..h].copy_from_slice(&col[..h]);
+        edt_1d(&f, &mut d, &mut v, &mut z, h);
+        for y in 0..h { grid[y * w + x] = d[y]; }
+    }
+}
+
+/// 1D squared Euclidean distance transform (Felzenszwalb & Huttenlocher).
+/// f: input values (0 for seeds, large for non-seeds). d: output squared distances.
+fn edt_1d(f: &[f32], d: &mut [f32], v: &mut [usize], z: &mut [f32], n: usize) {
+    if n == 0 { return; }
+
+    v[0] = 0;
+    z[0] = f32::NEG_INFINITY;
+    z[1] = f32::INFINITY;
+    let mut k = 0usize;
+
+    for q in 1..n {
+        loop {
+            let vk = v[k];
+            let s = ((f[q] + (q * q) as f32) - (f[vk] + (vk * vk) as f32))
+                / (2.0 * (q as f32 - vk as f32));
+            if s > z[k] {
+                k += 1;
+                v[k] = q;
+                z[k] = s;
+                z[k + 1] = f32::INFINITY;
+                break;
+            }
+            if k == 0 {
+                v[0] = q;
+                z[0] = f32::NEG_INFINITY;
+                z[1] = f32::INFINITY;
+                break;
+            }
+            k -= 1;
+        }
+    }
+
+    k = 0;
+    for q in 0..n {
+        while z[k + 1] < q as f32 {
+            k += 1;
+        }
+        let vk = v[k];
+        let dq = q as f32 - vk as f32;
+        d[q] = dq * dq + f[vk];
     }
 }
