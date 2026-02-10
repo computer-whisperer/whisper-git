@@ -79,6 +79,11 @@ impl TabBar {
         self.tabs.len()
     }
 
+    /// Returns true if any tab, close button, or new button is hovered
+    pub fn is_any_hovered(&self) -> bool {
+        self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new
+    }
+
     /// Update tab name (e.g. when repo info changes)
     #[allow(dead_code)]
     pub fn set_tab_name(&mut self, index: usize, name: String) {

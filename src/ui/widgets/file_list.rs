@@ -89,6 +89,11 @@ impl FileList {
         }
     }
 
+    /// Returns true if any file item is currently hovered
+    pub fn is_item_hovered(&self) -> bool {
+        self.hovered_index.is_some()
+    }
+
     /// Set the files to display
     pub fn set_files(&mut self, files: Vec<FileEntry>) {
         self.files = files;

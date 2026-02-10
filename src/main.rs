@@ -1276,15 +1276,19 @@ impl ApplicationHandler for App {
                             }
                             InputEvent::MouseUp { .. } => {
                                 self.divider_drag = None;
+                                // Reset cursor after drag ends
+                                if let Some(ref render_state) = self.state {
+                                    render_state.window.set_cursor(CursorIcon::Default);
+                                }
                                 return;
                             }
                             _ => {}
                         }
                     }
 
-                    // Start divider drag on MouseDown near divider edges
+                    // Start divider drag on MouseDown near divider edges (wide 8px hit zone)
                     if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = &input_event {
-                        let hit_tolerance = 5.0;
+                        let hit_tolerance = 8.0;
 
                         // Only check dividers in the main content area (below header)
                         if *y > layout.shortcut_bar.bottom() {
@@ -1769,14 +1773,14 @@ impl ApplicationHandler for App {
                         view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
                         view_state.staging_well.update_hover(*x, *y, layout.staging);
 
-                        // Determine cursor icon based on hover position
-                        let cursor = determine_cursor(*x, *y, &layout, view_state);
-
-                        // Tab bar hover needs text_renderer
+                        // Tab bar hover needs text_renderer - update before cursor determination
                         if let Some(ref render_state) = self.state {
                             if tab_count > 1 {
                                 self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
                             }
+
+                            // Determine cursor icon based on hover position
+                            let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count);
                             render_state.window.set_cursor(cursor);
                         }
                     }
@@ -1793,27 +1797,36 @@ impl ApplicationHandler for App {
 }
 
 /// Determine which cursor icon to show based on mouse position.
-/// Returns resize cursors near divider edges, Text cursor over text inputs, Default otherwise.
-fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewState) -> CursorIcon {
-    let hit_tolerance = 5.0;
+/// Returns resize cursors near divider edges, Pointer over clickable elements,
+/// Text cursor over text inputs, Default otherwise.
+fn determine_cursor(
+    x: f32,
+    y: f32,
+    layout: &ScreenLayout,
+    view_state: &TabViewState,
+    tab_bar: &TabBar,
+    tab_count: usize,
+) -> CursorIcon {
+    // Wider hit zone for dividers (8px) makes dragging much easier
+    let divider_hit = 8.0;
 
     // Check divider hover zones (only below shortcut bar)
     if y > layout.shortcut_bar.bottom() {
         // Divider 1: sidebar | graph (vertical)
         let sidebar_edge = layout.sidebar.right();
-        if (x - sidebar_edge).abs() < hit_tolerance {
+        if (x - sidebar_edge).abs() < divider_hit {
             return CursorIcon::ColResize;
         }
 
         // Divider 2: graph | right panel (vertical)
         let graph_edge = layout.graph.right();
-        if (x - graph_edge).abs() < hit_tolerance {
+        if (x - graph_edge).abs() < divider_hit {
             return CursorIcon::ColResize;
         }
 
         // Divider 3: staging | right panel (horizontal, only in right column)
         let staging_edge = layout.staging.bottom();
-        if (y - staging_edge).abs() < hit_tolerance
+        if (y - staging_edge).abs() < divider_hit
             && x >= layout.staging.x
             && x <= layout.staging.right()
         {
@@ -1821,7 +1834,9 @@ fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewS
         }
     }
 
-    // Check staging area text inputs (subject line, body area)
+    // -- Text cursor: text input fields --
+
+    // Staging area text inputs (subject line, body area)
     if layout.staging.contains(x, y) {
         let (subject_bounds, body_bounds, _, _, _) = view_state.staging_well.compute_regions(layout.staging);
         if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
@@ -1829,7 +1844,7 @@ fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewS
         }
     }
 
-    // Check search bar when active (overlays the graph area)
+    // Search bar when active (overlays the graph area)
     if view_state.commit_graph_view.search_bar.is_active() && layout.graph.contains(x, y) {
         let scrollbar_width = 8.0;
         let search_bar_height = 30.0;
@@ -1842,6 +1857,43 @@ fn determine_cursor(x: f32, y: f32, layout: &ScreenLayout, view_state: &TabViewS
         if search_bounds.contains(x, y) {
             return CursorIcon::Text;
         }
+    }
+
+    // Sidebar filter bar (show text cursor when hovering the filter input area)
+    if layout.sidebar.contains(x, y) && view_state.branch_sidebar.is_over_filter_bar(x, y, layout.sidebar) {
+        return CursorIcon::Text;
+    }
+
+    // -- Pointer cursor: clickable elements --
+
+    // Header bar buttons, breadcrumb links, abort button
+    if layout.header.contains(x, y) && view_state.header_bar.is_any_interactive_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Tab bar tabs, close buttons, new button
+    if tab_count > 1 && tab_bar.is_any_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Sidebar clickable items (branches, tags, stashes, etc.)
+    if layout.sidebar.contains(x, y) && view_state.branch_sidebar.is_item_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Staging well buttons (Stage All, Unstage All, Commit, Amend)
+    if layout.staging.contains(x, y) && view_state.staging_well.is_any_button_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Staging well file list items (clickable to select/stage/unstage)
+    if layout.staging.contains(x, y) && view_state.staging_well.is_file_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Commit graph rows (clickable to select commit)
+    if layout.graph.contains(x, y) && view_state.commit_graph_view.hovered_commit.is_some() {
+        return CursorIcon::Pointer;
     }
 
     CursorIcon::Default
@@ -2107,9 +2159,9 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::BORDER.to_array(),
     ));
 
-    // Divider hover detection: brighten divider when mouse is within 4px
+    // Divider hover detection: brighten divider when mouse is within 8px (matches drag hit zone)
     let (mx, my) = mouse_pos;
-    let hit_tolerance = 4.0;
+    let hit_tolerance = 8.0;
     let in_content_area = my > layout.shortcut_bar.bottom();
 
     let sidebar_edge = layout.sidebar.right();
