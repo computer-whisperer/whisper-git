@@ -243,10 +243,10 @@ impl Default for CommitGraphView {
     fn default() -> Self {
         Self {
             layout: GraphLayout::new(),
-            line_width: 2.0,
+            line_width: 2.5,
             lane_width: 22.0,
             row_height: 24.0,
-            node_radius: 5.0,
+            node_radius: 6.0,
             segments_per_curve: 20,
             row_scale: 1.0,
             selected_commit: None,
@@ -275,8 +275,8 @@ impl CommitGraphView {
         let s = self.row_scale;
         self.row_height = (lh * 1.8 * s).max(20.0 * s);   // ~28.8px at s=1.0, lh=16
         self.lane_width = (lh * 1.0 * s).max(12.0 * s);    // ~16px (compact lanes)
-        self.node_radius = (lh * 0.25 * s).max(3.0 * s);   // ~4px (small nodes)
-        self.line_width = (lh * 0.12 * s.sqrt()).max(1.5);  // ~1.9px (thin lines)
+        self.node_radius = (lh * 0.38 * s).max(5.0 * s);   // ~6px (larger donut nodes)
+        self.line_width = (lh * 0.18 * s.sqrt()).max(2.5);  // ~2.9px (thicker lines)
     }
 }
 
@@ -925,35 +925,52 @@ impl CommitGraphView {
             vertices.extend(self.create_circle_vertices(
                 x,
                 y,
-                self.node_radius + 1.0,
+                self.node_radius + 1.5,
                 theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
             ));
 
-            // Commit node (filled circle, or double ring for merge)
+            // Commit node: donut-ring style (colored outer ring, dark center)
             let node_color = layout.color.with_alpha(dim_alpha);
+            let ring_thickness = self.node_radius * 0.38; // ~2.3px ring width
             if is_merge {
-                // Outer ring for merge indicator
+                // Merge: extra outer ring + inner donut
                 vertices.extend(self.create_ring_vertices(
                     x,
                     y,
-                    self.node_radius + 2.5,
+                    self.node_radius + 3.0,
                     1.5,
                     node_color.to_array(),
                 ));
-                // Inner filled circle
-                vertices.extend(self.create_circle_vertices(
+                // Main donut ring
+                vertices.extend(self.create_ring_vertices(
                     x,
                     y,
                     self.node_radius,
+                    ring_thickness,
                     node_color.to_array(),
                 ));
-            } else {
-                // Regular commit: filled circle
+                // Dark center fill
                 vertices.extend(self.create_circle_vertices(
                     x,
                     y,
+                    self.node_radius - ring_thickness,
+                    theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+                ));
+            } else {
+                // Regular commit: donut ring (colored outer, dark center)
+                vertices.extend(self.create_ring_vertices(
+                    x,
+                    y,
                     self.node_radius,
+                    ring_thickness,
                     node_color.to_array(),
+                ));
+                // Dark center fill
+                vertices.extend(self.create_circle_vertices(
+                    x,
+                    y,
+                    self.node_radius - ring_thickness,
+                    theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
                 ));
             }
 
@@ -1111,9 +1128,12 @@ impl CommitGraphView {
 
         // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
         let time_col_width: f32 = 80.0;
+        let stats_col_width: f32 = 90.0; // "+999 / -999" fits in ~90px
         let right_margin: f32 = 8.0;
         let col_gap: f32 = 8.0;
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
+        let stats_col_right = time_col_right - time_col_width - col_gap;
+        let stats_col_left = stats_col_right - stats_col_width;
         let time_col_left = time_col_right - time_col_width;
 
         // Branch tip lookup
@@ -1213,6 +1233,16 @@ impl CommitGraphView {
             vertices.extend(text_renderer.layout_text_small(
                 "COMMIT MESSAGE",
                 msg_label_x,
+                header_text_y,
+                header_color,
+            ));
+
+            // "DIFF" label right-aligned in the stats column
+            let diff_label = "DIFF";
+            let diff_label_w = text_renderer.measure_text_scaled(diff_label, 0.85);
+            vertices.extend(text_renderer.layout_text_small(
+                diff_label,
+                stats_col_right - diff_label_w,
                 header_text_y,
                 header_color,
             ));
@@ -1552,8 +1582,43 @@ impl CommitGraphView {
                 current_x += author_col_width + col_gap;
             }
 
+            // === Diff stats (+N / -M) right-aligned in the stats column ===
+            if commit.insertions > 0 || commit.deletions > 0 {
+                let ins_str = format!("+{}", commit.insertions);
+                let del_str = format!("-{}", commit.deletions);
+                let sep = " / ";
+                let ins_w = text_renderer.measure_text_scaled(&ins_str, 0.85);
+                let del_w = text_renderer.measure_text_scaled(&del_str, 0.85);
+                let sep_w = text_renderer.measure_text_scaled(sep, 0.85);
+                let total_w = ins_w + sep_w + del_w;
+                let stats_x = stats_col_right - total_w;
+                let stats_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
+
+                // Green insertions
+                vertices.extend(text_renderer.layout_text_small(
+                    &ins_str,
+                    stats_x,
+                    stats_y,
+                    theme::STATUS_CLEAN.with_alpha(0.85 * dim_alpha).to_array(),
+                ));
+                // Separator
+                vertices.extend(text_renderer.layout_text_small(
+                    sep,
+                    stats_x + ins_w,
+                    stats_y,
+                    theme::TEXT_MUTED.with_alpha(0.5 * dim_alpha).to_array(),
+                ));
+                // Red deletions
+                vertices.extend(text_renderer.layout_text_small(
+                    &del_str,
+                    stats_x + ins_w + sep_w,
+                    stats_y,
+                    theme::STATUS_DIRTY.with_alpha(0.85 * dim_alpha).to_array(),
+                ));
+            }
+
             // === Subject line (primary content, bright text, in remaining space) ===
-            let available_width = (time_col_left - col_gap) - current_x;
+            let available_width = (stats_col_left - col_gap) - current_x;
             let summary_color = if is_selected {
                 theme::TEXT_BRIGHT
             } else if is_head {
