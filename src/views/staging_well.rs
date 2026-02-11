@@ -67,12 +67,6 @@ pub struct StagingWell {
     worktree_contexts: Vec<WorktreeContext>,
     /// Index of the active worktree in worktree_contexts
     active_worktree_idx: usize,
-    /// Whether the worktree selector dropdown is open
-    worktree_selector_open: bool,
-    /// Hovered item in the worktree selector dropdown
-    worktree_selector_hover: Option<usize>,
-    /// Bounds of the worktree selector pill (for hit testing and dropdown positioning)
-    worktree_pill_bounds: Option<Rect>,
     /// Individual pill rects in the pill bar (for click hit testing)
     pill_bar_rects: Vec<Rect>,
 }
@@ -113,9 +107,6 @@ impl StagingWell {
             scale: 1.0,
             worktree_contexts: Vec::new(),
             active_worktree_idx: 0,
-            worktree_selector_open: false,
-            worktree_selector_hover: None,
-            worktree_pill_bounds: None,
             pill_bar_rects: Vec::new(),
         }
     }
@@ -376,7 +367,6 @@ impl StagingWell {
     /// Switch to a different worktree context, saving/restoring drafts.
     pub fn switch_worktree(&mut self, index: usize) {
         if index >= self.worktree_contexts.len() || index == self.active_worktree_idx {
-            self.worktree_selector_open = false;
             return;
         }
 
@@ -397,8 +387,6 @@ impl StagingWell {
 
         // Exit amend mode on switch
         self.amend_mode = false;
-        self.worktree_selector_open = false;
-        self.worktree_selector_hover = None;
     }
 
     /// Returns the active worktree context, if any.
@@ -435,7 +423,7 @@ impl StagingWell {
         self.pill_bar_rects.clear();
 
         if self.worktree_contexts.is_empty() {
-            self.worktree_pill_bounds = None;
+
             return output;
         }
 
@@ -450,7 +438,7 @@ impl StagingWell {
                 text_y,
                 theme::TEXT_MUTED.to_array(),
             ));
-            self.worktree_pill_bounds = None;
+
             return output;
         }
 
@@ -522,8 +510,6 @@ impl StagingWell {
             pill_x += pill_w + pill_gap;
         }
 
-        // Store active pill bounds for dropdown positioning
-        self.worktree_pill_bounds = self.pill_bar_rects.get(self.active_worktree_idx).copied();
 
         output
     }
@@ -574,93 +560,10 @@ impl StagingWell {
 
         self.amend_btn.update_hover(x, y, regions.amend_btn);
         self.commit_btn.update_hover(x, y, regions.commit_btn);
-
-        // Update worktree selector hover
-        if self.worktree_selector_open {
-            if let Some(pill_bounds) = self.worktree_pill_bounds {
-                let dropdown_bounds = self.selector_dropdown_bounds(pill_bounds);
-                if dropdown_bounds.contains(x, y) {
-                    let s = self.scale;
-                    let row_height = 24.0 * s;
-                    let padding = 4.0 * s;
-                    let rel_y = y - dropdown_bounds.y - padding;
-                    if rel_y >= 0.0 {
-                        let idx = (rel_y / row_height) as usize;
-                        if idx < self.worktree_contexts.len() {
-                            self.worktree_selector_hover = Some(idx);
-                        } else {
-                            self.worktree_selector_hover = None;
-                        }
-                    }
-                } else {
-                    self.worktree_selector_hover = None;
-                }
-            }
-        }
     }
 
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
-        // Handle worktree selector dropdown events first (when open)
-        if self.worktree_selector_open {
-            match event {
-                InputEvent::MouseDown { x, y, .. } => {
-                    // Check if click is on a dropdown item
-                    if let Some(pill_bounds) = self.worktree_pill_bounds {
-                        let dropdown_bounds = self.selector_dropdown_bounds(pill_bounds);
-                        if dropdown_bounds.contains(*x, *y) {
-                            let s = self.scale;
-                            let row_height = 24.0 * s;
-                            let padding = 4.0 * s;
-                            let rel_y = y - dropdown_bounds.y - padding;
-                            if rel_y >= 0.0 {
-                                let idx = (rel_y / row_height) as usize;
-                                if idx < self.worktree_contexts.len() {
-                                    self.pending_action = Some(StagingAction::SwitchWorktree(idx));
-                                    self.worktree_selector_open = false;
-                                    return EventResponse::Consumed;
-                                }
-                            }
-                        }
-                    }
-                    // Click outside dropdown closes it
-                    self.worktree_selector_open = false;
-                    self.worktree_selector_hover = None;
-                    // Don't consume - let click fall through to normal handling
-                }
-                InputEvent::KeyDown { key: Key::Escape, .. } => {
-                    self.worktree_selector_open = false;
-                    self.worktree_selector_hover = None;
-                    return EventResponse::Consumed;
-                }
-                InputEvent::KeyDown { key: Key::Enter, .. } => {
-                    if let Some(idx) = self.worktree_selector_hover {
-                        self.pending_action = Some(StagingAction::SwitchWorktree(idx));
-                        self.worktree_selector_open = false;
-                        self.worktree_selector_hover = None;
-                        return EventResponse::Consumed;
-                    }
-                }
-                InputEvent::KeyDown { key, .. } => {
-                    let count = self.worktree_contexts.len();
-                    match key {
-                        Key::J | Key::Down => {
-                            let cur = self.worktree_selector_hover.unwrap_or(0);
-                            self.worktree_selector_hover = Some((cur + 1).min(count - 1));
-                            return EventResponse::Consumed;
-                        }
-                        Key::K | Key::Up => {
-                            let cur = self.worktree_selector_hover.unwrap_or(0);
-                            self.worktree_selector_hover = Some(cur.saturating_sub(1));
-                            return EventResponse::Consumed;
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        }
-
         // Calculate sub-regions
         let regions = self.compute_regions_full(bounds);
         let unstaged_bounds = regions.unstaged;
@@ -956,22 +859,6 @@ impl StagingWell {
         (r.unstaged, r.staged, r.subject, r.body, r.buttons)
     }
 
-    /// Compute the dropdown bounds below the worktree pill
-    fn selector_dropdown_bounds(&self, pill_bounds: Rect) -> Rect {
-        let s = self.scale;
-        let row_height = 24.0 * s;
-        let padding = 4.0 * s;
-        let count = self.worktree_contexts.len();
-        let dropdown_h = row_height * count as f32 + padding * 2.0;
-        let dropdown_w = 220.0 * s;
-        Rect::new(
-            pill_bounds.x,
-            pill_bounds.bottom() + 2.0 * s,
-            dropdown_w,
-            dropdown_h,
-        )
-    }
-
     /// Layout the staging well
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
@@ -1197,98 +1084,6 @@ impl StagingWell {
         output
     }
 
-    /// Layout the worktree selector dropdown for the overlay layer.
-    /// Returns Some(output) when the dropdown is open, None otherwise.
-    pub fn layout_selector_dropdown(&self, text_renderer: &TextRenderer) -> Option<WidgetOutput> {
-        if !self.worktree_selector_open || !self.has_worktree_selector() {
-            return None;
-        }
-        let pill_bounds = self.worktree_pill_bounds?;
-
-        let s = self.scale;
-        let mut output = WidgetOutput::new();
-
-        let dropdown = self.selector_dropdown_bounds(pill_bounds);
-        let row_height = 24.0 * s;
-        let padding = 4.0 * s;
-
-        // Dropdown background
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &dropdown,
-            theme::SURFACE_RAISED.to_array(),
-            4.0 * s,
-        ));
-        // Dropdown border
-        output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-            &dropdown,
-            theme::BORDER.to_array(),
-            4.0 * s,
-            1.0,
-        ));
-
-        for (i, ctx) in self.worktree_contexts.iter().enumerate() {
-            let row_y = dropdown.y + padding + i as f32 * row_height;
-            let row_rect = Rect::new(
-                dropdown.x + 2.0 * s,
-                row_y,
-                dropdown.width - 4.0 * s,
-                row_height,
-            );
-
-            // Hover highlight
-            if self.worktree_selector_hover == Some(i) {
-                output.spline_vertices.extend(create_rounded_rect_vertices(
-                    &row_rect,
-                    theme::SURFACE_HOVER.to_array(),
-                    3.0 * s,
-                ));
-            }
-
-            // Status dot
-            let dot_r = 3.0 * s;
-            let dot_cx = dropdown.x + 12.0 * s;
-            let dot_cy = row_y + row_height / 2.0;
-            let dot_color = if ctx.is_current {
-                theme::STATUS_CLEAN
-            } else if ctx.is_dirty {
-                theme::STATUS_BEHIND
-            } else {
-                theme::TEXT_MUTED
-            };
-            let dot_rect = Rect::new(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2.0, dot_r * 2.0);
-            output.spline_vertices.extend(create_rounded_rect_vertices(
-                &dot_rect,
-                dot_color.to_array(),
-                dot_r,
-            ));
-
-            // Active checkmark or name
-            let text_x = dropdown.x + 22.0 * s;
-            let text_y = row_y + 4.0 * s;
-
-            let is_active = i == self.active_worktree_idx;
-            let name_color = if is_active { theme::TEXT_BRIGHT } else { theme::TEXT_MUTED };
-            output.text_vertices.extend(text_renderer.layout_text(
-                &ctx.name,
-                text_x,
-                text_y,
-                name_color.to_array(),
-            ));
-
-            // Branch name (right-aligned, muted)
-            let branch_text = &ctx.branch;
-            let branch_w = text_renderer.measure_text(branch_text);
-            let branch_x = dropdown.right() - branch_w - 8.0 * s;
-            output.text_vertices.extend(text_renderer.layout_text(
-                branch_text,
-                branch_x,
-                text_y,
-                theme::TEXT_MUTED.with_alpha(0.6).to_array(),
-            ));
-        }
-
-        Some(output)
-    }
 }
 
 impl Default for StagingWell {

@@ -493,12 +493,11 @@ pub fn handle_app_message(
             let new_count = real_count + 50;
             if let Ok(new_commits) = repo.commit_graph(new_count) {
                 *commits = new_commits;
-                // Re-add synthetic entries
+                // Re-add synthetic entries sorted by time
                 let worktrees = repo.worktrees().unwrap_or_default();
-                let mut synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
+                let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
                 if !synthetics.is_empty() {
-                    synthetics.append(commits);
-                    *commits = synthetics;
+                    git::insert_synthetics_sorted(commits, synthetics);
                 }
                 view_state.commit_graph_view.update_layout(commits);
             }
@@ -851,11 +850,10 @@ fn refresh_repo_state(
         Vec::new()
     });
 
-    // Prepend synthetic "uncommitted changes" entries for dirty worktrees
-    let mut synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
+    // Insert synthetic "uncommitted changes" entries sorted by time
+    let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
     if !synthetics.is_empty() {
-        synthetics.append(commits);
-        *commits = synthetics;
+        git::insert_synthetics_sorted(commits, synthetics);
     }
 
     view_state.commit_graph_view.update_layout(commits);
