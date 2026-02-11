@@ -219,34 +219,68 @@ pub fn handle_app_message(
             }
         }
         AppMessage::StageAll => {
-            if let Ok(status) = staging_repo.status() {
-                let total = status.unstaged.len();
-                let mut failed = 0;
-                for file in &status.unstaged {
-                    if staging_repo.stage_file(&file.path).is_err() {
-                        failed += 1;
+            match staging_repo.status() {
+                Ok(status) => {
+                    let total = status.unstaged.len();
+                    if total == 0 {
+                        toast_manager.push("No unstaged files".to_string(), ToastSeverity::Info);
+                    } else {
+                        let mut failed = 0;
+                        for file in &status.unstaged {
+                            if staging_repo.stage_file(&file.path).is_err() {
+                                failed += 1;
+                            }
+                        }
+                        if failed > 0 {
+                            toast_manager.push(
+                                format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
+                                ToastSeverity::Error,
+                            );
+                        } else {
+                            toast_manager.push(
+                                format!("Staged {} file{}", total, if total == 1 { "" } else { "s" }),
+                                ToastSeverity::Success,
+                            );
+                        }
                     }
                 }
-                if failed > 0 {
+                Err(e) => {
                     toast_manager.push(
-                        format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
+                        format!("Failed to read file status: {}", e),
                         ToastSeverity::Error,
                     );
                 }
             }
         }
         AppMessage::UnstageAll => {
-            if let Ok(status) = staging_repo.status() {
-                let total = status.staged.len();
-                let mut failed = 0;
-                for file in &status.staged {
-                    if staging_repo.unstage_file(&file.path).is_err() {
-                        failed += 1;
+            match staging_repo.status() {
+                Ok(status) => {
+                    let total = status.staged.len();
+                    if total == 0 {
+                        toast_manager.push("No staged files".to_string(), ToastSeverity::Info);
+                    } else {
+                        let mut failed = 0;
+                        for file in &status.staged {
+                            if staging_repo.unstage_file(&file.path).is_err() {
+                                failed += 1;
+                            }
+                        }
+                        if failed > 0 {
+                            toast_manager.push(
+                                format!("Unstaged {}/{} files ({} failed)", total - failed, total, failed),
+                                ToastSeverity::Error,
+                            );
+                        } else {
+                            toast_manager.push(
+                                format!("Unstaged {} file{}", total, if total == 1 { "" } else { "s" }),
+                                ToastSeverity::Success,
+                            );
+                        }
                     }
                 }
-                if failed > 0 {
+                Err(e) => {
                     toast_manager.push(
-                        format!("Unstaged {}/{} files ({} failed)", total - failed, total, failed),
+                        format!("Failed to read file status: {}", e),
                         ToastSeverity::Error,
                     );
                 }
@@ -354,7 +388,10 @@ pub fn handle_app_message(
                     *view_state.right_panel_mode = RightPanelMode::Browse;
                 }
                 Err(e) => {
-                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
+                    toast_manager.push(
+                        format!("Failed to load diff for {}: {}", &oid.to_string()[..7], e),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -364,7 +401,11 @@ pub fn handle_app_message(
                     view_state.diff_view.set_diff(diff_files, path);
                 }
                 Err(e) => {
-                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
+                    view_state.diff_view.clear();
+                    toast_manager.push(
+                        format!("Failed to load diff for '{}': {}", path, e),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -385,7 +426,11 @@ pub fn handle_app_message(
                     *view_state.last_diff_commit = None;
                 }
                 Err(e) => {
-                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
+                    view_state.diff_view.clear();
+                    toast_manager.push(
+                        format!("Failed to load diff for '{}': {}", path, e),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -497,22 +542,30 @@ pub fn handle_app_message(
                 .filter(|c| c.insertions > 0 || c.deletions > 0)
                 .map(|c| (c.id, (c.insertions, c.deletions)))
                 .collect();
-            if let Ok(new_commits) = repo.commit_graph(new_count) {
-                *commits = new_commits;
-                // Restore cached diff stats until async task provides fresh values
-                for commit in commits.iter_mut() {
-                    if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
-                        commit.insertions = ins;
-                        commit.deletions = del;
+            match repo.commit_graph(new_count) {
+                Ok(new_commits) => {
+                    *commits = new_commits;
+                    // Restore cached diff stats until async task provides fresh values
+                    for commit in commits.iter_mut() {
+                        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+                            commit.insertions = ins;
+                            commit.deletions = del;
+                        }
                     }
+                    // Re-add synthetic entries sorted by time
+                    let worktrees = repo.worktrees().unwrap_or_default();
+                    let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
+                    if !synthetics.is_empty() {
+                        git::insert_synthetics_sorted(commits, synthetics);
+                    }
+                    view_state.commit_graph_view.update_layout(commits);
                 }
-                // Re-add synthetic entries sorted by time
-                let worktrees = repo.worktrees().unwrap_or_default();
-                let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
-                if !synthetics.is_empty() {
-                    git::insert_synthetics_sorted(commits, synthetics);
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to load more commits: {}", e),
+                        ToastSeverity::Error,
+                    );
                 }
-                view_state.commit_graph_view.update_layout(commits);
             }
             view_state.commit_graph_view.finish_loading();
         }
