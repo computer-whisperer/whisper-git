@@ -344,6 +344,47 @@ pub fn create_arc_vertices(
     vertices
 }
 
+/// Helper to create the standard modal dialog backdrop: semi-transparent overlay,
+/// drop shadow, and rounded dialog background.
+///
+/// Appends vertices to the given `WidgetOutput` and returns the corner radius used.
+pub fn create_dialog_backdrop(
+    output: &mut WidgetOutput,
+    screen: &Rect,
+    dialog: &Rect,
+    scale: f32,
+) -> f32 {
+    // Semi-transparent backdrop
+    output
+        .spline_vertices
+        .extend(create_rect_vertices(screen, [0.0, 0.0, 0.0, 0.8]));
+
+    let corner_radius = 8.0 * scale;
+
+    // Drop shadow
+    let shadow_offset = 3.0 * scale;
+    let shadow_rect = Rect::new(
+        dialog.x + shadow_offset,
+        dialog.y + shadow_offset,
+        dialog.width,
+        dialog.height,
+    );
+    output.spline_vertices.extend(create_rounded_rect_vertices(
+        &shadow_rect,
+        [0.0, 0.0, 0.0, 0.5],
+        corner_radius,
+    ));
+
+    // Dialog background
+    output.spline_vertices.extend(create_rounded_rect_vertices(
+        dialog,
+        theme::SURFACE_RAISED.lighten(0.06).to_array(),
+        corner_radius,
+    ));
+
+    corner_radius
+}
+
 /// Theme colors - Dark blue-gray palette
 pub mod theme {
     use crate::ui::Color;

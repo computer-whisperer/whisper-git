@@ -34,60 +34,12 @@ impl ScreenLayout {
     /// |      |                |                                  |
     /// +------+---------------------------------------------------+
     /// ```
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn compute(bounds: Rect) -> Self {
-        Self::compute_scaled(bounds, 1.0)
+        Self::compute_with_ratios_and_shortcut(bounds, 0.0, 1.0, None, None, true)
     }
 
-    /// Create the screen layout, with pixel constants scaled for HiDPI
-    pub fn compute_scaled(bounds: Rect, scale: f32) -> Self {
-        // Split into header and main area
-        let header_height = bounds.height * 0.04;
-        let (header, after_header) = bounds.take_top(header_height.max(32.0 * scale));
-
-        // Shortcut bar: thin strip below header
-        let shortcut_bar_height = 26.0 * scale;
-        let (shortcut_bar, main) = after_header.take_top(shortcut_bar_height);
-
-        // Split main area into sidebar and content
-        let sidebar_width = (180.0 * scale).min(main.width * 0.15);
-        let (sidebar, content) = main.take_left(sidebar_width);
-
-        // Split content area into graph and right panel
-        let (graph, right_panel) = content.split_horizontal(0.55);
-
-        Self {
-            header,
-            shortcut_bar,
-            sidebar,
-            graph,
-            right_panel,
-        }
-    }
-
-    /// Create a layout with a gap between sections (convenience wrapper using default ratios)
-    #[allow(dead_code)]
-    pub fn compute_with_gap(bounds: Rect, gap: f32, scale: f32) -> Self {
-        Self::compute_with_ratios(bounds, gap, scale, None, None)
-    }
-
-    /// Create the screen layout with custom panel ratios and gap padding.
-    ///
-    /// - `sidebar_ratio`: fraction of total width for sidebar (default ~0.14, clamped 0.05..0.30)
-    /// - `graph_ratio`: fraction of content width (after sidebar) for graph (default 0.55, clamped 0.30..0.80)
-    ///
-    /// Pass `None` for any ratio to use the default value.
-    pub fn compute_with_ratios(
-        bounds: Rect,
-        gap: f32,
-        scale: f32,
-        sidebar_ratio: Option<f32>,
-        graph_ratio: Option<f32>,
-    ) -> Self {
-        Self::compute_with_ratios_and_shortcut(bounds, gap, scale, sidebar_ratio, graph_ratio, true)
-    }
-
-    /// Like `compute_with_ratios` but allows hiding the shortcut bar.
+    /// Create the screen layout with custom panel ratios, gap padding, and shortcut bar toggle.
     pub fn compute_with_ratios_and_shortcut(
         bounds: Rect,
         gap: f32,

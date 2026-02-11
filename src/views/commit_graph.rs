@@ -14,6 +14,7 @@ use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::widgets::search_bar::{SearchBar, SearchAction};
 use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
+use crate::ui::text_util::truncate_to_width;
 
 use crate::ui::widget::theme::LANE_COLORS;
 
@@ -97,7 +98,7 @@ impl GraphLayout {
 
         for commit in commits.iter() {
             // Step 1: Find lane for this commit (may already be reserved)
-            let lane = self.find_or_assign_lane(commit, &commit_indices);
+            let lane = self.find_or_assign_lane(commit);
             let color = LANE_COLORS[lane % LANE_COLORS.len()];
 
             self.layouts.insert(commit.id, CommitLayout { lane, color });
@@ -121,7 +122,6 @@ impl GraphLayout {
     fn find_or_assign_lane(
         &mut self,
         commit: &CommitInfo,
-        _commit_indices: &HashMap<Oid, usize>,
     ) -> usize {
         // Check if any active lane is already waiting for this commit
         // (reserved by a child's update_lanes_for_parents)
@@ -854,169 +854,16 @@ impl CommitGraphView {
             }
 
             // Draw connections to parents
-            for &parent_id in commit.parent_ids.iter() {
-                if let Some(&parent_row) = commit_indices.get(&parent_id)
-                    && let Some(parent_layout) = self.layout.get(&parent_id) {
-                        let parent_x = self.lane_x(parent_layout.lane, &bounds);
-                        let parent_y = self.row_y(parent_row, &bounds, header_offset);
+            self.render_graph_connections(
+                commit, layout, x, y, buffer,
+                &bounds, header_offset, &commit_indices, &mut vertices,
+            );
 
-                        // Use the child's color for the connection
-                        let color = layout.color.to_array();
-
-                        if layout.lane == parent_layout.lane {
-                            // Vertical line - same lane
-                            let start_y = (y + self.node_radius).max(bounds.y - buffer);
-                            let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
-                            let mut spline = Spline::new(
-                                SplinePoint::new(x, start_y),
-                                color,
-                                self.line_width,
-                            );
-                            spline.line_to(SplinePoint::new(
-                                parent_x,
-                                end_y,
-                            ));
-                            vertices.extend(spline.to_vertices(self.segments_per_curve));
-                        } else {
-                            // Bezier curve - different lanes (merge/fork)
-                            let start_y = (y + self.node_radius).max(bounds.y - buffer);
-                            let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
-                            let dy = end_y - start_y;
-
-                            let mut spline = Spline::new(
-                                SplinePoint::new(x, start_y),
-                                color,
-                                self.line_width,
-                            );
-
-                            // S-curve: drop vertically for 30%, curve across lanes,
-                            // then continue vertically to parent
-                            let ctrl1 = SplinePoint::new(x, start_y + dy * 0.4);
-                            let ctrl2 = SplinePoint::new(parent_x, end_y - dy * 0.4);
-
-                            spline.cubic_to(
-                                ctrl1,
-                                ctrl2,
-                                SplinePoint::new(parent_x, end_y),
-                            );
-                            vertices.extend(spline.to_vertices(self.segments_per_curve));
-                        }
-                    }
-            }
-
-            // Draw commit node
-            let is_merge = commit.parent_ids.len() > 1;
-            let is_selected = self.selected_commit == Some(commit.id);
-            let is_hovered = self.hovered_commit == Some(commit.id);
-            let is_head = self.head_oid == Some(commit.id);
-            let is_match = self.is_search_match(&commit.id);
-
-            // Dim factor for non-matching commits during search
-            let dim_alpha = if is_match { 1.0 } else { 0.2 };
-
-            // Selection/hover highlight (full row)
-            if is_selected || is_hovered {
-                let highlight_color = if is_selected {
-                    theme::ACCENT_MUTED
-                } else {
-                    theme::SURFACE_HOVER.with_alpha(0.15)
-                };
-                let highlight_rect = Rect::new(
-                    bounds.x,
-                    y - self.row_height / 2.0,
-                    bounds.width,
-                    self.row_height,
-                );
-                vertices.extend(create_rect_vertices(
-                    &highlight_rect,
-                    highlight_color.to_array(),
-                ));
-            }
-
-            // HEAD indicator (glow behind node) - draw first so it's behind
-            if is_head {
-                // Outer glow
-                vertices.extend(self.create_circle_vertices(
-                    x,
-                    y,
-                    self.node_radius + 4.0,
-                    theme::ACCENT.with_alpha(0.25).to_array(),
-                ));
-                // Inner glow
-                vertices.extend(self.create_circle_vertices(
-                    x,
-                    y,
-                    self.node_radius + 2.0,
-                    theme::ACCENT.with_alpha(0.5).to_array(),
-                ));
-            }
-
-            // Dark outline for depth (draw before the node)
-            vertices.extend(self.create_circle_vertices(
-                x,
-                y,
-                self.node_radius + 1.5,
-                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
-            ));
-
-            // Commit node: donut-ring style (colored outer ring, dark center)
-            let node_color = layout.color.with_alpha(dim_alpha);
-            let ring_thickness = self.node_radius * 0.38; // ~2.3px ring width
-            if is_merge {
-                // Merge: extra outer ring + inner donut
-                vertices.extend(self.create_ring_vertices(
-                    x,
-                    y,
-                    self.node_radius + 3.0,
-                    1.5,
-                    node_color.to_array(),
-                ));
-                // Main donut ring
-                vertices.extend(self.create_ring_vertices(
-                    x,
-                    y,
-                    self.node_radius,
-                    ring_thickness,
-                    node_color.to_array(),
-                ));
-                // Dark center fill
-                vertices.extend(self.create_circle_vertices(
-                    x,
-                    y,
-                    self.node_radius - ring_thickness,
-                    theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
-                ));
-            } else {
-                // Regular commit: donut ring (colored outer, dark center)
-                vertices.extend(self.create_ring_vertices(
-                    x,
-                    y,
-                    self.node_radius,
-                    ring_thickness,
-                    node_color.to_array(),
-                ));
-                // Dark center fill
-                vertices.extend(self.create_circle_vertices(
-                    x,
-                    y,
-                    self.node_radius - ring_thickness,
-                    theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
-                ));
-            }
-
-            // Highlight background for search matches
-            if self.search_bar.is_active() && !self.search_bar.query().is_empty() && is_match {
-                let highlight_rect = Rect::new(
-                    bounds.x,
-                    y - self.row_height / 2.0,
-                    bounds.width - scrollbar_width,
-                    self.row_height,
-                );
-                vertices.extend(create_rect_vertices(
-                    &highlight_rect,
-                    theme::STATUS_CLEAN.with_alpha(0.08).to_array(),
-                ));
-            }
+            // Draw commit node with selection/hover highlights and search match overlay
+            self.render_commit_node(
+                commit, layout, x, y,
+                &bounds, scrollbar_width, &mut vertices,
+            );
         }
 
         // Render scrollbar
@@ -1038,6 +885,195 @@ impl CommitGraphView {
         }
 
         vertices
+    }
+
+    /// Render graph connection lines from a commit to its parents
+    fn render_graph_connections(
+        &self,
+        commit: &CommitInfo,
+        layout: &CommitLayout,
+        x: f32,
+        y: f32,
+        buffer: f32,
+        bounds: &Rect,
+        header_offset: f32,
+        commit_indices: &HashMap<Oid, usize>,
+        vertices: &mut Vec<SplineVertex>,
+    ) {
+        for &parent_id in commit.parent_ids.iter() {
+            if let Some(&parent_row) = commit_indices.get(&parent_id)
+                && let Some(parent_layout) = self.layout.get(&parent_id) {
+                    let parent_x = self.lane_x(parent_layout.lane, bounds);
+                    let parent_y = self.row_y(parent_row, bounds, header_offset);
+
+                    // Use the child's color for the connection
+                    let color = layout.color.to_array();
+
+                    if layout.lane == parent_layout.lane {
+                        // Vertical line - same lane
+                        let start_y = (y + self.node_radius).max(bounds.y - buffer);
+                        let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
+                        let mut spline = Spline::new(
+                            SplinePoint::new(x, start_y),
+                            color,
+                            self.line_width,
+                        );
+                        spline.line_to(SplinePoint::new(
+                            parent_x,
+                            end_y,
+                        ));
+                        vertices.extend(spline.to_vertices(self.segments_per_curve));
+                    } else {
+                        // Bezier curve - different lanes (merge/fork)
+                        let start_y = (y + self.node_radius).max(bounds.y - buffer);
+                        let end_y = (parent_y - self.node_radius).min(bounds.bottom() + buffer);
+                        let dy = end_y - start_y;
+
+                        let mut spline = Spline::new(
+                            SplinePoint::new(x, start_y),
+                            color,
+                            self.line_width,
+                        );
+
+                        // S-curve: drop vertically for 30%, curve across lanes,
+                        // then continue vertically to parent
+                        let ctrl1 = SplinePoint::new(x, start_y + dy * 0.4);
+                        let ctrl2 = SplinePoint::new(parent_x, end_y - dy * 0.4);
+
+                        spline.cubic_to(
+                            ctrl1,
+                            ctrl2,
+                            SplinePoint::new(parent_x, end_y),
+                        );
+                        vertices.extend(spline.to_vertices(self.segments_per_curve));
+                    }
+                }
+        }
+    }
+
+    /// Render the commit node (donut-ring), selection/hover highlights, and search match overlay
+    fn render_commit_node(
+        &self,
+        commit: &CommitInfo,
+        layout: &CommitLayout,
+        x: f32,
+        y: f32,
+        bounds: &Rect,
+        scrollbar_width: f32,
+        vertices: &mut Vec<SplineVertex>,
+    ) {
+        let is_merge = commit.parent_ids.len() > 1;
+        let is_selected = self.selected_commit == Some(commit.id);
+        let is_hovered = self.hovered_commit == Some(commit.id);
+        let is_head = self.head_oid == Some(commit.id);
+        let is_match = self.is_search_match(&commit.id);
+
+        // Dim factor for non-matching commits during search
+        let dim_alpha = if is_match { 1.0 } else { 0.2 };
+
+        // Selection/hover highlight (full row)
+        if is_selected || is_hovered {
+            let highlight_color = if is_selected {
+                theme::ACCENT_MUTED
+            } else {
+                theme::SURFACE_HOVER.with_alpha(0.15)
+            };
+            let highlight_rect = Rect::new(
+                bounds.x,
+                y - self.row_height / 2.0,
+                bounds.width,
+                self.row_height,
+            );
+            vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                highlight_color.to_array(),
+            ));
+        }
+
+        // HEAD indicator (glow behind node) - draw first so it's behind
+        if is_head {
+            // Outer glow
+            vertices.extend(self.create_circle_vertices(
+                x,
+                y,
+                self.node_radius + 4.0,
+                theme::ACCENT.with_alpha(0.25).to_array(),
+            ));
+            // Inner glow
+            vertices.extend(self.create_circle_vertices(
+                x,
+                y,
+                self.node_radius + 2.0,
+                theme::ACCENT.with_alpha(0.5).to_array(),
+            ));
+        }
+
+        // Dark outline for depth (draw before the node)
+        vertices.extend(self.create_circle_vertices(
+            x,
+            y,
+            self.node_radius + 1.5,
+            theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+        ));
+
+        // Commit node: donut-ring style (colored outer ring, dark center)
+        let node_color = layout.color.with_alpha(dim_alpha);
+        let ring_thickness = self.node_radius * 0.38; // ~2.3px ring width
+        if is_merge {
+            // Merge: extra outer ring + inner donut
+            vertices.extend(self.create_ring_vertices(
+                x,
+                y,
+                self.node_radius + 3.0,
+                1.5,
+                node_color.to_array(),
+            ));
+            // Main donut ring
+            vertices.extend(self.create_ring_vertices(
+                x,
+                y,
+                self.node_radius,
+                ring_thickness,
+                node_color.to_array(),
+            ));
+            // Dark center fill
+            vertices.extend(self.create_circle_vertices(
+                x,
+                y,
+                self.node_radius - ring_thickness,
+                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+            ));
+        } else {
+            // Regular commit: donut ring (colored outer, dark center)
+            vertices.extend(self.create_ring_vertices(
+                x,
+                y,
+                self.node_radius,
+                ring_thickness,
+                node_color.to_array(),
+            ));
+            // Dark center fill
+            vertices.extend(self.create_circle_vertices(
+                x,
+                y,
+                self.node_radius - ring_thickness,
+                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+            ));
+        }
+
+        // Highlight background for search matches
+        if self.search_bar.is_active() && !self.search_bar.query().is_empty() && is_match {
+            let highlight_rect = Rect::new(
+                bounds.x,
+                y - self.row_height / 2.0,
+                bounds.width - scrollbar_width,
+                self.row_height,
+            );
+            vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                theme::STATUS_CLEAN.with_alpha(0.08).to_array(),
+            ));
+        }
     }
 
     /// Create vertices for a filled circle (approximated as triangles)
@@ -1216,12 +1252,16 @@ impl CommitGraphView {
             None
         };
 
-        let char_width = text_renderer.char_width();
-        let pill_pad_h: f32 = 7.0;
-        let pill_pad_v: f32 = 2.0;
-        let pill_radius: f32 = 3.0;
-        let pill_border_thickness: f32 = 1.0;
-
+        let pill_params = PillParams {
+            char_width: text_renderer.char_width(),
+            line_height,
+            pill_pad_h: 7.0,
+            pill_pad_v: 2.0,
+            pill_radius: 3.0,
+            pill_border_thickness: 1.0,
+            col_gap,
+            time_col_left,
+        };
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(_layout) = self.layout.get(&commit.id) else {
@@ -1258,382 +1298,61 @@ impl CommitGraphView {
             // === Start rendering from text_x: pills first, then avatar, then subject ===
             let mut current_x = text_x;
 
-            // === Branch labels with pill backgrounds (GitKraken style: before avatar/subject) ===
-            if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
-                for tip in tips {
-                    let (label_color, pill_bg) = if tip.is_remote {
-                        // Remote tracking: teal/cyan
-                        (
-                            Color::rgba(0.149, 0.776, 0.855, 1.0),  // #26C6DA
-                            Color::rgba(0.149, 0.776, 0.855, 0.20),
-                        )
-                    } else if tip.is_head {
-                        // HEAD pointer: green
-                        (
-                            Color::rgba(0.400, 0.733, 0.416, 1.0),  // #66BB6A
-                            Color::rgba(0.400, 0.733, 0.416, 0.22),
-                        )
-                    } else {
-                        // Local branches: blue
-                        (
-                            Color::rgba(0.259, 0.647, 0.961, 1.0),  // #42A5F5
-                            Color::rgba(0.259, 0.647, 0.961, 0.22),
-                        )
-                    };
+            // === Branch and tag pills ===
+            current_x = Self::render_branch_pills(
+                text_renderer, &pill_params, y,
+                branch_tips_by_oid.get(&commit.id),
+                current_x, &mut vertices, &mut pill_vertices,
+            );
+            current_x = Self::render_tag_pills(
+                text_renderer, &pill_params, y,
+                tags_by_oid.get(&commit.id),
+                current_x, &mut vertices, &mut pill_vertices,
+            );
 
-                    let label = &tip.name;
-                    let label_width = text_renderer.measure_text(label);
-
-                    // Don't render if it would overflow into time column
-                    if current_x + label_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-
-                    // Pill background (rounded rect)
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        label_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        pill_bg.to_array(),
-                        pill_radius,
-                    ));
-                    // Pill border outline
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        label_color.with_alpha(0.45).to_array(),
-                        pill_radius,
-                        pill_border_thickness,
-                    ));
-
-                    // Label text (centered in pill)
-                    vertices.extend(text_renderer.layout_text(
-                        label,
-                        current_x + pill_pad_h,
-                        y,
-                        label_color.to_array(),
-                    ));
-                    current_x += label_width + pill_pad_h * 2.0 + char_width * 1.0;
-                }
-            }
-
-            // === Tag labels with pill backgrounds (after branch pills) ===
-            if let Some(tags) = tags_by_oid.get(&commit.id) {
-                for tag in tags {
-                    let tag_label = format!("\u{25C6} {}", tag.name);
-                    let tag_width = text_renderer.measure_text(&tag_label);
-                    if current_x + tag_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        tag_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    let tag_text_color = Color::rgba(1.0, 0.718, 0.302, 1.0); // #FFB74D
-                    // Tags: amber/yellow
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
-                        pill_radius,
-                    ));
-                    // Tag pill border outline
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        tag_text_color.with_alpha(0.45).to_array(),
-                        pill_radius,
-                        pill_border_thickness,
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        &tag_label,
-                        current_x + pill_pad_h,
-                        y,
-                        tag_text_color.to_array(),
-                    ));
-                    current_x += tag_width + pill_pad_h * 2.0 + char_width * 1.0;
-                }
-            }
-
-            // === Worktree labels with pill backgrounds (after tag pills) ===
-            if let Some(wts) = worktrees_by_oid.get(&commit.id) {
-                for wt in wts {
-                    let wt_label = format!("WT:{}", wt.name);
-                    let wt_width = text_renderer.measure_text(&wt_label);
-                    if current_x + wt_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        wt_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    // Track click target for this worktree pill
-                    self.pill_click_targets.push(PillClickTarget {
-                        worktree_name: wt.name.clone(),
-                        bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
-                    });
-                    let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
-                    // Worktrees: orange
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        Color::rgba(1.0, 0.596, 0.0, 0.20).to_array(),  // #FF9800 bg
-                        pill_radius,
-                    ));
-                    // Worktree pill border outline
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        wt_text_color.with_alpha(0.45).to_array(),
-                        pill_radius,
-                        pill_border_thickness,
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        &wt_label,
-                        current_x + pill_pad_h,
-                        y,
-                        wt_text_color.to_array(),
-                    ));
-                    current_x += wt_width + pill_pad_h * 2.0 + char_width * 1.0;
-                }
-            }
-
-            // === "Working (N)" pills for dirty worktrees at their HEAD commits ===
-            {
-                // Collect dirty file counts with worktree names for this commit
-                let mut dirty_entries: Vec<(usize, String)> = Vec::new();
-
-                // From worktree info (multi-worktree case)
-                if let Some(dirty_wts) = dirty_worktrees_by_oid.get(&commit.id) {
-                    for wt in dirty_wts {
-                        dirty_entries.push((wt.dirty_file_count, wt.name.clone()));
-                    }
-                }
-
-                // Fallback for single-worktree repos: show on HEAD commit
-                if is_head {
-                    if let Some(count) = fallback_dirty_count {
-                        dirty_entries.push((count, String::new()));
-                    }
-                }
-
-                for (count, wt_name) in dirty_entries {
-                    let wd_label = format!("Working ({})", count);
-                    let wd_width = text_renderer.measure_text(&wd_label);
-                    if current_x + wd_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
-                        break;
-                    }
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        wd_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    // Track click target for this working pill (only if we have a worktree name)
-                    if !wt_name.is_empty() {
-                        self.pill_click_targets.push(PillClickTarget {
-                            worktree_name: wt_name,
-                            bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
-                        });
-                    }
-                    // Red "Working" pill with subtle background and outline
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        theme::STATUS_DIRTY.with_alpha(0.15).to_array(),
-                        pill_radius,
-                    ));
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        theme::STATUS_DIRTY.with_alpha(0.45).to_array(),
-                        pill_radius,
-                        pill_border_thickness,
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        &wd_label,
-                        current_x + pill_pad_h,
-                        y,
-                        theme::STATUS_DIRTY.to_array(),
-                    ));
-                    current_x += wd_width + pill_pad_h * 2.0 + char_width * 1.0;
-                }
-            }
+            // === Worktree and working pills ===
+            let (new_x, wt_targets) = Self::render_worktree_pills(
+                text_renderer, &pill_params, y,
+                worktrees_by_oid.get(&commit.id),
+                current_x, &mut vertices, &mut pill_vertices,
+            );
+            current_x = new_x;
+            self.pill_click_targets.extend(wt_targets);
+            let (new_x, wd_targets) = Self::render_working_pills(
+                text_renderer, &pill_params, y, is_head,
+                dirty_worktrees_by_oid.get(&commit.id),
+                fallback_dirty_count,
+                current_x, &mut vertices, &mut pill_vertices,
+            );
+            current_x = new_x;
+            self.pill_click_targets.extend(wd_targets);
 
             // === HEAD indicator (after branch/tag/worktree pills) ===
             if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
-                let head_label = "HEAD";
-                let head_width = text_renderer.measure_text(head_label);
-                if current_x + head_width + pill_pad_h * 2.0 < time_col_left - col_gap {
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_pad_v,
-                        head_width + pill_pad_h * 2.0,
-                        line_height + pill_pad_v * 2.0,
-                    );
-                    let head_color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A
-                    // HEAD pill: green
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
-                        pill_radius,
-                    ));
-                    // HEAD pill border outline
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        head_color.with_alpha(0.45).to_array(),
-                        pill_radius,
-                        pill_border_thickness,
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        head_label,
-                        current_x + pill_pad_h,
-                        y,
-                        head_color.to_array(),
-                    ));
-                    current_x += head_width + pill_pad_h * 2.0 + char_width * 1.0;
-                }
+                current_x = Self::render_head_pill(
+                    text_renderer, &pill_params, y,
+                    current_x, &mut vertices, &mut pill_vertices,
+                );
             }
 
             // === Author avatar or identicon fallback (after pills) ===
-            let identicon_radius = (line_height * 0.42).max(5.0);
-            let avatar_size = identicon_radius * 2.0;
-            let identicon_cx = current_x + identicon_radius;
-            let identicon_cy = y + line_height / 2.0;
-
-            // Request avatar download if not already requested
-            avatar_cache.request_avatar(&commit.author_email);
-
-            let mut drew_avatar = false;
-            if let Some(tex_coords) = avatar_renderer.get_tex_coords(&commit.author_email) {
-                // Draw avatar quad
-                let ax = identicon_cx - identicon_radius;
-                let ay = identicon_cy - identicon_radius;
-                let mut quad = avatar::avatar_quad(ax, ay, avatar_size, tex_coords);
-                // Apply dim alpha
-                for v in &mut quad {
-                    v.color[3] = dim_alpha;
-                }
-                avatar_vertices.extend_from_slice(&quad);
-                drew_avatar = true;
-            }
-
-            if !drew_avatar {
-                // Identicon fallback: colored circle with initial
-                let identicon_color_idx = author_color_index(&commit.author);
-                let identicon_color = IDENTICON_COLORS[identicon_color_idx].with_alpha(dim_alpha);
-
-                pill_vertices.extend(self.create_circle_vertices(
-                    identicon_cx,
-                    identicon_cy,
-                    identicon_radius,
-                    identicon_color.to_array(),
-                ));
-
-                let initial = commit.author.chars().next()
-                    .map(|c| c.to_uppercase().to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                let initial_width = text_renderer.measure_text(&initial);
-                vertices.extend(text_renderer.layout_text(
-                    &initial,
-                    identicon_cx - initial_width / 2.0,
-                    identicon_cy - line_height / 2.0,
-                    theme::TEXT_BRIGHT.with_alpha(dim_alpha).to_array(),
-                ));
-            }
-
-            let identicon_advance = identicon_radius * 2.0 + 6.0;
-            current_x += identicon_advance;
+            current_x = self.render_author_avatar(
+                text_renderer, commit, y, dim_alpha, current_x,
+                avatar_cache, avatar_renderer,
+                &mut vertices, &mut pill_vertices, &mut avatar_vertices,
+            );
 
             // === Diff stats (+N / -M) right-aligned in the stats column ===
-            if commit.insertions > 0 || commit.deletions > 0 {
-                let ins_str = format!("+{}", commit.insertions);
-                let del_str = format!("-{}", commit.deletions);
-                let sep = " / ";
-                let ins_w = text_renderer.measure_text_scaled(&ins_str, 0.85);
-                let del_w = text_renderer.measure_text_scaled(&del_str, 0.85);
-                let sep_w = text_renderer.measure_text_scaled(sep, 0.85);
-                let total_w = ins_w + sep_w + del_w;
-                let stats_x = stats_col_right - total_w;
-                let stats_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
-
-                // Green insertions
-                vertices.extend(text_renderer.layout_text_small(
-                    &ins_str,
-                    stats_x,
-                    stats_y,
-                    theme::STATUS_CLEAN.with_alpha(0.85 * dim_alpha).to_array(),
-                ));
-                // Separator
-                vertices.extend(text_renderer.layout_text_small(
-                    sep,
-                    stats_x + ins_w,
-                    stats_y,
-                    theme::TEXT_MUTED.with_alpha(0.5 * dim_alpha).to_array(),
-                ));
-                // Red deletions
-                vertices.extend(text_renderer.layout_text_small(
-                    &del_str,
-                    stats_x + ins_w + sep_w,
-                    stats_y,
-                    theme::STATUS_DIRTY.with_alpha(0.85 * dim_alpha).to_array(),
-                ));
-            }
+            Self::render_diff_stats(
+                text_renderer, commit, y, dim_alpha,
+                stats_col_right, &mut vertices,
+            );
 
             // === Subject line (primary content, bright text, in remaining space) ===
-            let available_width = (stats_col_left - col_gap) - current_x;
-            let summary_color = if is_selected {
-                theme::TEXT_BRIGHT
-            } else if is_head {
-                theme::TEXT_BRIGHT.with_alpha(dim_alpha)
-            } else {
-                theme::TEXT.with_alpha(dim_alpha)
-            };
-
-            // Check if we have body text and enough space to show it
-            let summary_full_width = text_renderer.measure_text(&commit.summary);
-            if summary_full_width <= available_width {
-                // Subject fits -- render it in full, then try to append body excerpt
-                vertices.extend(text_renderer.layout_text(
-                    &commit.summary,
-                    current_x,
-                    y,
-                    summary_color.to_array(),
-                ));
-
-                if let Some(body) = &commit.body_excerpt {
-                    let separator = " \u{2014} "; // " -- "
-                    let sep_width = text_renderer.measure_text(separator);
-                    let remaining = available_width - summary_full_width - sep_width;
-                    if remaining > char_width * 5.0 {
-                        let body_text = truncate_to_width(body, text_renderer, remaining);
-                        let body_x = current_x + summary_full_width;
-                        let body_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
-                        vertices.extend(text_renderer.layout_text(
-                            separator,
-                            body_x,
-                            y,
-                            body_color,
-                        ));
-                        vertices.extend(text_renderer.layout_text(
-                            &body_text,
-                            body_x + sep_width,
-                            y,
-                            body_color,
-                        ));
-                    }
-                }
-            } else {
-                // Subject too long -- truncate it
-                let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
-                vertices.extend(text_renderer.layout_text(
-                    &summary,
-                    current_x,
-                    y,
-                    summary_color.to_array(),
-                ));
-            }
+            Self::render_subject_and_body(
+                text_renderer, commit, y, dim_alpha, is_head, is_selected,
+                current_x, stats_col_left - col_gap, &mut vertices,
+            );
         }
 
         // Render search bar text overlay
@@ -1652,6 +1371,493 @@ impl CommitGraphView {
         (vertices, pill_vertices, avatar_vertices)
     }
 
+    /// Render branch label pills (local, remote, HEAD). Returns updated current_x.
+    fn render_branch_pills(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        tips: Option<&Vec<&BranchTip>>,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> f32 {
+        let Some(tips) = tips else { return current_x };
+        for tip in tips {
+            let (label_color, pill_bg) = if tip.is_remote {
+                // Remote tracking: teal/cyan
+                (
+                    Color::rgba(0.149, 0.776, 0.855, 1.0),  // #26C6DA
+                    Color::rgba(0.149, 0.776, 0.855, 0.20),
+                )
+            } else if tip.is_head {
+                // HEAD pointer: green
+                (
+                    Color::rgba(0.400, 0.733, 0.416, 1.0),  // #66BB6A
+                    Color::rgba(0.400, 0.733, 0.416, 0.22),
+                )
+            } else {
+                // Local branches: blue
+                (
+                    Color::rgba(0.259, 0.647, 0.961, 1.0),  // #42A5F5
+                    Color::rgba(0.259, 0.647, 0.961, 0.22),
+                )
+            };
+
+            let label = &tip.name;
+            let label_width = text_renderer.measure_text(label);
+
+            // Don't render if it would overflow into time column
+            if current_x + label_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
+                break;
+            }
+
+            // Pill background (rounded rect)
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                label_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                pill_bg.to_array(),
+                p.pill_radius,
+            ));
+            // Pill border outline
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                label_color.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+
+            // Label text (centered in pill)
+            vertices.extend(text_renderer.layout_text(
+                label,
+                current_x + p.pill_pad_h,
+                y,
+                label_color.to_array(),
+            ));
+            current_x += label_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
+        }
+        current_x
+    }
+
+    /// Render tag label pills. Returns updated current_x.
+    fn render_tag_pills(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        tags: Option<&Vec<&TagInfo>>,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> f32 {
+        let Some(tags) = tags else { return current_x };
+        for tag in tags {
+            let tag_label = format!("\u{25C6} {}", tag.name);
+            let tag_width = text_renderer.measure_text(&tag_label);
+            if current_x + tag_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
+                break;
+            }
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                tag_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            let tag_text_color = Color::rgba(1.0, 0.718, 0.302, 1.0); // #FFB74D
+            // Tags: amber/yellow
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
+                p.pill_radius,
+            ));
+            // Tag pill border outline
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                tag_text_color.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+            vertices.extend(text_renderer.layout_text(
+                &tag_label,
+                current_x + p.pill_pad_h,
+                y,
+                tag_text_color.to_array(),
+            ));
+            current_x += tag_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
+        }
+        current_x
+    }
+
+    /// Render worktree label pills (WT:name). Returns (updated current_x, click targets).
+    fn render_worktree_pills(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        wts: Option<&Vec<&WorktreeInfo>>,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> (f32, Vec<PillClickTarget>) {
+        let mut click_targets = Vec::new();
+        let Some(wts) = wts else { return (current_x, click_targets) };
+        for wt in wts {
+            let wt_label = format!("WT:{}", wt.name);
+            let wt_width = text_renderer.measure_text(&wt_label);
+            if current_x + wt_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
+                break;
+            }
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                wt_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            // Track click target for this worktree pill
+            click_targets.push(PillClickTarget {
+                worktree_name: wt.name.clone(),
+                bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+            });
+            let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
+            // Worktrees: orange
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                Color::rgba(1.0, 0.596, 0.0, 0.20).to_array(),  // #FF9800 bg
+                p.pill_radius,
+            ));
+            // Worktree pill border outline
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                wt_text_color.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+            vertices.extend(text_renderer.layout_text(
+                &wt_label,
+                current_x + p.pill_pad_h,
+                y,
+                wt_text_color.to_array(),
+            ));
+            current_x += wt_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
+        }
+        (current_x, click_targets)
+    }
+
+    /// Render "Working (N)" pills for dirty worktrees. Returns (updated current_x, click targets).
+    #[allow(clippy::too_many_arguments)]
+    fn render_working_pills(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        is_head: bool,
+        dirty_wts: Option<&Vec<&WorktreeInfo>>,
+        fallback_dirty_count: Option<usize>,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> (f32, Vec<PillClickTarget>) {
+        let mut click_targets = Vec::new();
+
+        // Collect dirty file counts with worktree names for this commit
+        let mut dirty_entries: Vec<(usize, String)> = Vec::new();
+
+        // From worktree info (multi-worktree case)
+        if let Some(dirty_wts) = dirty_wts {
+            for wt in dirty_wts {
+                dirty_entries.push((wt.dirty_file_count, wt.name.clone()));
+            }
+        }
+
+        // Fallback for single-worktree repos: show on HEAD commit
+        if is_head {
+            if let Some(count) = fallback_dirty_count {
+                dirty_entries.push((count, String::new()));
+            }
+        }
+
+        if dirty_entries.is_empty() {
+            return (current_x, click_targets);
+        }
+
+        for (count, wt_name) in dirty_entries {
+            let wd_label = format!("Working ({})", count);
+            let wd_width = text_renderer.measure_text(&wd_label);
+            if current_x + wd_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
+                break;
+            }
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                wd_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            // Track click target for this working pill (only if we have a worktree name)
+            if !wt_name.is_empty() {
+                click_targets.push(PillClickTarget {
+                    worktree_name: wt_name,
+                    bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+                });
+            }
+            // Red "Working" pill with subtle background and outline
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                theme::STATUS_DIRTY.with_alpha(0.15).to_array(),
+                p.pill_radius,
+            ));
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                theme::STATUS_DIRTY.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+            vertices.extend(text_renderer.layout_text(
+                &wd_label,
+                current_x + p.pill_pad_h,
+                y,
+                theme::STATUS_DIRTY.to_array(),
+            ));
+            current_x += wd_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
+        }
+
+        (current_x, click_targets)
+    }
+
+    /// Render the HEAD pill (shown when no branch tip points to HEAD). Returns updated current_x.
+    fn render_head_pill(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> f32 {
+        let head_label = "HEAD";
+        let head_width = text_renderer.measure_text(head_label);
+        if current_x + head_width + p.pill_pad_h * 2.0 < p.time_col_left - p.col_gap {
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                head_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            let head_color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A
+            // HEAD pill: green
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
+                p.pill_radius,
+            ));
+            // HEAD pill border outline
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                head_color.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+            vertices.extend(text_renderer.layout_text(
+                head_label,
+                current_x + p.pill_pad_h,
+                y,
+                head_color.to_array(),
+            ));
+            current_x += head_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
+        }
+        current_x
+    }
+
+    /// Render author avatar or identicon fallback. Returns updated current_x.
+    #[allow(clippy::too_many_arguments)]
+    fn render_author_avatar(
+        &self,
+        text_renderer: &TextRenderer,
+        commit: &CommitInfo,
+        y: f32,
+        dim_alpha: f32,
+        current_x: f32,
+        avatar_cache: &mut AvatarCache,
+        avatar_renderer: &AvatarRenderer,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+        avatar_vertices: &mut Vec<TextVertex>,
+    ) -> f32 {
+        let line_height = text_renderer.line_height();
+        let identicon_radius = (line_height * 0.42).max(5.0);
+        let avatar_size = identicon_radius * 2.0;
+        let identicon_cx = current_x + identicon_radius;
+        let identicon_cy = y + line_height / 2.0;
+
+        // Request avatar download if not already requested
+        avatar_cache.request_avatar(&commit.author_email);
+
+        let mut drew_avatar = false;
+        if let Some(tex_coords) = avatar_renderer.get_tex_coords(&commit.author_email) {
+            // Draw avatar quad
+            let ax = identicon_cx - identicon_radius;
+            let ay = identicon_cy - identicon_radius;
+            let mut quad = avatar::avatar_quad(ax, ay, avatar_size, tex_coords);
+            // Apply dim alpha
+            for v in &mut quad {
+                v.color[3] = dim_alpha;
+            }
+            avatar_vertices.extend_from_slice(&quad);
+            drew_avatar = true;
+        }
+
+        if !drew_avatar {
+            // Identicon fallback: colored circle with initial
+            let identicon_color_idx = author_color_index(&commit.author);
+            let identicon_color = IDENTICON_COLORS[identicon_color_idx].with_alpha(dim_alpha);
+
+            pill_vertices.extend(self.create_circle_vertices(
+                identicon_cx,
+                identicon_cy,
+                identicon_radius,
+                identicon_color.to_array(),
+            ));
+
+            let initial = commit.author.chars().next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let initial_width = text_renderer.measure_text(&initial);
+            vertices.extend(text_renderer.layout_text(
+                &initial,
+                identicon_cx - initial_width / 2.0,
+                identicon_cy - line_height / 2.0,
+                theme::TEXT_BRIGHT.with_alpha(dim_alpha).to_array(),
+            ));
+        }
+
+        let identicon_advance = identicon_radius * 2.0 + 6.0;
+        current_x + identicon_advance
+    }
+
+    /// Render diff stats (+N / -M) right-aligned in the stats column
+    fn render_diff_stats(
+        text_renderer: &TextRenderer,
+        commit: &CommitInfo,
+        y: f32,
+        dim_alpha: f32,
+        stats_col_right: f32,
+        vertices: &mut Vec<TextVertex>,
+    ) {
+        if commit.insertions == 0 && commit.deletions == 0 {
+            return;
+        }
+        let line_height = text_renderer.line_height();
+        let ins_str = format!("+{}", commit.insertions);
+        let del_str = format!("-{}", commit.deletions);
+        let sep = " / ";
+        let ins_w = text_renderer.measure_text_scaled(&ins_str, 0.85);
+        let del_w = text_renderer.measure_text_scaled(&del_str, 0.85);
+        let sep_w = text_renderer.measure_text_scaled(sep, 0.85);
+        let total_w = ins_w + sep_w + del_w;
+        let stats_x = stats_col_right - total_w;
+        let stats_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
+
+        // Green insertions
+        vertices.extend(text_renderer.layout_text_small(
+            &ins_str,
+            stats_x,
+            stats_y,
+            theme::STATUS_CLEAN.with_alpha(0.85 * dim_alpha).to_array(),
+        ));
+        // Separator
+        vertices.extend(text_renderer.layout_text_small(
+            sep,
+            stats_x + ins_w,
+            stats_y,
+            theme::TEXT_MUTED.with_alpha(0.5 * dim_alpha).to_array(),
+        ));
+        // Red deletions
+        vertices.extend(text_renderer.layout_text_small(
+            &del_str,
+            stats_x + ins_w + sep_w,
+            stats_y,
+            theme::STATUS_DIRTY.with_alpha(0.85 * dim_alpha).to_array(),
+        ));
+    }
+
+    /// Render commit subject line and optional body excerpt
+    #[allow(clippy::too_many_arguments)]
+    fn render_subject_and_body(
+        text_renderer: &TextRenderer,
+        commit: &CommitInfo,
+        y: f32,
+        dim_alpha: f32,
+        is_head: bool,
+        is_selected: bool,
+        current_x: f32,
+        subject_right: f32,
+        vertices: &mut Vec<TextVertex>,
+    ) {
+        let available_width = subject_right - current_x;
+        let char_width = text_renderer.char_width();
+        let summary_color = if is_selected {
+            theme::TEXT_BRIGHT
+        } else if is_head {
+            theme::TEXT_BRIGHT.with_alpha(dim_alpha)
+        } else {
+            theme::TEXT.with_alpha(dim_alpha)
+        };
+
+        // Check if we have body text and enough space to show it
+        let summary_full_width = text_renderer.measure_text(&commit.summary);
+        if summary_full_width <= available_width {
+            // Subject fits -- render it in full, then try to append body excerpt
+            vertices.extend(text_renderer.layout_text(
+                &commit.summary,
+                current_x,
+                y,
+                summary_color.to_array(),
+            ));
+
+            if let Some(body) = &commit.body_excerpt {
+                let separator = " \u{2014} "; // " -- "
+                let sep_width = text_renderer.measure_text(separator);
+                let remaining = available_width - summary_full_width - sep_width;
+                if remaining > char_width * 5.0 {
+                    let body_text = truncate_to_width(body, text_renderer, remaining);
+                    let body_x = current_x + summary_full_width;
+                    let body_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
+                    vertices.extend(text_renderer.layout_text(
+                        separator,
+                        body_x,
+                        y,
+                        body_color,
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        &body_text,
+                        body_x + sep_width,
+                        y,
+                        body_color,
+                    ));
+                }
+            }
+        } else {
+            // Subject too long -- truncate it
+            let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
+            vertices.extend(text_renderer.layout_text(
+                &summary,
+                current_x,
+                y,
+                summary_color.to_array(),
+            ));
+        }
+    }
+}
+
+/// Shared pill rendering parameters passed to helper methods
+struct PillParams {
+    char_width: f32,
+    line_height: f32,
+    pill_pad_h: f32,
+    pill_pad_v: f32,
+    pill_radius: f32,
+    pill_border_thickness: f32,
+    col_gap: f32,
+    time_col_left: f32,
 }
 
 /// Author identicon colors - distinct hues for visual differentiation
@@ -1672,31 +1878,4 @@ fn author_color_index(author: &str) -> usize {
     (hash as usize) % IDENTICON_COLORS.len()
 }
 
-/// Truncate text to fit within the given pixel width, appending ellipsis if needed
-fn truncate_to_width(text: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-    let full_width = text_renderer.measure_text(text);
-    if full_width <= max_width {
-        return text.to_string();
-    }
-    let ellipsis = "\u{2026}";
-    let ellipsis_width = text_renderer.measure_text(ellipsis);
-    let target_width = max_width - ellipsis_width;
-    if target_width <= 0.0 {
-        return ellipsis.to_string();
-    }
-    let mut width = 0.0;
-    let mut end = 0;
-    for (i, c) in text.char_indices() {
-        let cw = text_renderer.measure_text(&text[i..i + c.len_utf8()]);
-        if width + cw > target_width {
-            break;
-        }
-        width += cw;
-        end = i + c.len_utf8();
-    }
-    format!("{}{}", &text[..end], ellipsis)
-}
 

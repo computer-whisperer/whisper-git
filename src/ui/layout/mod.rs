@@ -127,15 +127,6 @@ impl Color {
         Self { r, g, b, a }
     }
 
-    /// Create a color from hex value (e.g., 0x3B82F6 for blue)
-    #[allow(dead_code)]
-    pub const fn from_hex(hex: u32) -> Self {
-        let r = ((hex >> 16) & 0xFF) as f32 / 255.0;
-        let g = ((hex >> 8) & 0xFF) as f32 / 255.0;
-        let b = (hex & 0xFF) as f32 / 255.0;
-        Self { r, g, b, a: 1.0 }
-    }
-
     pub fn to_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
     }

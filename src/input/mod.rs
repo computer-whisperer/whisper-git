@@ -9,8 +9,10 @@ mod mouse;
 pub use keyboard::{Key, KeyState, Modifiers};
 pub use mouse::{MouseButton, MouseState};
 
+/// Pixels per line for converting line-based scroll deltas to pixel deltas.
+const SCROLL_PIXELS_PER_LINE: f32 = 20.0;
+
 /// A unified input event for the application
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum InputEvent {
     /// A key was pressed or released
@@ -189,7 +191,9 @@ impl InputState {
 
             WindowEvent::MouseWheel { delta, .. } => {
                 let (delta_x, delta_y) = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(x, y) => (*x * 20.0, *y * 20.0),
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        (*x * SCROLL_PIXELS_PER_LINE, *y * SCROLL_PIXELS_PER_LINE)
+                    }
                     winit::event::MouseScrollDelta::PixelDelta(pos) => {
                         (pos.x as f32, pos.y as f32)
                     }

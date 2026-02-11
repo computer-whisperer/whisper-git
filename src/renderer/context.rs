@@ -6,12 +6,10 @@ use vulkano::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
         QueueCreateInfo, QueueFlags,
     },
-    instance::{Instance, InstanceCreateInfo},
+    instance::Instance,
     memory::allocator::StandardMemoryAllocator,
     swapchain::Surface,
-    VulkanLibrary,
 };
-use winit::event_loop::EventLoop;
 
 /// Core Vulkan context - created once at startup
 #[allow(dead_code)]
@@ -25,35 +23,6 @@ pub struct VulkanContext {
 
 #[allow(dead_code)]
 impl VulkanContext {
-    /// Create a new Vulkan context
-    pub fn new(event_loop: &EventLoop<()>) -> Result<Self> {
-        let library = VulkanLibrary::new().context("No Vulkan library found")?;
-
-        let required_extensions = Surface::required_extensions(event_loop)
-            .context("Failed to get required surface extensions")?;
-
-        let instance = Instance::new(
-            library,
-            InstanceCreateInfo {
-                enabled_extensions: required_extensions,
-                ..Default::default()
-            },
-        )
-        .context("Failed to create Vulkan instance")?;
-
-        Self::with_instance(instance)
-    }
-
-    /// Create context with an existing instance (for when we need surface first)
-    pub fn with_instance(_instance: Arc<Instance>) -> Result<Self> {
-        // We need a temporary surface to check device compatibility
-        // This will be called after we have a window
-        // For now, just store instance - device creation deferred
-
-        // This is a placeholder - real initialization happens in with_surface
-        Err(anyhow::anyhow!("Use with_surface instead"))
-    }
-
     /// Create context with a surface (needed for device selection)
     pub fn with_surface(instance: Arc<Instance>, surface: &Surface) -> Result<Self> {
         let device_extensions = DeviceExtensions {

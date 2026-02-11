@@ -31,10 +31,6 @@ pub struct MouseState {
     x: f32,
     y: f32,
     pressed: HashSet<MouseButton>,
-    /// Position when drag started (if dragging)
-    drag_start: Option<(f32, f32)>,
-    /// Button that initiated the drag
-    drag_button: Option<MouseButton>,
 }
 
 impl MouseState {
@@ -43,8 +39,6 @@ impl MouseState {
             x: 0.0,
             y: 0.0,
             pressed: HashSet::new(),
-            drag_start: None,
-            drag_button: None,
         }
     }
 
@@ -60,18 +54,8 @@ impl MouseState {
     pub fn set_pressed(&mut self, button: MouseButton, pressed: bool) {
         if pressed {
             self.pressed.insert(button);
-            // Start tracking potential drag
-            if self.drag_start.is_none() {
-                self.drag_start = Some((self.x, self.y));
-                self.drag_button = Some(button);
-            }
         } else {
             self.pressed.remove(&button);
-            // End drag if this was the drag button
-            if self.drag_button == Some(button) {
-                self.drag_start = None;
-                self.drag_button = None;
-            }
         }
     }
 

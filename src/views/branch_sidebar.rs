@@ -8,9 +8,9 @@ use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, crea
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Rect, TextRenderer};
+use crate::ui::text_util::{truncate_to_width, clamp_scroll};
 
 /// Actions that can be triggered from the sidebar
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum SidebarAction {
     Checkout(String),
@@ -35,7 +35,6 @@ pub enum SidebarAction {
 }
 
 /// Represents a single navigable item in the flattened sidebar list
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 enum SidebarItem {
     SectionHeader(&'static str),
@@ -46,6 +45,26 @@ enum SidebarItem {
     SubmoduleEntry(String),       // submodule name
     WorktreeEntry(String),        // worktree name
     StashEntry(usize, String, i64),  // (index, message, time)
+}
+
+/// Shared layout parameters passed to section rendering methods
+struct LayoutParams<'a> {
+    text_renderer: &'a TextRenderer,
+    inner: Rect,
+    bounds: Rect,
+    line_height: f32,
+    section_header_height: f32,
+    indent: f32,
+}
+
+/// Pre-computed filtered data for all sections
+struct FilteredData {
+    local: Vec<String>,
+    remotes: Vec<(String, Vec<String>)>,
+    tags: Vec<String>,
+    submodules: Vec<String>,
+    worktrees: Vec<String>,
+    stashes: Vec<(usize, String, i64)>,
 }
 
 /// A sidebar showing local branches, remote branches, and tags
@@ -486,8 +505,7 @@ impl BranchSidebar {
         }
 
         // Clamp scroll
-        let max_scroll = (self.content_height - bounds.height).max(0.0);
-        self.scroll_offset = self.scroll_offset.clamp(0.0, max_scroll);
+        self.scroll_offset = clamp_scroll(self.scroll_offset, self.content_height, bounds.height);
     }
 
     /// Activate the currently focused item (checkout or toggle)
@@ -835,7 +853,7 @@ impl BranchSidebar {
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
                 let max_scroll = (self.content_height - bounds.height).max(0.0);
-                self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
+                self.scroll_offset = clamp_scroll(ratio * max_scroll, self.content_height, bounds.height);
             }
             return EventResponse::Consumed;
         }
@@ -963,107 +981,11 @@ impl BranchSidebar {
         EventResponse::Ignored
     }
 
-    /// Layout the sidebar and produce rendering output.
-    /// `bold_renderer` is used for section headers (LOCAL, REMOTE, etc.).
-    pub fn layout(&mut self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        let mut output = WidgetOutput::new();
-        self.last_bounds = Some(bounds);
-
-        self.build_visible_items();
-
-        // Panel background - slightly darker for depth
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::PANEL_SIDEBAR.to_array(),
-        ));
-
-        let padding = 8.0;
-        let inner = bounds.inset(padding);
-        let line_height = self.line_height;
-        let section_header_height = self.section_header_height;
-        let indent = 12.0;
-        let section_gap = 8.0;
-        let filter_bar_h = self.filter_bar_height();
-
-        // --- Filter bar at the top ---
-        {
-            let fb = self.filter_bar_bounds(&bounds);
-
-            // Filter background
-            let corner_radius = 4.0;
-            output.spline_vertices.extend(create_rounded_rect_vertices(
-                &fb,
-                theme::SURFACE.to_array(),
-                corner_radius,
-            ));
-
-            // Border
-            let border_color = if self.filter_focused {
-                theme::ACCENT
-            } else {
-                theme::BORDER
-            };
-            let border_thickness = if self.filter_focused { 2.0 } else { 1.0 };
-            output.spline_vertices.extend(create_rect_outline_vertices(
-                &fb,
-                border_color.to_array(),
-                border_thickness,
-            ));
-
-            let text_y = fb.y + (fb.height - text_renderer.line_height()) / 2.0;
-            let text_x = fb.x + 8.0;
-
-            // Search icon
-            let icon = "\u{25CB}"; // ○ as search icon placeholder
-            output.text_vertices.extend(text_renderer.layout_text(
-                icon,
-                text_x,
-                text_y,
-                theme::TEXT_MUTED.to_array(),
-            ));
-            let icon_width = text_renderer.measure_text(icon) + 4.0;
-            let input_x = text_x + icon_width;
-
-            if self.filter_query.is_empty() {
-                output.text_vertices.extend(text_renderer.layout_text(
-                    "Filter branches...",
-                    input_x,
-                    text_y,
-                    theme::TEXT_MUTED.with_alpha(0.5).to_array(),
-                ));
-            } else {
-                output.text_vertices.extend(text_renderer.layout_text(
-                    &self.filter_query,
-                    input_x,
-                    text_y,
-                    theme::TEXT_BRIGHT.to_array(),
-                ));
-
-                // Clear "x" on right side
-                let clear_text = "x";
-                let clear_width = text_renderer.measure_text(clear_text);
-                output.text_vertices.extend(text_renderer.layout_text(
-                    clear_text,
-                    fb.right() - clear_width - 8.0,
-                    text_y,
-                    theme::TEXT_MUTED.to_array(),
-                ));
-            }
-
-            // Cursor
-            if self.filter_focused && self.filter_cursor_visible {
-                let cursor_x = input_x + text_renderer.measure_text(&self.filter_query[..self.filter_cursor]);
-                let cursor_rect = Rect::new(cursor_x, fb.y + 4.0, 2.0, fb.height - 8.0);
-                output.spline_vertices.extend(create_rect_vertices(
-                    &cursor_rect,
-                    theme::ACCENT.to_array(),
-                ));
-            }
-        }
-
-        // Pre-compute filtered data for rendering
+    /// Build the pre-computed filtered data for all sections.
+    fn build_filtered_data(&self) -> FilteredData {
         let filtering = !self.filter_query.is_empty();
-        let filtered_local: Vec<String> = if filtering {
+
+        let local: Vec<String> = if filtering {
             self.local_branches.iter().filter(|b| self.matches_filter(b)).cloned().collect()
         } else {
             self.local_branches.clone()
@@ -1071,7 +993,7 @@ impl BranchSidebar {
 
         let mut remote_names_sorted: Vec<String> = self.remote_branches.keys().cloned().collect();
         remote_names_sorted.sort();
-        let filtered_remotes: Vec<(String, Vec<String>)> = remote_names_sorted.iter().filter_map(|rn| {
+        let remotes: Vec<(String, Vec<String>)> = remote_names_sorted.iter().filter_map(|rn| {
             let branches: Vec<String> = if filtering {
                 self.remote_branches[rn].iter()
                     .filter(|b| self.matches_filter(b) || self.matches_filter(rn))
@@ -1086,87 +1008,186 @@ impl BranchSidebar {
             }
         }).collect();
 
-        let filtered_tags: Vec<String> = if filtering {
+        let tags: Vec<String> = if filtering {
             self.tags.iter().filter(|t| self.matches_filter(t)).cloned().collect()
         } else {
             self.tags.clone()
         };
 
-        let filtered_submodules: Vec<String> = if filtering {
+        let submodules: Vec<String> = if filtering {
             self.submodules.iter().filter(|s| self.matches_filter(&s.name)).map(|s| s.name.clone()).collect()
         } else {
             self.submodules.iter().map(|s| s.name.clone()).collect()
         };
 
-        let filtered_worktrees: Vec<String> = if filtering {
+        let worktrees: Vec<String> = if filtering {
             self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).map(|w| w.name.clone()).collect()
         } else {
             self.worktrees.iter().map(|w| w.name.clone()).collect()
         };
 
-        let filtered_stashes: Vec<(usize, String, i64)> = if filtering {
+        let stashes: Vec<(usize, String, i64)> = if filtering {
             self.stashes.iter().filter(|s| self.matches_filter(&s.message)).map(|s| (s.index, s.message.clone(), s.time)).collect()
         } else {
             self.stashes.iter().map(|s| (s.index, s.message.clone(), s.time)).collect()
         };
 
-        let show_local = !filtering || !filtered_local.is_empty();
-        let show_remote = !filtering || !filtered_remotes.is_empty();
-        let show_tags = !filtering || !filtered_tags.is_empty();
-        let show_submodules = !self.submodules.is_empty() && (!filtering || !filtered_submodules.is_empty());
-        let show_worktrees = !self.worktrees.is_empty() && (!filtering || !filtered_worktrees.is_empty());
-        let show_stashes = !self.stashes.is_empty() && (!filtering || !filtered_stashes.is_empty());
+        FilteredData { local, remotes, tags, submodules, worktrees, stashes }
+    }
 
-        let mut y = inner.y + filter_bar_h - self.scroll_offset;
-        let mut item_idx: usize = 0;
+    /// Render hover/focus highlight backgrounds for a sidebar item row.
+    /// Returns the text color to use for the item.
+    fn layout_item_highlight(
+        &self,
+        output: &mut WidgetOutput,
+        inner: &Rect,
+        y: f32,
+        line_height: f32,
+        item_idx: usize,
+        default_color: [f32; 4],
+        bright_color: [f32; 4],
+    ) -> [f32; 4] {
+        let is_focused = self.focused && self.focused_index == Some(item_idx);
+        let is_hovered = self.hovered_index == Some(item_idx);
 
-        // --- LOCAL section ---
-        if show_local {
-        // Section header
+        if is_hovered && !is_focused {
+            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+            output.spline_vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
+            ));
+        }
+        if is_focused {
+            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+            output.spline_vertices.extend(create_rect_vertices(
+                &highlight_rect,
+                theme::SURFACE_HOVER.to_array(),
+            ));
+        }
+
+        if is_hovered || is_focused {
+            bright_color
+        } else {
+            default_color
+        }
+    }
+
+    /// Render the filter bar at the top of the sidebar.
+    fn layout_filter_bar(&self, text_renderer: &TextRenderer, output: &mut WidgetOutput, bounds: &Rect) {
+        let fb = self.filter_bar_bounds(bounds);
+
+        // Filter background
+        let corner_radius = 4.0;
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &fb,
+            theme::SURFACE.to_array(),
+            corner_radius,
+        ));
+
+        // Border
+        let border_color = if self.filter_focused {
+            theme::ACCENT
+        } else {
+            theme::BORDER
+        };
+        let border_thickness = if self.filter_focused { 2.0 } else { 1.0 };
+        output.spline_vertices.extend(create_rect_outline_vertices(
+            &fb,
+            border_color.to_array(),
+            border_thickness,
+        ));
+
+        let text_y = fb.y + (fb.height - text_renderer.line_height()) / 2.0;
+        let text_x = fb.x + 8.0;
+
+        // Search icon
+        let icon = "\u{25CB}"; // ○ as search icon placeholder
+        output.text_vertices.extend(text_renderer.layout_text(
+            icon,
+            text_x,
+            text_y,
+            theme::TEXT_MUTED.to_array(),
+        ));
+        let icon_width = text_renderer.measure_text(icon) + 4.0;
+        let input_x = text_x + icon_width;
+
+        if self.filter_query.is_empty() {
+            output.text_vertices.extend(text_renderer.layout_text(
+                "Filter branches...",
+                input_x,
+                text_y,
+                theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+            ));
+        } else {
+            output.text_vertices.extend(text_renderer.layout_text(
+                &self.filter_query,
+                input_x,
+                text_y,
+                theme::TEXT_BRIGHT.to_array(),
+            ));
+
+            // Clear "x" on right side
+            let clear_text = "x";
+            let clear_width = text_renderer.measure_text(clear_text);
+            output.text_vertices.extend(text_renderer.layout_text(
+                clear_text,
+                fb.right() - clear_width - 8.0,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+        }
+
+        // Cursor
+        if self.filter_focused && self.filter_cursor_visible {
+            let cursor_x = input_x + text_renderer.measure_text(&self.filter_query[..self.filter_cursor]);
+            let cursor_rect = Rect::new(cursor_x, fb.y + 4.0, 2.0, fb.height - 8.0);
+            output.spline_vertices.extend(create_rect_vertices(
+                &cursor_rect,
+                theme::ACCENT.to_array(),
+            ));
+        }
+    }
+
+    /// Layout the LOCAL branches section. Returns (new_y, new_item_idx).
+    fn layout_local_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_local: &[String],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
+
         y = self.layout_section_header(
-            text_renderer,
-            bold_renderer,
-            &mut output,
-            &inner,
-            y,
-            "LOCAL",
-            filtered_local.len(),
-            self.local_collapsed,
-            section_header_height,
-            &bounds,
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "LOCAL", filtered_local.len(), self.local_collapsed,
+            params.section_header_height, &params.bounds,
         );
         item_idx += 1; // SectionHeader("LOCAL")
 
         if !self.local_collapsed {
-            for branch in &filtered_local {
-                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+            for branch in filtered_local {
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
                 if visible {
                     let is_current = *branch == self.current_branch;
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
                     let is_hovered = self.hovered_index == Some(item_idx);
 
-                    // Hover highlight (drawn first, lowest layer)
+                    // Hover highlight
                     if is_hovered && !is_focused {
-                        let highlight_rect = Rect::new(
-                            inner.x,
-                            y,
-                            inner.width,
-                            line_height,
-                        );
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &highlight_rect,
                             theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
                         ));
                     }
 
-                    // Focus highlight (drawn before current-branch highlight so current still shows)
+                    // Focus highlight
                     if is_focused {
-                        let highlight_rect = Rect::new(
-                            inner.x,
-                            y,
-                            inner.width,
-                            line_height,
-                        );
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &highlight_rect,
                             theme::SURFACE_HOVER.to_array(),
@@ -1175,23 +1196,13 @@ impl BranchSidebar {
 
                     if is_current {
                         // Accent left stripe for current branch
-                        let stripe_rect = Rect::new(
-                            inner.x,
-                            y,
-                            3.0,
-                            line_height,
-                        );
+                        let stripe_rect = Rect::new(params.inner.x, y, 3.0, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &stripe_rect,
                             theme::ACCENT.to_array(),
                         ));
                         // Highlight background for current branch
-                        let highlight_rect = Rect::new(
-                            inner.x,
-                            y,
-                            inner.width,
-                            line_height,
-                        );
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &highlight_rect,
                             theme::ACCENT_MUTED.to_array(),
@@ -1213,568 +1224,595 @@ impl BranchSidebar {
                     } else {
                         theme::TEXT_MUTED.to_array()
                     };
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    output.text_vertices.extend(params.text_renderer.layout_text(
                         icon,
-                        inner.x + indent,
+                        params.inner.x + params.indent,
                         y + 2.0,
                         icon_color,
                     ));
-                    let icon_width = text_renderer.measure_text(icon) + 4.0;
+                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
 
-                    let display_name = truncate_to_width(branch, text_renderer, inner.width - indent - icon_width);
+                    let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent - icon_width);
                     if is_current {
                         // Active branch in bold
                         output.bold_text_vertices.extend(bold_renderer.layout_text(
                             &display_name,
-                            inner.x + indent + icon_width,
+                            params.inner.x + params.indent + icon_width,
                             y + 2.0,
                             color,
                         ));
                     } else {
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        output.text_vertices.extend(params.text_renderer.layout_text(
                             &display_name,
-                            inner.x + indent + icon_width,
+                            params.inner.x + params.indent + icon_width,
                             y + 2.0,
                             color,
                         ));
                     }
                 }
-                y += line_height;
+                y += params.line_height;
                 item_idx += 1;
             }
         }
 
-        y += section_gap;
-        } // end show_local
+        (y, item_idx)
+    }
 
-        // --- REMOTE section ---
-        if show_remote {
+    /// Layout the REMOTE branches section. Returns (new_y, new_item_idx).
+    fn layout_remote_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_remotes: &[(String, Vec<String>)],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
+
         let remote_count: usize = filtered_remotes.iter().map(|(_, v)| v.len()).sum();
         y = self.layout_section_header(
-            text_renderer,
-            bold_renderer,
-            &mut output,
-            &inner,
-            y,
-            "REMOTE",
-            remote_count,
-            self.remote_collapsed,
-            section_header_height,
-            &bounds,
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "REMOTE", remote_count, self.remote_collapsed,
+            params.section_header_height, &params.bounds,
         );
         item_idx += 1; // SectionHeader("REMOTE")
 
         if !self.remote_collapsed {
-            for (remote_name, branches) in &filtered_remotes {
-
+            for (remote_name, branches) in filtered_remotes {
                 // Remote name sub-header
-                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
                 if visible {
-                    let is_focused = self.focused && self.focused_index == Some(item_idx);
-                    let is_hovered = self.hovered_index == Some(item_idx);
-                    if is_hovered && !is_focused {
-                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &highlight_rect,
-                            theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                        ));
-                    }
-                    if is_focused {
-                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &highlight_rect,
-                            theme::SURFACE_HOVER.to_array(),
-                        ));
-                    }
-                    let remote_color = if is_hovered || is_focused {
-                        theme::TEXT.to_array()
-                    } else {
-                        theme::TEXT_MUTED.to_array()
-                    };
-                    // Remote icon prefix
+                    let remote_color = self.layout_item_highlight(
+                        output, &params.inner, y, params.line_height, item_idx,
+                        theme::TEXT_MUTED.to_array(), theme::TEXT.to_array(),
+                    );
                     let remote_label = format!("\u{2601} {}", remote_name); // ☁ icon
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    output.text_vertices.extend(params.text_renderer.layout_text(
                         &remote_label,
-                        inner.x + indent,
+                        params.inner.x + params.indent,
                         y + 2.0,
                         remote_color,
                     ));
                 }
-                y += line_height;
+                y += params.line_height;
                 item_idx += 1; // RemoteHeader
 
                 // Branches under this remote
                 for branch in branches {
-                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
+                    let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
                     if visible {
-                        let is_focused = self.focused && self.focused_index == Some(item_idx);
-                        let is_hovered = self.hovered_index == Some(item_idx);
-                        if is_hovered && !is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                            ));
-                        }
-                        if is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.to_array(),
-                            ));
-                        }
-                        let branch_color = if is_hovered || is_focused {
-                            theme::TEXT_BRIGHT.to_array()
-                        } else {
-                            theme::BRANCH_REMOTE.to_array()
-                        };
+                        let branch_color = self.layout_item_highlight(
+                            output, &params.inner, y, params.line_height, item_idx,
+                            theme::BRANCH_REMOTE.to_array(), theme::TEXT_BRIGHT.to_array(),
+                        );
                         // Remote branch icon
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        output.text_vertices.extend(params.text_renderer.layout_text(
                             "\u{25CB}", // ○
-                            inner.x + indent * 2.0,
+                            params.inner.x + params.indent * 2.0,
                             y + 2.0,
                             theme::TEXT_MUTED.to_array(),
                         ));
-                        let icon_width = text_renderer.measure_text("\u{25CB}") + 4.0;
-                        let display_name = truncate_to_width(branch, text_renderer, inner.width - indent * 2.0 - icon_width);
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        let icon_width = params.text_renderer.measure_text("\u{25CB}") + 4.0;
+                        let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent * 2.0 - icon_width);
+                        output.text_vertices.extend(params.text_renderer.layout_text(
                             &display_name,
-                            inner.x + indent * 2.0 + icon_width,
+                            params.inner.x + params.indent * 2.0 + icon_width,
                             y + 2.0,
                             branch_color,
                         ));
                     }
-                    y += line_height;
+                    y += params.line_height;
                     item_idx += 1;
                 }
             }
         }
 
-        y += section_gap;
-        } // end show_remote
+        (y, item_idx)
+    }
 
-        // --- TAGS section ---
-        if show_tags {
+    /// Layout the TAGS section. Returns (new_y, new_item_idx).
+    fn layout_tags_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_tags: &[String],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
+
         y = self.layout_section_header(
-            text_renderer,
-            bold_renderer,
-            &mut output,
-            &inner,
-            y,
-            "TAGS",
-            filtered_tags.len(),
-            self.tags_collapsed,
-            section_header_height,
-            &bounds,
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "TAGS", filtered_tags.len(), self.tags_collapsed,
+            params.section_header_height, &params.bounds,
         );
         item_idx += 1; // SectionHeader("TAGS")
 
         if !self.tags_collapsed {
-            for tag in &filtered_tags {
-                let visible = y + line_height >= bounds.y && y < bounds.bottom();
+            for tag in filtered_tags {
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
                 if visible {
+                    let tag_color = self.layout_item_highlight(
+                        output, &params.inner, y, params.line_height, item_idx,
+                        theme::BRANCH_RELEASE.to_array(), theme::TEXT_BRIGHT.to_array(),
+                    );
+                    // Tag icon prefix
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        "\u{2691}", // ⚑
+                        params.inner.x + params.indent,
+                        y + 2.0,
+                        theme::BRANCH_RELEASE.to_array(),
+                    ));
+                    let icon_width = params.text_renderer.measure_text("\u{2691}") + 4.0;
+                    let display_name = truncate_to_width(tag, params.text_renderer, params.inner.width - params.indent - icon_width);
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        &display_name,
+                        params.inner.x + params.indent + icon_width,
+                        y + 2.0,
+                        tag_color,
+                    ));
+                }
+                y += params.line_height;
+                item_idx += 1;
+            }
+        }
+
+        (y, item_idx)
+    }
+
+    /// Layout the SUBMODULES section. Returns (new_y, new_item_idx).
+    fn layout_submodules_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_submodules: &[String],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
+
+        y = self.layout_section_header(
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "SUBMODULES", filtered_submodules.len(), self.submodules_collapsed,
+            params.section_header_height, &params.bounds,
+        );
+        item_idx += 1; // SectionHeader("SUBMODULES")
+
+        if !self.submodules_collapsed {
+            for sm_name in filtered_submodules {
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                if visible {
+                    let name_color = self.layout_item_highlight(
+                        output, &params.inner, y, params.line_height, item_idx,
+                        theme::TEXT.to_array(), theme::TEXT_BRIGHT.to_array(),
+                    );
+
+                    // Submodule icon: ■ in green
+                    let icon = "\u{25A0}"; // ■
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        icon,
+                        params.inner.x + params.indent,
+                        y + 2.0,
+                        theme::BRANCH_FEATURE.to_array(),
+                    ));
+                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
+
+                    // Check dirty status
+                    let is_dirty = self.submodules.iter()
+                        .any(|s| s.name == *sm_name && s.is_dirty);
+
+                    // Show dirty indicator after name if dirty
+                    let dirty_marker = " \u{25CF}M"; // ●M
+                    let suffix_width = if is_dirty {
+                        params.text_renderer.measure_text(dirty_marker)
+                    } else {
+                        0.0
+                    };
+
+                    let display_name = truncate_to_width(sm_name, params.text_renderer, params.inner.width - params.indent - icon_width - suffix_width);
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        &display_name,
+                        params.inner.x + params.indent + icon_width,
+                        y + 2.0,
+                        name_color,
+                    ));
+
+                    if is_dirty {
+                        let name_width = params.text_renderer.measure_text(&display_name);
+                        output.text_vertices.extend(params.text_renderer.layout_text(
+                            dirty_marker,
+                            params.inner.x + params.indent + icon_width + name_width,
+                            y + 2.0,
+                            theme::STATUS_DIRTY.to_array(),
+                        ));
+                    }
+                }
+                y += params.line_height;
+                item_idx += 1;
+            }
+        }
+
+        (y, item_idx)
+    }
+
+    /// Layout the WORKTREES section. Returns (new_y, new_item_idx).
+    fn layout_worktrees_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_worktrees: &[String],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
+
+        y = self.layout_section_header(
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "WORKTREES", filtered_worktrees.len(), self.worktrees_collapsed,
+            params.section_header_height, &params.bounds,
+        );
+        item_idx += 1; // SectionHeader("WORKTREES")
+
+        if !self.worktrees_collapsed {
+            for wt_name in filtered_worktrees {
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                if visible {
+                    let is_current = self.worktrees.iter()
+                        .any(|w| w.name == *wt_name && w.is_current);
+
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
                     let is_hovered = self.hovered_index == Some(item_idx);
+
                     if is_hovered && !is_focused {
-                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &highlight_rect,
                             theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
                         ));
                     }
                     if is_focused {
-                        let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
                         output.spline_vertices.extend(create_rect_vertices(
                             &highlight_rect,
                             theme::SURFACE_HOVER.to_array(),
                         ));
                     }
-                    let tag_color = if is_hovered || is_focused {
+
+                    // Accent highlight for current worktree (like current branch)
+                    if is_current {
+                        let stripe_rect = Rect::new(params.inner.x, y, 3.0, params.line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &stripe_rect,
+                            theme::ACCENT.to_array(),
+                        ));
+                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
+                        output.spline_vertices.extend(create_rect_vertices(
+                            &highlight_rect,
+                            theme::ACCENT_MUTED.to_array(),
+                        ));
+                    }
+
+                    let name_color = if is_current {
+                        theme::ACCENT.to_array()
+                    } else if is_hovered || is_focused {
                         theme::TEXT_BRIGHT.to_array()
+                    } else {
+                        theme::TEXT.to_array()
+                    };
+
+                    // Worktree icon: ▣ in orange
+                    let icon = "\u{25A3}"; // ▣
+                    let icon_color = if is_current {
+                        theme::ACCENT.to_array()
                     } else {
                         theme::BRANCH_RELEASE.to_array()
                     };
-                    // Tag icon prefix
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        "\u{2691}", // ⚑
-                        inner.x + indent,
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        icon,
+                        params.inner.x + params.indent,
                         y + 2.0,
-                        theme::BRANCH_RELEASE.to_array(),
+                        icon_color,
                     ));
-                    let icon_width = text_renderer.measure_text("\u{2691}") + 4.0;
-                    let display_name = truncate_to_width(tag, text_renderer, inner.width - indent - icon_width);
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
+
+                    // Check dirty status
+                    let is_dirty = self.worktrees.iter()
+                        .any(|w| w.name == *wt_name && w.is_dirty);
+
+                    // Show dirty indicator after name if dirty
+                    let dirty_marker = " \u{25CF}M"; // ●M
+                    let suffix_width = if is_dirty {
+                        params.text_renderer.measure_text(dirty_marker)
+                    } else {
+                        0.0
+                    };
+
+                    let display_name = truncate_to_width(wt_name, params.text_renderer, params.inner.width - params.indent - icon_width - suffix_width);
+                    output.text_vertices.extend(params.text_renderer.layout_text(
                         &display_name,
-                        inner.x + indent + icon_width,
+                        params.inner.x + params.indent + icon_width,
                         y + 2.0,
-                        tag_color,
+                        name_color,
                     ));
+
+                    if is_dirty {
+                        let name_width = params.text_renderer.measure_text(&display_name);
+                        output.text_vertices.extend(params.text_renderer.layout_text(
+                            dirty_marker,
+                            params.inner.x + params.indent + icon_width + name_width,
+                            y + 2.0,
+                            theme::STATUS_DIRTY.to_array(),
+                        ));
+                    }
                 }
-                y += line_height;
+                y += params.line_height;
                 item_idx += 1;
             }
         }
 
-        } // end show_tags
+        (y, item_idx)
+    }
 
-        // --- SUBMODULES section (only if any exist) ---
-        if show_submodules {
-            y += section_gap;
+    /// Layout the STASHES section. Returns (new_y, new_item_idx).
+    fn layout_stashes_section(
+        &self,
+        params: &LayoutParams,
+        bold_renderer: &TextRenderer,
+        output: &mut WidgetOutput,
+        filtered_stashes: &[(usize, String, i64)],
+        y: f32,
+        item_idx: usize,
+    ) -> (f32, usize) {
+        let mut y = y;
+        let mut item_idx = item_idx;
 
-            y = self.layout_section_header(
-                text_renderer,
-                bold_renderer,
-                &mut output,
-                &inner,
-                y,
-                "SUBMODULES",
-                filtered_submodules.len(),
-                self.submodules_collapsed,
-                section_header_height,
-                &bounds,
-            );
-            item_idx += 1; // SectionHeader("SUBMODULES")
+        y = self.layout_section_header(
+            params.text_renderer, bold_renderer, output, &params.inner, y,
+            "STASHES", filtered_stashes.len(), self.stashes_collapsed,
+            params.section_header_height, &params.bounds,
+        );
+        item_idx += 1; // SectionHeader("STASHES")
 
-            if !self.submodules_collapsed {
-                for sm_name in &filtered_submodules {
-                    let sm_name = sm_name.clone();
-                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
-                    if visible {
-                        let is_focused = self.focused && self.focused_index == Some(item_idx);
-                        let is_hovered = self.hovered_index == Some(item_idx);
-                        if is_hovered && !is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                            ));
-                        }
-                        if is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.to_array(),
-                            ));
-                        }
-                        let name_color = if is_hovered || is_focused {
-                            theme::TEXT_BRIGHT.to_array()
-                        } else {
-                            theme::TEXT.to_array()
-                        };
+        if !self.stashes_collapsed {
+            for (stash_index, stash_msg, stash_time) in filtered_stashes {
+                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                if visible {
+                    let name_color = self.layout_item_highlight(
+                        output, &params.inner, y, params.line_height, item_idx,
+                        theme::TEXT.to_array(), theme::TEXT_BRIGHT.to_array(),
+                    );
 
-                        // Submodule icon: ■ in green
-                        let icon = "\u{25A0}"; // ■
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            icon,
-                            inner.x + indent,
-                            y + 2.0,
-                            theme::BRANCH_FEATURE.to_array(),
-                        ));
-                        let icon_width = text_renderer.measure_text(icon) + 4.0;
+                    // Stash icon: ◈
+                    let icon = "\u{25C8}"; // ◈
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        icon,
+                        params.inner.x + params.indent,
+                        y + 2.0,
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
 
-                        // Check dirty status
-                        let is_dirty = self.submodules.iter()
-                            .any(|s| s.name == sm_name && s.is_dirty);
+                    // Show relative time on the right side
+                    let time_str = if *stash_time > 0 {
+                        format_relative_time(*stash_time)
+                    } else {
+                        String::new()
+                    };
+                    let time_width = if !time_str.is_empty() {
+                        params.text_renderer.measure_text(&time_str) + 8.0
+                    } else {
+                        0.0
+                    };
 
-                        // Show dirty indicator after name if dirty
-                        let dirty_marker = " \u{25CF}M"; // ●M
-                        let suffix_width = if is_dirty {
-                            text_renderer.measure_text(dirty_marker)
-                        } else {
-                            0.0
-                        };
+                    // Display the stash message (e.g. "stash@{0}: WIP on main")
+                    let label = format!("@{{{}}}: {}", stash_index,
+                        stash_msg.split(": ").skip(1).collect::<Vec<_>>().join(": ")
+                            .chars().take(60).collect::<String>()
+                    );
+                    let display_name = truncate_to_width(&label, params.text_renderer, params.inner.width - params.indent - icon_width - time_width);
+                    output.text_vertices.extend(params.text_renderer.layout_text(
+                        &display_name,
+                        params.inner.x + params.indent + icon_width,
+                        y + 2.0,
+                        name_color,
+                    ));
 
-                        let display_name = truncate_to_width(&sm_name, text_renderer, inner.width - indent - icon_width - suffix_width);
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            &display_name,
-                            inner.x + indent + icon_width,
-                            y + 2.0,
-                            name_color,
-                        ));
-
-                        if is_dirty {
-                            let name_width = text_renderer.measure_text(&display_name);
-                            output.text_vertices.extend(text_renderer.layout_text(
-                                dirty_marker,
-                                inner.x + indent + icon_width + name_width,
-                                y + 2.0,
-                                theme::STATUS_DIRTY.to_array(),
-                            ));
-                        }
-                    }
-                    y += line_height;
-                    item_idx += 1;
-                }
-            }
-        }
-
-        // --- WORKTREES section (only if any exist) ---
-        if show_worktrees {
-            y += section_gap;
-
-            y = self.layout_section_header(
-                text_renderer,
-                bold_renderer,
-                &mut output,
-                &inner,
-                y,
-                "WORKTREES",
-                filtered_worktrees.len(),
-                self.worktrees_collapsed,
-                section_header_height,
-                &bounds,
-            );
-            item_idx += 1; // SectionHeader("WORKTREES")
-
-            if !self.worktrees_collapsed {
-                for wt_name in &filtered_worktrees {
-                    let wt_name = wt_name.clone();
-                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
-                    if visible {
-                        let is_focused = self.focused && self.focused_index == Some(item_idx);
-                        let is_hovered = self.hovered_index == Some(item_idx);
-
-                        let is_current = self.worktrees.iter()
-                            .any(|w| w.name == wt_name && w.is_current);
-
-                        if is_hovered && !is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                            ));
-                        }
-                        if is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.to_array(),
-                            ));
-                        }
-
-                        // Accent highlight for current worktree (like current branch)
-                        if is_current {
-                            let stripe_rect = Rect::new(inner.x, y, 3.0, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &stripe_rect,
-                                theme::ACCENT.to_array(),
-                            ));
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::ACCENT_MUTED.to_array(),
-                            ));
-                        }
-
-                        let name_color = if is_current {
-                            theme::ACCENT.to_array()
-                        } else if is_hovered || is_focused {
-                            theme::TEXT_BRIGHT.to_array()
-                        } else {
-                            theme::TEXT.to_array()
-                        };
-
-                        // Worktree icon: ▣ in orange
-                        let icon = "\u{25A3}"; // ▣
-                        let icon_color = if is_current {
-                            theme::ACCENT.to_array()
-                        } else {
-                            theme::BRANCH_RELEASE.to_array()
-                        };
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            icon,
-                            inner.x + indent,
-                            y + 2.0,
-                            icon_color,
-                        ));
-                        let icon_width = text_renderer.measure_text(icon) + 4.0;
-
-                        // Check dirty status
-                        let is_dirty = self.worktrees.iter()
-                            .any(|w| w.name == wt_name && w.is_dirty);
-
-                        // Show dirty indicator after name if dirty
-                        let dirty_marker = " \u{25CF}M"; // ●M
-                        let suffix_width = if is_dirty {
-                            text_renderer.measure_text(dirty_marker)
-                        } else {
-                            0.0
-                        };
-
-                        let display_name = truncate_to_width(&wt_name, text_renderer, inner.width - indent - icon_width - suffix_width);
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            &display_name,
-                            inner.x + indent + icon_width,
-                            y + 2.0,
-                            name_color,
-                        ));
-
-                        if is_dirty {
-                            let name_width = text_renderer.measure_text(&display_name);
-                            output.text_vertices.extend(text_renderer.layout_text(
-                                dirty_marker,
-                                inner.x + indent + icon_width + name_width,
-                                y + 2.0,
-                                theme::STATUS_DIRTY.to_array(),
-                            ));
-                        }
-                    }
-                    y += line_height;
-                    item_idx += 1;
-                }
-            }
-        }
-
-        // --- STASHES section (only if any exist) ---
-        if show_stashes {
-            y += section_gap;
-
-            y = self.layout_section_header(
-                text_renderer,
-                bold_renderer,
-                &mut output,
-                &inner,
-                y,
-                "STASHES",
-                filtered_stashes.len(),
-                self.stashes_collapsed,
-                section_header_height,
-                &bounds,
-            );
-            item_idx += 1; // SectionHeader("STASHES")
-
-            if !self.stashes_collapsed {
-                for (stash_index, stash_msg, stash_time) in &filtered_stashes {
-                    let visible = y + line_height >= bounds.y && y < bounds.bottom();
-                    if visible {
-                        let is_focused = self.focused && self.focused_index == Some(item_idx);
-                        let is_hovered = self.hovered_index == Some(item_idx);
-                        if is_hovered && !is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                            ));
-                        }
-                        if is_focused {
-                            let highlight_rect = Rect::new(inner.x, y, inner.width, line_height);
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &highlight_rect,
-                                theme::SURFACE_HOVER.to_array(),
-                            ));
-                        }
-                        let name_color = if is_hovered || is_focused {
-                            theme::TEXT_BRIGHT.to_array()
-                        } else {
-                            theme::TEXT.to_array()
-                        };
-
-                        // Stash icon: ⬒ in a muted color
-                        let icon = "\u{25C8}"; // ◈
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            icon,
-                            inner.x + indent,
+                    // Right-aligned time
+                    if !time_str.is_empty() {
+                        let time_x = params.inner.right() - params.text_renderer.measure_text(&time_str);
+                        output.text_vertices.extend(params.text_renderer.layout_text(
+                            &time_str,
+                            time_x,
                             y + 2.0,
                             theme::TEXT_MUTED.to_array(),
                         ));
-                        let icon_width = text_renderer.measure_text(icon) + 4.0;
-
-                        // Show relative time on the right side
-                        let time_str = if *stash_time > 0 {
-                            format_relative_time(*stash_time)
-                        } else {
-                            String::new()
-                        };
-                        let time_width = if !time_str.is_empty() {
-                            text_renderer.measure_text(&time_str) + 8.0
-                        } else {
-                            0.0
-                        };
-
-                        // Display the stash message (e.g. "stash@{0}: WIP on main")
-                        let label = format!("@{{{}}}: {}", stash_index,
-                            stash_msg.split(": ").skip(1).collect::<Vec<_>>().join(": ")
-                                .chars().take(60).collect::<String>()
-                        );
-                        let display_name = truncate_to_width(&label, text_renderer, inner.width - indent - icon_width - time_width);
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            &display_name,
-                            inner.x + indent + icon_width,
-                            y + 2.0,
-                            name_color,
-                        ));
-
-                        // Right-aligned time
-                        if !time_str.is_empty() {
-                            let time_x = inner.right() - text_renderer.measure_text(&time_str);
-                            output.text_vertices.extend(text_renderer.layout_text(
-                                &time_str,
-                                time_x,
-                                y + 2.0,
-                                theme::TEXT_MUTED.to_array(),
-                            ));
-                        }
                     }
-                    y += line_height;
-                    item_idx += 1;
                 }
+                y += params.line_height;
+                item_idx += 1;
             }
         }
 
-        // Compute total content height for scroll clamping (independent of early-break rendering)
-        let mut total_h: f32 = filter_bar_h;
+        (y, item_idx)
+    }
+
+    /// Compute the total content height for scroll clamping.
+    fn compute_content_height(
+        &self,
+        data: &FilteredData,
+        filter_bar_h: f32,
+        line_height: f32,
+        section_gap: f32,
+        show_local: bool,
+        show_remote: bool,
+        show_tags: bool,
+        show_submodules: bool,
+        show_worktrees: bool,
+        show_stashes: bool,
+    ) -> f32 {
         let section_header_total = self.section_header_total_height();
-        // LOCAL section
+        let mut total_h: f32 = filter_bar_h;
+
         if show_local {
             total_h += section_header_total;
             if !self.local_collapsed {
-                total_h += filtered_local.len() as f32 * line_height;
+                total_h += data.local.len() as f32 * line_height;
             }
             total_h += section_gap;
         }
-        // REMOTE section
         if show_remote {
             total_h += section_header_total;
             if !self.remote_collapsed {
-                for (_, branches) in &filtered_remotes {
+                for (_, branches) in &data.remotes {
                     total_h += line_height; // remote name sub-header
                     total_h += branches.len() as f32 * line_height;
                 }
             }
             total_h += section_gap;
         }
-        // TAGS section
         if show_tags {
             total_h += section_header_total;
             if !self.tags_collapsed {
-                total_h += filtered_tags.len() as f32 * line_height;
+                total_h += data.tags.len() as f32 * line_height;
             }
         }
-        // SUBMODULES section
         if show_submodules {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.submodules_collapsed {
-                total_h += filtered_submodules.len() as f32 * line_height;
+                total_h += data.submodules.len() as f32 * line_height;
             }
         }
-        // WORKTREES section
         if show_worktrees {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.worktrees_collapsed {
-                total_h += filtered_worktrees.len() as f32 * line_height;
+                total_h += data.worktrees.len() as f32 * line_height;
             }
         }
-        // STASHES section
         if show_stashes {
             total_h += section_gap;
             total_h += section_header_total;
             if !self.stashes_collapsed {
-                total_h += filtered_stashes.len() as f32 * line_height;
+                total_h += data.stashes.len() as f32 * line_height;
             }
         }
-        self.content_height = total_h;
+
+        total_h
+    }
+
+    /// Layout the sidebar and produce rendering output.
+    /// `bold_renderer` is used for section headers (LOCAL, REMOTE, etc.).
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+        self.last_bounds = Some(bounds);
+
+        self.build_visible_items();
+
+        // Panel background
+        output.spline_vertices.extend(create_rect_vertices(
+            &bounds,
+            theme::PANEL_SIDEBAR.to_array(),
+        ));
+
+        let padding = 8.0;
+        let inner = bounds.inset(padding);
+        let line_height = self.line_height;
+        let section_gap = 8.0;
+        let filter_bar_h = self.filter_bar_height();
+
+        // Filter bar at the top
+        self.layout_filter_bar(text_renderer, &mut output, &bounds);
+
+        // Build filtered data once (shared across section methods and content height)
+        let data = self.build_filtered_data();
+        let filtering = !self.filter_query.is_empty();
+
+        let show_local = !filtering || !data.local.is_empty();
+        let show_remote = !filtering || !data.remotes.is_empty();
+        let show_tags = !filtering || !data.tags.is_empty();
+        let show_submodules = !self.submodules.is_empty() && (!filtering || !data.submodules.is_empty());
+        let show_worktrees = !self.worktrees.is_empty() && (!filtering || !data.worktrees.is_empty());
+        let show_stashes = !self.stashes.is_empty() && (!filtering || !data.stashes.is_empty());
+
+        let params = LayoutParams {
+            text_renderer,
+            inner,
+            bounds,
+            line_height,
+            section_header_height: self.section_header_height,
+            indent: 12.0,
+        };
+
+        let mut y = inner.y + filter_bar_h - self.scroll_offset;
+        let mut item_idx: usize = 0;
+
+        if show_local {
+            (y, item_idx) = self.layout_local_section(&params, bold_renderer, &mut output, &data.local, y, item_idx);
+            y += section_gap;
+        }
+
+        if show_remote {
+            (y, item_idx) = self.layout_remote_section(&params, bold_renderer, &mut output, &data.remotes, y, item_idx);
+            y += section_gap;
+        }
+
+        if show_tags {
+            (y, item_idx) = self.layout_tags_section(&params, bold_renderer, &mut output, &data.tags, y, item_idx);
+        }
+
+        if show_submodules {
+            y += section_gap;
+            (y, item_idx) = self.layout_submodules_section(&params, bold_renderer, &mut output, &data.submodules, y, item_idx);
+        }
+
+        if show_worktrees {
+            y += section_gap;
+            (y, item_idx) = self.layout_worktrees_section(&params, bold_renderer, &mut output, &data.worktrees, y, item_idx);
+        }
+
+        if show_stashes {
+            y += section_gap;
+            (y, item_idx) = self.layout_stashes_section(&params, bold_renderer, &mut output, &data.stashes, y, item_idx);
+        }
+
+        // Silence unused warnings for final y/item_idx
+        let _ = (y, item_idx);
+
+        // Compute total content height for scroll clamping
+        self.content_height = self.compute_content_height(
+            &data, filter_bar_h, line_height, section_gap,
+            show_local, show_remote, show_tags,
+            show_submodules, show_worktrees, show_stashes,
+        );
 
         // Update and render scrollbar
         let scrollbar_width = 8.0;
@@ -1789,9 +1827,6 @@ impl BranchSidebar {
         let (_content_area, scrollbar_bounds) = bounds.take_right(scrollbar_width);
         let scrollbar_output = self.scrollbar.layout(scrollbar_bounds);
         output.spline_vertices.extend(scrollbar_output.spline_vertices);
-
-        // Suppress unused variable warning
-        let _ = item_idx;
 
         output
     }
@@ -1894,37 +1929,4 @@ impl Default for BranchSidebar {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Truncate text to fit within max_width, adding ellipsis if needed
-fn truncate_to_width(text: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
-    if max_width <= 0.0 {
-        return String::new();
-    }
-
-    let full_width = text_renderer.measure_text(text);
-    if full_width <= max_width {
-        return text.to_string();
-    }
-
-    let ellipsis = "...";
-    let ellipsis_width = text_renderer.measure_text(ellipsis);
-    let target_width = max_width - ellipsis_width;
-
-    if target_width <= 0.0 {
-        return ellipsis.to_string();
-    }
-
-    let chars: Vec<char> = text.chars().collect();
-    let mut end = chars.len();
-
-    while end > 0 {
-        let truncated: String = chars[..end].iter().collect();
-        if text_renderer.measure_text(&truncated) <= target_width {
-            return format!("{}{}", truncated, ellipsis);
-        }
-        end -= 1;
-    }
-
-    ellipsis.to_string()
 }

@@ -98,6 +98,14 @@ pub struct GitRepo {
 }
 
 impl GitRepo {
+    /// Return an error if this is a bare repository (no working directory).
+    fn ensure_not_bare(&self) -> Result<()> {
+        if self.repo.is_bare() {
+            anyhow::bail!("Cannot perform this operation on a bare repository");
+        }
+        Ok(())
+    }
+
     /// Open a repository at the given path
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let repo = Repository::discover(path.as_ref())
@@ -344,9 +352,7 @@ impl GitRepo {
 
     /// Stage a file
     pub fn stage_file(&self, path: &str) -> Result<()> {
-        if self.repo.is_bare() {
-            anyhow::bail!("Cannot perform this operation on a bare repository");
-        }
+        self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
         index.add_path(Path::new(path)).context("Failed to stage file")?;
         index.write().context("Failed to write index")?;
@@ -355,9 +361,7 @@ impl GitRepo {
 
     /// Unstage a file
     pub fn unstage_file(&self, path: &str) -> Result<()> {
-        if self.repo.is_bare() {
-            anyhow::bail!("Cannot perform this operation on a bare repository");
-        }
+        self.ensure_not_bare()?;
         let head = self.repo.head().context("Failed to get HEAD")?;
         let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
         self.repo
@@ -369,9 +373,7 @@ impl GitRepo {
 
     /// Create a commit with the staged changes
     pub fn commit(&self, message: &str) -> Result<Oid> {
-        if self.repo.is_bare() {
-            anyhow::bail!("Cannot perform this operation on a bare repository");
-        }
+        self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
         let tree_oid = index.write_tree().context("Failed to write tree")?;
         let tree = self.repo.find_tree(tree_oid).context("Failed to find tree")?;
@@ -924,26 +926,18 @@ pub struct TagInfo {
 #[derive(Debug, Clone)]
 pub struct RemoteOpResult {
     pub success: bool,
-    #[allow(dead_code)]
-    pub output: String,
     pub error: String,
 }
 
 /// Full commit information for the detail panel
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct FullCommitInfo {
     pub id: Oid,
     pub short_id: String,
-    pub summary: String,
     pub full_message: String,
     pub author_name: String,
     pub author_email: String,
-    pub committer_name: String,
-    pub committer_email: String,
     pub author_time: i64,
-    pub commit_time: i64,
-    pub parent_ids: Vec<Oid>,
     pub parent_short_ids: Vec<String>,
 }
 
@@ -1127,9 +1121,7 @@ impl GitRepo {
 
     /// Amend the last commit with the current index and a new message
     pub fn amend_commit(&self, message: &str) -> Result<Oid> {
-        if self.repo.is_bare() {
-            anyhow::bail!("Cannot perform this operation on a bare repository");
-        }
+        self.ensure_not_bare()?;
         let head = self.repo.head().context("Failed to get HEAD")?;
         let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
         let mut index = self.repo.index().context("Failed to get index")?;
@@ -1174,25 +1166,18 @@ impl GitRepo {
             .with_context(|| format!("Failed to find commit {}", oid))?;
 
         let author = commit.author();
-        let committer = commit.committer();
 
-        let parent_ids: Vec<Oid> = commit.parent_ids().collect();
-        let parent_short_ids: Vec<String> = parent_ids.iter()
+        let parent_short_ids: Vec<String> = commit.parent_ids()
             .map(|id| id.to_string().get(..7).unwrap_or("").to_string())
             .collect();
 
         Ok(FullCommitInfo {
             id: commit.id(),
             short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
-            summary: commit.summary().unwrap_or("").to_string(),
             full_message: commit.message().unwrap_or("").to_string(),
             author_name: author.name().unwrap_or("Unknown").to_string(),
             author_email: author.email().unwrap_or("").to_string(),
-            committer_name: committer.name().unwrap_or("Unknown").to_string(),
-            committer_email: committer.email().unwrap_or("").to_string(),
             author_time: author.when().seconds(),
-            commit_time: committer.when().seconds(),
-            parent_ids,
             parent_short_ids,
         })
     }
@@ -1225,40 +1210,18 @@ impl GitRepo {
     /// Stage a single hunk from a working-directory file by building a minimal
     /// unified-diff patch and applying it to the index via `git apply --cached`.
     pub fn stage_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
-        let hunks = self.diff_working_file(file_path, false)?;
-        let hunk = hunks.get(hunk_index)
-            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
-
-        let patch = Self::build_hunk_patch(file_path, file_path, hunk);
-        let workdir = self.repo.workdir()
-            .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
-
-        let output = std::process::Command::new("git")
-            .args(["apply", "--cached", "--unidiff-zero", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .current_dir(workdir)
-            .spawn()
-            .and_then(|mut child| {
-                use std::io::Write;
-                if let Some(ref mut stdin) = child.stdin {
-                    stdin.write_all(patch.as_bytes())?;
-                }
-                child.wait_with_output()
-            })
-            .context("Failed to run git apply")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to stage hunk: {}", stderr);
-        }
-        Ok(())
+        self.apply_hunk_patch(file_path, hunk_index, false)
     }
 
     /// Unstage a single hunk from the index by building a reverse patch and applying it.
     pub fn unstage_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
-        let hunks = self.diff_working_file(file_path, true)?;
+        self.apply_hunk_patch(file_path, hunk_index, true)
+    }
+
+    /// Apply a hunk patch to the index. When `reverse` is true the patch is
+    /// applied in reverse (unstage); when false it stages the hunk.
+    fn apply_hunk_patch(&self, file_path: &str, hunk_index: usize, reverse: bool) -> Result<()> {
+        let hunks = self.diff_working_file(file_path, reverse)?;
         let hunk = hunks.get(hunk_index)
             .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
 
@@ -1266,8 +1229,14 @@ impl GitRepo {
         let workdir = self.repo.workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
 
+        let mut args = vec!["apply", "--cached"];
+        if reverse {
+            args.push("--reverse");
+        }
+        args.extend(["--unidiff-zero", "-"]);
+
         let output = std::process::Command::new("git")
-            .args(["apply", "--cached", "--reverse", "--unidiff-zero", "-"])
+            .args(&args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1280,11 +1249,12 @@ impl GitRepo {
                 }
                 child.wait_with_output()
             })
-            .context("Failed to run git apply --reverse")?;
+            .with_context(|| format!("Failed to run git apply{}", if reverse { " --reverse" } else { "" }))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to unstage hunk: {}", stderr);
+            let action = if reverse { "unstage" } else { "stage" };
+            anyhow::bail!("Failed to {} hunk: {}", action, stderr);
         }
         Ok(())
     }
@@ -1365,12 +1335,10 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver
         let op_result = match result {
             Ok(output) => RemoteOpResult {
                 success: output.status.success(),
-                output: String::from_utf8_lossy(&output.stdout).to_string(),
                 error: String::from_utf8_lossy(&output.stderr).to_string(),
             },
             Err(e) => RemoteOpResult {
                 success: false,
-                output: String::new(),
                 error: format!("Failed to run git {}: {}", op_name, e),
             },
         };
@@ -1379,29 +1347,94 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver
     rx
 }
 
-/// Spawn a background thread to run `git fetch --prune`
-pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["fetch".into(), "--prune".into(), remote], workdir, "fetch")
+/// Define an async git wrapper that delegates to `run_git_async`.
+///
+/// Each invocation generates a `pub fn $name(workdir: PathBuf, ...) -> Receiver<RemoteOpResult>`
+/// that constructs the arg vector and calls `run_git_async`.
+///
+/// Syntax:
+///   `fn_name(param: Type, ...) => [arg_expr, ...], "op_name";`
+macro_rules! define_async_git_op {
+    ($(
+        $(#[doc = $doc:expr])*
+        $name:ident( $($param:ident : $pty:ty),* ) => [ $($arg:expr),+ $(,)? ], $op:expr;
+    )*) => {
+        $(
+            $(#[doc = $doc])*
+            pub fn $name(workdir: PathBuf, $($param: $pty),*) -> Receiver<RemoteOpResult> {
+                run_git_async(vec![$($arg.into()),+], workdir, $op)
+            }
+        )*
+    };
 }
 
-/// Spawn a background thread to run `git push`
-pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["push".into(), remote, branch], workdir, "push")
+define_async_git_op! {
+    /// Spawn a background thread to run `git fetch --prune`
+    fetch_remote_async(remote: String) =>
+        ["fetch", "--prune", remote], "fetch";
+
+    /// Spawn a background thread to run `git push`
+    push_remote_async(remote: String, branch: String) =>
+        ["push", remote, branch], "push";
+
+    /// Spawn a background thread to run `git push --force-with-lease`
+    push_force_async(remote: String, branch: String) =>
+        ["push", "--force-with-lease", remote, branch], "push";
+
+    /// Spawn a background thread to run `git pull`
+    pull_remote_async(remote: String, branch: String) =>
+        ["pull", remote, branch], "pull";
+
+    /// Spawn a background thread to run `git pull --rebase`
+    pull_rebase_async(remote: String, branch: String) =>
+        ["pull", "--rebase", remote, branch], "pull --rebase";
+
+    /// Spawn a background thread to update a submodule
+    update_submodule_async(name: String) =>
+        ["submodule", "update", "--init", name], "submodule update";
+
+    /// Spawn a background thread to remove a worktree
+    remove_worktree_async(name: String) =>
+        ["worktree", "remove", name], "worktree remove";
+
+    /// Spawn a background thread to merge a branch into the current branch
+    merge_branch_async(branch_name: String) =>
+        ["merge", branch_name], "merge";
+
+    /// Spawn a background thread to rebase the current branch onto another branch
+    rebase_branch_async(branch_name: String) =>
+        ["rebase", branch_name], "rebase";
+
+    /// Spawn a background thread to stash all changes
+    stash_push_async() =>
+        ["stash", "push"], "stash push";
+
+    /// Spawn a background thread to pop the most recent stash
+    stash_pop_async() =>
+        ["stash", "pop"], "stash pop";
+
+    /// Spawn a background thread to cherry-pick a commit
+    cherry_pick_async(sha: String) =>
+        ["cherry-pick", sha], "cherry-pick";
+
+    /// Spawn a background thread to revert a commit
+    revert_commit_async(sha: String) =>
+        ["revert", "--no-edit", sha], "revert";
 }
 
-/// Spawn a background thread to run `git push --force-with-lease`
-pub fn push_force_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["push".into(), "--force-with-lease".into(), remote, branch], workdir, "push")
+/// Spawn a background thread to apply a stash entry (without removing it)
+pub fn stash_apply_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply")
 }
 
-/// Spawn a background thread to run `git pull`
-pub fn pull_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["pull".into(), remote, branch], workdir, "pull")
+/// Spawn a background thread to drop a stash entry
+pub fn stash_drop_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop")
 }
 
-/// Spawn a background thread to run `git pull --rebase`
-pub fn pull_rebase_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["pull".into(), "--rebase".into(), remote, branch], workdir, "pull --rebase")
+/// Spawn a background thread to pop a stash entry by index
+pub fn stash_pop_index_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop")
 }
 
 /// Spawn a background thread to remove a submodule (deinit + rm)
@@ -1423,12 +1456,10 @@ pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<Remote
                 let op_result = match rm {
                     Ok(output) => RemoteOpResult {
                         success: output.status.success(),
-                        output: String::from_utf8_lossy(&output.stdout).to_string(),
                         error: String::from_utf8_lossy(&output.stderr).to_string(),
                     },
                     Err(e) => RemoteOpResult {
                         success: false,
-                        output: String::new(),
                         error: format!("Failed to run git rm: {}", e),
                     },
                 };
@@ -1437,73 +1468,16 @@ pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<Remote
             Ok(output) => {
                 let _ = tx.send(RemoteOpResult {
                     success: false,
-                    output: String::from_utf8_lossy(&output.stdout).to_string(),
                     error: String::from_utf8_lossy(&output.stderr).to_string(),
                 });
             }
             Err(e) => {
                 let _ = tx.send(RemoteOpResult {
                     success: false,
-                    output: String::new(),
                     error: format!("Failed to run git submodule deinit: {}", e),
                 });
             }
         }
     });
     rx
-}
-
-/// Spawn a background thread to update a submodule
-pub fn update_submodule_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["submodule".into(), "update".into(), "--init".into(), name], workdir, "submodule update")
-}
-
-/// Spawn a background thread to remove a worktree
-pub fn remove_worktree_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["worktree".into(), "remove".into(), name], workdir, "worktree remove")
-}
-
-/// Spawn a background thread to merge a branch into the current branch
-pub fn merge_branch_async(workdir: PathBuf, branch_name: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["merge".into(), branch_name], workdir, "merge")
-}
-
-/// Spawn a background thread to rebase the current branch onto another branch
-pub fn rebase_branch_async(workdir: PathBuf, branch_name: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["rebase".into(), branch_name], workdir, "rebase")
-}
-
-/// Spawn a background thread to stash all changes
-pub fn stash_push_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "push".into()], workdir, "stash push")
-}
-
-/// Spawn a background thread to pop the most recent stash
-pub fn stash_pop_async(workdir: PathBuf) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "pop".into()], workdir, "stash pop")
-}
-
-/// Spawn a background thread to apply a stash entry (without removing it)
-pub fn stash_apply_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply")
-}
-
-/// Spawn a background thread to drop a stash entry
-pub fn stash_drop_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop")
-}
-
-/// Spawn a background thread to pop a stash entry by index
-pub fn stash_pop_index_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop")
-}
-
-/// Spawn a background thread to cherry-pick a commit
-pub fn cherry_pick_async(workdir: PathBuf, sha: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["cherry-pick".into(), sha], workdir, "cherry-pick")
-}
-
-/// Spawn a background thread to revert a commit
-pub fn revert_commit_async(workdir: PathBuf, sha: String) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["revert".into(), "--no-edit".into(), sha], workdir, "revert")
 }

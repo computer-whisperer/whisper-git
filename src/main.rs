@@ -165,6 +165,82 @@ struct TabViewState {
 }
 
 impl TabViewState {
+    /// Switch the staging well to a different worktree by index.
+    /// Clears the diff view and updates the worktree repo handle.
+    /// If `set_staging_mode` is true, also switches right_panel_mode to Staging.
+    fn switch_to_worktree(&mut self, index: usize, set_staging_mode: bool) {
+        self.staging_well.switch_worktree(index);
+        if set_staging_mode {
+            self.right_panel_mode = RightPanelMode::Staging;
+        }
+        self.diff_view.clear();
+        if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
+            if wt_ctx.is_current {
+                self.worktree_repo = None;
+            } else {
+                self.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+            }
+        }
+    }
+
+    /// Switch to a named worktree (looks up index by name).
+    /// Clears the diff view and updates the worktree repo handle.
+    fn switch_to_worktree_by_name(&mut self, name: &str) {
+        if let Some(idx) = self.staging_well.worktree_index_by_name(name) {
+            self.switch_to_worktree(idx, false);
+        }
+    }
+
+    /// Handle a staging action by dispatching to the appropriate pending message.
+    fn handle_staging_action(&mut self, action: StagingAction) {
+        match action {
+            StagingAction::StageFile(path) => {
+                self.pending_messages.push(AppMessage::StageFile(path));
+            }
+            StagingAction::UnstageFile(path) => {
+                self.pending_messages.push(AppMessage::UnstageFile(path));
+            }
+            StagingAction::StageAll => {
+                self.pending_messages.push(AppMessage::StageAll);
+            }
+            StagingAction::UnstageAll => {
+                self.pending_messages.push(AppMessage::UnstageAll);
+            }
+            StagingAction::Commit(message) => {
+                self.pending_messages.push(AppMessage::Commit(message));
+            }
+            StagingAction::AmendCommit(message) => {
+                self.pending_messages.push(AppMessage::AmendCommit(message));
+            }
+            StagingAction::ToggleAmend => {
+                self.pending_messages.push(AppMessage::ToggleAmend);
+            }
+            StagingAction::ViewDiff(path) => {
+                let staged = self.staging_well.staged_list.files
+                    .iter().any(|f| f.path == path);
+                self.pending_messages.push(AppMessage::ViewDiff(path, staged));
+            }
+            StagingAction::SwitchWorktree(index) => {
+                self.switch_to_worktree(index, true);
+            }
+            StagingAction::PreviewDiff(path, staged) => {
+                self.pending_messages.push(AppMessage::ViewDiff(path, staged));
+            }
+        }
+    }
+
+    /// Handle a graph action by dispatching to the appropriate pending message.
+    fn handle_graph_action(&mut self, action: GraphAction) {
+        match action {
+            GraphAction::LoadMore => {
+                self.pending_messages.push(AppMessage::LoadMoreCommits);
+            }
+            GraphAction::SwitchWorktree(name) => {
+                self.switch_to_worktree_by_name(&name);
+            }
+        }
+    }
+
     fn new() -> Self {
         Self {
             focused_panel: FocusedPanel::Graph,
@@ -542,16 +618,9 @@ impl App {
         }
 
         // Partition: submodule navigation vs normal messages
-        let mut nav_messages = Vec::new();
-        let mut normal_messages = Vec::new();
-        for msg in messages {
-            match msg {
-                AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_) => {
-                    nav_messages.push(msg);
-                }
-                _ => normal_messages.push(msg),
-            }
-        }
+        let (nav_messages, normal_messages): (Vec<_>, Vec<_>) = messages.into_iter().partition(|msg| {
+            matches!(msg, AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_))
+        });
 
         // Handle submodule navigation first (needs text_renderer from self.state)
         if !nav_messages.is_empty() {
@@ -912,6 +981,387 @@ impl App {
             self.active_tab = index;
             self.tab_bar.set_active(index);
             self.refresh_status();
+        }
+    }
+
+    /// Handle events for modal dialogs (confirm, branch name, remote, settings, repo, toast, context menu).
+    /// Returns true if the event was consumed by a modal.
+    fn handle_modal_events(&mut self, input_event: &InputEvent, screen_bounds: Rect) -> bool {
+        // Confirm dialog takes highest modal priority
+        if self.confirm_dialog.is_visible() {
+            self.confirm_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.confirm_dialog.take_action() {
+                match action {
+                    ConfirmDialogAction::Confirm => {
+                        if let Some(msg) = self.pending_confirm_action.take() {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state.pending_messages.push(msg);
+                            }
+                        }
+                    }
+                    ConfirmDialogAction::Cancel => {
+                        self.pending_confirm_action = None;
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Branch name dialog takes modal priority
+        if self.branch_name_dialog.is_visible() {
+            let is_tag = self.branch_name_dialog.title().contains("Tag");
+            self.branch_name_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.branch_name_dialog.take_action() {
+                match action {
+                    BranchNameDialogAction::Create(name, oid) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            if is_tag {
+                                view_state.pending_messages.push(AppMessage::CreateTag(name, oid));
+                            } else {
+                                view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                            }
+                        }
+                    }
+                    BranchNameDialogAction::Cancel => {}
+                }
+            }
+            return true;
+        }
+
+        // Remote dialog takes modal priority
+        if self.remote_dialog.is_visible() {
+            self.remote_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.remote_dialog.take_action() {
+                match action {
+                    RemoteDialogAction::AddRemote(name, url) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::AddRemote(name, url));
+                        }
+                    }
+                    RemoteDialogAction::EditUrl(name, url) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::SetRemoteUrl(name, url));
+                        }
+                    }
+                    RemoteDialogAction::Rename(old_name, new_name) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::RenameRemote(old_name, new_name));
+                        }
+                    }
+                    RemoteDialogAction::Cancel => {}
+                }
+            }
+            return true;
+        }
+
+        // Settings dialog takes priority (modal)
+        if self.settings_dialog.is_visible() {
+            self.settings_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.settings_dialog.take_action() {
+                match action {
+                    SettingsDialogAction::Close => {
+                        let row_scale = self.settings_dialog.row_scale;
+                        if let Some(ref state) = self.state {
+                            for (_, view_state) in &mut self.tabs {
+                                view_state.commit_graph_view.row_scale = row_scale;
+                                view_state.commit_graph_view.sync_metrics(&state.text_renderer);
+                            }
+                        }
+                        self.config.avatars_enabled = self.settings_dialog.show_avatars;
+                        self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
+                        self.config.row_scale = self.settings_dialog.row_scale;
+                        self.config.save();
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Repo dialog takes priority (modal)
+        if self.repo_dialog.is_visible() {
+            self.repo_dialog.handle_event(input_event, screen_bounds);
+            return true;
+        }
+
+        // Toast click-to-dismiss (overlay, before context menu)
+        if self.toast_manager.handle_event(input_event, screen_bounds) {
+            return true;
+        }
+
+        // Context menu takes priority when visible (overlay)
+        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
+            && view_state.context_menu.is_visible() {
+                view_state.context_menu.handle_event(input_event, screen_bounds);
+                if let Some(action) = view_state.context_menu.take_action() {
+                    match action {
+                        MenuAction::Selected(action_id) => {
+                            handle_context_menu_action(
+                                &action_id,
+                                view_state,
+                                &mut self.toast_manager,
+                                &mut self.confirm_dialog,
+                                &mut self.branch_name_dialog,
+                                &mut self.remote_dialog,
+                                repo_tab.repo.as_ref(),
+                                &mut self.pending_confirm_action,
+                            );
+                        }
+                    }
+                }
+                return true;
+            }
+
+        false
+    }
+
+    /// Handle divider drag events (ongoing drag and starting new drags).
+    /// Returns true if the event was consumed.
+    fn handle_divider_drag(&mut self, input_event: &InputEvent, main_bounds: Rect, layout: &ScreenLayout) -> bool {
+        // Handle ongoing drag (MouseMove / MouseUp) before anything else
+        if self.divider_drag.is_some() {
+            match input_event {
+                InputEvent::MouseMove { x, .. } => {
+                    match self.divider_drag.unwrap() {
+                        DividerDrag::SidebarGraph => {
+                            let ratio = (*x - main_bounds.x) / main_bounds.width;
+                            self.sidebar_ratio = ratio.clamp(0.05, 0.30);
+                        }
+                        DividerDrag::GraphRight => {
+                            let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
+                            let content_x = main_bounds.x + sidebar_w;
+                            let content_w = main_bounds.width - sidebar_w;
+                            if content_w > 0.0 {
+                                let ratio = (*x - content_x) / content_w;
+                                self.graph_ratio = ratio.clamp(0.30, 0.80);
+                            }
+                        }
+                    }
+                    if let Some(ref render_state) = self.state {
+                        let cursor = CursorIcon::ColResize;
+                        if self.current_cursor != cursor {
+                            render_state.window.set_cursor(cursor);
+                            self.current_cursor = cursor;
+                        }
+                    }
+                    return true;
+                }
+                InputEvent::MouseUp { .. } => {
+                    self.divider_drag = None;
+                    if let Some(ref render_state) = self.state {
+                        if self.current_cursor != CursorIcon::Default {
+                            render_state.window.set_cursor(CursorIcon::Default);
+                            self.current_cursor = CursorIcon::Default;
+                        }
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
+        // Start divider drag on MouseDown near divider edges (wide 8px hit zone)
+        if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = input_event {
+            let hit_tolerance = 8.0;
+
+            if *y > layout.shortcut_bar.bottom() {
+                let sidebar_edge = layout.sidebar.right();
+                if (*x - sidebar_edge).abs() < hit_tolerance {
+                    self.divider_drag = Some(DividerDrag::SidebarGraph);
+                    return true;
+                }
+
+                let graph_edge = layout.graph.right();
+                if (*x - graph_edge).abs() < hit_tolerance {
+                    self.divider_drag = Some(DividerDrag::GraphRight);
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Handle global keyboard shortcuts (Ctrl+O, Ctrl+W, Ctrl+Tab, etc.).
+    /// Returns true if the event was consumed.
+    fn handle_global_shortcuts(&mut self, input_event: &InputEvent) -> bool {
+        let InputEvent::KeyDown { key, modifiers, .. } = input_event else {
+            return false;
+        };
+
+        // Ctrl+O: open repo
+        if *key == Key::O && modifiers.only_ctrl() {
+            self.repo_dialog.show_with_recent(&self.config.recent_repos);
+            return true;
+        }
+        // Ctrl+W: close tab
+        if *key == Key::W && modifiers.only_ctrl() {
+            if self.tabs.len() > 1 {
+                let idx = self.active_tab;
+                self.close_tab(idx);
+            }
+            return true;
+        }
+        // Ctrl+Tab: next tab
+        if *key == Key::Tab && modifiers.only_ctrl() {
+            let next = (self.active_tab + 1) % self.tabs.len();
+            self.switch_tab(next);
+            return true;
+        }
+        // Ctrl+Shift+Tab: previous tab
+        if *key == Key::Tab && modifiers.ctrl_shift() {
+            let prev = if self.active_tab == 0 {
+                self.tabs.len() - 1
+            } else {
+                self.active_tab - 1
+            };
+            self.switch_tab(prev);
+            return true;
+        }
+        // Ctrl+S: stash push (only when staging text inputs are not focused)
+        if *key == Key::S && modifiers.only_ctrl() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                if !view_state.staging_well.has_text_focus() {
+                    view_state.pending_messages.push(AppMessage::StashPush);
+                    return true;
+                }
+            }
+        }
+        // Ctrl+Shift+S: stash pop
+        if *key == Key::S && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                view_state.pending_messages.push(AppMessage::StashPop);
+                return true;
+            }
+        }
+        // Ctrl+Shift+A: toggle amend mode
+        if *key == Key::A && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                if !view_state.staging_well.has_text_focus() {
+                    view_state.pending_messages.push(AppMessage::ToggleAmend);
+                    return true;
+                }
+            }
+        }
+        // Ctrl+1..9: switch worktree context in staging well
+        if modifiers.only_ctrl() {
+            let wt_index = match *key {
+                Key::Num1 => Some(0),
+                Key::Num2 => Some(1),
+                Key::Num3 => Some(2),
+                Key::Num4 => Some(3),
+                Key::Num5 => Some(4),
+                Key::Num6 => Some(5),
+                Key::Num7 => Some(6),
+                Key::Num8 => Some(7),
+                Key::Num9 => Some(8),
+                _ => None,
+            };
+            if let Some(idx) = wt_index {
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    if view_state.staging_well.has_worktree_selector()
+                        && idx < view_state.staging_well.worktree_count()
+                    {
+                        view_state.switch_to_worktree(idx, true);
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Handle a sidebar action by dispatching to the appropriate pending message or dialog.
+    fn handle_sidebar_action(&mut self, action: SidebarAction) {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+
+        match action {
+            SidebarAction::Checkout(name) => {
+                view_state.pending_messages.push(AppMessage::CheckoutBranch(name));
+            }
+            SidebarAction::CheckoutRemote(remote, branch) => {
+                view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
+            }
+            SidebarAction::Delete(name) => {
+                self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
+                self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
+            }
+            SidebarAction::DeleteSubmodule(name) => {
+                self.confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", name));
+                self.pending_confirm_action = Some(AppMessage::DeleteSubmodule(name));
+            }
+            SidebarAction::UpdateSubmodule(name) => {
+                view_state.pending_messages.push(AppMessage::UpdateSubmodule(name));
+            }
+            SidebarAction::OpenSubmoduleTerminal(name) => {
+                let path = view_state.branch_sidebar.submodules.iter()
+                    .find(|s| s.name == name)
+                    .map(|s| s.path.clone());
+                if let Some(path) = path {
+                    open_terminal_at(&path, &name, &mut self.toast_manager);
+                } else {
+                    self.toast_manager.push(
+                        format!("Submodule '{}' not found", name),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+            SidebarAction::OpenSubmodule(name) => {
+                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
+            }
+            SidebarAction::SwitchWorktree(name) => {
+                view_state.switch_to_worktree_by_name(&name);
+            }
+            SidebarAction::JumpToWorktreeBranch(name) => {
+                view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(name));
+            }
+            SidebarAction::RemoveWorktree(name) => {
+                self.confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", name));
+                self.pending_confirm_action = Some(AppMessage::RemoveWorktree(name));
+            }
+            SidebarAction::OpenWorktreeTerminal(name) => {
+                let path = view_state.branch_sidebar.worktrees.iter()
+                    .find(|w| w.name == name)
+                    .map(|w| w.path.clone());
+                if let Some(path) = path {
+                    open_terminal_at(&path, &name, &mut self.toast_manager);
+                } else {
+                    self.toast_manager.push(
+                        format!("Worktree '{}' not found", name),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+            SidebarAction::ApplyStash(index) => {
+                view_state.pending_messages.push(AppMessage::StashApply(index));
+            }
+            SidebarAction::PopStash(index) => {
+                view_state.pending_messages.push(AppMessage::StashPopIndex(index));
+            }
+            SidebarAction::DropStash(index) => {
+                self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
+                self.pending_confirm_action = Some(AppMessage::StashDrop(index));
+            }
+            SidebarAction::AddRemote => {
+                self.remote_dialog.show_add();
+            }
+            SidebarAction::EditRemoteUrl(name) => {
+                let current_url = repo_tab.repo.as_ref()
+                    .and_then(|r| r.remote_url(&name))
+                    .unwrap_or_default();
+                self.remote_dialog.show_edit_url(&name, &current_url);
+            }
+            SidebarAction::RenameRemote(name) => {
+                self.remote_dialog.show_rename(&name);
+            }
+            SidebarAction::DeleteRemote(name) => {
+                self.confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", name));
+                self.pending_confirm_action = Some(AppMessage::DeleteRemote(name));
+            }
+            SidebarAction::DeleteTag(name) => {
+                self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
+                self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
+            }
         }
     }
 }
@@ -1314,7 +1764,6 @@ impl ApplicationHandler for App {
                 state.scale_factor = scale_factor;
                 state.text_renderer.set_render_scale(scale_factor);
                 state.bold_text_renderer.set_render_scale(scale_factor);
-                // Sync metrics on all tabs and recompute layouts
                 for (repo_tab, view_state) in &mut self.tabs {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                     view_state.commit_graph_view.update_layout(&repo_tab.commits);
@@ -1405,903 +1854,10 @@ impl ApplicationHandler for App {
 
             // Handle input events
             ref win_event => {
-                // Convert winit event to our InputEvent
-                if let Some(input_event) = state.input_state.handle_window_event(win_event) {
-                    // Calculate layout
-                    let extent = state.surface.extent();
-                    let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-                    let scale = state.scale_factor as f32;
-                    let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
-                    let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
-                    let layout = ScreenLayout::compute_with_ratios_and_shortcut(
-                        main_bounds, 4.0, scale,
-                        Some(self.sidebar_ratio),
-                        Some(self.graph_ratio),
-                        self.shortcut_bar_visible,
-                    );
-
-                    // Confirm dialog takes highest modal priority
-                    if self.confirm_dialog.is_visible() {
-                        self.confirm_dialog.handle_event(&input_event, screen_bounds);
-                        if let Some(action) = self.confirm_dialog.take_action() {
-                            match action {
-                                ConfirmDialogAction::Confirm => {
-                                    if let Some(msg) = self.pending_confirm_action.take() {
-                                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                            view_state.pending_messages.push(msg);
-                                        }
-                                    }
-                                }
-                                ConfirmDialogAction::Cancel => {
-                                    self.pending_confirm_action = None;
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // Branch name dialog takes modal priority
-                    if self.branch_name_dialog.is_visible() {
-                        let is_tag = self.branch_name_dialog.title().contains("Tag");
-                        self.branch_name_dialog.handle_event(&input_event, screen_bounds);
-                        if let Some(action) = self.branch_name_dialog.take_action() {
-                            match action {
-                                BranchNameDialogAction::Create(name, oid) => {
-                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                        if is_tag {
-                                            view_state.pending_messages.push(AppMessage::CreateTag(name, oid));
-                                        } else {
-                                            view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
-                                        }
-                                    }
-                                }
-                                BranchNameDialogAction::Cancel => {}
-                            }
-                        }
-                        return;
-                    }
-
-                    // Remote dialog takes modal priority
-                    if self.remote_dialog.is_visible() {
-                        self.remote_dialog.handle_event(&input_event, screen_bounds);
-                        if let Some(action) = self.remote_dialog.take_action() {
-                            match action {
-                                RemoteDialogAction::AddRemote(name, url) => {
-                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                        view_state.pending_messages.push(AppMessage::AddRemote(name, url));
-                                    }
-                                }
-                                RemoteDialogAction::EditUrl(name, url) => {
-                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                        view_state.pending_messages.push(AppMessage::SetRemoteUrl(name, url));
-                                    }
-                                }
-                                RemoteDialogAction::Rename(old_name, new_name) => {
-                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                        view_state.pending_messages.push(AppMessage::RenameRemote(old_name, new_name));
-                                    }
-                                }
-                                RemoteDialogAction::Cancel => {}
-                            }
-                        }
-                        return;
-                    }
-
-                    // Settings dialog takes priority (modal)
-                    if self.settings_dialog.is_visible() {
-                        self.settings_dialog.handle_event(&input_event, screen_bounds);
-                        if let Some(action) = self.settings_dialog.take_action() {
-                            match action {
-                                SettingsDialogAction::Close => {
-                                    // Apply row scale to all graph views
-                                    let row_scale = self.settings_dialog.row_scale;
-                                    for (_, view_state) in &mut self.tabs {
-                                        view_state.commit_graph_view.row_scale = row_scale;
-                                        view_state.commit_graph_view.sync_metrics(&state.text_renderer);
-                                    }
-                                    // Persist settings to disk
-                                    self.config.avatars_enabled = self.settings_dialog.show_avatars;
-                                    self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
-                                    self.config.row_scale = self.settings_dialog.row_scale;
-                                    self.config.save();
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // Dialog takes priority (modal)
-                    if self.repo_dialog.is_visible() {
-                        self.repo_dialog.handle_event(&input_event, screen_bounds);
-                        return;
-                    }
-
-                    // Toast click-to-dismiss (overlay, before context menu)
-                    if self.toast_manager.handle_event(&input_event, screen_bounds) {
-                        return;
-                    }
-
-                    // Context menu takes priority when visible (overlay)
-                    if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
-                        && view_state.context_menu.is_visible() {
-                            view_state.context_menu.handle_event(&input_event, screen_bounds);
-                            if let Some(action) = view_state.context_menu.take_action() {
-                                match action {
-                                    MenuAction::Selected(action_id) => {
-                                        handle_context_menu_action(
-                                            &action_id,
-                                            view_state,
-                                            &mut self.toast_manager,
-                                            &mut self.confirm_dialog,
-                                            &mut self.branch_name_dialog,
-                                            &mut self.remote_dialog,
-                                            repo_tab.repo.as_ref(),
-                                            &mut self.pending_confirm_action,
-                                        );
-                                    }
-                                }
-                            }
-                            return;
-                        }
-
-                    // ---- Divider drag handling ----
-                    // Handle ongoing drag (MouseMove / MouseUp) before anything else
-                    if self.divider_drag.is_some() {
-                        match &input_event {
-                            InputEvent::MouseMove { x, .. } => {
-                                match self.divider_drag.unwrap() {
-                                    DividerDrag::SidebarGraph => {
-                                        // Convert mouse x to sidebar ratio of main_bounds width
-                                        let ratio = (*x - main_bounds.x) / main_bounds.width;
-                                        self.sidebar_ratio = ratio.clamp(0.05, 0.30);
-                                    }
-                                    DividerDrag::GraphRight => {
-                                        // Content area starts after sidebar
-                                        let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
-                                        let content_x = main_bounds.x + sidebar_w;
-                                        let content_w = main_bounds.width - sidebar_w;
-                                        if content_w > 0.0 {
-                                            let ratio = (*x - content_x) / content_w;
-                                            self.graph_ratio = ratio.clamp(0.30, 0.80);
-                                        }
-                                    }
-                                }
-                                // Set appropriate cursor while dragging (all dividers are vertical)
-                                if let Some(ref render_state) = self.state {
-                                    let cursor = CursorIcon::ColResize;
-                                    if self.current_cursor != cursor {
-                                        render_state.window.set_cursor(cursor);
-                                        self.current_cursor = cursor;
-                                    }
-                                }
-                                return;
-                            }
-                            InputEvent::MouseUp { .. } => {
-                                self.divider_drag = None;
-                                // Reset cursor after drag ends
-                                if let Some(ref render_state) = self.state {
-                                    if self.current_cursor != CursorIcon::Default {
-                                        render_state.window.set_cursor(CursorIcon::Default);
-                                        self.current_cursor = CursorIcon::Default;
-                                    }
-                                }
-                                return;
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Start divider drag on MouseDown near divider edges (wide 8px hit zone)
-                    if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = &input_event {
-                        let hit_tolerance = 8.0;
-
-                        // Only check dividers in the main content area (below header)
-                        if *y > layout.shortcut_bar.bottom() {
-                            // Divider 1: sidebar | graph (vertical)
-                            let sidebar_edge = layout.sidebar.right();
-                            if (*x - sidebar_edge).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::SidebarGraph);
-                                return;
-                            }
-
-                            // Divider 2: graph | right panel (vertical)
-                            let graph_edge = layout.graph.right();
-                            if (*x - graph_edge).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::GraphRight);
-                                return;
-                            }
-                        }
-                    }
-
-                    // Handle global keys first
-                    if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
-                        // Ctrl+O: open repo
-                        if *key == Key::O && modifiers.only_ctrl() {
-                            self.repo_dialog.show_with_recent(&self.config.recent_repos);
-                            return;
-                        }
-                        // Ctrl+W: close tab
-                        if *key == Key::W && modifiers.only_ctrl() {
-                            if self.tabs.len() > 1 {
-                                let idx = self.active_tab;
-                                self.close_tab(idx);
-                            }
-                            return;
-                        }
-                        // Ctrl+Tab: next tab
-                        if *key == Key::Tab && modifiers.only_ctrl() {
-                            let next = (self.active_tab + 1) % self.tabs.len();
-                            self.switch_tab(next);
-                            return;
-                        }
-                        // Ctrl+Shift+Tab: previous tab
-                        if *key == Key::Tab && modifiers.ctrl_shift() {
-                            let prev = if self.active_tab == 0 {
-                                self.tabs.len() - 1
-                            } else {
-                                self.active_tab - 1
-                            };
-                            self.switch_tab(prev);
-                            return;
-                        }
-                        // Ctrl+S: stash push (only when staging text inputs are not focused)
-                        if *key == Key::S && modifiers.only_ctrl() {
-                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                if !view_state.staging_well.has_text_focus() {
-                                    view_state.pending_messages.push(AppMessage::StashPush);
-                                    return;
-                                }
-                            }
-                        }
-                        // Ctrl+Shift+S: stash pop
-                        if *key == Key::S && modifiers.ctrl_shift() {
-                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                view_state.pending_messages.push(AppMessage::StashPop);
-                                return;
-                            }
-                        }
-                        // Ctrl+Shift+A: toggle amend mode
-                        if *key == Key::A && modifiers.ctrl_shift() {
-                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                if !view_state.staging_well.has_text_focus() {
-                                    view_state.pending_messages.push(AppMessage::ToggleAmend);
-                                    return;
-                                }
-                            }
-                        }
-                        // Ctrl+1..9: switch worktree context in staging well
-                        if modifiers.only_ctrl() {
-                            let wt_index = match *key {
-                                Key::Num1 => Some(0),
-                                Key::Num2 => Some(1),
-                                Key::Num3 => Some(2),
-                                Key::Num4 => Some(3),
-                                Key::Num5 => Some(4),
-                                Key::Num6 => Some(5),
-                                Key::Num7 => Some(6),
-                                Key::Num8 => Some(7),
-                                Key::Num9 => Some(8),
-                                _ => None,
-                            };
-                            if let Some(idx) = wt_index {
-                                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                    if view_state.staging_well.has_worktree_selector()
-                                        && idx < view_state.staging_well.worktree_count()
-                                    {
-                                        view_state.staging_well.switch_worktree(idx);
-                                        view_state.right_panel_mode = RightPanelMode::Staging;
-                                        view_state.diff_view.clear();
-                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                            if wt_ctx.is_current {
-                                                view_state.worktree_repo = None;
-                                            } else {
-                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                            }
-                                        }
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Route to tab bar (if visible)
-                    if self.tabs.len() > 1
-                        && self.tab_bar.handle_event(&input_event, tab_bar_bounds).is_consumed() {
-                            if let Some(action) = self.tab_bar.take_action() {
-                                match action {
-                                    TabAction::Select(idx) => self.switch_tab(idx),
-                                    TabAction::Close(idx) => self.close_tab(idx),
-                                    TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
-                                }
-                            }
-                            return;
-                        }
-
-                    // Route to active tab's views
-                    let tab_count = self.tabs.len();
-                    let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-
-                    // Handle per-tab global keys (except Tab, which is handled after panel routing)
-                    if let InputEvent::KeyDown { key, .. } = &input_event
-                        && key == &Key::Escape {
-                            if view_state.right_panel_mode == RightPanelMode::Browse {
-                                // Return to staging mode from browse mode
-                                view_state.right_panel_mode = RightPanelMode::Staging;
-                                view_state.commit_detail_view.clear();
-                                view_state.diff_view.clear();
-                                view_state.last_diff_commit = None;
-                            } else if view_state.diff_view.has_content() {
-                                view_state.diff_view.clear();
-                                view_state.last_diff_commit = None;
-                            } else if view_state.submodule_focus.is_some() {
-                                view_state.pending_messages.push(AppMessage::ExitSubmodule);
-                            } else {
-                                event_loop.exit();
-                            }
-                            return;
-                        }
-
-                    // Route to branch sidebar
-                    if view_state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
-                        // If the consumed event was a mouse click in the sidebar, update focused_panel
-                        if matches!(&input_event, InputEvent::MouseDown { .. }) {
-                            view_state.focused_panel = FocusedPanel::Sidebar;
-                            view_state.branch_sidebar.set_focused(true);
-                        }
-                        if let Some(action) = view_state.branch_sidebar.take_action() {
-                            match action {
-                                SidebarAction::Checkout(name) => {
-                                    view_state.pending_messages.push(AppMessage::CheckoutBranch(name));
-                                }
-                                SidebarAction::CheckoutRemote(remote, branch) => {
-                                    view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
-                                }
-                                SidebarAction::Delete(name) => {
-                                    self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
-                                    self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
-                                }
-                                SidebarAction::DeleteSubmodule(name) => {
-                                    self.confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", name));
-                                    self.pending_confirm_action = Some(AppMessage::DeleteSubmodule(name));
-                                }
-                                SidebarAction::UpdateSubmodule(name) => {
-                                    view_state.pending_messages.push(AppMessage::UpdateSubmodule(name));
-                                }
-                                SidebarAction::OpenSubmoduleTerminal(name) => {
-                                    let path = view_state.branch_sidebar.submodules.iter()
-                                        .find(|s| s.name == name)
-                                        .map(|s| s.path.clone());
-                                    if let Some(path) = path {
-                                        open_terminal_at(&path, &name, &mut self.toast_manager);
-                                    } else {
-                                        self.toast_manager.push(
-                                            format!("Submodule '{}' not found", name),
-                                            ToastSeverity::Error,
-                                        );
-                                    }
-                                }
-                                SidebarAction::OpenSubmodule(name) => {
-                                    view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
-                                }
-                                SidebarAction::SwitchWorktree(name) => {
-                                    if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
-                                        view_state.staging_well.switch_worktree(idx);
-                                        view_state.diff_view.clear();
-                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                            if wt_ctx.is_current {
-                                                view_state.worktree_repo = None;
-                                            } else {
-                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                            }
-                                        }
-                                    }
-                                }
-                                SidebarAction::JumpToWorktreeBranch(name) => {
-                                    view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(name));
-                                }
-                                SidebarAction::RemoveWorktree(name) => {
-                                    self.confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", name));
-                                    self.pending_confirm_action = Some(AppMessage::RemoveWorktree(name));
-                                }
-                                SidebarAction::OpenWorktreeTerminal(name) => {
-                                    let path = view_state.branch_sidebar.worktrees.iter()
-                                        .find(|w| w.name == name)
-                                        .map(|w| w.path.clone());
-                                    if let Some(path) = path {
-                                        open_terminal_at(&path, &name, &mut self.toast_manager);
-                                    } else {
-                                        self.toast_manager.push(
-                                            format!("Worktree '{}' not found", name),
-                                            ToastSeverity::Error,
-                                        );
-                                    }
-                                }
-                                SidebarAction::ApplyStash(index) => {
-                                    view_state.pending_messages.push(AppMessage::StashApply(index));
-                                }
-                                SidebarAction::PopStash(index) => {
-                                    view_state.pending_messages.push(AppMessage::StashPopIndex(index));
-                                }
-                                SidebarAction::DropStash(index) => {
-                                    self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
-                                    self.pending_confirm_action = Some(AppMessage::StashDrop(index));
-                                }
-                                SidebarAction::AddRemote => {
-                                    self.remote_dialog.show_add();
-                                }
-                                SidebarAction::EditRemoteUrl(name) => {
-                                    let current_url = repo_tab.repo.as_ref()
-                                        .and_then(|r| r.remote_url(&name))
-                                        .unwrap_or_default();
-                                    self.remote_dialog.show_edit_url(&name, &current_url);
-                                }
-                                SidebarAction::RenameRemote(name) => {
-                                    self.remote_dialog.show_rename(&name);
-                                }
-                                SidebarAction::DeleteRemote(name) => {
-                                    self.confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", name));
-                                    self.pending_confirm_action = Some(AppMessage::DeleteRemote(name));
-                                }
-                                SidebarAction::DeleteTag(name) => {
-                                    self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
-                                    self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // Route to header bar
-                    if view_state.header_bar.handle_event(&input_event, layout.header).is_consumed() {
-                        if let Some(action) = view_state.header_bar.take_action() {
-                            use crate::ui::widgets::HeaderAction;
-                            match action {
-                                HeaderAction::Fetch => {
-                                    view_state.pending_messages.push(AppMessage::Fetch);
-                                }
-                                HeaderAction::Pull => {
-                                    view_state.pending_messages.push(AppMessage::Pull);
-                                }
-                                HeaderAction::PullRebase => {
-                                    view_state.pending_messages.push(AppMessage::PullRebase);
-                                }
-                                HeaderAction::Push => {
-                                    view_state.pending_messages.push(AppMessage::Push);
-                                }
-                                HeaderAction::Commit => {
-                                    view_state.focused_panel = FocusedPanel::RightPanel;
-                                    view_state.right_panel_mode = RightPanelMode::Staging;
-                                }
-                                HeaderAction::Help => {
-                                    self.shortcut_bar_visible = !self.shortcut_bar_visible;
-                                    self.config.shortcut_bar_visible = self.shortcut_bar_visible;
-                                    self.config.save();
-                                }
-                                HeaderAction::Settings => {
-                                    self.settings_dialog.show();
-                                }
-                                HeaderAction::BreadcrumbNav(depth) => {
-                                    view_state.pending_messages.push(AppMessage::ExitToDepth(depth));
-                                }
-                                HeaderAction::BreadcrumbClose => {
-                                    view_state.pending_messages.push(AppMessage::ExitToDepth(0));
-                                }
-                                HeaderAction::AbortOperation => {
-                                    view_state.pending_messages.push(AppMessage::AbortOperation);
-                                }
-                            }
-                        }
-                        return;
-                    }
-
-                    // Route events to right panel content (commit detail + diff view)
-                    {
-                        let pill_bar_h = view_state.staging_well.pill_bar_height();
-                        let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-
-                        // Route to commit detail view when in browse mode
-                        if view_state.right_panel_mode == RightPanelMode::Browse
-                            && view_state.commit_detail_view.has_content()
-                        {
-                            let (detail_rect, _diff_rect) = content_rect.split_vertical(0.40);
-                            if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
-                                if let Some(action) = view_state.commit_detail_view.take_action() {
-                                    match action {
-                                        CommitDetailAction::ViewFileDiff(oid, path) => {
-                                            view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                        }
-
-                        // Route events to diff view if it has content (both modes)
-                        if view_state.diff_view.has_content() {
-                            let diff_bounds = match view_state.right_panel_mode {
-                                RightPanelMode::Browse if view_state.commit_detail_view.has_content() => {
-                                    let (_detail_rect, diff_rect) = content_rect.split_vertical(0.40);
-                                    diff_rect
-                                }
-                                RightPanelMode::Staging => {
-                                    let (_staging_rect, diff_rect) = content_rect.split_vertical(0.45);
-                                    diff_rect
-                                }
-                                _ => content_rect,
-                            };
-                            if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
-                                if let Some(action) = view_state.diff_view.take_action() {
-                                    match action {
-                                        DiffAction::StageHunk(path, hunk_idx) => {
-                                            view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
-                                        }
-                                        DiffAction::UnstageHunk(path, hunk_idx) => {
-                                            view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
-                                        }
-                                    }
-                                }
-                                return;
-                            }
-                        }
-                    }
-
-                    // Right-click context menus
-                    if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = &input_event {
-                        // Check submodule strip first (it overlays the bottom of the graph area)
-                        if !view_state.submodule_strip.submodules.is_empty() {
-                            let strip_h = SubmoduleStatusStrip::height(scale);
-                            let strip_bounds = Rect::new(
-                                layout.graph.x,
-                                layout.graph.bottom() - strip_h,
-                                layout.graph.width,
-                                strip_h,
-                            );
-                            view_state.submodule_strip.handle_event(&input_event, strip_bounds);
-                            if let Some(SubmoduleStripAction::OpenContextMenu(name, mx, my)) = view_state.submodule_strip.take_action() {
-                                let items = vec![
-                                    MenuItem::new("Open Submodule", format!("enter_submodule:{}", name)),
-                                    MenuItem::separator(),
-                                    MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
-                                    MenuItem::separator(),
-                                    MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
-                                ];
-                                view_state.context_menu.show(items, mx, my);
-                                return;
-                            }
-                        }
-
-                        // Check which panel was right-clicked and show context menu
-                        if layout.graph.contains(*x, *y) {
-                            if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
-                                *x, *y, &repo_tab.commits, layout.graph,
-                            ) {
-                                view_state.context_menu_commit = Some(oid);
-                                view_state.context_menu.show(items, *x, *y);
-                                return;
-                            }
-                        } else if layout.sidebar.contains(*x, *y) {
-                            if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar) {
-                                view_state.context_menu.show(items, *x, *y);
-                                return;
-                            }
-                        } else if layout.right_panel.contains(*x, *y)
-                            && view_state.right_panel_mode == RightPanelMode::Staging
-                            && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
-                                view_state.context_menu.show(items, *x, *y);
-                                return;
-                            }
-                    }
-
-                    // Route left-clicks to submodule strip (before panel routing)
-                    if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = &input_event {
-                        if !view_state.submodule_strip.submodules.is_empty() {
-                            let strip_h = SubmoduleStatusStrip::height(scale);
-                            let strip_bounds = Rect::new(
-                                layout.graph.x,
-                                layout.graph.bottom() - strip_h,
-                                layout.graph.width,
-                                strip_h,
-                            );
-                            if strip_bounds.contains(*x, *y) {
-                                view_state.submodule_strip.handle_event(&input_event, strip_bounds);
-                                if let Some(action) = view_state.submodule_strip.take_action() {
-                                    match action {
-                                        SubmoduleStripAction::Open(name) => {
-                                            // When in a submodule, exit first then enter sibling
-                                            if view_state.submodule_focus.is_some() {
-                                                view_state.pending_messages.push(AppMessage::ExitSubmodule);
-                                            }
-                                            view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
-                                            return;
-                                        }
-                                        SubmoduleStripAction::OpenContextMenu(..) => {
-                                            // Shouldn't happen on left-click, but handle gracefully
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Detect clicks on panels to switch focus
-                    if let InputEvent::MouseDown { x, y, .. } = &input_event {
-                        if layout.right_panel.contains(*x, *y) {
-                            view_state.focused_panel = FocusedPanel::RightPanel;
-                        } else if layout.graph.contains(*x, *y) {
-                            view_state.focused_panel = FocusedPanel::Graph;
-                        } else if layout.sidebar.contains(*x, *y) {
-                            view_state.focused_panel = FocusedPanel::Sidebar;
-                            view_state.branch_sidebar.set_focused(true);
-                        }
-                        // Update sidebar focus state based on panel focus
-                        if view_state.focused_panel != FocusedPanel::Sidebar {
-                            view_state.branch_sidebar.set_focused(false);
-                        }
-                        // Unfocus staging text inputs when focus moves away
-                        if view_state.focused_panel != FocusedPanel::RightPanel
-                            || view_state.right_panel_mode != RightPanelMode::Staging {
-                            view_state.staging_well.unfocus_all();
-                        }
-                    }
-
-                    // Handle worktree pill bar clicks (before content routing)
-                    if let InputEvent::MouseDown { .. } = &input_event {
-                        let pill_bar_h = view_state.staging_well.pill_bar_height();
-                        let (pill_rect, _content_rect) = layout.right_panel.take_top(pill_bar_h);
-                        if view_state.staging_well.handle_pill_event(&input_event, pill_rect).is_consumed() {
-                            if let Some(action) = view_state.staging_well.take_action() {
-                                if let StagingAction::SwitchWorktree(index) = action {
-                                    view_state.staging_well.switch_worktree(index);
-                                    view_state.right_panel_mode = RightPanelMode::Staging;
-                                    view_state.diff_view.clear();
-                                    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                        if wt_ctx.is_current {
-                                            view_state.worktree_repo = None;
-                                        } else {
-                                            view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                        }
-                                    }
-                                }
-                            }
-                            return;
-                        }
-                    }
-
-                    // Route scroll events to the panel under the mouse cursor (hover-based, not focus-based)
-                    if let InputEvent::Scroll { x, y, .. } = &input_event {
-                        if layout.graph.contains(*x, *y) {
-                            let prev_selected = view_state.commit_graph_view.selected_commit;
-                            let response = view_state.commit_graph_view.handle_event(&input_event, &repo_tab.commits, layout.graph);
-                            if view_state.commit_graph_view.selected_commit != prev_selected
-                                && let Some(oid) = view_state.commit_graph_view.selected_commit
-                                    && view_state.last_diff_commit != Some(oid) {
-                                        view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
-                                    }
-                            if let Some(action) = view_state.commit_graph_view.take_action() {
-                                match action {
-                                    GraphAction::LoadMore => {
-                                        view_state.pending_messages.push(AppMessage::LoadMoreCommits);
-                                    }
-                                    GraphAction::SwitchWorktree(name) => {
-                                        if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
-                                            view_state.staging_well.switch_worktree(idx);
-                                            view_state.diff_view.clear();
-                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                                if wt_ctx.is_current {
-                                                    view_state.worktree_repo = None;
-                                                } else {
-                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if response.is_consumed() {
-                                return;
-                            }
-                        } else if layout.right_panel.contains(*x, *y)
-                            && view_state.right_panel_mode == RightPanelMode::Staging {
-                            let pill_bar_h = view_state.staging_well.pill_bar_height();
-                            let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                            let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
-                            let response = view_state.staging_well.handle_event(&input_event, staging_rect);
-                            if let Some(action) = view_state.staging_well.take_action() {
-                                match action {
-                                    StagingAction::StageFile(path) => {
-                                        view_state.pending_messages.push(AppMessage::StageFile(path));
-                                    }
-                                    StagingAction::UnstageFile(path) => {
-                                        view_state.pending_messages.push(AppMessage::UnstageFile(path));
-                                    }
-                                    StagingAction::StageAll => {
-                                        view_state.pending_messages.push(AppMessage::StageAll);
-                                    }
-                                    StagingAction::UnstageAll => {
-                                        view_state.pending_messages.push(AppMessage::UnstageAll);
-                                    }
-                                    StagingAction::Commit(message) => {
-                                        view_state.pending_messages.push(AppMessage::Commit(message));
-                                    }
-                                    StagingAction::AmendCommit(message) => {
-                                        view_state.pending_messages.push(AppMessage::AmendCommit(message));
-                                    }
-                                    StagingAction::ToggleAmend => {
-                                        view_state.pending_messages.push(AppMessage::ToggleAmend);
-                                    }
-                                    StagingAction::ViewDiff(path) => {
-                                        let staged = view_state.staging_well.staged_list.files
-                                            .iter().any(|f| f.path == path);
-                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
-                                    }
-                                    StagingAction::SwitchWorktree(index) => {
-                                        view_state.staging_well.switch_worktree(index);
-                                        view_state.right_panel_mode = RightPanelMode::Staging;
-                                        view_state.diff_view.clear();
-                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                            if wt_ctx.is_current {
-                                                view_state.worktree_repo = None;
-                                            } else {
-                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                            }
-                                        }
-                                    }
-                                    StagingAction::PreviewDiff(path, staged) => {
-                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
-                                    }
-                                }
-                            }
-                            if response.is_consumed() {
-                                return;
-                            }
-                        } else if layout.sidebar.contains(*x, *y) {
-                            // Sidebar scroll: delegate to sidebar handle_event (already routed above at line 1764,
-                            // but if it wasn't consumed there, try again here)
-                            // Note: sidebar is already routed unconditionally above, so scroll should be handled there.
-                        }
-                        // Scroll events should not fall through to focus-based routing
-                        return;
-                    }
-
-                    // Route to focused panel
-                    match view_state.focused_panel {
-                        FocusedPanel::Graph => {
-                            let prev_selected = view_state.commit_graph_view.selected_commit;
-                            let response = view_state.commit_graph_view.handle_event(&input_event, &repo_tab.commits, layout.graph);
-                            if view_state.commit_graph_view.selected_commit != prev_selected
-                                && let Some(oid) = view_state.commit_graph_view.selected_commit
-                                    && view_state.last_diff_commit != Some(oid) {
-                                        view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
-                                    }
-                            if let Some(action) = view_state.commit_graph_view.take_action() {
-                                match action {
-                                    GraphAction::LoadMore => {
-                                        view_state.pending_messages.push(AppMessage::LoadMoreCommits);
-                                    }
-                                    GraphAction::SwitchWorktree(name) => {
-                                        if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
-                                            view_state.staging_well.switch_worktree(idx);
-                                            view_state.diff_view.clear();
-                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                                if wt_ctx.is_current {
-                                                    view_state.worktree_repo = None;
-                                                } else {
-                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            if response.is_consumed() {
-                                return;
-                            }
-                        }
-                        FocusedPanel::RightPanel => {
-                            if view_state.right_panel_mode == RightPanelMode::Staging {
-                                let pill_bar_h = view_state.staging_well.pill_bar_height();
-                                let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
-                                let response = view_state.staging_well.handle_event(&input_event, staging_rect);
-
-                                if let Some(action) = view_state.staging_well.take_action() {
-                                    match action {
-                                        StagingAction::StageFile(path) => {
-                                            view_state.pending_messages.push(AppMessage::StageFile(path));
-                                        }
-                                        StagingAction::UnstageFile(path) => {
-                                            view_state.pending_messages.push(AppMessage::UnstageFile(path));
-                                        }
-                                        StagingAction::StageAll => {
-                                            view_state.pending_messages.push(AppMessage::StageAll);
-                                        }
-                                        StagingAction::UnstageAll => {
-                                            view_state.pending_messages.push(AppMessage::UnstageAll);
-                                        }
-                                        StagingAction::Commit(message) => {
-                                            view_state.pending_messages.push(AppMessage::Commit(message));
-                                        }
-                                        StagingAction::AmendCommit(message) => {
-                                            view_state.pending_messages.push(AppMessage::AmendCommit(message));
-                                        }
-                                        StagingAction::ToggleAmend => {
-                                            view_state.pending_messages.push(AppMessage::ToggleAmend);
-                                        }
-                                        StagingAction::ViewDiff(path) => {
-                                            let staged = view_state.staging_well.staged_list.files
-                                                .iter().any(|f| f.path == path);
-                                            view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
-                                        }
-                                        StagingAction::SwitchWorktree(index) => {
-                                            view_state.staging_well.switch_worktree(index);
-                                            view_state.right_panel_mode = RightPanelMode::Staging;
-                                            view_state.diff_view.clear();
-                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                                if wt_ctx.is_current {
-                                                    view_state.worktree_repo = None;
-                                                } else {
-                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                                                }
-                                            }
-                                        }
-                                        StagingAction::PreviewDiff(path, staged) => {
-                                            view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
-                                        }
-                                    }
-                                }
-                                if response.is_consumed() {
-                                    return;
-                                }
-                            }
-                            // Browse mode: diff/detail view events are handled above in pre-routing
-                        }
-                        FocusedPanel::Sidebar => {
-                            // Keyboard events handled by branch_sidebar.handle_event above
-                        }
-                    }
-
-                    // Tab to cycle panels (only when not consumed by focused panel)
-                    if let InputEvent::KeyDown { key: Key::Tab, .. } = &input_event {
-                        view_state.focused_panel = match view_state.focused_panel {
-                            FocusedPanel::Graph => FocusedPanel::RightPanel,
-                            FocusedPanel::RightPanel => FocusedPanel::Sidebar,
-                            FocusedPanel::Sidebar => FocusedPanel::Graph,
-                        };
-                        view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
-                        if view_state.focused_panel != FocusedPanel::RightPanel
-                            || view_state.right_panel_mode != RightPanelMode::Staging {
-                            view_state.staging_well.unfocus_all();
-                        }
-                        return;
-                    }
-
-                    // Update hover states
-                    if let InputEvent::MouseMove { x, y, .. } = &input_event {
-                        view_state.header_bar.update_hover(*x, *y, layout.header);
-                        view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
-                        // Pass correct staging bounds (after pill bar + split)
-                        {
-                            let pill_bar_h = view_state.staging_well.pill_bar_height();
-                            let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                            let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
-                            view_state.staging_well.update_hover(*x, *y, staging_rect);
-                        }
-
-                        // Tab bar hover needs text_renderer - update before cursor determination
-                        if let Some(ref render_state) = self.state {
-                            if tab_count > 1 {
-                                self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
-                            }
-
-                            // Determine cursor icon based on hover position
-                            let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count);
-                            if self.current_cursor != cursor {
-                                render_state.window.set_cursor(cursor);
-                                self.current_cursor = cursor;
-                            }
-                        }
-                    }
+                // Convert winit event to our InputEvent (brief mutable borrow)
+                let input_event = state.input_state.handle_window_event(win_event);
+                if let Some(input_event) = input_event {
+                    self.handle_input_event(event_loop, &input_event);
                 }
             }
         }
@@ -2310,6 +1866,405 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = &self.state {
             state.window.request_redraw();
+        }
+    }
+}
+
+impl App {
+    /// Dispatch an input event to the appropriate handler.
+    fn handle_input_event(&mut self, event_loop: &ActiveEventLoop, input_event: &InputEvent) {
+        let Some(ref state) = self.state else { return };
+
+        // Calculate layout
+        let extent = state.surface.extent();
+        let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
+        let scale = state.scale_factor as f32;
+        let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
+        let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
+        let layout = ScreenLayout::compute_with_ratios_and_shortcut(
+            main_bounds, 4.0, scale,
+            Some(self.sidebar_ratio),
+            Some(self.graph_ratio),
+            self.shortcut_bar_visible,
+        );
+
+        // Modal dialogs consume all events when visible
+        if self.handle_modal_events(input_event, screen_bounds) {
+            return;
+        }
+
+        // Divider drag handling
+        if self.handle_divider_drag(input_event, main_bounds, &layout) {
+            return;
+        }
+
+        // Global keyboard shortcuts
+        if self.handle_global_shortcuts(input_event) {
+            return;
+        }
+
+        // Route to tab bar (if visible)
+        if self.tabs.len() > 1
+            && self.tab_bar.handle_event(input_event, tab_bar_bounds).is_consumed() {
+                if let Some(action) = self.tab_bar.take_action() {
+                    match action {
+                        TabAction::Select(idx) => self.switch_tab(idx),
+                        TabAction::Close(idx) => self.close_tab(idx),
+                        TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
+                    }
+                }
+                return;
+            }
+
+        // Route to active tab's views
+        let tab_count = self.tabs.len();
+        let Some((_repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+
+        // Handle per-tab global keys (except Tab, which is handled after panel routing)
+        if let InputEvent::KeyDown { key, .. } = input_event
+            && key == &Key::Escape {
+                if view_state.right_panel_mode == RightPanelMode::Browse {
+                    view_state.right_panel_mode = RightPanelMode::Staging;
+                    view_state.commit_detail_view.clear();
+                    view_state.diff_view.clear();
+                    view_state.last_diff_commit = None;
+                } else if view_state.diff_view.has_content() {
+                    view_state.diff_view.clear();
+                    view_state.last_diff_commit = None;
+                } else if view_state.submodule_focus.is_some() {
+                    view_state.pending_messages.push(AppMessage::ExitSubmodule);
+                } else {
+                    event_loop.exit();
+                }
+                return;
+            }
+
+        // Route to branch sidebar
+        if view_state.branch_sidebar.handle_event(input_event, layout.sidebar).is_consumed() {
+            if matches!(input_event, InputEvent::MouseDown { .. }) {
+                view_state.focused_panel = FocusedPanel::Sidebar;
+                view_state.branch_sidebar.set_focused(true);
+            }
+            if let Some(action) = view_state.branch_sidebar.take_action() {
+                self.handle_sidebar_action(action);
+            }
+            return;
+        }
+
+        // Route to header bar
+        let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        if view_state.header_bar.handle_event(input_event, layout.header).is_consumed() {
+            if let Some(action) = view_state.header_bar.take_action() {
+                use crate::ui::widgets::HeaderAction;
+                match action {
+                    HeaderAction::Fetch => {
+                        view_state.pending_messages.push(AppMessage::Fetch);
+                    }
+                    HeaderAction::Pull => {
+                        view_state.pending_messages.push(AppMessage::Pull);
+                    }
+                    HeaderAction::PullRebase => {
+                        view_state.pending_messages.push(AppMessage::PullRebase);
+                    }
+                    HeaderAction::Push => {
+                        view_state.pending_messages.push(AppMessage::Push);
+                    }
+                    HeaderAction::Commit => {
+                        view_state.focused_panel = FocusedPanel::RightPanel;
+                        view_state.right_panel_mode = RightPanelMode::Staging;
+                    }
+                    HeaderAction::Help => {
+                        self.shortcut_bar_visible = !self.shortcut_bar_visible;
+                        self.config.shortcut_bar_visible = self.shortcut_bar_visible;
+                        self.config.save();
+                    }
+                    HeaderAction::Settings => {
+                        self.settings_dialog.show();
+                    }
+                    HeaderAction::BreadcrumbNav(depth) => {
+                        view_state.pending_messages.push(AppMessage::ExitToDepth(depth));
+                    }
+                    HeaderAction::BreadcrumbClose => {
+                        view_state.pending_messages.push(AppMessage::ExitToDepth(0));
+                    }
+                    HeaderAction::AbortOperation => {
+                        view_state.pending_messages.push(AppMessage::AbortOperation);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Route events to right panel content (commit detail + diff view)
+        {
+            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+
+            // Route to commit detail view when in browse mode
+            if view_state.right_panel_mode == RightPanelMode::Browse
+                && view_state.commit_detail_view.has_content()
+            {
+                let (detail_rect, _diff_rect) = content_rect.split_vertical(0.40);
+                if view_state.commit_detail_view.handle_event(input_event, detail_rect).is_consumed() {
+                    if let Some(action) = view_state.commit_detail_view.take_action() {
+                        match action {
+                            CommitDetailAction::ViewFileDiff(oid, path) => {
+                                view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // Route events to diff view if it has content (both modes)
+            if view_state.diff_view.has_content() {
+                let diff_bounds = match view_state.right_panel_mode {
+                    RightPanelMode::Browse if view_state.commit_detail_view.has_content() => {
+                        let (_detail_rect, diff_rect) = content_rect.split_vertical(0.40);
+                        diff_rect
+                    }
+                    RightPanelMode::Staging => {
+                        let (_staging_rect, diff_rect) = content_rect.split_vertical(0.45);
+                        diff_rect
+                    }
+                    _ => content_rect,
+                };
+                if view_state.diff_view.handle_event(input_event, diff_bounds).is_consumed() {
+                    if let Some(action) = view_state.diff_view.take_action() {
+                        match action {
+                            DiffAction::StageHunk(path, hunk_idx) => {
+                                view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
+                            }
+                            DiffAction::UnstageHunk(path, hunk_idx) => {
+                                view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Right-click context menus
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = input_event {
+            // Check submodule strip first (it overlays the bottom of the graph area)
+            if !view_state.submodule_strip.submodules.is_empty() {
+                let strip_h = SubmoduleStatusStrip::height(scale);
+                let strip_bounds = Rect::new(
+                    layout.graph.x,
+                    layout.graph.bottom() - strip_h,
+                    layout.graph.width,
+                    strip_h,
+                );
+                view_state.submodule_strip.handle_event(input_event, strip_bounds);
+                if let Some(SubmoduleStripAction::OpenContextMenu(name, mx, my)) = view_state.submodule_strip.take_action() {
+                    let items = vec![
+                        MenuItem::new("Open Submodule", format!("enter_submodule:{}", name)),
+                        MenuItem::separator(),
+                        MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
+                        MenuItem::separator(),
+                        MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
+                    ];
+                    view_state.context_menu.show(items, mx, my);
+                    return;
+                }
+            }
+
+            // Check which panel was right-clicked and show context menu
+            if layout.graph.contains(*x, *y) {
+                if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
+                    *x, *y, &repo_tab.commits, layout.graph,
+                ) {
+                    view_state.context_menu_commit = Some(oid);
+                    view_state.context_menu.show(items, *x, *y);
+                    return;
+                }
+            } else if layout.sidebar.contains(*x, *y) {
+                if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar) {
+                    view_state.context_menu.show(items, *x, *y);
+                    return;
+                }
+            } else if layout.right_panel.contains(*x, *y)
+                && view_state.right_panel_mode == RightPanelMode::Staging
+                && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
+                    view_state.context_menu.show(items, *x, *y);
+                    return;
+                }
+        }
+
+        // Route left-clicks to submodule strip (before panel routing)
+        if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = input_event {
+            if !view_state.submodule_strip.submodules.is_empty() {
+                let strip_h = SubmoduleStatusStrip::height(scale);
+                let strip_bounds = Rect::new(
+                    layout.graph.x,
+                    layout.graph.bottom() - strip_h,
+                    layout.graph.width,
+                    strip_h,
+                );
+                if strip_bounds.contains(*x, *y) {
+                    view_state.submodule_strip.handle_event(input_event, strip_bounds);
+                    if let Some(action) = view_state.submodule_strip.take_action() {
+                        match action {
+                            SubmoduleStripAction::Open(name) => {
+                                if view_state.submodule_focus.is_some() {
+                                    view_state.pending_messages.push(AppMessage::ExitSubmodule);
+                                }
+                                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
+                                return;
+                            }
+                            SubmoduleStripAction::OpenContextMenu(..) => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        // Detect clicks on panels to switch focus
+        if let InputEvent::MouseDown { x, y, .. } = input_event {
+            if layout.right_panel.contains(*x, *y) {
+                view_state.focused_panel = FocusedPanel::RightPanel;
+            } else if layout.graph.contains(*x, *y) {
+                view_state.focused_panel = FocusedPanel::Graph;
+            } else if layout.sidebar.contains(*x, *y) {
+                view_state.focused_panel = FocusedPanel::Sidebar;
+                view_state.branch_sidebar.set_focused(true);
+            }
+            if view_state.focused_panel != FocusedPanel::Sidebar {
+                view_state.branch_sidebar.set_focused(false);
+            }
+            if view_state.focused_panel != FocusedPanel::RightPanel
+                || view_state.right_panel_mode != RightPanelMode::Staging {
+                view_state.staging_well.unfocus_all();
+            }
+        }
+
+        // Handle worktree pill bar clicks (before content routing)
+        if let InputEvent::MouseDown { .. } = input_event {
+            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let (pill_rect, _content_rect) = layout.right_panel.take_top(pill_bar_h);
+            if view_state.staging_well.handle_pill_event(input_event, pill_rect).is_consumed() {
+                if let Some(action) = view_state.staging_well.take_action() {
+                    if let StagingAction::SwitchWorktree(index) = action {
+                        view_state.switch_to_worktree(index, true);
+                    }
+                }
+                return;
+            }
+        }
+
+        // Route scroll events to the panel under the mouse cursor (hover-based, not focus-based)
+        if let InputEvent::Scroll { x, y, .. } = input_event {
+            if layout.graph.contains(*x, *y) {
+                let prev_selected = view_state.commit_graph_view.selected_commit;
+                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
+                if view_state.commit_graph_view.selected_commit != prev_selected
+                    && let Some(oid) = view_state.commit_graph_view.selected_commit
+                        && view_state.last_diff_commit != Some(oid) {
+                            view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                        }
+                if let Some(action) = view_state.commit_graph_view.take_action() {
+                    view_state.handle_graph_action(action);
+                }
+                if response.is_consumed() {
+                    return;
+                }
+            } else if layout.right_panel.contains(*x, *y)
+                && view_state.right_panel_mode == RightPanelMode::Staging {
+                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                let response = view_state.staging_well.handle_event(input_event, staging_rect);
+                if let Some(action) = view_state.staging_well.take_action() {
+                    view_state.handle_staging_action(action);
+                }
+                if response.is_consumed() {
+                    return;
+                }
+            } else if layout.sidebar.contains(*x, *y) {
+                // Sidebar scroll already routed above
+            }
+            // Scroll events should not fall through to focus-based routing
+            return;
+        }
+
+        // Route to focused panel
+        match view_state.focused_panel {
+            FocusedPanel::Graph => {
+                let prev_selected = view_state.commit_graph_view.selected_commit;
+                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
+                if view_state.commit_graph_view.selected_commit != prev_selected
+                    && let Some(oid) = view_state.commit_graph_view.selected_commit
+                        && view_state.last_diff_commit != Some(oid) {
+                            view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                        }
+                if let Some(action) = view_state.commit_graph_view.take_action() {
+                    view_state.handle_graph_action(action);
+                }
+                if response.is_consumed() {
+                    return;
+                }
+            }
+            FocusedPanel::RightPanel => {
+                if view_state.right_panel_mode == RightPanelMode::Staging {
+                    let pill_bar_h = view_state.staging_well.pill_bar_height();
+                    let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                    let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                    let response = view_state.staging_well.handle_event(input_event, staging_rect);
+
+                    if let Some(action) = view_state.staging_well.take_action() {
+                        view_state.handle_staging_action(action);
+                    }
+                    if response.is_consumed() {
+                        return;
+                    }
+                }
+                // Browse mode: diff/detail view events are handled above in pre-routing
+            }
+            FocusedPanel::Sidebar => {
+                // Keyboard events handled by branch_sidebar.handle_event above
+            }
+        }
+
+        // Tab to cycle panels (only when not consumed by focused panel)
+        if let InputEvent::KeyDown { key: Key::Tab, .. } = input_event {
+            view_state.focused_panel = match view_state.focused_panel {
+                FocusedPanel::Graph => FocusedPanel::RightPanel,
+                FocusedPanel::RightPanel => FocusedPanel::Sidebar,
+                FocusedPanel::Sidebar => FocusedPanel::Graph,
+            };
+            view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
+            if view_state.focused_panel != FocusedPanel::RightPanel
+                || view_state.right_panel_mode != RightPanelMode::Staging {
+                view_state.staging_well.unfocus_all();
+            }
+            return;
+        }
+
+        // Update hover states
+        if let InputEvent::MouseMove { x, y, .. } = input_event {
+            view_state.header_bar.update_hover(*x, *y, layout.header);
+            view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
+            {
+                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                view_state.staging_well.update_hover(*x, *y, staging_rect);
+            }
+
+            if let Some(ref render_state) = self.state {
+                if tab_count > 1 {
+                    self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
+                }
+
+                let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count);
+                if self.current_cursor != cursor {
+                    render_state.window.set_cursor(cursor);
+                    self.current_cursor = cursor;
+                }
+            }
         }
     }
 }
@@ -2605,17 +2560,7 @@ fn handle_context_menu_action(
         }
         "switch_worktree" => {
             if !param.is_empty() {
-                if let Some(idx) = view_state.staging_well.worktree_index_by_name(param) {
-                    view_state.staging_well.switch_worktree(idx);
-                    view_state.diff_view.clear();
-                    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                        if wt_ctx.is_current {
-                            view_state.worktree_repo = None;
-                        } else {
-                            view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
-                        }
-                    }
-                }
+                view_state.switch_to_worktree_by_name(param);
             }
         }
         "jump_to_worktree" => {

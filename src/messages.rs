@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use git2::Oid;
@@ -100,6 +101,89 @@ pub struct MessageContext {
     pub graph_bounds: Rect,
 }
 
+/// Check commit preconditions common to both Commit and AmendCommit:
+/// non-empty message and valid git user config. Returns `true` if all
+/// preconditions pass; `false` if a precondition failed (with a toast shown).
+fn validate_commit_preconditions(
+    message: &str,
+    staging_repo: &GitRepo,
+    toast_manager: &mut ToastManager,
+) -> bool {
+    if message.trim().is_empty() {
+        toast_manager.push(
+            "Commit message cannot be empty".to_string(),
+            ToastSeverity::Error,
+        );
+        return false;
+    }
+    if !staging_repo.has_user_config() {
+        toast_manager.push(
+            "Git user not configured. Run: git config user.name \"Your Name\" && git config user.email \"you@example.com\"".to_string(),
+            ToastSeverity::Error,
+        );
+        return false;
+    }
+    true
+}
+
+/// Execute a synchronous git operation that mutates repo state, then refresh
+/// the UI. On success, shows `success_msg` as a toast. On error, shows
+/// `error_msg_prefix: <error>`.
+fn handle_repo_mutation(
+    result: Result<(), anyhow::Error>,
+    success_msg: String,
+    error_msg_prefix: &str,
+    repo: &GitRepo,
+    commits: &mut Vec<CommitInfo>,
+    view_state: &mut MessageViewState<'_>,
+    toast_manager: &mut ToastManager,
+) {
+    match result {
+        Ok(()) => {
+            refresh_repo_state(repo, commits, view_state, toast_manager);
+            toast_manager.push(success_msg, ToastSeverity::Success);
+        }
+        Err(e) => {
+            toast_manager.push(
+                format!("{}: {}", error_msg_prefix, e),
+                ToastSeverity::Error,
+            );
+        }
+    }
+}
+
+/// Start a remote operation (fetch/pull/push) with common boilerplate:
+/// check that no operation is already in progress on the given receiver,
+/// verify a working directory exists, then launch the async function and
+/// store the receiver. Returns `false` if the operation was already busy.
+fn start_remote_op(
+    receiver: &mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    repo: &GitRepo,
+    op_name: &str,
+    start_fn: impl FnOnce(PathBuf) -> Receiver<RemoteOpResult>,
+    set_header_flag: impl FnOnce(&mut crate::ui::widgets::HeaderBar),
+    toast_manager: &mut ToastManager,
+    header_bar: &mut crate::ui::widgets::HeaderBar,
+) -> bool {
+    if receiver.is_some() {
+        eprintln!("{} already in progress", op_name);
+        return false;
+    }
+    if let Some(workdir) = repo.working_dir_path() {
+        let rx = start_fn(workdir);
+        *receiver = Some((rx, std::time::Instant::now()));
+        set_header_flag(header_bar);
+        true
+    } else {
+        eprintln!("No working directory for {}", op_name);
+        toast_manager.push(
+            format!("Cannot {}: no working directory", op_name.to_lowercase()),
+            ToastSeverity::Error,
+        );
+        false
+    }
+}
+
 /// Dispatch a single `AppMessage`.
 ///
 /// Returns `true` if the message was handled (even if it resulted in an
@@ -168,18 +252,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::Commit(message) => {
-            if message.trim().is_empty() {
-                toast_manager.push(
-                    "Commit message cannot be empty".to_string(),
-                    ToastSeverity::Error,
-                );
-                return true;
-            }
-            if !staging_repo.has_user_config() {
-                toast_manager.push(
-                    "Git user not configured. Run: git config user.name \"Your Name\" && git config user.email \"you@example.com\"".to_string(),
-                    ToastSeverity::Error,
-                );
+            if !validate_commit_preconditions(&message, staging_repo, toast_manager) {
                 return true;
             }
             match staging_repo.commit(&message) {
@@ -202,89 +275,64 @@ pub fn handle_app_message(
             }
         }
         AppMessage::Fetch => {
-            if view_state.fetch_receiver.is_some() {
-                eprintln!("Fetch already in progress");
+            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+            if !start_remote_op(
+                view_state.fetch_receiver, repo, "Fetch",
+                |wd| git::fetch_remote_async(wd, remote),
+                |hb| hb.fetching = true,
+                toast_manager, view_state.header_bar,
+            ) {
                 return false;
-            }
-            if let Some(workdir) = repo.working_dir_path() {
-                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                println!("Fetching from {}...", remote);
-                let rx = git::fetch_remote_async(workdir, remote);
-                *view_state.fetch_receiver = Some((rx, std::time::Instant::now()));
-                view_state.header_bar.fetching = true;
-            } else {
-                eprintln!("No working directory for fetch");
-                toast_manager.push("Cannot fetch: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::Pull => {
-            if view_state.pull_receiver.is_some() {
-                eprintln!("Pull already in progress");
+            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            if !start_remote_op(
+                view_state.pull_receiver, repo, "Pull",
+                |wd| git::pull_remote_async(wd, remote, branch),
+                |hb| hb.pulling = true,
+                toast_manager, view_state.header_bar,
+            ) {
                 return false;
-            }
-            if let Some(workdir) = repo.working_dir_path() {
-                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                println!("Pulling {} from {}...", branch, remote);
-                let rx = git::pull_remote_async(workdir, remote, branch);
-                *view_state.pull_receiver = Some((rx, std::time::Instant::now()));
-                view_state.header_bar.pulling = true;
-            } else {
-                eprintln!("No working directory for pull");
-                toast_manager.push("Cannot pull: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::PullRebase => {
-            if view_state.pull_receiver.is_some() {
-                eprintln!("Pull already in progress");
+            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            if !start_remote_op(
+                view_state.pull_receiver, repo, "Pull",
+                |wd| git::pull_rebase_async(wd, remote, branch),
+                |hb| hb.pulling = true,
+                toast_manager, view_state.header_bar,
+            ) {
                 return false;
-            }
-            if let Some(workdir) = repo.working_dir_path() {
-                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                println!("Pulling (rebase) {} from {}...", branch, remote);
-                let rx = git::pull_rebase_async(workdir, remote, branch);
-                *view_state.pull_receiver = Some((rx, std::time::Instant::now()));
-                view_state.header_bar.pulling = true;
-            } else {
-                eprintln!("No working directory for pull --rebase");
-                toast_manager.push("Cannot pull: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::Push => {
-            if view_state.push_receiver.is_some() {
-                eprintln!("Push already in progress");
+            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            if !start_remote_op(
+                view_state.push_receiver, repo, "Push",
+                |wd| git::push_remote_async(wd, remote, branch),
+                |hb| hb.pushing = true,
+                toast_manager, view_state.header_bar,
+            ) {
                 return false;
-            }
-            if let Some(workdir) = repo.working_dir_path() {
-                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                println!("Pushing {} to {}...", branch, remote);
-                let rx = git::push_remote_async(workdir, remote, branch);
-                *view_state.push_receiver = Some((rx, std::time::Instant::now()));
-                view_state.header_bar.pushing = true;
-            } else {
-                eprintln!("No working directory for push");
-                toast_manager.push("Cannot push: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::PushForce => {
-            if view_state.push_receiver.is_some() {
-                eprintln!("Push already in progress");
+            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            if !start_remote_op(
+                view_state.push_receiver, repo, "Push",
+                |wd| git::push_force_async(wd, remote, branch),
+                |hb| hb.pushing = true,
+                toast_manager, view_state.header_bar,
+            ) {
                 return false;
             }
-            if let Some(workdir) = repo.working_dir_path() {
-                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                println!("Force pushing {} to {} (--force-with-lease)...", branch, remote);
-                let rx = git::push_force_async(workdir, remote, branch);
-                *view_state.push_receiver = Some((rx, std::time::Instant::now()));
-                view_state.header_bar.pushing = true;
-                toast_manager.push("Force pushing...", ToastSeverity::Info);
-            } else {
-                eprintln!("No working directory for push");
-                toast_manager.push("Cannot push: no working directory".to_string(), ToastSeverity::Error);
-            }
+            toast_manager.push("Force pushing...", ToastSeverity::Info);
         }
         AppMessage::SelectedCommit(oid) => {
             let full_info = repo.full_commit_info(oid);
@@ -346,42 +394,20 @@ pub fn handle_app_message(
             }
         }
         AppMessage::CheckoutBranch(name) => {
-            match repo.checkout_branch(&name) {
-                Ok(()) => {
-                    println!("Checked out branch: {}", name);
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Switched to {}", name),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Failed to checkout branch '{}': {}", name, e);
-                    toast_manager.push(
-                        format!("Checkout failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.checkout_branch(&name),
+                format!("Switched to {}", name),
+                "Checkout failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
         AppMessage::CheckoutRemoteBranch(remote, branch) => {
-            match repo.checkout_remote_branch(&remote, &branch) {
-                Ok(()) => {
-                    println!("Checked out remote branch: {}/{}", remote, branch);
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Switched to {}/{}", remote, branch),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Failed to checkout remote branch '{}/{}': {}", remote, branch, e);
-                    toast_manager.push(
-                        format!("Checkout failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.checkout_remote_branch(&remote, &branch),
+                format!("Switched to {}/{}", remote, branch),
+                "Checkout failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
         AppMessage::DeleteBranch(name) => {
             match repo.delete_branch(&name) {
@@ -556,55 +582,28 @@ pub fn handle_app_message(
             }
         }
         AppMessage::CreateBranch(name, oid) => {
-            match repo.create_branch_at(&name, oid) {
-                Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Created branch '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Create branch failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.create_branch_at(&name, oid),
+                format!("Created branch '{}'", name),
+                "Create branch failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
         AppMessage::CreateTag(name, oid) => {
-            match repo.create_tag(&name, oid) {
-                Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Created tag '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Create tag failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.create_tag(&name, oid),
+                format!("Created tag '{}'", name),
+                "Create tag failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
         AppMessage::DeleteTag(name) => {
-            match repo.delete_tag(&name) {
-                Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Deleted tag '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Delete tag failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.delete_tag(&name),
+                format!("Deleted tag '{}'", name),
+                "Delete tag failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
         AppMessage::StashPush => {
             if let Some(workdir) = repo.working_dir_path() {
@@ -680,18 +679,7 @@ pub fn handle_app_message(
             }
         }
         AppMessage::AmendCommit(message) => {
-            if message.trim().is_empty() {
-                toast_manager.push(
-                    "Commit message cannot be empty".to_string(),
-                    ToastSeverity::Error,
-                );
-                return true;
-            }
-            if !staging_repo.has_user_config() {
-                toast_manager.push(
-                    "Git user not configured. Run: git config user.name \"Your Name\" && git config user.email \"you@example.com\"".to_string(),
-                    ToastSeverity::Error,
-                );
+            if !validate_commit_preconditions(&message, staging_repo, toast_manager) {
                 return true;
             }
             match staging_repo.amend_commit(&message) {
@@ -744,108 +732,57 @@ pub fn handle_app_message(
                 git2::ResetType::Mixed => "mixed",
                 git2::ResetType::Hard => "hard",
             };
-            match repo.reset_to_commit(oid, mode) {
-                Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push(
-                        format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Reset failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.reset_to_commit(oid, mode),
+                format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
+                "Reset failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         AppMessage::AbortOperation => {
-            match repo.cleanup_state() {
-                Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                    toast_manager.push("Operation aborted", ToastSeverity::Success);
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Abort failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.cleanup_state(),
+                "Operation aborted".to_string(),
+                "Abort failed",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         AppMessage::AddRemote(name, url) => {
-            match repo.add_remote(&name, &url) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Added remote '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to add remote: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.add_remote(&name, &url),
+                format!("Added remote '{}'", name),
+                "Failed to add remote",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         AppMessage::DeleteRemote(name) => {
-            match repo.delete_remote(&name) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Deleted remote '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to delete remote: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.delete_remote(&name),
+                format!("Deleted remote '{}'", name),
+                "Failed to delete remote",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         AppMessage::RenameRemote(old_name, new_name) => {
-            match repo.rename_remote(&old_name, &new_name) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Renamed remote '{}' to '{}'", old_name, new_name),
-                        ToastSeverity::Success,
-                    );
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to rename remote: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.rename_remote(&old_name, &new_name),
+                format!("Renamed remote '{}' to '{}'", old_name, new_name),
+                "Failed to rename remote",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         AppMessage::SetRemoteUrl(name, url) => {
-            match repo.set_remote_url(&name, &url) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Updated URL for '{}'", name),
-                        ToastSeverity::Success,
-                    );
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to update remote URL: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.set_remote_url(&name, &url),
+                format!("Updated URL for '{}'", name),
+                "Failed to update remote URL",
+                repo, commits, view_state, toast_manager,
+            );
         }
 
         // Submodule navigation messages are handled in main.rs process_messages,

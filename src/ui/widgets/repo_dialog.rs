@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -331,34 +331,8 @@ impl Widget for RepoDialog {
         let line_h = 32.0 * scale;
         let line_height = text_renderer.line_height();
 
-        // Semi-transparent backdrop (strong darkening for modal focus)
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            [0.0, 0.0, 0.0, 0.8],
-        ));
-
-        let corner_radius = 8.0 * scale;
-
-        // Drop shadow (slightly larger, darker rect behind dialog for depth)
-        let shadow_offset = 3.0 * scale;
-        let shadow_rect = Rect::new(
-            dialog.x + shadow_offset,
-            dialog.y + shadow_offset,
-            dialog.width,
-            dialog.height,
-        );
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &shadow_rect,
-            [0.0, 0.0, 0.0, 0.5],
-            corner_radius,
-        ));
-
-        // Dialog background (brighter than SURFACE_RAISED for contrast against dark backdrop)
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &dialog,
-            theme::SURFACE_RAISED.lighten(0.06).to_array(),
-            corner_radius,
-        ));
+        // Backdrop + shadow + dialog background
+        create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
         // Title
         let title_y = dialog.y + padding;

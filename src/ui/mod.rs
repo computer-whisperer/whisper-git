@@ -2,6 +2,7 @@ pub mod avatar;
 pub mod layout;
 mod spline;
 mod text;
+pub mod text_util;
 pub mod widget;
 pub mod widgets;
 
