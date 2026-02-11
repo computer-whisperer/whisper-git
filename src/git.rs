@@ -162,11 +162,45 @@ impl GitRepo {
             .filter_map(|oid| {
                 let oid = oid.ok()?;
                 let commit = self.repo.find_commit(oid).ok()?;
-                Some(CommitInfo::from_commit_with_stats(&commit, &self.repo))
+                Some(CommitInfo::from_commit(&commit))
             })
             .collect();
 
         Ok(commits)
+    }
+
+    /// Spawn a background thread to compute diff stats for a list of commit OIDs.
+    /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
+    pub fn compute_diff_stats_async(&self, oids: Vec<Oid>) -> Receiver<Vec<(Oid, usize, usize)>> {
+        let repo_path = self.repo.path().to_path_buf();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok(repo) = Repository::open(&repo_path) else {
+                let _ = tx.send(Vec::new());
+                return;
+            };
+            let mut results = Vec::with_capacity(oids.len());
+            for oid in oids {
+                let Ok(commit) = repo.find_commit(oid) else { continue };
+                let (ins, del) = if let Ok(tree) = commit.tree() {
+                    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+                    if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                        if let Ok(stats) = diff.stats() {
+                            (stats.insertions(), stats.deletions())
+                        } else {
+                            (0, 0)
+                        }
+                    } else {
+                        (0, 0)
+                    }
+                } else {
+                    (0, 0)
+                };
+                results.push((oid, ins, del));
+            }
+            let _ = tx.send(results);
+        });
+        rx
     }
 
     /// Get the repository name (basename of workdir or bare repo path)
