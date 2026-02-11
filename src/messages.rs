@@ -60,7 +60,7 @@ pub enum AppMessage {
 /// operation was successfully queued, or `false` if another operation is
 /// already in progress (in which case a toast is shown).
 pub fn queue_async_op(
-    generic_op_receiver: &mut Option<(Receiver<RemoteOpResult>, String)>,
+    generic_op_receiver: &mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
     rx: Receiver<RemoteOpResult>,
     label: String,
     in_progress_msg: String,
@@ -70,7 +70,7 @@ pub fn queue_async_op(
         toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
         return false;
     }
-    *generic_op_receiver = Some((rx, label));
+    *generic_op_receiver = Some((rx, label, std::time::Instant::now()));
     toast_manager.push(in_progress_msg, ToastSeverity::Info);
     true
 }
@@ -135,7 +135,7 @@ pub fn handle_app_message(
             match staging_repo.commit(&message) {
                 Ok(oid) => {
                     println!("Created commit: {}", oid);
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     view_state.staging_well.clear_and_focus();
                     toast_manager.push(
                         format!("Commit {}", &oid.to_string()[..7]),
@@ -160,7 +160,7 @@ pub fn handle_app_message(
                 let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
                 println!("Fetching from {}...", remote);
                 let rx = git::fetch_remote_async(workdir, remote);
-                *view_state.fetch_receiver = Some(rx);
+                *view_state.fetch_receiver = Some((rx, std::time::Instant::now()));
                 view_state.header_bar.fetching = true;
             } else {
                 eprintln!("No working directory for fetch");
@@ -176,7 +176,7 @@ pub fn handle_app_message(
                 let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                 println!("Pulling {} from {}...", branch, remote);
                 let rx = git::pull_remote_async(workdir, remote, branch);
-                *view_state.pull_receiver = Some(rx);
+                *view_state.pull_receiver = Some((rx, std::time::Instant::now()));
                 view_state.header_bar.pulling = true;
             } else {
                 eprintln!("No working directory for pull");
@@ -192,7 +192,7 @@ pub fn handle_app_message(
                 let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                 println!("Pushing {} to {}...", branch, remote);
                 let rx = git::push_remote_async(workdir, remote, branch);
-                *view_state.push_receiver = Some(rx);
+                *view_state.push_receiver = Some((rx, std::time::Instant::now()));
                 view_state.header_bar.pushing = true;
             } else {
                 eprintln!("No working directory for push");
@@ -257,7 +257,7 @@ pub fn handle_app_message(
             match repo.checkout_branch(&name) {
                 Ok(()) => {
                     println!("Checked out branch: {}", name);
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Switched to {}", name),
                         ToastSeverity::Success,
@@ -276,7 +276,7 @@ pub fn handle_app_message(
             match repo.checkout_remote_branch(&remote, &branch) {
                 Ok(()) => {
                     println!("Checked out remote branch: {}/{}", remote, branch);
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Switched to {}/{}", remote, branch),
                         ToastSeverity::Success,
@@ -295,7 +295,7 @@ pub fn handle_app_message(
             match repo.delete_branch(&name) {
                 Ok(()) => {
                     println!("Deleted branch: {}", name);
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Deleted branch {}", name),
                         ToastSeverity::Success,
@@ -466,7 +466,7 @@ pub fn handle_app_message(
         AppMessage::CreateBranch(name, oid) => {
             match repo.create_branch_at(&name, oid) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Created branch '{}'", name),
                         ToastSeverity::Success,
@@ -483,7 +483,7 @@ pub fn handle_app_message(
         AppMessage::CreateTag(name, oid) => {
             match repo.create_tag(&name, oid) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Created tag '{}'", name),
                         ToastSeverity::Success,
@@ -500,7 +500,7 @@ pub fn handle_app_message(
         AppMessage::DeleteTag(name) => {
             match repo.delete_tag(&name) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Deleted tag '{}'", name),
                         ToastSeverity::Success,
@@ -591,7 +591,7 @@ pub fn handle_app_message(
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
                     println!("Amended commit: {}", oid);
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     view_state.staging_well.exit_amend_mode();
                     toast_manager.push(
                         format!("Amended {}", &oid.to_string()[..7]),
@@ -640,7 +640,7 @@ pub fn handle_app_message(
             };
             match repo.reset_to_commit(oid, mode) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
                         ToastSeverity::Success,
@@ -658,7 +658,7 @@ pub fn handle_app_message(
         AppMessage::AbortOperation => {
             match repo.cleanup_state() {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state);
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push("Operation aborted", ToastSeverity::Success);
                 }
                 Err(e) => {
@@ -694,10 +694,10 @@ pub struct MessageViewState<'a> {
     pub header_bar: &'a mut crate::ui::widgets::HeaderBar,
     pub submodule_strip: &'a mut crate::ui::widgets::SubmoduleStatusStrip,
     pub last_diff_commit: &'a mut Option<Oid>,
-    pub fetch_receiver: &'a mut Option<Receiver<RemoteOpResult>>,
-    pub pull_receiver: &'a mut Option<Receiver<RemoteOpResult>>,
-    pub push_receiver: &'a mut Option<Receiver<RemoteOpResult>>,
-    pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String)>,
+    pub fetch_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
 }
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
@@ -706,16 +706,39 @@ fn refresh_repo_state(
     repo: &GitRepo,
     commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
+    toast_manager: &mut ToastManager,
 ) {
-    *commits = repo.commit_graph(MAX_COMMITS).unwrap_or_default();
+    match repo.commit_graph(MAX_COMMITS) {
+        Ok(c) => *commits = c,
+        Err(e) => {
+            eprintln!("Failed to load commit graph: {}", e);
+            toast_manager.push(
+                format!("Failed to load commits: {}", e),
+                ToastSeverity::Error,
+            );
+            *commits = Vec::new();
+        }
+    }
     view_state.commit_graph_view.update_layout(commits);
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();
 
-    let branch_tips = repo.branch_tips().unwrap_or_default();
-    let tags = repo.tags().unwrap_or_default();
-    let current = repo.current_branch().unwrap_or_default();
+    let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
+        eprintln!("Failed to load branch tips: {}", e);
+        Vec::new()
+    });
+    let tags = repo.tags().unwrap_or_else(|e| {
+        eprintln!("Failed to load tags: {}", e);
+        Vec::new()
+    });
+    let current = repo.current_branch().unwrap_or_else(|e| {
+        eprintln!("Failed to get current branch: {}", e);
+        String::new()
+    });
 
-    let worktrees = repo.worktrees().unwrap_or_default();
+    let worktrees = repo.worktrees().unwrap_or_else(|e| {
+        eprintln!("Failed to load worktrees: {}", e);
+        Vec::new()
+    });
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
@@ -724,11 +747,17 @@ fn refresh_repo_state(
     view_state.staging_well.set_worktrees(&worktrees, current_workdir);
     view_state.branch_sidebar.worktrees = worktrees;
 
-    let submodules = repo.submodules().unwrap_or_default();
+    let submodules = repo.submodules().unwrap_or_else(|e| {
+        eprintln!("Failed to load submodules: {}", e);
+        Vec::new()
+    });
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
-    let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
+    let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
+        eprintln!("Failed to compute ahead/behind: {}", e);
+        (0, 0)
+    });
     view_state.header_bar.set_repo_info(
         view_state.header_bar.repo_name.clone(),
         current,
