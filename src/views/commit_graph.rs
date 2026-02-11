@@ -287,7 +287,7 @@ impl CommitGraphView {
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         let lh = text_renderer.line_height();
         let s = self.row_scale;
-        self.row_height = (lh * 1.8 * s).max(20.0 * s);   // ~28.8px at s=1.0, lh=16
+        self.row_height = (lh * 1.55 * s).max(18.0 * s);   // ~24.8px at s=1.0, lh=16 (tighter rows)
         self.lane_width = (lh * 1.0 * s).max(12.0 * s);    // ~16px (compact lanes)
         self.node_radius = (lh * 0.38 * s).max(5.0 * s);   // ~6px (larger donut nodes)
         self.line_width = (lh * 0.18 * s.sqrt()).max(2.5);  // ~2.9px (thicker lines)
@@ -785,9 +785,9 @@ impl CommitGraphView {
         // Column separator lines between diff stats / time columns
         // (mirrors the column positions computed in layout_text)
         let time_col_width: f32 = 80.0;
-        let stats_col_width: f32 = 90.0;
+        let stats_col_width: f32 = 100.0;
         let right_margin: f32 = 8.0;
-        let col_gap: f32 = 8.0;
+        let col_gap: f32 = 16.0;
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let time_col_left = time_col_right - time_col_width;
         let stats_col_right = time_col_left - col_gap;
@@ -990,6 +990,21 @@ impl CommitGraphView {
             ));
         }
 
+        // Selected-row left accent bar (VS Code style active line indicator)
+        if is_selected {
+            let accent_bar_width = 3.0;
+            let accent_rect = Rect::new(
+                bounds.x,
+                y - self.row_height / 2.0,
+                accent_bar_width,
+                self.row_height,
+            );
+            vertices.extend(create_rect_vertices(
+                &accent_rect,
+                theme::ACCENT.with_alpha(0.6).to_array(),
+            ));
+        }
+
         // HEAD indicator (glow behind node) - draw first so it's behind
         if is_head {
             // Outer glow
@@ -1016,32 +1031,16 @@ impl CommitGraphView {
             theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
         ));
 
-        // Commit node: donut-ring style (colored outer ring, dark center)
+        // Commit node style: merge = solid filled circle, regular = donut ring
         let node_color = layout.color.with_alpha(dim_alpha);
         let ring_thickness = self.node_radius * 0.38; // ~2.3px ring width
         if is_merge {
-            // Merge: extra outer ring + inner donut
-            vertices.extend(self.create_ring_vertices(
-                x,
-                y,
-                self.node_radius + 3.0,
-                1.5,
-                node_color.to_array(),
-            ));
-            // Main donut ring
-            vertices.extend(self.create_ring_vertices(
-                x,
-                y,
-                self.node_radius,
-                ring_thickness,
-                node_color.to_array(),
-            ));
-            // Dark center fill
+            // Merge commit: solid filled circle (visually distinct from regular commits)
             vertices.extend(self.create_circle_vertices(
                 x,
                 y,
-                self.node_radius - ring_thickness,
-                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+                self.node_radius,
+                node_color.to_array(),
             ));
         } else {
             // Regular commit: donut ring (colored outer, dark center)
@@ -1195,9 +1194,9 @@ impl CommitGraphView {
 
         // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
         let time_col_width: f32 = 80.0;
-        let stats_col_width: f32 = 90.0; // "+999 / -999" fits in ~90px
+        let stats_col_width: f32 = 100.0; // "+9999 / -9999" fits comfortably
         let right_margin: f32 = 8.0;
-        let col_gap: f32 = 8.0;
+        let col_gap: f32 = 16.0; // wider gap to prevent collision with commit messages
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let stats_col_right = time_col_right - time_col_width - col_gap;
         let stats_col_left = stats_col_right - stats_col_width;
