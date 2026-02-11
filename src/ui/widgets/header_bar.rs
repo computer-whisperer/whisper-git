@@ -10,6 +10,7 @@ use crate::ui::widgets::Button;
 pub enum HeaderAction {
     Fetch,
     Pull,
+    PullRebase,
     Push,
     Commit,
     Help,
@@ -66,6 +67,8 @@ pub struct HeaderBar {
     abort_button: Button,
     /// Cached abort button bounds (computed during update_breadcrumb_bounds)
     abort_button_bounds: Option<Rect>,
+    /// Whether shift was held during the last pull button click (for pull --rebase)
+    pull_shift_held: bool,
 }
 
 impl HeaderBar {
@@ -94,6 +97,7 @@ impl HeaderBar {
             operation_state_label: None,
             abort_button: Button::new("Abort"),
             abort_button_bounds: None,
+            pull_shift_held: false,
         }
     }
 
@@ -508,9 +512,20 @@ impl Widget for HeaderBar {
             return EventResponse::Consumed;
         }
 
+        // Track shift state for pull --rebase detection
+        if let InputEvent::MouseDown { modifiers, .. } | InputEvent::MouseUp { modifiers, .. } = event {
+            if pull_bounds.contains(event.position().unwrap_or((0.0, 0.0)).0, event.position().unwrap_or((0.0, 0.0)).1) {
+                self.pull_shift_held = modifiers.shift;
+            }
+        }
         if self.pull_button.handle_event(event, pull_bounds).is_consumed() {
             if self.pull_button.was_clicked() {
-                self.pending_action = Some(HeaderAction::Pull);
+                if self.pull_shift_held {
+                    self.pending_action = Some(HeaderAction::PullRebase);
+                } else {
+                    self.pending_action = Some(HeaderAction::Pull);
+                }
+                self.pull_shift_held = false;
             }
             return EventResponse::Consumed;
         }

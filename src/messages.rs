@@ -20,6 +20,7 @@ pub enum AppMessage {
     Commit(String),
     Fetch,
     Pull,
+    PullRebase,
     Push,
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
@@ -132,6 +133,20 @@ pub fn handle_app_message(
             }
         }
         AppMessage::Commit(message) => {
+            if message.trim().is_empty() {
+                toast_manager.push(
+                    "Commit message cannot be empty".to_string(),
+                    ToastSeverity::Error,
+                );
+                return true;
+            }
+            if !staging_repo.has_user_config() {
+                toast_manager.push(
+                    "Git user not configured. Run: git config user.name \"Your Name\" && git config user.email \"you@example.com\"".to_string(),
+                    ToastSeverity::Error,
+                );
+                return true;
+            }
             match staging_repo.commit(&message) {
                 Ok(oid) => {
                     println!("Created commit: {}", oid);
@@ -180,6 +195,22 @@ pub fn handle_app_message(
                 view_state.header_bar.pulling = true;
             } else {
                 eprintln!("No working directory for pull");
+            }
+        }
+        AppMessage::PullRebase => {
+            if view_state.pull_receiver.is_some() {
+                eprintln!("Pull already in progress");
+                return false;
+            }
+            if let Some(workdir) = repo.working_dir_path() {
+                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                println!("Pulling (rebase) {} from {}...", branch, remote);
+                let rx = git::pull_rebase_async(workdir, remote, branch);
+                *view_state.pull_receiver = Some((rx, std::time::Instant::now()));
+                view_state.header_bar.pulling = true;
+            } else {
+                eprintln!("No working directory for pull --rebase");
             }
         }
         AppMessage::Push => {
@@ -588,6 +619,20 @@ pub fn handle_app_message(
             }
         }
         AppMessage::AmendCommit(message) => {
+            if message.trim().is_empty() {
+                toast_manager.push(
+                    "Commit message cannot be empty".to_string(),
+                    ToastSeverity::Error,
+                );
+                return true;
+            }
+            if !staging_repo.has_user_config() {
+                toast_manager.push(
+                    "Git user not configured. Run: git config user.name \"Your Name\" && git config user.email \"you@example.com\"".to_string(),
+                    ToastSeverity::Error,
+                );
+                return true;
+            }
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
                     println!("Amended commit: {}", oid);

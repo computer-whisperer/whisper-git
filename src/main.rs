@@ -1710,6 +1710,9 @@ impl ApplicationHandler for App {
                                 HeaderAction::Pull => {
                                     view_state.pending_messages.push(AppMessage::Pull);
                                 }
+                                HeaderAction::PullRebase => {
+                                    view_state.pending_messages.push(AppMessage::PullRebase);
+                                }
                                 HeaderAction::Push => {
                                     view_state.pending_messages.push(AppMessage::Push);
                                 }
@@ -2164,6 +2167,12 @@ fn handle_context_menu_action(
         }
         "push" => {
             view_state.pending_messages.push(AppMessage::Push);
+        }
+        "pull" => {
+            view_state.pending_messages.push(AppMessage::Pull);
+        }
+        "pull_rebase" => {
+            view_state.pending_messages.push(AppMessage::PullRebase);
         }
         // Staging actions
         "stage" => {

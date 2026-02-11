@@ -937,6 +937,12 @@ impl GitRepo {
         self.repo.workdir().map(|p| p.to_path_buf())
     }
 
+    /// Check if git user.name and user.email are configured.
+    /// Returns true if `repo.signature()` would succeed (needed for commits).
+    pub fn has_user_config(&self) -> bool {
+        self.repo.signature().is_ok()
+    }
+
     /// Find the default remote name (usually "origin")
     pub fn default_remote(&self) -> Result<String> {
         // Try to find the upstream remote for the current branch
@@ -1320,6 +1326,11 @@ pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Re
 /// Spawn a background thread to run `git pull`
 pub fn pull_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["pull".into(), remote, branch], workdir, "pull")
+}
+
+/// Spawn a background thread to run `git pull --rebase`
+pub fn pull_rebase_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["pull".into(), "--rebase".into(), remote, branch], workdir, "pull --rebase")
 }
 
 /// Spawn a background thread to remove a submodule (deinit + rm)
