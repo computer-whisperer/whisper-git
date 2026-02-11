@@ -204,8 +204,13 @@ impl TextRenderer {
         let line_height = line_metrics.new_line_size;
         let ascent = line_metrics.ascent;
 
-        // Characters to include in atlas
-        let chars: Vec<char> = (32u8..127u8).map(|c| c as char).collect();
+        // Characters to include in atlas: printable ASCII + UI symbols present in Roboto
+        let mut chars: Vec<char> = (32u8..127u8).map(|c| c as char).collect();
+        chars.extend([
+            '\u{2191}', // ↑ Up arrow (Push)
+            '\u{2193}', // ↓ Down arrow (Pull)
+            '\u{25CF}', // ● Filled circle
+        ]);
 
         // First pass: calculate atlas size (including SDF padding)
         let mut total_width = 0u32;
