@@ -54,6 +54,14 @@ pub struct DiffView {
     hunk_button_bounds: Vec<(usize, usize, Rect)>,
     /// Which hunk button is hovered
     hovered_hunk_button: Option<(usize, usize)>,
+    /// Y offsets of file headers (relative to content start), computed during layout
+    file_y_offsets: Vec<f32>,
+    /// Y offsets of hunk headers (relative to content start), computed during layout
+    hunk_y_offsets: Vec<f32>,
+    /// Last known viewport height for page scrolling
+    viewport_height: f32,
+    /// Line height from last layout (for line-by-line scrolling)
+    last_line_height: f32,
 }
 
 impl DiffView {
@@ -69,6 +77,10 @@ impl DiffView {
             pending_action: None,
             hunk_button_bounds: Vec::new(),
             hovered_hunk_button: None,
+            file_y_offsets: Vec::new(),
+            hunk_y_offsets: Vec::new(),
+            viewport_height: 0.0,
+            last_line_height: 20.0,
         }
     }
 
@@ -81,6 +93,8 @@ impl DiffView {
         self.showing_staged = false;
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
+        self.file_y_offsets.clear();
+        self.hunk_y_offsets.clear();
     }
 
     /// Load staged diff content
@@ -97,6 +111,8 @@ impl DiffView {
         self.title.clear();
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
+        self.file_y_offsets.clear();
+        self.hunk_y_offsets.clear();
     }
 
     /// Whether the diff view has content to show
@@ -175,10 +191,11 @@ impl DiffView {
                 EventResponse::Ignored
             }
             InputEvent::KeyDown { key, modifiers, .. } => {
-                if !bounds.contains(0.0, 0.0) && !self.has_content() {
+                if !self.has_content() {
                     return EventResponse::Ignored;
                 }
                 use crate::input::Key;
+                let max_scroll = (self.content_height - bounds.height).max(0.0);
                 match key {
                     Key::Left if !modifiers.any() => {
                         self.h_scroll_offset = (self.h_scroll_offset - 40.0).max(0.0);
@@ -189,6 +206,64 @@ impl DiffView {
                             .min((self.content_width - 100.0).max(0.0));
                         EventResponse::Consumed
                     }
+                    // j / Down: scroll down one line
+                    Key::J | Key::Down if !modifiers.any() => {
+                        self.scroll_offset = (self.scroll_offset + self.last_line_height)
+                            .min(max_scroll);
+                        EventResponse::Consumed
+                    }
+                    // k / Up: scroll up one line
+                    Key::K | Key::Up if !modifiers.any() => {
+                        self.scroll_offset = (self.scroll_offset - self.last_line_height)
+                            .max(0.0);
+                        EventResponse::Consumed
+                    }
+                    // PageDown: scroll down one page
+                    Key::PageDown if !modifiers.any() => {
+                        self.scroll_offset = (self.scroll_offset + self.viewport_height * 0.9)
+                            .min(max_scroll);
+                        EventResponse::Consumed
+                    }
+                    // PageUp: scroll up one page
+                    Key::PageUp if !modifiers.any() => {
+                        self.scroll_offset = (self.scroll_offset - self.viewport_height * 0.9)
+                            .max(0.0);
+                        EventResponse::Consumed
+                    }
+                    // Home: jump to start
+                    Key::Home if !modifiers.any() => {
+                        self.scroll_offset = 0.0;
+                        EventResponse::Consumed
+                    }
+                    // End: jump to end
+                    Key::End if !modifiers.any() => {
+                        self.scroll_offset = max_scroll;
+                        EventResponse::Consumed
+                    }
+                    // n: jump to next hunk
+                    Key::N if !modifiers.any() => {
+                        self.jump_to_next_hunk();
+                        EventResponse::Consumed
+                    }
+                    // p / Shift+N: jump to previous hunk
+                    Key::P if !modifiers.any() => {
+                        self.jump_to_prev_hunk();
+                        EventResponse::Consumed
+                    }
+                    Key::N if modifiers.shift && !modifiers.ctrl && !modifiers.alt => {
+                        self.jump_to_prev_hunk();
+                        EventResponse::Consumed
+                    }
+                    // ]: jump to next file
+                    Key::RightBracket if !modifiers.any() => {
+                        self.jump_to_next_file();
+                        EventResponse::Consumed
+                    }
+                    // [: jump to previous file
+                    Key::LeftBracket if !modifiers.any() => {
+                        self.jump_to_prev_file();
+                        EventResponse::Consumed
+                    }
                     _ => EventResponse::Ignored,
                 }
             }
@@ -196,10 +271,62 @@ impl DiffView {
         }
     }
 
+    /// Jump scroll_offset to the next hunk after the current position
+    fn jump_to_next_hunk(&mut self) {
+        let current = self.scroll_offset;
+        for &offset in &self.hunk_y_offsets {
+            if offset > current + 1.0 {
+                let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+                self.scroll_offset = offset.min(max_scroll);
+                return;
+            }
+        }
+    }
+
+    /// Jump scroll_offset to the previous hunk before the current position
+    fn jump_to_prev_hunk(&mut self) {
+        let current = self.scroll_offset;
+        for &offset in self.hunk_y_offsets.iter().rev() {
+            if offset < current - 1.0 {
+                self.scroll_offset = offset.max(0.0);
+                return;
+            }
+        }
+        // If no previous hunk found, go to top
+        self.scroll_offset = 0.0;
+    }
+
+    /// Jump scroll_offset to the next file header after the current position
+    fn jump_to_next_file(&mut self) {
+        let current = self.scroll_offset;
+        for &offset in &self.file_y_offsets {
+            if offset > current + 1.0 {
+                let max_scroll = (self.content_height - self.viewport_height).max(0.0);
+                self.scroll_offset = offset.min(max_scroll);
+                return;
+            }
+        }
+    }
+
+    /// Jump scroll_offset to the previous file header before the current position
+    fn jump_to_prev_file(&mut self) {
+        let current = self.scroll_offset;
+        for &offset in self.file_y_offsets.iter().rev() {
+            if offset < current - 1.0 {
+                self.scroll_offset = offset.max(0.0);
+                return;
+            }
+        }
+        // If no previous file found, go to top
+        self.scroll_offset = 0.0;
+    }
+
     /// Layout the diff view and produce rendering output
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         self.hunk_button_bounds.clear();
+        self.file_y_offsets.clear();
+        self.hunk_y_offsets.clear();
 
         // Background
         output.spline_vertices.extend(create_rect_vertices(
@@ -209,6 +336,8 @@ impl DiffView {
 
         let padding = 8.0;
         let line_height = text_renderer.line_height();
+        self.last_line_height = line_height;
+        self.viewport_height = bounds.height;
         let digit_width = text_renderer.measure_text("0");
         let gutter_width = digit_width * 8.0; // Space for two line numbers (4+4)
         let content_x = bounds.x + padding + gutter_width;
@@ -216,6 +345,8 @@ impl DiffView {
         let mut y = bounds.y + padding - self.scroll_offset;
         let visible_top = bounds.y;
         let visible_bottom = bounds.bottom();
+        // content_y tracks position relative to content start (for navigation offsets)
+        let mut content_y = padding;
 
         // Track max text width for horizontal scroll bounds
         let mut max_text_width: f32 = 0.0;
@@ -231,9 +362,13 @@ impl DiffView {
                 ));
             }
             y += line_height + padding;
+            content_y += line_height + padding;
         }
 
         for (file_idx, file) in self.diff_files.iter().enumerate() {
+            // Record file header offset for navigation
+            self.file_y_offsets.push(content_y);
+
             // File header
             let header_height = line_height + 4.0;
             if y + header_height > visible_top && y < visible_bottom {
@@ -274,8 +409,12 @@ impl DiffView {
                 ));
             }
             y += header_height + 2.0;
+            content_y += header_height + 2.0;
 
             for (hunk_idx, hunk) in file.hunks.iter().enumerate() {
+                // Record hunk header offset for navigation
+                self.hunk_y_offsets.push(content_y);
+
                 // Hunk header with stage/unstage button
                 if y + line_height > visible_top && y < visible_bottom {
                     output.text_vertices.extend(text_renderer.layout_text(
@@ -319,6 +458,7 @@ impl DiffView {
                     }
                 }
                 y += line_height;
+                content_y += line_height;
 
                 // Lines
                 for line in &hunk.lines {
@@ -421,11 +561,13 @@ impl DiffView {
                         }
                     }
                     y += line_height;
+                    content_y += line_height;
                 }
             }
 
             // Gap between files
             y += line_height / 2.0;
+            content_y += line_height / 2.0;
         }
 
         // Update total content dimensions for scroll bounds
