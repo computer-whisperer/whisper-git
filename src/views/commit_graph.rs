@@ -751,6 +751,29 @@ impl CommitGraphView {
             ));
         }
 
+        // Column separator lines between diff stats / time columns
+        // (mirrors the column positions computed in layout_text)
+        let time_col_width: f32 = 80.0;
+        let stats_col_width: f32 = 90.0;
+        let right_margin: f32 = 8.0;
+        let col_gap: f32 = 8.0;
+        let time_col_right = bounds.right() - right_margin - scrollbar_width;
+        let time_col_left = time_col_right - time_col_width;
+        let stats_col_right = time_col_left - col_gap;
+        let stats_col_left = stats_col_right - stats_col_width;
+        let separator_color = theme::BORDER.with_alpha(0.12).to_array();
+
+        // Separator between commit message and diff stats
+        vertices.extend(create_rect_vertices(
+            &Rect::new(stats_col_left - col_gap / 2.0, bounds.y, 1.0, bounds.height),
+            separator_color,
+        ));
+        // Separator between diff stats and time
+        vertices.extend(create_rect_vertices(
+            &Rect::new(time_col_left - col_gap / 2.0, bounds.y, 1.0, bounds.height),
+            separator_color,
+        ));
+
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
             .iter()
