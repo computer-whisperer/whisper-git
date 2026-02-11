@@ -311,10 +311,11 @@ impl StagingWell {
         } else {
             self.commit_btn.label = if self.amend_mode { "Amend Commit".to_string() } else { "Commit".to_string() };
             self.commit_btn.background = theme::SURFACE_RAISED;
-            self.commit_btn.hover_background = theme::SURFACE_HOVER;
-            self.commit_btn.pressed_background = theme::SURFACE;
-            self.commit_btn.text_color = theme::TEXT_MUTED;
-            self.commit_btn.border_color = Some(theme::BORDER);
+            // No hover/press effect when disabled — looks inert
+            self.commit_btn.hover_background = theme::SURFACE_RAISED;
+            self.commit_btn.pressed_background = theme::SURFACE_RAISED;
+            self.commit_btn.text_color = theme::TEXT_MUTED.with_alpha(0.5);
+            self.commit_btn.border_color = Some(theme::BORDER.with_alpha(0.5));
         }
     }
 
@@ -432,8 +433,20 @@ impl StagingWell {
 
         self.unstaged_list.update_hover(x, y, regions.unstaged);
         self.staged_list.update_hover(x, y, regions.staged);
-        self.stage_all_btn.update_hover(x, y, regions.stage_all_btn);
-        self.unstage_all_btn.update_hover(x, y, regions.unstage_all_btn);
+
+        // Hide Stage All / Unstage All hover when the corresponding list is empty
+        let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
+        if self.unstaged_list.files.is_empty() {
+            self.stage_all_btn.update_hover(x, y, zero);
+        } else {
+            self.stage_all_btn.update_hover(x, y, regions.stage_all_btn);
+        }
+        if self.staged_list.files.is_empty() {
+            self.unstage_all_btn.update_hover(x, y, zero);
+        } else {
+            self.unstage_all_btn.update_hover(x, y, regions.unstage_all_btn);
+        }
+
         self.amend_btn.update_hover(x, y, regions.amend_btn);
         self.commit_btn.update_hover(x, y, regions.commit_btn);
 
@@ -572,18 +585,23 @@ impl StagingWell {
             }
 
         // Handle header button clicks (Stage All, Unstage All in section headers)
-        if self.stage_all_btn.handle_event(event, regions.stage_all_btn).is_consumed() {
-            if self.stage_all_btn.was_clicked() {
-                self.pending_action = Some(StagingAction::StageAll);
+        // Only process when the corresponding file list is non-empty (button is visible)
+        if !self.unstaged_list.files.is_empty() {
+            if self.stage_all_btn.handle_event(event, regions.stage_all_btn).is_consumed() {
+                if self.stage_all_btn.was_clicked() {
+                    self.pending_action = Some(StagingAction::StageAll);
+                }
+                return EventResponse::Consumed;
             }
-            return EventResponse::Consumed;
         }
 
-        if self.unstage_all_btn.handle_event(event, regions.unstage_all_btn).is_consumed() {
-            if self.unstage_all_btn.was_clicked() {
-                self.pending_action = Some(StagingAction::UnstageAll);
+        if !self.staged_list.files.is_empty() {
+            if self.unstage_all_btn.handle_event(event, regions.unstage_all_btn).is_consumed() {
+                if self.unstage_all_btn.was_clicked() {
+                    self.pending_action = Some(StagingAction::UnstageAll);
+                }
+                return EventResponse::Consumed;
             }
-            return EventResponse::Consumed;
         }
 
         // Handle bottom button clicks (Amend, Commit)
@@ -685,6 +703,8 @@ impl StagingWell {
 
     /// Compute all regions for the new layout order.
     /// Top-to-bottom: unstaged header + list, staged header + list, commit area, buttons.
+    /// When file lists are empty, they collapse to just the header row and the saved
+    /// space is given to the commit message body area.
     fn compute_regions_full(&self, bounds: Rect) -> StagingRegions {
         let s = self.scale;
         let padding = 8.0 * s;
@@ -693,31 +713,51 @@ impl StagingWell {
         let section_header_height = 26.0 * s;
         let divider_gap = 6.0 * s;
 
+        let unstaged_empty = self.unstaged_list.files.is_empty();
+        let staged_empty = self.staged_list.files.is_empty();
+
         // Bottom-up: reserve space for buttons and commit message area first
         let button_area_height = 40.0 * s;
         let commit_title_height = 22.0 * s;
         let subject_height = 32.0 * s;
         let gap_small = padding * 0.5;
-        let body_height = 80.0 * s;
+        let base_body_height = 80.0 * s;
+
+        // File lists: when empty, collapse to zero height (header-only).
+        // The header is already accounted for separately.
+        let file_area_budget = (inner.height
+            - section_header_height * 2.0
+            - divider_gap
+            - divider_gap
+            - commit_title_height
+            - subject_height
+            - gap_small
+            - base_body_height
+            - divider_gap
+            - button_area_height)
+            .max(40.0 * s);
+
+        // Distribute file area: empty lists get 0, non-empty get their share.
+        let (unstaged_list_h, staged_list_h, body_bonus) = match (unstaged_empty, staged_empty) {
+            (true, true) => (0.0, 0.0, file_area_budget),
+            (true, false) => (0.0, file_area_budget, 0.0),
+            (false, true) => (file_area_budget, 0.0, 0.0),
+            (false, false) => (file_area_budget / 2.0, file_area_budget / 2.0, 0.0),
+        };
+
+        let body_height = base_body_height + body_bonus;
         let commit_total = commit_title_height + subject_height + gap_small + body_height;
-
-        // Total fixed height at bottom: divider + commit area + divider + buttons
-        let bottom_fixed = divider_gap + commit_total + divider_gap + button_area_height;
-
-        // File lists get all remaining space, split 50/50 between unstaged and staged
-        let file_area_height = (inner.height - section_header_height * 2.0 - divider_gap - bottom_fixed).max(40.0 * s);
-        let half_file = file_area_height / 2.0;
 
         // --- Unstaged section (top) ---
         let (unstaged_header, remaining) = inner.take_top(section_header_height);
-        let (unstaged, remaining) = remaining.take_top(half_file);
+        let (unstaged, remaining) = remaining.take_top(unstaged_list_h);
 
         // Divider between unstaged and staged
         let (_div1, remaining) = remaining.take_top(divider_gap);
 
         // --- Staged section ---
         let (staged_header, remaining) = remaining.take_top(section_header_height);
-        let (staged, remaining) = remaining.take_top(half_file);
+        let (staged, remaining) = remaining.take_top(staged_list_h);
 
         // Divider between staged and commit area
         let (_div2, remaining) = remaining.take_top(divider_gap);
@@ -838,6 +878,9 @@ impl StagingWell {
         // 1. UNSTAGED SECTION (top)
         // =============================================================
 
+        let unstaged_count = self.unstaged_list.files.len();
+        let unstaged_empty = unstaged_count == 0;
+
         // Section header background
         output.spline_vertices.extend(create_rect_vertices(
             &regions.unstaged_header,
@@ -845,28 +888,41 @@ impl StagingWell {
         ));
 
         // Section title
-        let unstaged_count = self.unstaged_list.files.len();
         let unstaged_title = format!("Unstaged Changes ({})", unstaged_count);
         output.text_vertices.extend(text_renderer.layout_text(
             &unstaged_title,
             regions.unstaged_header.x + 4.0 * s,
             regions.unstaged_header.y + 5.0 * s,
-            theme::STATUS_BEHIND.to_array(),
+            if unstaged_empty { theme::TEXT_MUTED.with_alpha(0.6).to_array() } else { theme::STATUS_BEHIND.to_array() },
         ));
 
-        // Stage All button in header
-        output.extend(self.stage_all_btn.layout(text_renderer, regions.stage_all_btn));
+        if unstaged_empty {
+            // Compact inline hint after header title
+            let title_w = text_renderer.measure_text(&unstaged_title);
+            let hint = "  \u{2014} Working tree clean";
+            output.text_vertices.extend(text_renderer.layout_text(
+                hint,
+                regions.unstaged_header.x + 4.0 * s + title_w,
+                regions.unstaged_header.y + 5.0 * s,
+                theme::TEXT_MUTED.with_alpha(0.4).to_array(),
+            ));
+        } else {
+            // Stage All button in header (only when there are files)
+            output.extend(self.stage_all_btn.layout(text_renderer, regions.stage_all_btn));
 
-        // Subtle background tint for unstaged area (orange tint)
-        output.spline_vertices.extend(create_rect_vertices(
-            &regions.unstaged,
-            theme::STATUS_BEHIND.with_alpha(0.03).to_array(),
-        ));
+            // Subtle background tint for unstaged area (orange tint)
+            output.spline_vertices.extend(create_rect_vertices(
+                &regions.unstaged,
+                theme::STATUS_BEHIND.with_alpha(0.03).to_array(),
+            ));
 
-        // Unstaged files list
-        output.extend(self.unstaged_list.layout(text_renderer, regions.unstaged));
+            // Unstaged files list
+            output.extend(self.unstaged_list.layout(text_renderer, regions.unstaged));
+        }
 
         // --- Divider between unstaged and staged ---
+        // When unstaged list is empty, regions.unstaged has zero height,
+        // so .bottom() == unstaged_header.bottom(), placing divider right after header.
         let div1_y = regions.unstaged.bottom() + 2.0 * s;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(bounds.x + 8.0 * s, div1_y, bounds.width - 16.0 * s, 1.0),
@@ -877,6 +933,9 @@ impl StagingWell {
         // 2. STAGED SECTION
         // =============================================================
 
+        let staged_count = self.staged_list.files.len();
+        let staged_empty = staged_count == 0;
+
         // Section header background
         output.spline_vertices.extend(create_rect_vertices(
             &regions.staged_header,
@@ -884,26 +943,37 @@ impl StagingWell {
         ));
 
         // Section title
-        let staged_count = self.staged_list.files.len();
         let staged_title = format!("Staged Changes ({})", staged_count);
         output.text_vertices.extend(text_renderer.layout_text(
             &staged_title,
             regions.staged_header.x + 4.0 * s,
             regions.staged_header.y + 5.0 * s,
-            theme::STATUS_CLEAN.to_array(),
+            if staged_empty { theme::TEXT_MUTED.with_alpha(0.6).to_array() } else { theme::STATUS_CLEAN.to_array() },
         ));
 
-        // Unstage All button in header
-        output.extend(self.unstage_all_btn.layout(text_renderer, regions.unstage_all_btn));
+        if staged_empty {
+            // Compact inline hint after header title
+            let title_w = text_renderer.measure_text(&staged_title);
+            let hint = "  \u{2014} Stage files to commit them";
+            output.text_vertices.extend(text_renderer.layout_text(
+                hint,
+                regions.staged_header.x + 4.0 * s + title_w,
+                regions.staged_header.y + 5.0 * s,
+                theme::TEXT_MUTED.with_alpha(0.4).to_array(),
+            ));
+        } else {
+            // Unstage All button in header (only when there are files)
+            output.extend(self.unstage_all_btn.layout(text_renderer, regions.unstage_all_btn));
 
-        // Subtle background tint for staged area (green tint)
-        output.spline_vertices.extend(create_rect_vertices(
-            &regions.staged,
-            theme::STATUS_CLEAN.with_alpha(0.03).to_array(),
-        ));
+            // Subtle background tint for staged area (green tint)
+            output.spline_vertices.extend(create_rect_vertices(
+                &regions.staged,
+                theme::STATUS_CLEAN.with_alpha(0.03).to_array(),
+            ));
 
-        // Staged files list
-        output.extend(self.staged_list.layout(text_renderer, regions.staged));
+            // Staged files list
+            output.extend(self.staged_list.layout(text_renderer, regions.staged));
+        }
 
         // --- Divider between staged and commit area ---
         let div2_y = regions.staged.bottom() + 2.0 * s;
