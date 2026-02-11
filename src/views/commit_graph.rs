@@ -649,6 +649,11 @@ impl CommitGraphView {
 
         if let Some(row) = self.row_at_y(y, &bounds, header_offset, commits.len()) {
             if let Some(commit) = commits.get(row) {
+                // No context menu for synthetic "uncommitted changes" rows
+                if commit.is_synthetic {
+                    return None;
+                }
+
                 self.selected_commit = Some(commit.id);
 
                 let mut items = vec![
@@ -1031,33 +1036,52 @@ impl CommitGraphView {
             theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
         ));
 
-        // Commit node style: merge = solid filled circle, regular = donut ring
-        let node_color = layout.color.with_alpha(dim_alpha);
+        // Commit node style
         let ring_thickness = self.node_radius * 0.38; // ~2.3px ring width
-        if is_merge {
-            // Merge commit: solid filled circle (visually distinct from regular commits)
-            vertices.extend(self.create_circle_vertices(
-                x,
-                y,
-                self.node_radius,
-                node_color.to_array(),
-            ));
-        } else {
-            // Regular commit: donut ring (colored outer, dark center)
+        if commit.is_synthetic {
+            // Synthetic "uncommitted changes" node: orange/amber ring with pulsing center
+            let synth_color = theme::STATUS_DIRTY.with_alpha(dim_alpha);
             vertices.extend(self.create_ring_vertices(
                 x,
                 y,
                 self.node_radius,
                 ring_thickness,
-                node_color.to_array(),
+                synth_color.to_array(),
             ));
-            // Dark center fill
+            // Warm center fill (not dark like regular commits)
             vertices.extend(self.create_circle_vertices(
                 x,
                 y,
                 self.node_radius - ring_thickness,
-                theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+                theme::STATUS_DIRTY.with_alpha(0.25 * dim_alpha).to_array(),
             ));
+        } else {
+            let node_color = layout.color.with_alpha(dim_alpha);
+            if is_merge {
+                // Merge commit: solid filled circle (visually distinct from regular commits)
+                vertices.extend(self.create_circle_vertices(
+                    x,
+                    y,
+                    self.node_radius,
+                    node_color.to_array(),
+                ));
+            } else {
+                // Regular commit: donut ring (colored outer, dark center)
+                vertices.extend(self.create_ring_vertices(
+                    x,
+                    y,
+                    self.node_radius,
+                    ring_thickness,
+                    node_color.to_array(),
+                ));
+                // Dark center fill
+                vertices.extend(self.create_circle_vertices(
+                    x,
+                    y,
+                    self.node_radius - ring_thickness,
+                    theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+                ));
+            }
         }
 
         // Highlight background for search matches
@@ -1281,77 +1305,129 @@ impl CommitGraphView {
             let is_match = self.is_search_match(&commit.id);
             let dim_alpha = if is_match { 1.0 } else { 0.2 };
 
-            // === Right-aligned time column (small text) ===
-            let time_str = commit.relative_time();
-            let time_width = text_renderer.measure_text_scaled(&time_str, 0.85);
-            let time_x = time_col_right - time_width;
-            // Vertically center the smaller text within the row
-            let time_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
-            vertices.extend(text_renderer.layout_text_small(
-                &time_str,
-                time_x,
-                time_y,
-                theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
-            ));
+            if commit.is_synthetic {
+                // === Synthetic "uncommitted changes" row ===
+                // Render summary in amber/orange, no avatar, no time column
+                let mut current_x = text_x;
 
-            // === Start rendering from text_x: pills first, then avatar, then subject ===
-            let mut current_x = text_x;
+                // Render a "Working" pill-style indicator
+                let synth_label = "\u{25CF} uncommitted"; // ● uncommitted
+                let synth_width = text_renderer.measure_text(synth_label);
+                let synth_color = theme::STATUS_DIRTY;
 
-            // === Branch and tag pills ===
-            current_x = Self::render_branch_pills(
-                text_renderer, &pill_params, y,
-                branch_tips_by_oid.get(&commit.id),
-                current_x, &mut vertices, &mut pill_vertices,
-            );
-            current_x = Self::render_tag_pills(
-                text_renderer, &pill_params, y,
-                tags_by_oid.get(&commit.id),
-                current_x, &mut vertices, &mut pill_vertices,
-            );
+                if current_x + synth_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width
+                    <= pill_params.time_col_left - pill_params.col_gap
+                {
+                    let pill_rect = Rect::new(
+                        current_x,
+                        y - pill_params.pill_pad_v,
+                        synth_width + pill_params.pill_pad_h * 2.0,
+                        line_height + pill_params.pill_pad_v * 2.0,
+                    );
+                    pill_vertices.extend(create_rounded_rect_vertices(
+                        &pill_rect,
+                        synth_color.with_alpha(0.15).to_array(),
+                        pill_params.pill_radius,
+                    ));
+                    pill_vertices.extend(create_rounded_rect_outline_vertices(
+                        &pill_rect,
+                        synth_color.with_alpha(0.45).to_array(),
+                        pill_params.pill_radius,
+                        pill_params.pill_border_thickness,
+                    ));
+                    vertices.extend(text_renderer.layout_text(
+                        synth_label,
+                        current_x + pill_params.pill_pad_h,
+                        y,
+                        synth_color.with_alpha(dim_alpha).to_array(),
+                    ));
+                    current_x += synth_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width;
+                }
 
-            // === Worktree and working pills ===
-            let (new_x, wt_targets) = Self::render_worktree_pills(
-                text_renderer, &pill_params, y,
-                worktrees_by_oid.get(&commit.id),
-                current_x, &mut vertices, &mut pill_vertices,
-            );
-            current_x = new_x;
-            self.pill_click_targets.extend(wt_targets);
-            let (new_x, wd_targets) = Self::render_working_pills(
-                text_renderer, &pill_params, y, is_head,
-                dirty_worktrees_by_oid.get(&commit.id),
-                fallback_dirty_count,
-                current_x, &mut vertices, &mut pill_vertices,
-            );
-            current_x = new_x;
-            self.pill_click_targets.extend(wd_targets);
+                // Summary text (amber)
+                let available = stats_col_left - col_gap - current_x;
+                let summary = truncate_to_width(&commit.summary, text_renderer, available);
+                vertices.extend(text_renderer.layout_text(
+                    &summary,
+                    current_x,
+                    y,
+                    synth_color.with_alpha(0.9 * dim_alpha).to_array(),
+                ));
+            } else {
+                // === Regular commit row ===
 
-            // === HEAD indicator (after branch/tag/worktree pills) ===
-            if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
-                current_x = Self::render_head_pill(
+                // === Right-aligned time column (small text) ===
+                let time_str = commit.relative_time();
+                let time_width = text_renderer.measure_text_scaled(&time_str, 0.85);
+                let time_x = time_col_right - time_width;
+                // Vertically center the smaller text within the row
+                let time_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
+                vertices.extend(text_renderer.layout_text_small(
+                    &time_str,
+                    time_x,
+                    time_y,
+                    theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
+                ));
+
+                // === Start rendering from text_x: pills first, then avatar, then subject ===
+                let mut current_x = text_x;
+
+                // === Branch and tag pills ===
+                current_x = Self::render_branch_pills(
                     text_renderer, &pill_params, y,
+                    branch_tips_by_oid.get(&commit.id),
                     current_x, &mut vertices, &mut pill_vertices,
                 );
+                current_x = Self::render_tag_pills(
+                    text_renderer, &pill_params, y,
+                    tags_by_oid.get(&commit.id),
+                    current_x, &mut vertices, &mut pill_vertices,
+                );
+
+                // === Worktree and working pills ===
+                let (new_x, wt_targets) = Self::render_worktree_pills(
+                    text_renderer, &pill_params, y,
+                    worktrees_by_oid.get(&commit.id),
+                    current_x, &mut vertices, &mut pill_vertices,
+                );
+                current_x = new_x;
+                self.pill_click_targets.extend(wt_targets);
+                let (new_x, wd_targets) = Self::render_working_pills(
+                    text_renderer, &pill_params, y, is_head,
+                    dirty_worktrees_by_oid.get(&commit.id),
+                    fallback_dirty_count,
+                    current_x, &mut vertices, &mut pill_vertices,
+                );
+                current_x = new_x;
+                self.pill_click_targets.extend(wd_targets);
+
+                // === HEAD indicator (after branch/tag/worktree pills) ===
+                if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
+                    current_x = Self::render_head_pill(
+                        text_renderer, &pill_params, y,
+                        current_x, &mut vertices, &mut pill_vertices,
+                    );
+                }
+
+                // === Author avatar or identicon fallback (after pills) ===
+                current_x = self.render_author_avatar(
+                    text_renderer, commit, y, dim_alpha, current_x,
+                    avatar_cache, avatar_renderer,
+                    &mut vertices, &mut pill_vertices, &mut avatar_vertices,
+                );
+
+                // === Diff stats (+N / -M) right-aligned in the stats column ===
+                Self::render_diff_stats(
+                    text_renderer, commit, y, dim_alpha,
+                    stats_col_right, &mut vertices,
+                );
+
+                // === Subject line (primary content, bright text, in remaining space) ===
+                Self::render_subject_and_body(
+                    text_renderer, commit, y, dim_alpha, is_head, is_selected,
+                    current_x, stats_col_left - col_gap, &mut vertices,
+                );
             }
-
-            // === Author avatar or identicon fallback (after pills) ===
-            current_x = self.render_author_avatar(
-                text_renderer, commit, y, dim_alpha, current_x,
-                avatar_cache, avatar_renderer,
-                &mut vertices, &mut pill_vertices, &mut avatar_vertices,
-            );
-
-            // === Diff stats (+N / -M) right-aligned in the stats column ===
-            Self::render_diff_stats(
-                text_renderer, commit, y, dim_alpha,
-                stats_col_right, &mut vertices,
-            );
-
-            // === Subject line (primary content, bright text, in remaining space) ===
-            Self::render_subject_and_body(
-                text_renderer, commit, y, dim_alpha, is_head, is_selected,
-                current_x, stats_col_left - col_gap, &mut vertices,
-            );
         }
 
         // Render search bar text overlay

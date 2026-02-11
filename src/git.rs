@@ -59,6 +59,8 @@ pub struct CommitInfo {
     pub insertions: usize,
     /// Number of lines deleted in this commit (0 if not computed)
     pub deletions: usize,
+    /// True for synthetic "uncommitted changes" rows (not real commits)
+    pub is_synthetic: bool,
 }
 
 impl CommitInfo {
@@ -84,11 +86,87 @@ impl CommitInfo {
             parent_ids: commit.parent_ids().collect(),
             insertions: 0,
             deletions: 0,
+            is_synthetic: false,
         }
     }
 
     pub fn relative_time(&self) -> String {
         format_relative_time(self.time)
+    }
+
+    /// Create a synthetic "uncommitted changes" entry for a dirty worktree.
+    /// Uses a deterministic sentinel Oid derived from the worktree name so each
+    /// worktree gets a unique, stable fake commit ID.
+    pub fn synthetic_for_worktree(wt: &WorktreeInfo) -> Option<Self> {
+        let head = wt.head_oid?;
+        // Build a deterministic sentinel Oid from the worktree name bytes (padded/hashed)
+        let mut bytes = [0u8; 20];
+        // Prefix with 0xFF to avoid collisions with real commit hashes
+        bytes[0] = 0xFF;
+        bytes[1] = 0xFE;
+        for (i, b) in wt.name.bytes().enumerate() {
+            bytes[2 + (i % 18)] ^= b;
+        }
+        let sentinel = Oid::from_bytes(&bytes).ok()?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let summary = if wt.dirty_file_count == 1 {
+            format!("Uncommitted changes ({}): 1 file", wt.name)
+        } else {
+            format!("Uncommitted changes ({}): {} files", wt.name, wt.dirty_file_count)
+        };
+
+        Some(Self {
+            id: sentinel,
+            short_id: String::new(),
+            summary,
+            body_excerpt: None,
+            author: String::new(),
+            author_email: String::new(),
+            time: now,
+            parent_ids: vec![head],
+            insertions: 0,
+            deletions: 0,
+            is_synthetic: true,
+        })
+    }
+
+    /// Create a synthetic "uncommitted changes" entry for the current working directory
+    /// (single-worktree fallback when no linked worktrees exist).
+    pub fn synthetic_for_working_dir(head_oid: Oid, dirty_count: usize) -> Self {
+        let mut bytes = [0u8; 20];
+        bytes[0] = 0xFF;
+        bytes[1] = 0xFD; // distinct prefix from worktree variant
+        let sentinel = Oid::from_bytes(&bytes).unwrap_or(head_oid);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let summary = if dirty_count == 1 {
+            "Uncommitted changes: 1 file".to_string()
+        } else {
+            format!("Uncommitted changes: {} files", dirty_count)
+        };
+
+        Self {
+            id: sentinel,
+            short_id: String::new(),
+            summary,
+            body_excerpt: None,
+            author: String::new(),
+            author_email: String::new(),
+            time: now,
+            parent_ids: vec![head_oid],
+            insertions: 0,
+            deletions: 0,
+            is_synthetic: true,
+        }
     }
 }
 

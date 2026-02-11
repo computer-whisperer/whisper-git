@@ -718,8 +718,9 @@ impl App {
         }
 
         // Spawn async diff stats for commits missing stats (loaded by message handlers)
+        // Skip synthetic entries — they have no real git object
         let needs_stats: Vec<Oid> = repo_tab.commits.iter()
-            .filter(|c| c.insertions == 0 && c.deletions == 0)
+            .filter(|c| !c.is_synthetic && c.insertions == 0 && c.deletions == 0)
             .map(|c| c.id)
             .collect();
         if !needs_stats.is_empty() && self.diff_stats_receiver.is_none() {
@@ -1376,8 +1377,8 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             repo_tab.commits = Vec::new();
         }
     }
-    view_state.commit_graph_view.update_layout(&repo_tab.commits);
-    view_state.commit_graph_view.head_oid = repo.head_oid().ok();
+    let head_oid = repo.head_oid().ok();
+    view_state.commit_graph_view.head_oid = head_oid;
 
     let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
@@ -1396,6 +1397,37 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
         Vec::new()
     });
+
+    // Prepend synthetic "uncommitted changes" entries for dirty worktrees
+    {
+        use crate::git::CommitInfo;
+        let mut synthetics: Vec<CommitInfo> = Vec::new();
+        if worktrees.is_empty() {
+            // Single-worktree fallback: use working_dir_status if dirty
+            if let Some(head) = head_oid {
+                if let Ok(status) = repo.status() {
+                    let count = status.total_files();
+                    if count > 0 {
+                        synthetics.push(CommitInfo::synthetic_for_working_dir(head, count));
+                    }
+                }
+            }
+        } else {
+            for wt in &worktrees {
+                if wt.is_dirty {
+                    if let Some(synthetic) = CommitInfo::synthetic_for_worktree(wt) {
+                        synthetics.push(synthetic);
+                    }
+                }
+            }
+        }
+        if !synthetics.is_empty() {
+            synthetics.append(&mut repo_tab.commits);
+            repo_tab.commits = synthetics;
+        }
+    }
+
+    view_state.commit_graph_view.update_layout(&repo_tab.commits);
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
@@ -1438,10 +1470,13 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
 
-    // Spawn async diff stats computation
-    if !repo_tab.commits.is_empty() {
-        let oids: Vec<Oid> = repo_tab.commits.iter().map(|c| c.id).collect();
-        Some(repo.compute_diff_stats_async(oids))
+    // Spawn async diff stats computation (skip synthetic entries — no real git object)
+    let real_oids: Vec<Oid> = repo_tab.commits.iter()
+        .filter(|c| !c.is_synthetic)
+        .map(|c| c.id)
+        .collect();
+    if !real_oids.is_empty() {
+        Some(repo.compute_diff_stats_async(real_oids))
     } else {
         None
     }
@@ -2167,7 +2202,8 @@ impl App {
                 let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid) {
+                        && view_state.last_diff_commit != Some(oid)
+                        && !repo_tab.commits.iter().any(|c| c.id == oid && c.is_synthetic) {
                             view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
@@ -2202,7 +2238,8 @@ impl App {
                 let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid) {
+                        && view_state.last_diff_commit != Some(oid)
+                        && !repo_tab.commits.iter().any(|c| c.id == oid && c.is_synthetic) {
                             view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
