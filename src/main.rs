@@ -5,6 +5,7 @@ mod messages;
 mod renderer;
 mod ui;
 mod views;
+mod watcher;
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
@@ -36,6 +37,7 @@ use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
+use crate::watcher::RepoWatcher;
 
 /// Maximum number of commits to load into the graph view.
 const MAX_COMMITS: usize = 50;
@@ -155,6 +157,9 @@ struct TabViewState {
     worktree_repo: Option<GitRepo>,
     /// Submodule drill-down state (None when viewing root repo)
     submodule_focus: Option<SubmoduleFocus>,
+    /// Filesystem watcher for auto-refresh on external changes
+    watcher: Option<RepoWatcher>,
+    watcher_rx: Option<Receiver<()>>,
 }
 
 impl TabViewState {
@@ -180,6 +185,8 @@ impl TabViewState {
             submodule_strip: SubmoduleStatusStrip::new(),
             worktree_repo: None,
             submodule_focus: None,
+            watcher: None,
+            watcher_rx: None,
         }
     }
 }
@@ -610,6 +617,22 @@ impl App {
         }
     }
 
+    fn poll_watcher(&mut self) {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some(ref rx) = view_state.watcher_rx else { return };
+
+        // Drain all pending signals (there may be more than one if debounce fired multiple times)
+        let mut changed = false;
+        while rx.try_recv().is_ok() {
+            changed = true;
+        }
+
+        if changed {
+            println!("Filesystem change detected, refreshing...");
+            refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+        }
+    }
+
     fn poll_remote_ops(&mut self) {
         use std::sync::mpsc::TryRecvError;
 
@@ -960,6 +983,31 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Refresh commits, branches, tags, head, and header info
     refresh_repo_state(repo_tab, view_state, toast_manager);
+
+    // Start filesystem watcher for auto-refresh
+    start_watcher(repo_tab, view_state);
+}
+
+/// Start (or restart) a filesystem watcher for the given tab's repo.
+fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState) {
+    // Drop any existing watcher first
+    view_state.watcher = None;
+    view_state.watcher_rx = None;
+
+    let Some(ref repo) = repo_tab.repo else { return };
+    let Some(workdir) = repo.workdir() else { return };
+    let git_dir = repo.git_dir();
+
+    match RepoWatcher::new(workdir, git_dir) {
+        Ok((watcher, rx)) => {
+            println!("Filesystem watcher started for {}", workdir.display());
+            view_state.watcher = Some(watcher);
+            view_state.watcher_rx = Some(rx);
+        }
+        Err(e) => {
+            eprintln!("Failed to start filesystem watcher: {}", e);
+        }
+    }
 }
 
 /// Drill into a named submodule: saves parent state and swaps repo to the submodule.
@@ -1236,6 +1284,8 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Poll filesystem watcher for external changes
+                self.poll_watcher();
                 // Poll background remote operations
                 self.poll_remote_ops();
                 // Process any pending messages
