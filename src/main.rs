@@ -2184,28 +2184,47 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         && mx >= layout.staging.x
         && mx <= layout.staging.right();
 
-    // Vertical border: sidebar | graph (2px for drag affordance)
-    let sidebar_graph_color = if sidebar_graph_hover { theme::BORDER_LIGHT } else { theme::BORDER };
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
-        sidebar_graph_color.to_array(),
-    ));
+    // Vertical divider: sidebar | graph
+    // Subtle 1px line at rest, wider 2px highlighted line on hover
+    if sidebar_graph_hover {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
+            theme::BORDER_LIGHT.to_array(),
+        ));
+    } else {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 1.0, layout.sidebar.height),
+            theme::BORDER.with_alpha(0.35).to_array(),
+        ));
+    }
 
-    // Vertical border: graph | staging/secondary (2px for drag affordance)
-    let graph_right_color = if graph_right_hover { theme::BORDER_LIGHT } else { theme::BORDER };
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
-        graph_right_color.to_array(),
-    ));
+    // Vertical divider: graph | staging/secondary
+    if graph_right_hover {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
+            theme::BORDER_LIGHT.to_array(),
+        ));
+    } else {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.graph.right(), layout.graph.y, 1.0, layout.graph.height),
+            theme::BORDER.with_alpha(0.35).to_array(),
+        ));
+    }
 
-    // Horizontal border: staging | right panel (2px for drag affordance)
-    let staging_right_color = if staging_right_hover { theme::BORDER_LIGHT } else { theme::BORDER };
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 2.0),
-        staging_right_color.to_array(),
-    ));
+    // Horizontal divider: staging | right panel
+    if staging_right_hover {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 2.0),
+            theme::BORDER_LIGHT.to_array(),
+        ));
+    } else {
+        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 1.0),
+            theme::BORDER.with_alpha(0.35).to_array(),
+        ));
+    }
 
-    // Focused panel accent top border (2px accent-colored line at top of focused panel)
+    // Focused panel indicator: subtle accent-colored top border (2px at ~40% alpha)
     let focused_rect = match focused {
         FocusedPanel::Graph => &layout.graph,
         FocusedPanel::Staging => &layout.staging,
@@ -2213,7 +2232,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 2.0),
-        theme::ACCENT.to_array(),
+        theme::ACCENT.with_alpha(0.4).to_array(),
     ));
 }
 
