@@ -11,12 +11,12 @@ pub struct ScreenLayout {
     pub shortcut_bar: Rect,
     /// Branch sidebar region (180px wide, left side)
     pub sidebar: Rect,
-    /// Primary commit graph region (55% of remaining width, 96% height)
+    /// Primary commit graph region
     pub graph: Rect,
-    /// Staging well region (45% of remaining width, 45% of main height)
+    /// Staging well region (left portion of right area)
     pub staging: Rect,
-    /// Right panel region for diff/detail views (45% of remaining width, bottom portion)
-    pub right_panel: Rect,
+    /// Preview panel region for diff/detail views (right portion of right area)
+    pub preview: Rect,
 }
 
 impl ScreenLayout {
@@ -27,13 +27,13 @@ impl ScreenLayout {
     /// +----------------------------------------------------------+
     /// |                     HEADER (4%)                          |
     /// +------+---------------------------------------------------+
-    /// |      |                       |                           |
-    /// | SIDE |   GRAPH (55% rem)     |   STAGING (45% x 45%)    |
-    /// | BAR  |                       |                           |
-    /// | 180  |                       +---------------------------+
-    /// | px   |                       |                           |
-    /// |      |                       |   RIGHT PANEL (45% x 55%)|
-    /// |      |                       |                           |
+    /// |      |                |            |                     |
+    /// | SIDE |   GRAPH        |  STAGING   |   PREVIEW           |
+    /// | BAR  |                |            |                     |
+    /// | 180  |                |            |                     |
+    /// | px   |                |            |                     |
+    /// |      |                |            |                     |
+    /// |      |                |            |                     |
     /// +------+---------------------------------------------------+
     /// ```
     #[allow(dead_code)]
@@ -55,16 +55,11 @@ impl ScreenLayout {
         let sidebar_width = (180.0 * scale).min(main.width * 0.15);
         let (sidebar, content) = main.take_left(sidebar_width);
 
-        // Split content area into left (graph) and right (staging + secondary)
-        let (graph, right_panel) = content.split_horizontal(0.55);
+        // Split content area into graph and right area
+        let (graph, right_area) = content.split_horizontal(0.55);
 
-        // Split right panel into staging (top 45%) and secondary (bottom 51%)
-        // The remaining 4% is implicitly used for spacing/gaps
-        let staging_height = right_panel.height * 0.45;
-        let (staging, remaining) = right_panel.take_top(staging_height);
-
-        // Secondary repos takes the rest
-        let right_panel = remaining;
+        // Split right area into staging and preview (both full height)
+        let (staging, preview) = right_area.split_horizontal(0.40);
 
         Self {
             header,
@@ -72,7 +67,7 @@ impl ScreenLayout {
             sidebar,
             graph,
             staging,
-            right_panel,
+            preview,
         }
     }
 
@@ -86,7 +81,7 @@ impl ScreenLayout {
     ///
     /// - `sidebar_ratio`: fraction of total width for sidebar (default ~0.14, clamped 0.05..0.30)
     /// - `graph_ratio`: fraction of content width (after sidebar) for graph (default 0.55, clamped 0.30..0.80)
-    /// - `staging_ratio`: fraction of right panel height for staging (default 0.45, clamped 0.15..0.85)
+    /// - `staging_ratio`: fraction of right area width for staging (default 0.40, clamped 0.20..0.70)
     ///
     /// Pass `None` for any ratio to use the default value.
     pub fn compute_with_ratios(
@@ -127,15 +122,13 @@ impl ScreenLayout {
         };
         let (sidebar, content) = main.take_left(sidebar_width);
 
-        // Graph / right panel split
+        // Graph / right area split
         let graph_frac = graph_ratio.unwrap_or(0.55).clamp(0.30, 0.80);
-        let (graph, right_panel) = content.split_horizontal(graph_frac);
+        let (graph, right_area) = content.split_horizontal(graph_frac);
 
-        // Staging / right_panel vertical split
-        let staging_frac = staging_ratio.unwrap_or(0.45).clamp(0.15, 0.85);
-        let staging_height = right_panel.height * staging_frac;
-        let (staging, remaining) = right_panel.take_top(staging_height);
-        let right_panel = remaining;
+        // Staging / preview horizontal split (both full height)
+        let staging_frac = staging_ratio.unwrap_or(0.40).clamp(0.20, 0.70);
+        let (staging, preview) = right_area.split_horizontal(staging_frac);
 
         // Apply gap padding
         Self {
@@ -143,8 +136,8 @@ impl ScreenLayout {
             shortcut_bar, // no padding - full width subtle bar
             sidebar: sidebar.pad(gap, gap, gap / 2.0, gap),
             graph: graph.pad(gap / 2.0, gap, gap / 2.0, gap),
-            staging: staging.pad(gap / 2.0, gap, gap, gap / 2.0),
-            right_panel: right_panel.pad(gap / 2.0, gap / 2.0, gap, gap),
+            staging: staging.pad(gap / 2.0, gap, gap / 2.0, gap),
+            preview: preview.pad(gap / 2.0, gap, gap, gap),
         }
     }
 }
@@ -169,7 +162,14 @@ mod tests {
         // Graph should take 55% of remaining
         assert!((layout.graph.width - 605.0).abs() < 1.0); // 1100 * 0.55 = 605
 
-        // Staging should take 45% of remaining
-        assert!((layout.staging.width - 495.0).abs() < 1.0); // 1100 * 0.45 = 495
+        // Right area is 45% of remaining = 495
+        // Staging takes 40% of right area = 198
+        assert!((layout.staging.width - 198.0).abs() < 1.0);
+        // Preview takes 60% of right area = 297
+        assert!((layout.preview.width - 297.0).abs() < 1.0);
+
+        // Both staging and preview are full height
+        assert!((layout.staging.height - layout.graph.height).abs() < 1.0);
+        assert!((layout.preview.height - layout.graph.height).abs() < 1.0);
     }
 }

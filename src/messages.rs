@@ -60,12 +60,6 @@ pub enum AppMessage {
     DeleteRemote(String),
     RenameRemote(String, String),  // (old_name, new_name)
     SetRemoteUrl(String, String),  // (name, new_url)
-    /// Load diff and show it inline in the staging panel (path, staged)
-    ViewDiffInline(String, bool),
-    /// Stage a hunk from inline diff, then refresh the inline diff
-    InlineStageHunk(String, usize),
-    /// Unstage a hunk from inline diff, then refresh the inline diff
-    InlineUnstageHunk(String, usize),
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -837,70 +831,6 @@ pub fn handle_app_message(
                 Err(e) => {
                     toast_manager.push(
                         format!("Failed to update remote URL: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
-        }
-
-        AppMessage::ViewDiffInline(path, staged) => {
-            match staging_repo.diff_working_file(&path, staged) {
-                Ok(hunks) => {
-                    let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                    view_state.staging_well.show_inline_diff(path, vec![diff_file], staged);
-                }
-                Err(e) => {
-                    eprintln!("Failed to load inline diff for {}: {}", path, e);
-                }
-            }
-        }
-        AppMessage::InlineStageHunk(path, hunk_idx) => {
-            match staging_repo.stage_hunk(&path, hunk_idx) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Staged hunk {} in {}", hunk_idx + 1, path),
-                        ToastSeverity::Success,
-                    );
-                    // Refresh the inline diff to show remaining hunks
-                    if let Ok(hunks) = staging_repo.diff_working_file(&path, false) {
-                        if hunks.is_empty() {
-                            view_state.staging_well.close_inline_diff();
-                        } else {
-                            let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                            view_state.staging_well.show_inline_diff(path, vec![diff_file], false);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to stage hunk: {}", e);
-                    toast_manager.push(
-                        format!("Stage hunk failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
-        }
-        AppMessage::InlineUnstageHunk(path, hunk_idx) => {
-            match staging_repo.unstage_hunk(&path, hunk_idx) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Unstaged hunk {} in {}", hunk_idx + 1, path),
-                        ToastSeverity::Success,
-                    );
-                    // Refresh the inline diff to show remaining hunks
-                    if let Ok(hunks) = staging_repo.diff_working_file(&path, true) {
-                        if hunks.is_empty() {
-                            view_state.staging_well.close_inline_diff();
-                        } else {
-                            let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                            view_state.staging_well.show_inline_diff(path, vec![diff_file], true);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to unstage hunk: {}", e);
-                    toast_manager.push(
-                        format!("Unstage hunk failed: {}", e),
                         ToastSeverity::Error,
                     );
                 }
