@@ -150,7 +150,7 @@ pub fn create_rect_vertices(rect: &Rect, color: [f32; 4]) -> Vec<SplineVertex> {
 /// Helper to create filled rounded rectangle vertices
 ///
 /// Generates triangles for a rectangle with quarter-circle corner arcs.
-/// Uses center body + 2 side strips + 4 corner fans (6 segments each).
+/// Uses center body + 2 side strips + 4 corner fans (adaptive segments per corner).
 pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -> Vec<SplineVertex> {
     let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
     if r < 0.5 {
@@ -183,7 +183,9 @@ pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -
         (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
     ];
 
-    let segments = 6;
+    // Adaptive segment count: more segments for larger radii to keep corners smooth.
+    // At 6 segments each step is 15 deg — visibly faceted. At 8+ it's much smoother.
+    let segments = ((r * 1.5).ceil() as usize).clamp(8, 16);
     for (cx, cy, start_angle, end_angle) in corners {
         for i in 0..segments {
             let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
@@ -244,7 +246,8 @@ pub fn create_rounded_rect_outline_vertices(
         (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
     ];
 
-    let segments = 6;
+    // Adaptive segment count: match fill function for consistent corner smoothness.
+    let segments = ((r * 1.5).ceil() as usize).clamp(8, 16);
     for (cx, cy, start_angle, end_angle) in corners {
         for i in 0..segments {
             let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);

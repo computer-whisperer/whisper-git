@@ -87,21 +87,6 @@ impl CommitInfo {
         }
     }
 
-    fn from_commit_with_stats(commit: &Commit, repo: &Repository) -> Self {
-        let mut info = Self::from_commit(commit);
-        // Compute diff stats: diff this commit's tree against its first parent's tree
-        if let Ok(tree) = commit.tree() {
-            let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-            if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
-                if let Ok(stats) = diff.stats() {
-                    info.insertions = stats.insertions();
-                    info.deletions = stats.deletions();
-                }
-            }
-        }
-        info
-    }
-
     pub fn relative_time(&self) -> String {
         format_relative_time(self.time)
     }
