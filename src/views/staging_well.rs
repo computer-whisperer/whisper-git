@@ -2,12 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::git::{WorkingDirStatus, WorktreeInfo};
+use crate::git::{DiffFile, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::{Button, FileList, FileListAction, TextArea, TextInput};
 use crate::ui::{Rect, TextRenderer, Widget};
+use crate::views::DiffView;
 
 /// Per-worktree state for the staging context switcher
 #[derive(Clone, Debug)]
@@ -33,6 +34,19 @@ pub enum StagingAction {
     ToggleAmend,
     ViewDiff(String),
     SwitchWorktree(usize),
+    /// Auto-preview diff inline (file_path, is_staged)
+    PreviewDiff(String, bool),
+    /// Stage a hunk from inline diff view (file_path, hunk_index)
+    InlineStageHunk(String, usize),
+    /// Unstage a hunk from inline diff view (file_path, hunk_index)
+    InlineUnstageHunk(String, usize),
+}
+
+/// State for the inline diff viewer embedded in the staging panel
+pub struct InlineDiffState {
+    pub file_path: String,
+    pub is_staged: bool,
+    pub diff_view: DiffView,
 }
 
 /// The staging well view containing commit message and file lists
@@ -61,6 +75,10 @@ pub struct StagingWell {
     focus_section: usize,
     /// Display scale factor for 4K/HiDPI scaling
     pub scale: f32,
+    /// Inline diff state (when viewing a file diff inside the staging panel)
+    pub inline_diff: Option<InlineDiffState>,
+    /// Back button for inline diff mode
+    back_btn: Button,
     /// Worktree contexts for multi-worktree repos
     worktree_contexts: Vec<WorktreeContext>,
     /// Index of the active worktree in worktree_contexts
@@ -107,6 +125,8 @@ impl StagingWell {
             pending_action: None,
             focus_section: 0,
             scale: 1.0,
+            inline_diff: None,
+            back_btn: Button::new("\u{2190} Back").ghost(),
             worktree_contexts: Vec::new(),
             active_worktree_idx: 0,
             worktree_selector_open: false,
@@ -133,12 +153,54 @@ impl StagingWell {
         self.unstaged_list.set_files(unstaged);
     }
 
+    /// Show inline diff for a file in the staging panel.
+    pub fn show_inline_diff(&mut self, file_path: String, diff_files: Vec<DiffFile>, staged: bool) {
+        let mut diff_view = if let Some(mut existing) = self.inline_diff.take() {
+            // Reuse existing DiffView to preserve scroll state if same file
+            if existing.file_path == file_path && existing.is_staged == staged {
+                if staged {
+                    existing.diff_view.set_staged_diff(diff_files, file_path.clone());
+                } else {
+                    existing.diff_view.set_diff(diff_files, file_path.clone());
+                }
+                self.inline_diff = Some(existing);
+                return;
+            }
+            existing.diff_view
+        } else {
+            DiffView::new()
+        };
+
+        let title = file_path.clone();
+        if staged {
+            diff_view.set_staged_diff(diff_files, title);
+        } else {
+            diff_view.set_diff(diff_files, title);
+        }
+        self.inline_diff = Some(InlineDiffState {
+            file_path,
+            is_staged: staged,
+            diff_view,
+        });
+    }
+
+    /// Close the inline diff viewer, returning to file list mode.
+    pub fn close_inline_diff(&mut self) {
+        self.inline_diff = None;
+    }
+
+    /// Whether the inline diff viewer is active.
+    pub fn is_inline_diff_active(&self) -> bool {
+        self.inline_diff.is_some()
+    }
+
     /// Returns true if any button in the staging well is hovered
     pub fn is_any_button_hovered(&self) -> bool {
         self.stage_all_btn.is_hovered()
             || self.unstage_all_btn.is_hovered()
             || self.commit_btn.is_hovered()
             || self.amend_btn.is_hovered()
+            || self.back_btn.is_hovered()
     }
 
     /// Returns true if a file in either list is hovered
@@ -429,6 +491,20 @@ impl StagingWell {
 
     /// Update hover state for child widgets based on mouse position
     pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
+        // In inline diff mode, only update back button hover
+        if self.inline_diff.is_some() {
+            let s = self.scale;
+            let padding = 8.0 * s;
+            let back_btn_rect = Rect::new(
+                bounds.x + padding,
+                bounds.y + padding + 2.0 * s,
+                80.0 * s,
+                24.0 * s,
+            );
+            self.back_btn.update_hover(x, y, back_btn_rect);
+            return;
+        }
+
         let regions = self.compute_regions_full(bounds);
 
         self.unstaged_list.update_hover(x, y, regions.unstaged);
@@ -476,6 +552,11 @@ impl StagingWell {
 
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        // Handle inline diff mode events
+        if self.inline_diff.is_some() {
+            return self.handle_inline_diff_event(event, bounds);
+        }
+
         // Handle worktree selector dropdown events first (when open)
         if self.worktree_selector_open {
             match event {
@@ -657,6 +738,9 @@ impl StagingWell {
                             FileListAction::StageAll => {
                                 self.pending_action = Some(StagingAction::StageAll);
                             }
+                            FileListAction::SelectionChanged(path) => {
+                                self.pending_action = Some(StagingAction::PreviewDiff(path, false));
+                            }
                             _ => {}
                         }
                     }
@@ -677,6 +761,9 @@ impl StagingWell {
                             FileListAction::UnstageAll => {
                                 self.pending_action = Some(StagingAction::UnstageAll);
                             }
+                            FileListAction::SelectionChanged(path) => {
+                                self.pending_action = Some(StagingAction::PreviewDiff(path, true));
+                            }
                             _ => {}
                         }
                     }
@@ -696,6 +783,72 @@ impl StagingWell {
                 }
             }
             _ => {}
+        }
+
+        EventResponse::Ignored
+    }
+
+    /// Handle events when inline diff is active.
+    fn handle_inline_diff_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        let s = self.scale;
+        let padding = 8.0 * s;
+        let header_height = 32.0 * s;
+
+        let back_btn_rect = Rect::new(
+            bounds.x + padding,
+            bounds.y + padding + 2.0 * s,
+            80.0 * s,
+            24.0 * s,
+        );
+
+        // Escape closes inline diff
+        if let InputEvent::KeyDown { key: Key::Escape, .. } = event {
+            self.close_inline_diff();
+            return EventResponse::Consumed;
+        }
+
+        // Back button
+        if self.back_btn.handle_event(event, back_btn_rect).is_consumed() {
+            if self.back_btn.was_clicked() {
+                self.close_inline_diff();
+            }
+            return EventResponse::Consumed;
+        }
+
+        // Route remaining events to the inline diff view
+        let diff_bounds = Rect::new(
+            bounds.x,
+            bounds.y + padding + header_height,
+            bounds.width,
+            bounds.height - padding - header_height,
+        );
+
+        if let Some(ref mut state) = self.inline_diff {
+            let response = state.diff_view.handle_event(event, diff_bounds);
+
+            // Check for hunk stage/unstage actions from the diff view
+            if let Some(action) = state.diff_view.take_action() {
+                use crate::views::DiffAction;
+                match action {
+                    DiffAction::StageHunk(path, hunk_idx) => {
+                        self.pending_action = Some(StagingAction::InlineStageHunk(path, hunk_idx));
+                    }
+                    DiffAction::UnstageHunk(path, hunk_idx) => {
+                        self.pending_action = Some(StagingAction::InlineUnstageHunk(path, hunk_idx));
+                    }
+                }
+            }
+
+            if response.is_consumed() {
+                return response;
+            }
+        }
+
+        // Consume all mouse events within bounds to prevent pass-through
+        if let InputEvent::MouseDown { x, y, .. } = event {
+            if bounds.contains(*x, *y) {
+                return EventResponse::Consumed;
+            }
         }
 
         EventResponse::Ignored
@@ -871,6 +1024,11 @@ impl StagingWell {
             theme::BORDER.to_array(),
             1.0,
         ));
+
+        // If inline diff is active, render that instead of the normal layout
+        if self.inline_diff.is_some() {
+            return self.layout_inline_diff(text_renderer, bounds);
+        }
 
         let regions = self.compute_regions_full(bounds);
 
@@ -1116,6 +1274,123 @@ impl StagingWell {
 
         // Commit button
         output.extend(self.commit_btn.layout(text_renderer, regions.commit_btn));
+
+        output
+    }
+
+    /// Layout the inline diff view (replaces normal staging layout when active).
+    fn layout_inline_diff(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+        let s = self.scale;
+        let padding = 8.0 * s;
+        let header_height = 32.0 * s;
+
+        // Re-draw background (already drawn in layout(), but we need to build
+        // the complete output since we're returning early)
+        output.spline_vertices.extend(create_rect_vertices(
+            &bounds,
+            theme::SURFACE.to_array(),
+        ));
+        output.spline_vertices.extend(create_rect_outline_vertices(
+            &bounds,
+            theme::BORDER.to_array(),
+            1.0,
+        ));
+
+        // Header area: back button + filename + STAGED/UNSTAGED label
+        let header_rect = Rect::new(bounds.x, bounds.y, bounds.width, padding + header_height);
+        output.spline_vertices.extend(create_rect_vertices(
+            &header_rect,
+            theme::SURFACE_RAISED.with_alpha(0.5).to_array(),
+        ));
+
+        // Back button
+        let back_btn_rect = Rect::new(
+            bounds.x + padding,
+            bounds.y + padding + 2.0 * s,
+            80.0 * s,
+            24.0 * s,
+        );
+        output.extend(self.back_btn.layout(text_renderer, back_btn_rect));
+
+        if let Some(ref state) = self.inline_diff {
+            // Filename
+            let file_x = back_btn_rect.right() + 8.0 * s;
+            let file_y = bounds.y + padding + 6.0 * s;
+
+            // Show just the filename portion (bright) with dir prefix (muted)
+            let (dir_part, file_part) = match state.file_path.rfind('/') {
+                Some(pos) => (&state.file_path[..=pos], &state.file_path[pos + 1..]),
+                None => ("", state.file_path.as_str()),
+            };
+
+            let mut text_x = file_x;
+            if !dir_part.is_empty() {
+                output.text_vertices.extend(text_renderer.layout_text(
+                    dir_part,
+                    text_x,
+                    file_y,
+                    theme::TEXT_MUTED.to_array(),
+                ));
+                text_x += text_renderer.measure_text(dir_part);
+            }
+            output.text_vertices.extend(text_renderer.layout_text(
+                file_part,
+                text_x,
+                file_y,
+                theme::TEXT_BRIGHT.to_array(),
+            ));
+
+            // STAGED/UNSTAGED label (right-aligned)
+            let label = if state.is_staged { "STAGED" } else { "UNSTAGED" };
+            let label_color = if state.is_staged {
+                theme::STATUS_CLEAN
+            } else {
+                theme::STATUS_BEHIND
+            };
+            let label_w = text_renderer.measure_text(label);
+            let label_x = bounds.right() - label_w - padding;
+
+            // Pill background for label
+            let pill_pad_h = 6.0 * s;
+            let pill_pad_v = 2.0 * s;
+            let pill_rect = Rect::new(
+                label_x - pill_pad_h,
+                file_y - pill_pad_v,
+                label_w + pill_pad_h * 2.0,
+                text_renderer.line_height() + pill_pad_v * 2.0,
+            );
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                label_color.with_alpha(0.15).to_array(),
+                4.0 * s,
+            ));
+            output.text_vertices.extend(text_renderer.layout_text(
+                label,
+                label_x,
+                file_y,
+                label_color.to_array(),
+            ));
+        }
+
+        // Separator below header
+        let sep_y = bounds.y + padding + header_height - 1.0;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // Diff view content
+        let diff_bounds = Rect::new(
+            bounds.x,
+            bounds.y + padding + header_height,
+            bounds.width,
+            bounds.height - padding - header_height,
+        );
+
+        if let Some(ref mut state) = self.inline_diff {
+            output.extend(state.diff_view.layout(text_renderer, diff_bounds));
+        }
 
         output
     }
