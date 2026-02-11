@@ -33,7 +33,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 
@@ -222,6 +222,7 @@ struct App {
     settings_dialog: SettingsDialog,
     confirm_dialog: ConfirmDialog,
     branch_name_dialog: BranchNameDialog,
+    remote_dialog: RemoteDialog,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
@@ -324,6 +325,7 @@ impl App {
             settings_dialog,
             confirm_dialog: ConfirmDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
+            remote_dialog: RemoteDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
@@ -1355,6 +1357,32 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Remote dialog takes modal priority
+                    if self.remote_dialog.is_visible() {
+                        self.remote_dialog.handle_event(&input_event, screen_bounds);
+                        if let Some(action) = self.remote_dialog.take_action() {
+                            match action {
+                                RemoteDialogAction::AddRemote(name, url) => {
+                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                        view_state.pending_messages.push(AppMessage::AddRemote(name, url));
+                                    }
+                                }
+                                RemoteDialogAction::EditUrl(name, url) => {
+                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                        view_state.pending_messages.push(AppMessage::SetRemoteUrl(name, url));
+                                    }
+                                }
+                                RemoteDialogAction::Rename(old_name, new_name) => {
+                                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                        view_state.pending_messages.push(AppMessage::RenameRemote(old_name, new_name));
+                                    }
+                                }
+                                RemoteDialogAction::Cancel => {}
+                            }
+                        }
+                        return;
+                    }
+
                     // Settings dialog takes priority (modal)
                     if self.settings_dialog.is_visible() {
                         self.settings_dialog.handle_event(&input_event, screen_bounds);
@@ -1385,7 +1413,7 @@ impl ApplicationHandler for App {
                     }
 
                     // Context menu takes priority when visible (overlay)
-                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+                    if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
                         && view_state.context_menu.is_visible() {
                             view_state.context_menu.handle_event(&input_event, screen_bounds);
                             if let Some(action) = view_state.context_menu.take_action() {
@@ -1397,6 +1425,8 @@ impl ApplicationHandler for App {
                                             &mut self.toast_manager,
                                             &mut self.confirm_dialog,
                                             &mut self.branch_name_dialog,
+                                            &mut self.remote_dialog,
+                                            repo_tab.repo.as_ref(),
                                             &mut self.pending_confirm_action,
                                         );
                                     }
@@ -1693,6 +1723,22 @@ impl ApplicationHandler for App {
                                 SidebarAction::DropStash(index) => {
                                     self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
                                     self.pending_confirm_action = Some(AppMessage::StashDrop(index));
+                                }
+                                SidebarAction::AddRemote => {
+                                    self.remote_dialog.show_add();
+                                }
+                                SidebarAction::EditRemoteUrl(name) => {
+                                    let current_url = repo_tab.repo.as_ref()
+                                        .and_then(|r| r.remote_url(&name))
+                                        .unwrap_or_default();
+                                    self.remote_dialog.show_edit_url(&name, &current_url);
+                                }
+                                SidebarAction::RenameRemote(name) => {
+                                    self.remote_dialog.show_rename(&name);
+                                }
+                                SidebarAction::DeleteRemote(name) => {
+                                    self.confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", name));
+                                    self.pending_confirm_action = Some(AppMessage::DeleteRemote(name));
                                 }
                             }
                         }
@@ -2103,6 +2149,8 @@ fn handle_context_menu_action(
     toast_manager: &mut ToastManager,
     confirm_dialog: &mut ConfirmDialog,
     branch_name_dialog: &mut BranchNameDialog,
+    remote_dialog: &mut RemoteDialog,
+    repo: Option<&crate::git::GitRepo>,
     pending_confirm_action: &mut Option<AppMessage>,
 ) {
     // Actions may be in format "action:param" or just "action"
@@ -2321,6 +2369,28 @@ fn handle_context_menu_action(
                 *pending_confirm_action = Some(AppMessage::StashDrop(index));
             }
         }
+        "add_remote" => {
+            remote_dialog.show_add();
+        }
+        "edit_remote_url" => {
+            if !param.is_empty() {
+                let current_url = repo
+                    .and_then(|r| r.remote_url(param))
+                    .unwrap_or_default();
+                remote_dialog.show_edit_url(param, &current_url);
+            }
+        }
+        "rename_remote" => {
+            if !param.is_empty() {
+                remote_dialog.show_rename(param);
+            }
+        }
+        "delete_remote" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", param));
+                *pending_confirm_action = Some(AppMessage::DeleteRemote(param.to_string()));
+            }
+        }
         _ => {
             eprintln!("Unknown context menu action: {}", action_id);
         }
@@ -2433,6 +2503,7 @@ fn build_ui_output(
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
     branch_name_dialog: &BranchNameDialog,
+    remote_dialog: &RemoteDialog,
     text_renderer: &TextRenderer,
     bold_text_renderer: &TextRenderer,
     scale_factor: f64,
@@ -2571,6 +2642,11 @@ fn build_ui_output(
         overlay_output.extend(branch_name_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Remote dialog (overlay layer - on top of everything)
+    if remote_dialog.is_visible() {
+        overlay_output.extend(remote_dialog.layout(text_renderer, screen_bounds));
+    }
+
     (graph_output, chrome_output, overlay_output)
 }
 
@@ -2659,7 +2735,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -2793,7 +2869,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -2909,7 +2985,7 @@ fn capture_screenshot_offscreen(
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog,
+        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
