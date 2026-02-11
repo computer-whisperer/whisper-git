@@ -8,7 +8,12 @@ pub struct Config {
     pub fast_scroll: bool,
     pub row_scale: f32,
     pub shortcut_bar_visible: bool,
+    #[serde(default)]
+    pub recent_repos: Vec<String>,
 }
+
+/// Maximum number of recent repos to remember
+const MAX_RECENT_REPOS: usize = 10;
 
 impl Default for Config {
     fn default() -> Self {
@@ -17,6 +22,7 @@ impl Default for Config {
             fast_scroll: false,
             row_scale: 1.0,
             shortcut_bar_visible: true,
+            recent_repos: Vec::new(),
         }
     }
 }
@@ -59,5 +65,13 @@ impl Config {
             }
             Err(e) => eprintln!("Failed to serialize config: {e}"),
         }
+    }
+
+    /// Add a repo path to the recent repos list (most recent first, deduped).
+    pub fn add_recent_repo(&mut self, path: &str) {
+        self.recent_repos.retain(|p| p != path);
+        self.recent_repos.insert(0, path.to_string());
+        self.recent_repos.truncate(MAX_RECENT_REPOS);
+        self.save();
     }
 }

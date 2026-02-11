@@ -1244,10 +1244,15 @@ impl ApplicationHandler for App {
                 // switches, external edits, etc. are reflected immediately)
                 self.refresh_status();
 
+                // Poll native file picker for results
+                self.repo_dialog.poll_picker();
+
                 // Check for repo dialog actions
                 if let Some(action) = self.repo_dialog.take_action() {
                     match action {
                         RepoDialogAction::Open(path) => {
+                            let path_str = path.to_string_lossy().to_string();
+                            self.config.add_recent_repo(&path_str);
                             self.open_repo_tab(path);
                         }
                         RepoDialogAction::Cancel => {}
@@ -1495,7 +1500,7 @@ impl ApplicationHandler for App {
                     if let InputEvent::KeyDown { key, modifiers, .. } = &input_event {
                         // Ctrl+O: open repo
                         if *key == Key::O && modifiers.only_ctrl() {
-                            self.repo_dialog.show();
+                            self.repo_dialog.show_with_recent(&self.config.recent_repos);
                             return;
                         }
                         // Ctrl+W: close tab
@@ -1588,7 +1593,7 @@ impl ApplicationHandler for App {
                                 match action {
                                     TabAction::Select(idx) => self.switch_tab(idx),
                                     TabAction::Close(idx) => self.close_tab(idx),
-                                    TabAction::New => self.repo_dialog.show(),
+                                    TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
                                 }
                             }
                             return;
