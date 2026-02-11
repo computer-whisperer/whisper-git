@@ -243,6 +243,8 @@ struct App {
     staging_ratio: f32,
     /// Whether the shortcut bar is visible
     shortcut_bar_visible: bool,
+    /// Current cursor icon (cached to avoid redundant Wayland protocol calls)
+    current_cursor: CursorIcon,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -341,6 +343,7 @@ impl App {
             graph_ratio: 0.55,
             staging_ratio: 0.45,
             shortcut_bar_visible,
+            current_cursor: CursorIcon::Default,
         })
     }
 
@@ -1520,7 +1523,10 @@ impl ApplicationHandler for App {
                                         DividerDrag::SidebarGraph | DividerDrag::GraphRight => CursorIcon::ColResize,
                                         DividerDrag::StagingRight => CursorIcon::RowResize,
                                     };
-                                    render_state.window.set_cursor(cursor);
+                                    if self.current_cursor != cursor {
+                                        render_state.window.set_cursor(cursor);
+                                        self.current_cursor = cursor;
+                                    }
                                 }
                                 return;
                             }
@@ -1528,7 +1534,10 @@ impl ApplicationHandler for App {
                                 self.divider_drag = None;
                                 // Reset cursor after drag ends
                                 if let Some(ref render_state) = self.state {
-                                    render_state.window.set_cursor(CursorIcon::Default);
+                                    if self.current_cursor != CursorIcon::Default {
+                                        render_state.window.set_cursor(CursorIcon::Default);
+                                        self.current_cursor = CursorIcon::Default;
+                                    }
                                 }
                                 return;
                             }
@@ -2070,7 +2079,10 @@ impl ApplicationHandler for App {
 
                             // Determine cursor icon based on hover position
                             let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count);
-                            render_state.window.set_cursor(cursor);
+                            if self.current_cursor != cursor {
+                                render_state.window.set_cursor(cursor);
+                                self.current_cursor = cursor;
+                            }
                         }
                     }
                 }
