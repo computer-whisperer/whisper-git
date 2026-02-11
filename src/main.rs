@@ -715,13 +715,21 @@ impl App {
             );
         }
 
-        // Spawn async diff stats for commits missing stats (loaded by message handlers)
-        // Skip synthetic entries — they have no real git object
+    }
+
+    /// Re-launch async diff stats for any commits still missing stats.
+    /// Runs every frame so orphaned receivers are quickly replaced.
+    fn ensure_diff_stats(&mut self) {
+        if self.diff_stats_receiver.is_some() {
+            return; // computation already in progress
+        }
+        let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some(ref repo) = repo_tab.repo else { return };
         let needs_stats: Vec<Oid> = repo_tab.commits.iter()
             .filter(|c| !c.is_synthetic && c.insertions == 0 && c.deletions == 0)
             .map(|c| c.id)
             .collect();
-        if !needs_stats.is_empty() && self.diff_stats_receiver.is_none() {
+        if !needs_stats.is_empty() {
             self.diff_stats_receiver = Some(repo.compute_diff_stats_async(needs_stats));
         }
     }
@@ -1363,6 +1371,12 @@ impl App {
 fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let Some(ref repo) = repo_tab.repo else { return None };
 
+    // Preserve existing diff stats so they don't flicker away during refresh
+    let prev_stats: HashMap<Oid, (usize, usize)> = repo_tab.commits.iter()
+        .filter(|c| c.insertions > 0 || c.deletions > 0)
+        .map(|c| (c.id, (c.insertions, c.deletions)))
+        .collect();
+
     match repo.commit_graph(MAX_COMMITS) {
         Ok(commits) => {
             repo_tab.commits = commits;
@@ -1373,6 +1387,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
                 ToastSeverity::Error,
             );
             repo_tab.commits = Vec::new();
+        }
+    }
+
+    // Restore cached diff stats until async task provides fresh values
+    for commit in &mut repo_tab.commits {
+        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+            commit.insertions = ins;
+            commit.deletions = del;
         }
     }
     let head_oid = repo.head_oid().ok();
@@ -1785,14 +1807,24 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Poll async diff stats FIRST — apply completed results before
+                // watcher or remote ops can orphan the receiver with a new one
+                self.poll_diff_stats();
+                // Re-launch diff stats if the previous receiver was orphaned
+                self.ensure_diff_stats();
                 // Poll filesystem watcher for external changes
                 self.poll_watcher();
                 // Poll background remote operations
                 self.poll_remote_ops();
-                // Poll async diff stats
-                self.poll_diff_stats();
                 // Process any pending messages
                 self.process_messages();
+                // Check if staging well requested an immediate status refresh (e.g., worktree switch)
+                if let Some((_rt, vs)) = self.tabs.get_mut(self.active_tab) {
+                    if vs.staging_well.status_refresh_needed {
+                        self.status_dirty = true;
+                        vs.staging_well.status_refresh_needed = false;
+                    }
+                }
                 // Refresh working directory status only when dirty or on a periodic timer
                 {
                     let now = Instant::now();

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
@@ -491,8 +492,20 @@ pub fn handle_app_message(
             // Count only real commits (exclude synthetics) for the load-more request
             let real_count = commits.iter().filter(|c| !c.is_synthetic).count();
             let new_count = real_count + 50;
+            // Preserve existing diff stats so they don't flicker away
+            let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
+                .filter(|c| c.insertions > 0 || c.deletions > 0)
+                .map(|c| (c.id, (c.insertions, c.deletions)))
+                .collect();
             if let Ok(new_commits) = repo.commit_graph(new_count) {
                 *commits = new_commits;
+                // Restore cached diff stats until async task provides fresh values
+                for commit in commits.iter_mut() {
+                    if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+                        commit.insertions = ins;
+                        commit.deletions = del;
+                    }
+                }
                 // Re-add synthetic entries sorted by time
                 let worktrees = repo.worktrees().unwrap_or_default();
                 let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
@@ -820,6 +833,12 @@ fn refresh_repo_state(
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
 ) {
+    // Preserve existing diff stats so they don't flicker away during refresh
+    let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
+        .filter(|c| c.insertions > 0 || c.deletions > 0)
+        .map(|c| (c.id, (c.insertions, c.deletions)))
+        .collect();
+
     match repo.commit_graph(MAX_COMMITS) {
         Ok(c) => *commits = c,
         Err(e) => {
@@ -828,6 +847,14 @@ fn refresh_repo_state(
                 ToastSeverity::Error,
             );
             *commits = Vec::new();
+        }
+    }
+
+    // Restore cached diff stats until async task provides fresh values
+    for commit in commits.iter_mut() {
+        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+            commit.insertions = ins;
+            commit.deletions = del;
         }
     }
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();

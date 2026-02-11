@@ -69,6 +69,8 @@ pub struct StagingWell {
     active_worktree_idx: usize,
     /// Individual pill rects in the pill bar (for click hit testing)
     pill_bar_rects: Vec<Rect>,
+    /// Flag to request an immediate status refresh (e.g., after worktree switch)
+    pub status_refresh_needed: bool,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -108,6 +110,7 @@ impl StagingWell {
             worktree_contexts: Vec::new(),
             active_worktree_idx: 0,
             pill_bar_rects: Vec::new(),
+            status_refresh_needed: false,
         }
     }
 
@@ -387,6 +390,11 @@ impl StagingWell {
 
         // Exit amend mode on switch
         self.amend_mode = false;
+
+        // Clear stale file lists immediately and request a fresh status refresh
+        self.staged_list.set_files(Vec::new());
+        self.unstaged_list.set_files(Vec::new());
+        self.status_refresh_needed = true;
     }
 
     /// Returns the active worktree context, if any.

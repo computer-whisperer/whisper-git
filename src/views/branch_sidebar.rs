@@ -1,13 +1,13 @@
 //! Branch sidebar view - displays local branches, remote branches, and tags
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::git::{BranchTip, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
-use crate::ui::{Rect, TextRenderer};
+use crate::ui::{Rect, SplineVertex, TextRenderer};
 use crate::ui::text_util::{truncate_to_width, clamp_scroll};
 
 /// Actions that can be triggered from the sidebar
@@ -97,6 +97,8 @@ pub struct BranchSidebar {
     pub worktrees_collapsed: bool,
     /// Whether the STASHES section is collapsed
     pub stashes_collapsed: bool,
+    /// Per-remote collapse state (e.g., "origin" collapsed independently)
+    collapsed_remotes: HashSet<String>,
     /// Scroll offset for the sidebar content
     pub scroll_offset: f32,
     /// Total content height (tracked during layout)
@@ -133,6 +135,26 @@ pub struct BranchSidebar {
     filter_last_blink: std::time::Instant,
 }
 
+/// Create a small filled triangle chevron using spline vertices.
+/// `collapsed=true` → right-pointing ▸, `collapsed=false` → down-pointing ▾.
+fn create_chevron_vertices(x: f32, y: f32, size: f32, collapsed: bool, color: [f32; 4]) -> Vec<SplineVertex> {
+    if collapsed {
+        // Right-pointing triangle: 3 vertices
+        vec![
+            SplineVertex { position: [x, y], color },
+            SplineVertex { position: [x, y + size], color },
+            SplineVertex { position: [x + size * 0.7, y + size * 0.5], color },
+        ]
+    } else {
+        // Down-pointing triangle: 3 vertices
+        vec![
+            SplineVertex { position: [x, y], color },
+            SplineVertex { position: [x + size, y], color },
+            SplineVertex { position: [x + size * 0.5, y + size * 0.7], color },
+        ]
+    }
+}
+
 impl BranchSidebar {
     pub fn new() -> Self {
         Self {
@@ -149,6 +171,7 @@ impl BranchSidebar {
             submodules_collapsed: false,
             worktrees_collapsed: false,
             stashes_collapsed: false,
+            collapsed_remotes: HashSet::new(),
             scroll_offset: 0.0,
             content_height: 0.0,
             line_height: 18.0,
@@ -382,8 +405,10 @@ impl BranchSidebar {
             if !self.remote_collapsed {
                 for (remote_name, branches) in &remote_filtered {
                     self.visible_items.push(SidebarItem::RemoteHeader(remote_name.clone()));
-                    for branch in branches {
-                        self.visible_items.push(SidebarItem::RemoteBranch(remote_name.clone(), branch.clone()));
+                    if !self.collapsed_remotes.contains(remote_name) {
+                        for branch in branches {
+                            self.visible_items.push(SidebarItem::RemoteBranch(remote_name.clone(), branch.clone()));
+                        }
                     }
                 }
             }
@@ -971,6 +996,16 @@ impl BranchSidebar {
                                     self.build_visible_items();
                                     return EventResponse::Consumed;
                                 }
+                                SidebarItem::RemoteHeader(name) => {
+                                    // Toggle per-remote collapse
+                                    if self.collapsed_remotes.contains(name) {
+                                        self.collapsed_remotes.remove(name);
+                                    } else {
+                                        self.collapsed_remotes.insert(name.clone());
+                                    }
+                                    self.build_visible_items();
+                                    return EventResponse::Consumed;
+                                }
                                 SidebarItem::WorktreeEntry(name) => {
                                     self.focused_index = Some(idx);
                                     self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
@@ -1303,6 +1338,7 @@ impl BranchSidebar {
 
         if !self.remote_collapsed {
             for (remote_name, branches) in filtered_remotes {
+                let remote_is_collapsed = self.collapsed_remotes.contains(remote_name);
                 // Remote name sub-header
                 let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
@@ -1310,10 +1346,20 @@ impl BranchSidebar {
                         output, &params.inner, y, params.line_height, item_idx,
                         theme::TEXT_MUTED.to_array(), theme::TEXT.to_array(),
                     );
+                    // Chevron indicator for collapse state (spline triangle)
+                    let chevron_size = params.line_height * 0.45;
+                    let chevron_x = params.inner.x + params.indent;
+                    let chevron_y = y + (params.line_height - chevron_size) * 0.5;
+                    output.spline_vertices.extend(create_chevron_vertices(
+                        chevron_x, chevron_y, chevron_size,
+                        remote_is_collapsed,
+                        theme::TEXT_MUTED.with_alpha(0.6).to_array(),
+                    ));
+                    let chevron_w = chevron_size + 4.0;
                     let remote_label = format!("\u{2601} {}", remote_name); // ☁ icon
                     output.text_vertices.extend(params.text_renderer.layout_text(
                         &remote_label,
-                        params.inner.x + params.indent,
+                        params.inner.x + params.indent + chevron_w,
                         y + 2.0,
                         remote_color,
                     ));
@@ -1321,32 +1367,34 @@ impl BranchSidebar {
                 y += params.line_height;
                 item_idx += 1; // RemoteHeader
 
-                // Branches under this remote
-                for branch in branches {
-                    let visible = y >= params.content_top && y < params.bounds.bottom();
-                    if visible {
-                        let branch_color = self.layout_item_highlight(
-                            output, &params.inner, y, params.line_height, item_idx,
-                            theme::BRANCH_REMOTE.to_array(), theme::TEXT_BRIGHT.to_array(),
-                        );
-                        // Remote branch icon
-                        output.text_vertices.extend(params.text_renderer.layout_text(
-                            "\u{25CB}", // ○
-                            params.inner.x + params.indent * 2.0,
-                            y + 2.0,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
-                        let icon_width = params.text_renderer.measure_text("\u{25CB}") + 4.0;
-                        let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent * 2.0 - icon_width);
-                        output.text_vertices.extend(params.text_renderer.layout_text(
-                            &display_name,
-                            params.inner.x + params.indent * 2.0 + icon_width,
-                            y + 2.0,
-                            branch_color,
-                        ));
+                // Branches under this remote (skip if collapsed)
+                if !remote_is_collapsed {
+                    for branch in branches {
+                        let visible = y >= params.content_top && y < params.bounds.bottom();
+                        if visible {
+                            let branch_color = self.layout_item_highlight(
+                                output, &params.inner, y, params.line_height, item_idx,
+                                theme::BRANCH_REMOTE.to_array(), theme::TEXT_BRIGHT.to_array(),
+                            );
+                            // Remote branch icon
+                            output.text_vertices.extend(params.text_renderer.layout_text(
+                                "\u{25CB}", // ○
+                                params.inner.x + params.indent * 2.0,
+                                y + 2.0,
+                                theme::TEXT_MUTED.to_array(),
+                            ));
+                            let icon_width = params.text_renderer.measure_text("\u{25CB}") + 4.0;
+                            let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent * 2.0 - icon_width);
+                            output.text_vertices.extend(params.text_renderer.layout_text(
+                                &display_name,
+                                params.inner.x + params.indent * 2.0 + icon_width,
+                                y + 2.0,
+                                branch_color,
+                            ));
+                        }
+                        y += params.line_height;
+                        item_idx += 1;
                     }
-                    y += params.line_height;
-                    item_idx += 1;
                 }
             }
         }
@@ -1713,9 +1761,11 @@ impl BranchSidebar {
         if show_remote {
             total_h += section_header_total;
             if !self.remote_collapsed {
-                for (_, branches) in &data.remotes {
+                for (remote_name, branches) in &data.remotes {
                     total_h += line_height; // remote name sub-header
-                    total_h += branches.len() as f32 * line_height;
+                    if !self.collapsed_remotes.contains(remote_name) {
+                        total_h += branches.len() as f32 * line_height;
+                    }
                 }
             }
             total_h += section_gap;
@@ -1919,18 +1969,16 @@ impl BranchSidebar {
                 theme::TEXT_MUTED.to_array()
             };
 
-            // Collapse indicator - small chevron
-            let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
-            output.text_vertices.extend(text_renderer.layout_text_scaled(
-                indicator,
-                inner.x + inset + 4.0,
-                text_y,
-                label_color,
-                header_scale,
+            // Collapse indicator - small spline triangle chevron
+            let chevron_size = text_h * 0.55;
+            let chevron_x = inner.x + inset + 4.0;
+            let chevron_y = text_y + (text_h - chevron_size) * 0.5;
+            output.spline_vertices.extend(create_chevron_vertices(
+                chevron_x, chevron_y, chevron_size, collapsed, label_color,
             ));
 
             // Section title in regular weight, muted color, smaller scale
-            let indicator_width = text_renderer.measure_text_scaled(indicator, header_scale) + 2.0;
+            let indicator_width = chevron_size + 4.0;
             output.text_vertices.extend(text_renderer.layout_text_scaled(
                 title,
                 inner.x + inset + 4.0 + indicator_width,
