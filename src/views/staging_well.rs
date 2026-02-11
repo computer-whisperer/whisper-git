@@ -181,9 +181,9 @@ impl StagingWell {
     /// In amend mode, we only require a non-empty subject (no staged files needed).
     pub fn can_commit(&self) -> bool {
         if self.amend_mode {
-            !self.subject_input.text().is_empty()
+            !self.subject_input.text().trim().is_empty()
         } else {
-            !self.subject_input.text().is_empty() && !self.staged_list.files.is_empty()
+            !self.subject_input.text().trim().is_empty() && !self.staged_list.files.is_empty()
         }
     }
 
