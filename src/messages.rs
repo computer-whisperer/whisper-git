@@ -4,7 +4,7 @@ use std::sync::mpsc::Receiver;
 
 use git2::Oid;
 
-use crate::git::{self, CommitInfo, DiffFile, GitRepo, RemoteOpResult};
+use crate::git::{self, CommitInfo, DiffFile, GitRepo, RemoteOpResult, WorktreeInfo};
 use crate::ui::Rect;
 use crate::ui::widgets::{ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitGraphView, DiffView, StagingWell};
@@ -587,7 +587,7 @@ pub fn handle_app_message(
         }
         AppMessage::JumpToWorktreeBranch(name) => {
             // Find the worktree by name, get its branch, find the branch tip, select it
-            if let Some(wt) = view_state.branch_sidebar.worktrees.iter().find(|w| w.name == name) {
+            if let Some(wt) = view_state.worktrees.iter().find(|w| w.name == name) {
                 let branch_name = wt.branch.clone();
                 if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
                     .find(|t| t.name == branch_name && !t.is_remote) {
@@ -857,6 +857,7 @@ pub struct MessageViewState<'a> {
     pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
     pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
     pub right_panel_mode: &'a mut RightPanelMode,
+    pub worktrees: &'a mut Vec<WorktreeInfo>,
 }
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
@@ -922,9 +923,8 @@ fn refresh_repo_state(
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
-    let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
-    view_state.staging_well.set_worktrees(&worktrees, current_workdir);
-    view_state.branch_sidebar.worktrees = worktrees;
+    view_state.staging_well.set_worktrees(&worktrees);
+    *view_state.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);

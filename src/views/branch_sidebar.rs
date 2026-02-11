@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::git::{BranchTip, StashEntry, TagInfo, WorktreeInfo, format_relative_time};
+use crate::git::{BranchTip, StashEntry, TagInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -16,7 +16,6 @@ pub enum SidebarAction {
     Checkout(String),
     CheckoutRemote(String, String), // (remote, branch)
     Delete(String),
-    SwitchWorktree(String),
     ApplyStash(usize),
     DropStash(usize),
     DeleteTag(String),
@@ -30,7 +29,6 @@ enum SidebarItem {
     RemoteHeader(String),         // remote name like "origin"
     RemoteBranch(String, String), // (remote, branch)
     Tag(String),
-    WorktreeEntry(String),        // worktree name
     StashEntry(usize),  // stash index
 }
 
@@ -51,7 +49,6 @@ struct FilteredData {
     local: Vec<String>,
     remotes: Vec<(String, Vec<String>)>,
     tags: Vec<String>,
-    worktrees: Vec<String>,
     stashes: Vec<(usize, String, i64)>,
 }
 
@@ -65,8 +62,6 @@ pub struct BranchSidebar {
     pub tags: Vec<String>,
     /// Current branch name (for highlighting)
     pub current_branch: String,
-    /// Worktrees in the repository
-    pub worktrees: Vec<WorktreeInfo>,
     /// Stash entries
     pub stashes: Vec<StashEntry>,
     /// Whether the LOCAL section is collapsed
@@ -75,8 +70,6 @@ pub struct BranchSidebar {
     pub remote_collapsed: bool,
     /// Whether the TAGS section is collapsed
     pub tags_collapsed: bool,
-    /// Whether the WORKTREES section is collapsed
-    pub worktrees_collapsed: bool,
     /// Whether the STASHES section is collapsed
     pub stashes_collapsed: bool,
     /// Per-remote collapse state (e.g., "origin" collapsed independently)
@@ -144,12 +137,10 @@ impl BranchSidebar {
             remote_branches: HashMap::new(),
             tags: Vec::new(),
             current_branch: String::new(),
-            worktrees: Vec::new(),
             stashes: Vec::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
-            worktrees_collapsed: false,
             stashes_collapsed: false,
             collapsed_remotes: HashSet::new(),
             scroll_offset: 0.0,
@@ -411,23 +402,6 @@ impl BranchSidebar {
             }
         }
 
-        // WORKTREES section (only if any exist)
-        if !self.worktrees.is_empty() {
-            let wt_filtered: Vec<WorktreeInfo> = if filtering {
-                self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).cloned().collect()
-            } else {
-                self.worktrees.clone()
-            };
-            if !filtering || !wt_filtered.is_empty() {
-                self.visible_items.push(SidebarItem::SectionHeader("WORKTREES"));
-                if !self.worktrees_collapsed {
-                    for wt in &wt_filtered {
-                        self.visible_items.push(SidebarItem::WorktreeEntry(wt.name.clone()));
-                    }
-                }
-            }
-        }
-
         // STASHES section (only if any exist)
         if !self.stashes.is_empty() {
             let stash_filtered: Vec<StashEntry> = if filtering {
@@ -522,9 +496,6 @@ impl BranchSidebar {
                     }
                     SidebarItem::RemoteBranch(remote, branch) => {
                         self.pending_action = Some(SidebarAction::CheckoutRemote(remote.clone(), branch.clone()));
-                    }
-                    SidebarItem::WorktreeEntry(name) => {
-                        self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
                     }
                     SidebarItem::Tag(name) => {
                         self.pending_action = Some(SidebarAction::Checkout(name.clone()));
@@ -626,21 +597,6 @@ impl BranchSidebar {
                         ];
                         for item in &mut items {
                             item.action_id = format!("{}:{}", item.action_id, full);
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::WorktreeEntry(name) => {
-                        let mut items = vec![
-                            MenuItem::new("Switch Staging", "switch_worktree"),
-                            MenuItem::new("Jump to Branch", "jump_to_worktree"),
-                            MenuItem::new("Open in Terminal", "open_worktree"),
-                            MenuItem::separator(),
-                            MenuItem::new("Remove Worktree", "remove_worktree"),
-                        ];
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, name);
-                            }
                         }
                         return Some(items);
                     }
@@ -936,7 +892,6 @@ impl BranchSidebar {
                                         "LOCAL" => self.local_collapsed = !self.local_collapsed,
                                         "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
                                         "TAGS" => self.tags_collapsed = !self.tags_collapsed,
-                                        "WORKTREES" => self.worktrees_collapsed = !self.worktrees_collapsed,
                                         "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
                                         _ => {}
                                     }
@@ -951,11 +906,6 @@ impl BranchSidebar {
                                         self.collapsed_remotes.insert(name.clone());
                                     }
                                     self.build_visible_items();
-                                    return EventResponse::Consumed;
-                                }
-                                SidebarItem::WorktreeEntry(name) => {
-                                    self.focused_index = Some(idx);
-                                    self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
                                     return EventResponse::Consumed;
                                 }
                                 _ => {
@@ -1018,19 +968,13 @@ impl BranchSidebar {
             self.tags.clone()
         };
 
-        let worktrees: Vec<String> = if filtering {
-            self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).map(|w| w.name.clone()).collect()
-        } else {
-            self.worktrees.iter().map(|w| w.name.clone()).collect()
-        };
-
         let stashes: Vec<(usize, String, i64)> = if filtering {
             self.stashes.iter().filter(|s| self.matches_filter(&s.message)).map(|s| (s.index, s.message.clone(), s.time)).collect()
         } else {
             self.stashes.iter().map(|s| (s.index, s.message.clone(), s.time)).collect()
         };
 
-        FilteredData { local, remotes, tags, worktrees, stashes }
+        FilteredData { local, remotes, tags, stashes }
     }
 
     /// Render hover/focus highlight backgrounds for a sidebar item row.
@@ -1395,126 +1339,6 @@ impl BranchSidebar {
         (y, item_idx)
     }
 
-    /// Layout the WORKTREES section. Returns (new_y, new_item_idx).
-    fn layout_worktrees_section(
-        &self,
-        params: &LayoutParams,
-        bold_renderer: &TextRenderer,
-        output: &mut WidgetOutput,
-        filtered_worktrees: &[String],
-        y: f32,
-        item_idx: usize,
-    ) -> (f32, usize) {
-        let mut y = y;
-        let mut item_idx = item_idx;
-
-        y = self.layout_section_header(
-            params.text_renderer, bold_renderer, output, &params.inner, y,
-            "WORKTREES", filtered_worktrees.len(), self.worktrees_collapsed,
-            params.section_header_height, &params.bounds, params.content_top,
-        );
-        item_idx += 1; // SectionHeader("WORKTREES")
-
-        if !self.worktrees_collapsed {
-            for wt_name in filtered_worktrees {
-                let visible = y >= params.content_top && y < params.bounds.bottom();
-                if visible {
-                    let is_current = self.worktrees.iter()
-                        .any(|w| w.name == *wt_name && w.is_current);
-
-                    let is_focused = self.focused && self.focused_index == Some(item_idx);
-                    let is_hovered = self.hovered_index == Some(item_idx);
-
-                    if is_hovered && !is_focused {
-                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &highlight_rect,
-                            theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
-                        ));
-                    }
-                    if is_focused {
-                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &highlight_rect,
-                            theme::SURFACE_HOVER.to_array(),
-                        ));
-                    }
-
-                    // Accent highlight for current worktree (like current branch)
-                    if is_current {
-                        let stripe_rect = Rect::new(params.inner.x, y, 3.0, params.line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &stripe_rect,
-                            theme::ACCENT.to_array(),
-                        ));
-                        let highlight_rect = Rect::new(params.inner.x, y, params.inner.width, params.line_height);
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &highlight_rect,
-                            theme::ACCENT_MUTED.to_array(),
-                        ));
-                    }
-
-                    let name_color = if is_current {
-                        theme::ACCENT.to_array()
-                    } else if is_hovered || is_focused {
-                        theme::TEXT_BRIGHT.to_array()
-                    } else {
-                        theme::TEXT.to_array()
-                    };
-
-                    // Worktree icon: ▣ in orange
-                    let icon = "\u{25A3}"; // ▣
-                    let icon_color = if is_current {
-                        theme::ACCENT.to_array()
-                    } else {
-                        theme::BRANCH_RELEASE.to_array()
-                    };
-                    output.text_vertices.extend(params.text_renderer.layout_text(
-                        icon,
-                        params.inner.x + params.indent,
-                        y + 2.0,
-                        icon_color,
-                    ));
-                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
-
-                    // Check dirty status
-                    let is_dirty = self.worktrees.iter()
-                        .any(|w| w.name == *wt_name && w.is_dirty);
-
-                    // Show dirty indicator after name if dirty
-                    let dirty_marker = " \u{25CF}M"; // ●M
-                    let suffix_width = if is_dirty {
-                        params.text_renderer.measure_text(dirty_marker)
-                    } else {
-                        0.0
-                    };
-
-                    let display_name = truncate_to_width(wt_name, params.text_renderer, params.inner.width - params.indent - icon_width - suffix_width);
-                    output.text_vertices.extend(params.text_renderer.layout_text(
-                        &display_name,
-                        params.inner.x + params.indent + icon_width,
-                        y + 2.0,
-                        name_color,
-                    ));
-
-                    if is_dirty {
-                        let name_width = params.text_renderer.measure_text(&display_name);
-                        output.text_vertices.extend(params.text_renderer.layout_text(
-                            dirty_marker,
-                            params.inner.x + params.indent + icon_width + name_width,
-                            y + 2.0,
-                            theme::STATUS_DIRTY.to_array(),
-                        ));
-                    }
-                }
-                y += params.line_height;
-                item_idx += 1;
-            }
-        }
-
-        (y, item_idx)
-    }
-
     /// Layout the STASHES section. Returns (new_y, new_item_idx).
     fn layout_stashes_section(
         &self,
@@ -1608,7 +1432,6 @@ impl BranchSidebar {
         show_local: bool,
         show_remote: bool,
         show_tags: bool,
-        show_worktrees: bool,
         show_stashes: bool,
     ) -> f32 {
         let section_header_total = self.section_header_total_height();
@@ -1637,13 +1460,6 @@ impl BranchSidebar {
             total_h += section_header_total;
             if !self.tags_collapsed {
                 total_h += data.tags.len() as f32 * line_height;
-            }
-        }
-        if show_worktrees {
-            total_h += section_gap;
-            total_h += section_header_total;
-            if !self.worktrees_collapsed {
-                total_h += data.worktrees.len() as f32 * line_height;
             }
         }
         if show_stashes {
@@ -1687,7 +1503,6 @@ impl BranchSidebar {
         let show_local = !filtering || !data.local.is_empty();
         let show_remote = !filtering || !data.remotes.is_empty();
         let show_tags = !filtering || !data.tags.is_empty();
-        let show_worktrees = !self.worktrees.is_empty() && (!filtering || !data.worktrees.is_empty());
         let show_stashes = !self.stashes.is_empty() && (!filtering || !data.stashes.is_empty());
 
         let params = LayoutParams {
@@ -1717,11 +1532,6 @@ impl BranchSidebar {
             (y, item_idx) = self.layout_tags_section(&params, bold_renderer, &mut output, &data.tags, y, item_idx);
         }
 
-        if show_worktrees {
-            y += section_gap;
-            (y, item_idx) = self.layout_worktrees_section(&params, bold_renderer, &mut output, &data.worktrees, y, item_idx);
-        }
-
         if show_stashes {
             y += section_gap;
             (y, item_idx) = self.layout_stashes_section(&params, bold_renderer, &mut output, &data.stashes, y, item_idx);
@@ -1734,7 +1544,7 @@ impl BranchSidebar {
         self.content_height = self.compute_content_height(
             &data, filter_bar_h, line_height, section_gap,
             show_local, show_remote, show_tags,
-            show_worktrees, show_stashes,
+            show_stashes,
         );
 
         // Update and render scrollbar

@@ -154,6 +154,8 @@ struct TabViewState {
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
     /// Track whether we already showed the "still running" toast for each op
     showed_timeout_toast: [bool; 4],
+    /// Worktree info list (moved from sidebar)
+    worktrees: Vec<crate::git::WorktreeInfo>,
     /// Cache of opened worktree repos keyed by path, to avoid re-discovering on switch
     worktree_repo_cache: HashMap<PathBuf, GitRepo>,
     /// Path of the currently active worktree (None = main worktree)
@@ -276,6 +278,7 @@ impl TabViewState {
             push_receiver: None,
             generic_op_receiver: None,
             showed_timeout_toast: [false; 4],
+            worktrees: Vec::new(),
             worktree_repo_cache: HashMap::new(),
             active_worktree_path: None,
             submodule_focus: None,
@@ -697,6 +700,7 @@ impl App {
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
+                worktrees: &mut view_state.worktrees,
             };
             let staging_repo = view_state.active_worktree_path.as_ref()
                 .and_then(|p| view_state.worktree_repo_cache.get(p))
@@ -762,7 +766,7 @@ impl App {
                 if let Some(ref repo) = repo_tab.repo {
                     let git_dir = repo.git_dir().to_path_buf();
                     if let Some(ref mut w) = view_state.watcher {
-                        w.update_worktree_watches(&view_state.branch_sidebar.worktrees, &git_dir);
+                        w.update_worktree_watches(&view_state.worktrees, &git_dir);
                     }
                 }
             }
@@ -908,7 +912,7 @@ impl App {
                         // Also refresh worktrees/stashes
                         if let Some(ref repo) = repo_tab.repo {
                             if let Ok(worktrees) = repo.worktrees() {
-                                view_state.branch_sidebar.worktrees = worktrees;
+                                view_state.worktrees = worktrees;
                             }
                             view_state.branch_sidebar.stashes = repo.stash_list();
                         }
@@ -1342,9 +1346,6 @@ impl App {
                 self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
             }
-            SidebarAction::SwitchWorktree(name) => {
-                view_state.switch_to_worktree_by_name(&name);
-            }
             SidebarAction::ApplyStash(index) => {
                 view_state.pending_messages.push(AppMessage::StashApply(index));
             }
@@ -1427,14 +1428,13 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
-    let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
-    view_state.staging_well.set_worktrees(&worktrees, current_workdir);
+    view_state.staging_well.set_worktrees(&worktrees);
     // Prune cached worktree repos for paths that no longer exist
     let valid_paths: std::collections::HashSet<PathBuf> = worktrees.iter()
         .map(|wt| PathBuf::from(&wt.path))
         .collect();
     view_state.worktree_repo_cache.retain(|path, _| valid_paths.contains(path));
-    view_state.branch_sidebar.worktrees = worktrees;
+    view_state.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
@@ -1515,7 +1515,7 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
     let Some(workdir) = repo.workdir() else { return };
     let git_dir = repo.git_dir();
 
-    match RepoWatcher::new(workdir, git_dir, &view_state.branch_sidebar.worktrees) {
+    match RepoWatcher::new(workdir, git_dir, &view_state.worktrees) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
@@ -2112,12 +2112,24 @@ impl App {
                     view_state.context_menu.show(items, *x, *y);
                     return;
                 }
-            } else if layout.right_panel.contains(*x, *y)
-                && view_state.right_panel_mode == RightPanelMode::Staging
-                && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
-                    view_state.context_menu.show(items, *x, *y);
-                    return;
+            } else if layout.right_panel.contains(*x, *y) {
+                // Check pill bar first
+                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let (pill_rect, _) = layout.right_panel.take_top(pill_bar_h);
+                if pill_rect.contains(*x, *y) {
+                    if let Some(items) = view_state.staging_well.pill_context_menu_at(*x, *y) {
+                        view_state.context_menu.show(items, *x, *y);
+                        return;
+                    }
                 }
+                // Then check staging file lists
+                if view_state.right_panel_mode == RightPanelMode::Staging {
+                    if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
+                        view_state.context_menu.show(items, *x, *y);
+                        return;
+                    }
+                }
+            }
         }
 
         // Detect clicks on panels to switch focus
@@ -2359,6 +2371,11 @@ fn determine_cursor(
         return CursorIcon::Pointer;
     }
 
+    // Staging well worktree pills (clickable to switch worktree)
+    if layout.right_panel.contains(x, y) && view_state.staging_well.is_over_pill(x, y) {
+        return CursorIcon::Pointer;
+    }
+
     // Staging well buttons (Stage All, Unstage All, Commit, Amend)
     if layout.right_panel.contains(x, y) && view_state.staging_well.is_any_button_hovered() {
         return CursorIcon::Pointer;
@@ -2557,7 +2574,7 @@ fn handle_context_menu_action(
         }
         "open_worktree" => {
             if !param.is_empty() {
-                let path = view_state.branch_sidebar.worktrees.iter()
+                let path = view_state.worktrees.iter()
                     .find(|w| w.name == param)
                     .map(|w| w.path.clone());
                 if let Some(path) = path {

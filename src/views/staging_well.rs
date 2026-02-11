@@ -1,6 +1,6 @@
 //! Staging well view - commit message editor and file staging
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
@@ -13,12 +13,43 @@ use crate::ui::{Rect, TextRenderer, Widget};
 #[derive(Clone, Debug)]
 pub struct WorktreeContext {
     pub name: String,
+    pub display_name: String,
     pub path: PathBuf,
     pub branch: String,
     pub is_current: bool,
-    pub is_dirty: bool,
+    pub dirty_file_count: usize,
     pub subject_draft: String,
     pub body_draft: String,
+}
+
+/// Compute short display names by stripping the longest common prefix
+/// (up to and including the last separator: `-`, `_`, or `/`).
+fn compute_display_names(names: &[String]) -> Vec<String> {
+    if names.len() < 2 {
+        return names.to_vec();
+    }
+    // Find longest common prefix
+    let first = &names[0];
+    let prefix_len = first.len().min(
+        names[1..].iter().map(|n| {
+            first.chars().zip(n.chars()).take_while(|(a, b)| a == b).count()
+        }).min().unwrap_or(0)
+    );
+    let common = &first[..prefix_len];
+    // Walk backward to last separator
+    let strip_len = common.rfind(|c: char| c == '-' || c == '_' || c == '/')
+        .map(|i| i + 1) // include separator
+        .unwrap_or(0);
+    if strip_len == 0 {
+        return names.to_vec();
+    }
+    let result: Vec<String> = names.iter().map(|n| n[strip_len..].to_string()).collect();
+    // Guard: if any result is empty, return originals
+    if result.iter().any(|s| s.is_empty()) {
+        names.to_vec()
+    } else {
+        result
+    }
 }
 
 /// Actions from the staging well
@@ -71,6 +102,8 @@ pub struct StagingWell {
     active_worktree_idx: usize,
     /// Individual pill rects in the pill bar (for click hit testing)
     pill_bar_rects: Vec<Rect>,
+    /// Number of rows in the pill bar (for wrapping layout)
+    cached_pill_rows: usize,
     /// Flag to request an immediate status refresh (e.g., after worktree switch)
     pub status_refresh_needed: bool,
     /// Submodule info for the current worktree/repo
@@ -118,6 +151,7 @@ impl StagingWell {
             worktree_contexts: Vec::new(),
             active_worktree_idx: 0,
             pill_bar_rects: Vec::new(),
+            cached_pill_rows: 1,
             status_refresh_needed: false,
             submodules: Vec::new(),
             submodule_bounds: Vec::new(),
@@ -338,7 +372,7 @@ impl StagingWell {
     /// Build worktree contexts from the repo's worktree list.
     /// Only creates contexts when there are 2+ worktrees (including the main one).
     /// Preserves existing drafts by matching on path.
-    pub fn set_worktrees(&mut self, worktrees: &[WorktreeInfo], _current_workdir: &Path) {
+    pub fn set_worktrees(&mut self, worktrees: &[WorktreeInfo]) {
         // Only show selector when there are linked worktrees (2+)
         if worktrees.len() < 2 {
             self.worktree_contexts.clear();
@@ -360,10 +394,11 @@ impl StagingWell {
 
             WorktreeContext {
                 name: wt.name.clone(),
+                display_name: wt.name.clone(), // temporary, overwritten below
                 path,
                 branch: wt.branch.clone(),
                 is_current: wt.is_current,
-                is_dirty: wt.is_dirty,
+                dirty_file_count: wt.dirty_file_count,
                 subject_draft,
                 body_draft,
             }
@@ -371,6 +406,13 @@ impl StagingWell {
 
         // Sort: current worktree first, then alphabetical
         new_contexts.sort_by(|a, b| b.is_current.cmp(&a.is_current).then(a.name.cmp(&b.name)));
+
+        // Compute prefix-stripped display names
+        let names: Vec<String> = new_contexts.iter().map(|c| c.name.clone()).collect();
+        let display_names = compute_display_names(&names);
+        for (ctx, dn) in new_contexts.iter_mut().zip(display_names) {
+            ctx.display_name = dn;
+        }
 
         // Restore active index by path match, or reset to 0
         self.active_worktree_idx = if let Some(ref old_path) = old_active_path {
@@ -429,7 +471,17 @@ impl StagingWell {
 
     /// Height of the pill bar in pixels (0 when no worktree contexts).
     pub fn pill_bar_height(&self) -> f32 {
-        if self.worktree_contexts.is_empty() { 0.0 } else { 26.0 * self.scale }
+        let s = self.scale;
+        if self.worktree_contexts.is_empty() {
+            0.0
+        } else if self.worktree_contexts.len() == 1 {
+            26.0 * s
+        } else {
+            let pill_h = 20.0 * s;
+            let gap = 4.0 * s;
+            let padding = 6.0 * s;
+            self.cached_pill_rows as f32 * (pill_h + gap) + padding
+        }
     }
 
     /// Find a worktree index by name.
@@ -438,7 +490,7 @@ impl StagingWell {
     }
 
     /// Layout the worktree pill bar at the top of the right panel.
-    /// Renders a row of pills (one per worktree), active one highlighted.
+    /// Renders wrapping rows of pills (one per worktree), active one highlighted.
     /// Single-worktree: renders just the branch name as muted text.
     pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
@@ -446,7 +498,6 @@ impl StagingWell {
         self.pill_bar_rects.clear();
 
         if self.worktree_contexts.is_empty() {
-
             return output;
         }
 
@@ -465,18 +516,40 @@ impl StagingWell {
             return output;
         }
 
-        // Multiple worktrees: render a row of pills
-        let mut pill_x = bounds.x + 6.0 * s;
+        // Multiple worktrees: render wrapping rows of pills
+        let left_margin = 6.0 * s;
         let pill_h = 20.0 * s;
-        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
         let pill_gap = 4.0 * s;
+        let top_pad = 3.0 * s;
+        let max_x = bounds.x + bounds.width - 4.0 * s;
+
+        let mut pill_x = bounds.x + left_margin;
+        let mut row = 0;
+        let mut pill_y = bounds.y + top_pad;
 
         for (i, ctx) in self.worktree_contexts.iter().enumerate() {
             let is_active = i == self.active_worktree_idx;
-            let label = &ctx.name;
+            let label = &ctx.display_name;
             let label_w = text_renderer.measure_text(label);
-            let dot_space = if ctx.is_dirty { 10.0 * s } else { 0.0 };
-            let pill_w = label_w + 12.0 * s + dot_space;
+            // Dirty count suffix: " *N"
+            let dirty_suffix = if ctx.dirty_file_count > 0 {
+                format!(" *{}", ctx.dirty_file_count)
+            } else {
+                String::new()
+            };
+            let suffix_w = if !dirty_suffix.is_empty() {
+                text_renderer.measure_text(&dirty_suffix)
+            } else {
+                0.0
+            };
+            let pill_w = label_w + suffix_w + 12.0 * s;
+
+            // Wrap to next row if this pill would overflow
+            if i > 0 && pill_x + pill_w > max_x {
+                row += 1;
+                pill_x = bounds.x + left_margin;
+                pill_y = bounds.y + top_pad + row as f32 * (pill_h + pill_gap);
+            }
 
             let pill_rect = Rect::new(pill_x, pill_y, pill_w, pill_h);
             self.pill_bar_rects.push(pill_rect);
@@ -517,24 +590,47 @@ impl StagingWell {
                 text_color.to_array(),
             ));
 
-            // Dirty indicator dot
-            if ctx.is_dirty {
-                let dot_r = 3.0 * s;
-                let dot_cx = pill_x + pill_w - 6.0 * s - dot_r;
-                let dot_cy = pill_y + pill_h / 2.0;
-                let dot_rect = Rect::new(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2.0, dot_r * 2.0);
-                output.spline_vertices.extend(create_rounded_rect_vertices(
-                    &dot_rect,
+            // Dirty count suffix in amber
+            if !dirty_suffix.is_empty() {
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &dirty_suffix,
+                    text_x + label_w,
+                    text_y_pill,
                     theme::STATUS_BEHIND.to_array(),
-                    dot_r,
                 ));
             }
 
             pill_x += pill_w + pill_gap;
         }
 
+        self.cached_pill_rows = row + 1;
 
         output
+    }
+
+    /// Returns true if the mouse position is over a worktree pill.
+    pub fn is_over_pill(&self, x: f32, y: f32) -> bool {
+        self.pill_bar_rects.iter().any(|r| r.contains(x, y))
+    }
+
+    /// Get context menu items for a right-clicked worktree pill at (x, y).
+    pub fn pill_context_menu_at(&self, x: f32, y: f32) -> Option<Vec<MenuItem>> {
+        for (i, pill_rect) in self.pill_bar_rects.iter().enumerate() {
+            if pill_rect.contains(x, y) {
+                if let Some(ctx) = self.worktree_contexts.get(i) {
+                    let name = &ctx.name;
+                    let items = vec![
+                        MenuItem::new("Switch Staging", format!("switch_worktree:{}", name)),
+                        MenuItem::new("Jump to Branch", format!("jump_to_worktree:{}", name)),
+                        MenuItem::new("Open in Terminal", format!("open_worktree:{}", name)),
+                        MenuItem::separator(),
+                        MenuItem::new("Remove Worktree", format!("remove_worktree:{}", name)),
+                    ];
+                    return Some(items);
+                }
+            }
+        }
+        None
     }
 
     /// Handle events on the worktree pill bar.
