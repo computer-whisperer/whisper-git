@@ -1242,38 +1242,21 @@ impl CommitGraphView {
                 acc
             });
 
-        // Worktree lookup (non-current only — current worktree HEAD is already shown via branch pills)
+        // Worktree lookup: only show WT: pills for CLEAN non-current worktrees on their HEAD.
+        // Dirty worktrees get their WT: pill on the synthetic row instead.
+        let dirty_wt_names: HashSet<String> = commits.iter()
+            .filter(|c| c.is_synthetic)
+            .filter_map(|c| c.synthetic_wt_name.clone())
+            .collect();
         let worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
             .worktrees
             .iter()
-            .filter(|wt| !wt.is_current)
+            .filter(|wt| !wt.is_current && !dirty_wt_names.contains(&wt.name))
             .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
             .fold(HashMap::new(), |mut acc, (oid, wt)| {
                 acc.entry(oid).or_default().push(wt);
                 acc
             });
-
-        // Dirty worktree lookup — all worktrees (including current) that have dirty files
-        // For the "(Working N)" pill indicators at each dirty worktree's HEAD commit
-        let dirty_worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
-            .worktrees
-            .iter()
-            .filter(|wt| wt.is_dirty && wt.head_oid.is_some())
-            .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
-            .fold(HashMap::new(), |mut acc, (oid, wt)| {
-                acc.entry(oid).or_default().push(wt);
-                acc
-            });
-
-        // Single-worktree fallback: if no linked worktrees exist, use working_dir_status
-        // to show a "Working (N)" pill on the HEAD commit
-        let fallback_dirty_count = if self.worktrees.is_empty() {
-            self.working_dir_status.as_ref()
-                .filter(|s| !s.is_clean())
-                .map(|s| s.total_files())
-        } else {
-            None
-        };
 
         let pill_params = PillParams {
             char_width: text_renderer.char_width(),
@@ -1307,41 +1290,47 @@ impl CommitGraphView {
 
             if commit.is_synthetic {
                 // === Synthetic "uncommitted changes" row ===
-                // Render summary in amber/orange, no avatar, no time column
                 let mut current_x = text_x;
-
-                // Render a "Working" pill-style indicator
-                let synth_label = "\u{25CF} uncommitted"; // ● uncommitted
-                let synth_width = text_renderer.measure_text(synth_label);
                 let synth_color = theme::STATUS_DIRTY;
 
-                if current_x + synth_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width
-                    <= pill_params.time_col_left - pill_params.col_gap
-                {
-                    let pill_rect = Rect::new(
-                        current_x,
-                        y - pill_params.pill_pad_v,
-                        synth_width + pill_params.pill_pad_h * 2.0,
-                        line_height + pill_params.pill_pad_v * 2.0,
-                    );
-                    pill_vertices.extend(create_rounded_rect_vertices(
-                        &pill_rect,
-                        synth_color.with_alpha(0.15).to_array(),
-                        pill_params.pill_radius,
-                    ));
-                    pill_vertices.extend(create_rounded_rect_outline_vertices(
-                        &pill_rect,
-                        synth_color.with_alpha(0.45).to_array(),
-                        pill_params.pill_radius,
-                        pill_params.pill_border_thickness,
-                    ));
-                    vertices.extend(text_renderer.layout_text(
-                        synth_label,
-                        current_x + pill_params.pill_pad_h,
-                        y,
-                        synth_color.with_alpha(dim_alpha).to_array(),
-                    ));
-                    current_x += synth_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width;
+                // WT: pill if this synthetic is for a named worktree
+                if let Some(ref wt_name) = commit.synthetic_wt_name {
+                    let wt_label = format!("WT:{}", wt_name);
+                    let wt_width = text_renderer.measure_text(&wt_label);
+                    if current_x + wt_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width
+                        <= pill_params.time_col_left - pill_params.col_gap
+                    {
+                        let pill_rect = Rect::new(
+                            current_x,
+                            y - pill_params.pill_pad_v,
+                            wt_width + pill_params.pill_pad_h * 2.0,
+                            line_height + pill_params.pill_pad_v * 2.0,
+                        );
+                        let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
+                        pill_vertices.extend(create_rounded_rect_vertices(
+                            &pill_rect,
+                            Color::rgba(1.0, 0.596, 0.0, 0.20).to_array(),
+                            pill_params.pill_radius,
+                        ));
+                        pill_vertices.extend(create_rounded_rect_outline_vertices(
+                            &pill_rect,
+                            wt_text_color.with_alpha(0.45).to_array(),
+                            pill_params.pill_radius,
+                            pill_params.pill_border_thickness,
+                        ));
+                        vertices.extend(text_renderer.layout_text(
+                            &wt_label,
+                            current_x + pill_params.pill_pad_h,
+                            y,
+                            wt_text_color.with_alpha(dim_alpha).to_array(),
+                        ));
+                        // Track click target for worktree switching
+                        self.pill_click_targets.push(PillClickTarget {
+                            worktree_name: wt_name.clone(),
+                            bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+                        });
+                        current_x += wt_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width;
+                    }
                 }
 
                 // Summary text (amber)
@@ -1352,6 +1341,18 @@ impl CommitGraphView {
                     current_x,
                     y,
                     synth_color.with_alpha(0.9 * dim_alpha).to_array(),
+                ));
+
+                // Time column for synthetic rows too
+                let time_str = commit.relative_time();
+                let time_width = text_renderer.measure_text_scaled(&time_str, 0.85);
+                let time_x = time_col_right - time_width;
+                let time_y = y + (line_height - text_renderer.line_height_small()) * 0.5;
+                vertices.extend(text_renderer.layout_text_small(
+                    &time_str,
+                    time_x,
+                    time_y,
+                    synth_color.with_alpha(0.5 * dim_alpha).to_array(),
                 ));
             } else {
                 // === Regular commit row ===
@@ -1384,7 +1385,7 @@ impl CommitGraphView {
                     current_x, &mut vertices, &mut pill_vertices,
                 );
 
-                // === Worktree and working pills ===
+                // === Worktree pills (only for clean worktrees — dirty ones show on synthetic row) ===
                 let (new_x, wt_targets) = Self::render_worktree_pills(
                     text_renderer, &pill_params, y,
                     worktrees_by_oid.get(&commit.id),
@@ -1392,14 +1393,6 @@ impl CommitGraphView {
                 );
                 current_x = new_x;
                 self.pill_click_targets.extend(wt_targets);
-                let (new_x, wd_targets) = Self::render_working_pills(
-                    text_renderer, &pill_params, y, is_head,
-                    dirty_worktrees_by_oid.get(&commit.id),
-                    fallback_dirty_count,
-                    current_x, &mut vertices, &mut pill_vertices,
-                );
-                current_x = new_x;
-                self.pill_click_targets.extend(wd_targets);
 
                 // === HEAD indicator (after branch/tag/worktree pills) ===
                 if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
@@ -1617,85 +1610,6 @@ impl CommitGraphView {
             ));
             current_x += wt_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
         }
-        (current_x, click_targets)
-    }
-
-    /// Render "Working (N)" pills for dirty worktrees. Returns (updated current_x, click targets).
-    #[allow(clippy::too_many_arguments)]
-    fn render_working_pills(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        is_head: bool,
-        dirty_wts: Option<&Vec<&WorktreeInfo>>,
-        fallback_dirty_count: Option<usize>,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-    ) -> (f32, Vec<PillClickTarget>) {
-        let mut click_targets = Vec::new();
-
-        // Collect dirty file counts with worktree names for this commit
-        let mut dirty_entries: Vec<(usize, String)> = Vec::new();
-
-        // From worktree info (multi-worktree case)
-        if let Some(dirty_wts) = dirty_wts {
-            for wt in dirty_wts {
-                dirty_entries.push((wt.dirty_file_count, wt.name.clone()));
-            }
-        }
-
-        // Fallback for single-worktree repos: show on HEAD commit
-        if is_head {
-            if let Some(count) = fallback_dirty_count {
-                dirty_entries.push((count, String::new()));
-            }
-        }
-
-        if dirty_entries.is_empty() {
-            return (current_x, click_targets);
-        }
-
-        for (count, wt_name) in dirty_entries {
-            let wd_label = format!("Working ({})", count);
-            let wd_width = text_renderer.measure_text(&wd_label);
-            if current_x + wd_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
-                break;
-            }
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                wd_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            // Track click target for this working pill (only if we have a worktree name)
-            if !wt_name.is_empty() {
-                click_targets.push(PillClickTarget {
-                    worktree_name: wt_name,
-                    bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
-                });
-            }
-            // Red "Working" pill with subtle background and outline
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                theme::STATUS_DIRTY.with_alpha(0.15).to_array(),
-                p.pill_radius,
-            ));
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                theme::STATUS_DIRTY.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-            vertices.extend(text_renderer.layout_text(
-                &wd_label,
-                current_x + p.pill_pad_h,
-                y,
-                theme::STATUS_DIRTY.to_array(),
-            ));
-            current_x += wd_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
-        }
-
         (current_x, click_targets)
     }
 
