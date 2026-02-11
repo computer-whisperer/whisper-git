@@ -55,6 +55,8 @@ struct LayoutParams<'a> {
     line_height: f32,
     section_header_height: f32,
     indent: f32,
+    /// Top Y below which items are visible (below the filter bar)
+    content_top: f32,
 }
 
 /// Pre-computed filtered data for all sections
@@ -291,6 +293,13 @@ impl BranchSidebar {
         let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
         let filter_offset = self.filter_bar_height();
+        let content_top = bounds.y + padding + filter_offset;
+
+        // If mouse is in the filter bar region, no item hover
+        if y < content_top {
+            self.hovered_index = None;
+            return;
+        }
 
         let mut item_y = inner.y + filter_offset - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
@@ -301,6 +310,11 @@ impl BranchSidebar {
 
             if y >= item_y && y < item_y + h {
                 // Only highlight navigable items, not section headers
+                // Also skip items that are behind the filter bar
+                if item_y < content_top {
+                    self.hovered_index = None;
+                    return;
+                }
                 match item {
                     SidebarItem::SectionHeader(_) => {
                         self.hovered_index = None;
@@ -567,6 +581,12 @@ impl BranchSidebar {
         let section_header_total = self.section_header_total_height();
         let section_gap = 8.0;
         let filter_offset = self.filter_bar_height();
+        let content_top = bounds.y + padding + filter_offset;
+
+        // Click is in the filter bar region - no context menu
+        if y < content_top {
+            return None;
+        }
 
         let mut item_y = inner.y + filter_offset - self.scroll_offset;
         for (idx, item) in self.visible_items.iter().enumerate() {
@@ -926,6 +946,7 @@ impl BranchSidebar {
 
                     // Offset start Y by filter bar height
                     let filter_offset = self.filter_bar_height();
+                    let content_top = bounds.y + padding + filter_offset;
                     let mut item_y = inner.y + filter_offset - self.scroll_offset;
                     for (idx, item) in self.visible_items.iter().enumerate() {
                         let h = match item {
@@ -933,7 +954,8 @@ impl BranchSidebar {
                             _ => line_height,
                         };
 
-                        if *y >= item_y && *y < item_y + h {
+                        // Skip items behind the filter bar
+                        if *y >= item_y && *y < item_y + h && item_y >= content_top {
                             match item {
                                 SidebarItem::SectionHeader(name) => {
                                     // Toggle collapse
@@ -1164,13 +1186,13 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "LOCAL", filtered_local.len(), self.local_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("LOCAL")
 
         if !self.local_collapsed {
             for branch in filtered_local {
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let is_current = *branch == self.current_branch;
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -1275,14 +1297,14 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "REMOTE", remote_count, self.remote_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("REMOTE")
 
         if !self.remote_collapsed {
             for (remote_name, branches) in filtered_remotes {
                 // Remote name sub-header
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let remote_color = self.layout_item_highlight(
                         output, &params.inner, y, params.line_height, item_idx,
@@ -1301,7 +1323,7 @@ impl BranchSidebar {
 
                 // Branches under this remote
                 for branch in branches {
-                    let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                    let visible = y >= params.content_top && y < params.bounds.bottom();
                     if visible {
                         let branch_color = self.layout_item_highlight(
                             output, &params.inner, y, params.line_height, item_idx,
@@ -1348,13 +1370,13 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "TAGS", filtered_tags.len(), self.tags_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("TAGS")
 
         if !self.tags_collapsed {
             for tag in filtered_tags {
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let tag_color = self.layout_item_highlight(
                         output, &params.inner, y, params.line_height, item_idx,
@@ -1400,13 +1422,13 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "SUBMODULES", filtered_submodules.len(), self.submodules_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("SUBMODULES")
 
         if !self.submodules_collapsed {
             for sm_name in filtered_submodules {
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let name_color = self.layout_item_highlight(
                         output, &params.inner, y, params.line_height, item_idx,
@@ -1477,13 +1499,13 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "WORKTREES", filtered_worktrees.len(), self.worktrees_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("WORKTREES")
 
         if !self.worktrees_collapsed {
             for wt_name in filtered_worktrees {
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let is_current = self.worktrees.iter()
                         .any(|w| w.name == *wt_name && w.is_current);
@@ -1597,13 +1619,13 @@ impl BranchSidebar {
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "STASHES", filtered_stashes.len(), self.stashes_collapsed,
-            params.section_header_height, &params.bounds,
+            params.section_header_height, &params.bounds, params.content_top,
         );
         item_idx += 1; // SectionHeader("STASHES")
 
         if !self.stashes_collapsed {
             for (stash_index, stash_msg, stash_time) in filtered_stashes {
-                let visible = y + params.line_height >= params.bounds.y && y < params.bounds.bottom();
+                let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
                     let name_color = self.layout_item_highlight(
                         output, &params.inner, y, params.line_height, item_idx,
@@ -1749,8 +1771,8 @@ impl BranchSidebar {
         let section_gap = 8.0;
         let filter_bar_h = self.filter_bar_height();
 
-        // Filter bar at the top
-        self.layout_filter_bar(text_renderer, &mut output, &bounds);
+        // The top Y below which scrollable content is visible (below the filter bar)
+        let content_top = bounds.y + padding + filter_bar_h;
 
         // Build filtered data once (shared across section methods and content height)
         let data = self.build_filtered_data();
@@ -1770,6 +1792,7 @@ impl BranchSidebar {
             line_height,
             section_header_height: self.section_header_height,
             indent: 12.0,
+            content_top,
         };
 
         let mut y = inner.y + filter_bar_h - self.scroll_offset;
@@ -1828,6 +1851,20 @@ impl BranchSidebar {
         let scrollbar_output = self.scrollbar.layout(scrollbar_bounds);
         output.spline_vertices.extend(scrollbar_output.spline_vertices);
 
+        // Render filter bar LAST as overlay so it covers any items that scroll behind it.
+        // First draw a solid background to occlude scrolled content beneath.
+        let filter_cover = Rect::new(
+            bounds.x,
+            bounds.y,
+            bounds.width,
+            padding + filter_bar_h,
+        );
+        output.spline_vertices.extend(create_rect_vertices(
+            &filter_cover,
+            theme::PANEL_SIDEBAR.to_array(),
+        ));
+        self.layout_filter_bar(text_renderer, &mut output, &bounds);
+
         output
     }
 
@@ -1847,12 +1884,13 @@ impl BranchSidebar {
         collapsed: bool,
         header_height: f32,
         bounds: &Rect,
+        content_top: f32,
     ) -> f32 {
         let top_pad = 2.0;
         let bottom_pad = 2.0;
         let inset = 6.0;
         let total_height = top_pad + header_height + bottom_pad;
-        let visible = y + total_height >= bounds.y && y < bounds.bottom();
+        let visible = y >= content_top && y < bounds.bottom();
         if visible {
             let empty = count == 0;
             let header_scale = 0.85;
