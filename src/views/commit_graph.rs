@@ -285,15 +285,9 @@ impl CommitGraphView {
         Self::default()
     }
 
-    /// Height of the column header row at the top of the graph panel
-    fn column_header_height(&self) -> f32 {
-        self.row_height
-    }
-
     /// Header offset above graph content, scales with row_height.
-    /// Includes the column header row.
     fn header_offset(&self) -> f32 {
-        self.row_height * 0.35 + self.column_header_height()
+        self.row_height * 0.35
     }
 
     /// Width reserved for the scrollbar track
@@ -757,24 +751,6 @@ impl CommitGraphView {
             ));
         }
 
-        // === Column header row background ===
-        let col_header_h = self.column_header_height();
-        let col_header_rect = Rect::new(
-            bounds.x,
-            bounds.y,
-            bounds.width - scrollbar_width,
-            col_header_h,
-        );
-        vertices.extend(create_rect_vertices(
-            &col_header_rect,
-            theme::SURFACE_RAISED.with_alpha(0.5).to_array(),
-        ));
-        // Bottom border of column header
-        vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x, bounds.y + col_header_h - 1.0, bounds.width - scrollbar_width, 1.0),
-            theme::BORDER.to_array(),
-        ));
-
         // Build index for quick parent lookup
         let commit_indices: HashMap<Oid, usize> = commits
             .iter()
@@ -1191,72 +1167,6 @@ impl CommitGraphView {
         let pill_radius: f32 = 3.0;
         let pill_border_thickness: f32 = 1.0;
 
-        // Fixed-width author column (after avatar, before commit message)
-        let author_col_width: f32 = 120.0;
-
-        // === Column header labels ===
-        {
-            let col_header_h = self.column_header_height();
-            let header_text_y = bounds.y + (col_header_h - line_height) / 2.0;
-            let header_color = theme::TEXT_MUTED.to_array();
-
-            // "GRAPH" label over the graph lanes area
-            let graph_label = "GRAPH";
-            let graph_label_w = text_renderer.measure_text_scaled(graph_label, 0.85);
-            let graph_col_center = bounds.x + self.lane_left_pad() + self.graph_width() / 2.0;
-            vertices.extend(text_renderer.layout_text_small(
-                graph_label,
-                graph_col_center - graph_label_w / 2.0,
-                header_text_y,
-                header_color,
-            ));
-
-            // "BRANCH / TAG" label right after graph column
-            vertices.extend(text_renderer.layout_text_small(
-                "BRANCH / TAG",
-                text_x,
-                header_text_y,
-                header_color,
-            ));
-
-            // "AUTHOR" label after BRANCH / TAG area
-            let author_label_x = text_x + text_renderer.measure_text_scaled("BRANCH / TAG", 0.85) + char_width * 4.0;
-            vertices.extend(text_renderer.layout_text_small(
-                "AUTHOR",
-                author_label_x,
-                header_text_y,
-                header_color,
-            ));
-
-            // "COMMIT MESSAGE" label after AUTHOR column
-            let msg_label_x = author_label_x + text_renderer.measure_text_scaled("AUTHOR", 0.85) + char_width * 4.0;
-            vertices.extend(text_renderer.layout_text_small(
-                "COMMIT MESSAGE",
-                msg_label_x,
-                header_text_y,
-                header_color,
-            ));
-
-            // "DIFF" label right-aligned in the stats column
-            let diff_label = "DIFF";
-            let diff_label_w = text_renderer.measure_text_scaled(diff_label, 0.85);
-            vertices.extend(text_renderer.layout_text_small(
-                diff_label,
-                stats_col_right - diff_label_w,
-                header_text_y,
-                header_color,
-            ));
-
-            // "DATE" label right-aligned in the time column
-            let date_label = "DATE";
-            let date_label_w = text_renderer.measure_text_scaled(date_label, 0.85);
-            vertices.extend(text_renderer.layout_text_small(
-                date_label,
-                time_col_right - date_label_w,
-                header_text_y,
-                header_color,
-            ));
-        }
 
         for (row, commit) in commits.iter().enumerate() {
             let Some(_layout) = self.layout.get(&commit.id) else {
@@ -1568,19 +1478,6 @@ impl CommitGraphView {
 
             let identicon_advance = identicon_radius * 2.0 + 6.0;
             current_x += identicon_advance;
-
-            // === Author name (muted, fixed-width column after avatar) ===
-            {
-                let author_text = truncate_to_width(&commit.author, text_renderer, author_col_width);
-                let author_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
-                vertices.extend(text_renderer.layout_text(
-                    &author_text,
-                    current_x,
-                    y,
-                    author_color,
-                ));
-                current_x += author_col_width + col_gap;
-            }
 
             // === Diff stats (+N / -M) right-aligned in the stats column ===
             if commit.insertions > 0 || commit.deletions > 0 {
