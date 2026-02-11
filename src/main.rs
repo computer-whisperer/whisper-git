@@ -1998,6 +1998,18 @@ impl ApplicationHandler for App {
                                     GraphAction::LoadMore => {
                                         view_state.pending_messages.push(AppMessage::LoadMoreCommits);
                                     }
+                                    GraphAction::SwitchWorktree(name) => {
+                                        if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
+                                            view_state.staging_well.switch_worktree(idx);
+                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                                if wt_ctx.is_current {
+                                                    view_state.worktree_repo = None;
+                                                } else {
+                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             if response.is_consumed() {
@@ -2194,6 +2206,11 @@ fn determine_cursor(
 
     // Staging well file list items (clickable to select/stage/unstage)
     if layout.staging.contains(x, y) && view_state.staging_well.is_file_hovered() {
+        return CursorIcon::Pointer;
+    }
+
+    // Commit graph worktree/working pills (clickable to switch worktree)
+    if layout.graph.contains(x, y) && view_state.commit_graph_view.hovered_pill {
         return CursorIcon::Pointer;
     }
 

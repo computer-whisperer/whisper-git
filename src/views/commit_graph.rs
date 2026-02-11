@@ -21,6 +21,14 @@ use crate::ui::widget::theme::LANE_COLORS;
 pub enum GraphAction {
     /// Request to load more commits (infinite scroll)
     LoadMore,
+    /// Switch the staging panel to a different worktree
+    SwitchWorktree(String),
+}
+
+/// Click target for a worktree/working pill in the commit graph
+struct PillClickTarget {
+    worktree_name: String,
+    bounds: [f32; 4], // x, y, width, height
 }
 
 /// Layout information for a single commit
@@ -237,6 +245,10 @@ pub struct CommitGraphView {
     loading_more: bool,
     /// Pre-computed Y offsets for each row (time-based variable spacing)
     row_y_offsets: Vec<f32>,
+    /// Click targets for worktree/working pills (rebuilt each layout_text call)
+    pill_click_targets: Vec<PillClickTarget>,
+    /// Whether the mouse is currently hovering over a clickable pill
+    pub hovered_pill: bool,
 }
 
 impl Default for CommitGraphView {
@@ -263,6 +275,8 @@ impl Default for CommitGraphView {
             pending_action: None,
             loading_more: false,
             row_y_offsets: Vec::new(),
+            pill_click_targets: Vec::new(),
+            hovered_pill: false,
         }
     }
 }
@@ -561,6 +575,14 @@ impl CommitGraphView {
                 ..
             } => {
                 if content_bounds.contains(*x, *y) {
+                    // Check for click on a worktree/working pill first (more specific target)
+                    for target in &self.pill_click_targets {
+                        let [px, py, pw, ph] = target.bounds;
+                        if *x >= px && *x <= px + pw && *y >= py && *y <= py + ph {
+                            self.pending_action = Some(GraphAction::SwitchWorktree(target.worktree_name.clone()));
+                            return EventResponse::Consumed;
+                        }
+                    }
                     // Check for click on a commit using binary search
                     if let Some(row) = self.row_at_y(*y, &bounds, header_offset, commits.len()) {
                         if let Some(commit) = commits.get(row) {
@@ -572,6 +594,15 @@ impl CommitGraphView {
                 EventResponse::Ignored
             }
             InputEvent::MouseMove { x, y, .. } => {
+                // Check if hovering over a clickable pill
+                self.hovered_pill = false;
+                for target in &self.pill_click_targets {
+                    let [px, py, pw, ph] = target.bounds;
+                    if *x >= px && *x <= px + pw && *y >= py && *y <= py + ph {
+                        self.hovered_pill = true;
+                        break;
+                    }
+                }
                 // Update hover state using binary search
                 self.hovered_commit = None;
                 if content_bounds.contains(*x, *y) {
@@ -1108,7 +1139,7 @@ impl CommitGraphView {
     /// Row layout (GitKraken style): graph lanes | branch/tag pills | identicon/avatar | subject line | time (dimmer, right-aligned)
     /// Labels are rendered right after the graph lanes for maximum visibility.
     pub fn layout_text(
-        &self,
+        &mut self,
         text_renderer: &TextRenderer,
         commits: &[CommitInfo],
         bounds: Rect,
@@ -1118,6 +1149,7 @@ impl CommitGraphView {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
         let mut avatar_vertices = Vec::new();
+        self.pill_click_targets.clear();
         let header_offset = self.header_offset();
         let line_height = text_renderer.line_height();
         let scrollbar_width = self.scrollbar_width();
@@ -1340,6 +1372,11 @@ impl CommitGraphView {
                         wt_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    // Track click target for this worktree pill
+                    self.pill_click_targets.push(PillClickTarget {
+                        worktree_name: wt.name.clone(),
+                        bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+                    });
                     let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
                     // Worktrees: orange
                     pill_vertices.extend(create_rounded_rect_vertices(
@@ -1366,24 +1403,24 @@ impl CommitGraphView {
 
             // === "Working (N)" pills for dirty worktrees at their HEAD commits ===
             {
-                // Collect dirty file counts for this commit
-                let mut dirty_counts: Vec<usize> = Vec::new();
+                // Collect dirty file counts with worktree names for this commit
+                let mut dirty_entries: Vec<(usize, String)> = Vec::new();
 
                 // From worktree info (multi-worktree case)
                 if let Some(dirty_wts) = dirty_worktrees_by_oid.get(&commit.id) {
                     for wt in dirty_wts {
-                        dirty_counts.push(wt.dirty_file_count);
+                        dirty_entries.push((wt.dirty_file_count, wt.name.clone()));
                     }
                 }
 
                 // Fallback for single-worktree repos: show on HEAD commit
                 if is_head {
                     if let Some(count) = fallback_dirty_count {
-                        dirty_counts.push(count);
+                        dirty_entries.push((count, String::new()));
                     }
                 }
 
-                for count in dirty_counts {
+                for (count, wt_name) in dirty_entries {
                     let wd_label = format!("Working ({})", count);
                     let wd_width = text_renderer.measure_text(&wd_label);
                     if current_x + wd_width + pill_pad_h * 2.0 + char_width > time_col_left - col_gap {
@@ -1395,6 +1432,13 @@ impl CommitGraphView {
                         wd_width + pill_pad_h * 2.0,
                         line_height + pill_pad_v * 2.0,
                     );
+                    // Track click target for this working pill (only if we have a worktree name)
+                    if !wt_name.is_empty() {
+                        self.pill_click_targets.push(PillClickTarget {
+                            worktree_name: wt_name,
+                            bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+                        });
+                    }
                     // Red "Working" pill with subtle background and outline
                     pill_vertices.extend(create_rounded_rect_vertices(
                         &pill_rect,
