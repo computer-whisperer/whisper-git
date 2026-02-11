@@ -104,6 +104,11 @@ impl DiffView {
         !self.diff_files.is_empty()
     }
 
+    /// Get the current title text
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     /// Take and clear any pending action
     pub fn take_action(&mut self) -> Option<DiffAction> {
         self.pending_action.take()
