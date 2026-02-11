@@ -1261,6 +1261,56 @@ impl App {
                 }
             }
         }
+        // Ctrl+Shift+F: Fetch
+        if *key == Key::F && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                view_state.pending_messages.push(AppMessage::Fetch);
+                return true;
+            }
+        }
+        // Ctrl+Shift+L: Pull
+        if *key == Key::L && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                view_state.pending_messages.push(AppMessage::Pull);
+                return true;
+            }
+        }
+        // Ctrl+Shift+P: Push
+        if *key == Key::P && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                view_state.pending_messages.push(AppMessage::Push);
+                return true;
+            }
+        }
+        // Ctrl+Shift+R: Pull --rebase
+        if *key == Key::R && modifiers.ctrl_shift() {
+            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                view_state.pending_messages.push(AppMessage::PullRebase);
+                return true;
+            }
+        }
+        // Backtick (`): Open terminal at repo workdir
+        if *key == Key::Grave && !modifiers.any() {
+            if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                // Don't fire when a text input has focus
+                if !view_state.staging_well.has_text_focus()
+                    && !view_state.branch_sidebar.has_text_focus()
+                {
+                    if let Some(ref repo) = repo_tab.repo {
+                        if let Some(workdir) = repo.workdir() {
+                            let path = workdir.to_string_lossy().to_string();
+                            open_terminal_at(&path, "repo", &mut self.toast_manager);
+                        } else {
+                            self.toast_manager.push(
+                                "No working directory (bare repository)",
+                                ToastSeverity::Error,
+                            );
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
 
         false
     }
