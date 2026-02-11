@@ -1462,6 +1462,11 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Toast click-to-dismiss (overlay, before context menu)
+                    if self.toast_manager.handle_event(&input_event, screen_bounds) {
+                        return;
+                    }
+
                     // Context menu takes priority when visible (overlay)
                     if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
                         && view_state.context_menu.is_visible() {
@@ -2603,7 +2608,7 @@ fn build_ui_output(
     tabs: &mut [(RepoTab, TabViewState)],
     active_tab: usize,
     tab_bar: &TabBar,
-    toast_manager: &ToastManager,
+    toast_manager: &mut ToastManager,
     repo_dialog: &RepoDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
@@ -2725,7 +2730,7 @@ fn build_ui_output(
         }
 
     // Toast notifications (overlay layer - on top of context menus)
-    overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds));
+    overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds, scale));
 
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
@@ -2840,7 +2845,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -2974,7 +2979,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
@@ -3090,7 +3095,7 @@ fn capture_screenshot_offscreen(
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, staging_ratio,
