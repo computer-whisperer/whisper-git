@@ -56,6 +56,10 @@ pub enum AppMessage {
     ExitSubmodule,
     ExitToDepth(usize),
     AbortOperation,
+    AddRemote(String, String),     // (name, url)
+    DeleteRemote(String),
+    RenameRemote(String, String),  // (old_name, new_name)
+    SetRemoteUrl(String, String),  // (name, new_url)
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -727,6 +731,78 @@ pub fn handle_app_message(
                 Err(e) => {
                     toast_manager.push(
                         format!("Abort failed: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::AddRemote(name, url) => {
+            match repo.add_remote(&name, &url) {
+                Ok(()) => {
+                    toast_manager.push(
+                        format!("Added remote '{}'", name),
+                        ToastSeverity::Success,
+                    );
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to add remote: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::DeleteRemote(name) => {
+            match repo.delete_remote(&name) {
+                Ok(()) => {
+                    toast_manager.push(
+                        format!("Deleted remote '{}'", name),
+                        ToastSeverity::Success,
+                    );
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to delete remote: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::RenameRemote(old_name, new_name) => {
+            match repo.rename_remote(&old_name, &new_name) {
+                Ok(()) => {
+                    toast_manager.push(
+                        format!("Renamed remote '{}' to '{}'", old_name, new_name),
+                        ToastSeverity::Success,
+                    );
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to rename remote: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::SetRemoteUrl(name, url) => {
+            match repo.set_remote_url(&name, &url) {
+                Ok(()) => {
+                    toast_manager.push(
+                        format!("Updated URL for '{}'", name),
+                        ToastSeverity::Success,
+                    );
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to update remote URL: {}", e),
                         ToastSeverity::Error,
                     );
                 }

@@ -1285,6 +1285,64 @@ impl GitRepo {
         }
         patch
     }
+
+    // ---- Remote management ----
+
+    /// List all remotes as (name, url) pairs.
+    pub fn list_remotes(&self) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        if let Ok(remotes) = self.repo.remotes() {
+            for name in remotes.iter().flatten() {
+                let url = self.repo.find_remote(name)
+                    .ok()
+                    .and_then(|r| r.url().map(|u| u.to_string()))
+                    .unwrap_or_default();
+                result.push((name.to_string(), url));
+            }
+        }
+        result
+    }
+
+    /// Get the URL of a named remote.
+    pub fn remote_url(&self, name: &str) -> Option<String> {
+        self.repo.find_remote(name)
+            .ok()
+            .and_then(|r| r.url().map(|u| u.to_string()))
+    }
+
+    /// Add a new remote with the given name and URL.
+    pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
+        self.repo.remote(name, url)
+            .with_context(|| format!("Failed to add remote '{}' with url '{}'", name, url))?;
+        Ok(())
+    }
+
+    /// Delete a remote by name.
+    pub fn delete_remote(&self, name: &str) -> Result<()> {
+        self.repo.remote_delete(name)
+            .with_context(|| format!("Failed to delete remote '{}'", name))?;
+        Ok(())
+    }
+
+    /// Rename a remote.
+    pub fn rename_remote(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let problems = self.repo.remote_rename(old_name, new_name)
+            .with_context(|| format!("Failed to rename remote '{}' to '{}'", old_name, new_name))?;
+        if !problems.is_empty() {
+            let msgs: Vec<&str> = problems.iter().flatten().collect();
+            if !msgs.is_empty() {
+                eprintln!("Remote rename warnings: {:?}", msgs);
+            }
+        }
+        Ok(())
+    }
+
+    /// Change the URL of an existing remote.
+    pub fn set_remote_url(&self, name: &str, url: &str) -> Result<()> {
+        self.repo.remote_set_url(name, url)
+            .with_context(|| format!("Failed to set URL for remote '{}'", name))?;
+        Ok(())
+    }
 }
 
 /// Spawn a background thread to run a git CLI command and send the result over a channel.

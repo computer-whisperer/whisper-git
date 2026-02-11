@@ -27,6 +27,10 @@ pub enum SidebarAction {
     PopStash(usize),
     DropStash(usize),
     OpenSubmodule(String),
+    AddRemote,
+    EditRemoteUrl(String),
+    RenameRemote(String),
+    DeleteRemote(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -559,6 +563,20 @@ impl BranchSidebar {
                         }
                         return Some(items);
                     }
+                    SidebarItem::RemoteHeader(name) => {
+                        let mut items = vec![
+                            MenuItem::new("Edit URL...", "edit_remote_url"),
+                            MenuItem::new("Rename...", "rename_remote"),
+                            MenuItem::separator(),
+                            MenuItem::new("Delete Remote", "delete_remote"),
+                        ];
+                        for item in &mut items {
+                            if !item.is_separator {
+                                item.action_id = format!("{}:{}", item.action_id, name);
+                            }
+                        }
+                        return Some(items);
+                    }
                     SidebarItem::RemoteBranch(remote, branch) => {
                         let full = format!("{}/{}", remote, branch);
                         let mut items = vec![
@@ -622,6 +640,12 @@ impl BranchSidebar {
                                 item.action_id = format!("{}:{}", item.action_id, idx_str);
                             }
                         }
+                        return Some(items);
+                    }
+                    SidebarItem::SectionHeader("REMOTE") => {
+                        let items = vec![
+                            MenuItem::new("Add Remote...", "add_remote"),
+                        ];
                         return Some(items);
                     }
                     _ => return None,
