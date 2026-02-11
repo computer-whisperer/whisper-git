@@ -101,6 +101,7 @@ enum FocusedPanel {
     #[default]
     Graph,
     Staging,
+    Preview,
     Sidebar,
 }
 
@@ -213,10 +214,10 @@ fn main() -> Result<()> {
 enum DividerDrag {
     /// Vertical divider between sidebar and graph
     SidebarGraph,
-    /// Vertical divider between graph and right panel
-    GraphRight,
-    /// Horizontal divider between staging and right panel (diff/detail)
-    StagingRight,
+    /// Vertical divider between graph and staging
+    GraphStaging,
+    /// Vertical divider between staging and preview
+    StagingPreview,
 }
 
 struct App {
@@ -239,7 +240,7 @@ struct App {
     sidebar_ratio: f32,
     /// Fraction of content width (after sidebar) for graph (default 0.55)
     graph_ratio: f32,
-    /// Fraction of right panel height for staging (default 0.45)
+    /// Fraction of right area width for staging (default 0.40)
     staging_ratio: f32,
     /// Whether the shortcut bar is visible
     shortcut_bar_visible: bool,
@@ -348,7 +349,7 @@ impl App {
             divider_drag: None,
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
-            staging_ratio: 0.45,
+            staging_ratio: 0.40,
             shortcut_bar_visible,
             current_cursor: CursorIcon::Default,
             status_dirty: true,
@@ -1551,14 +1552,14 @@ impl ApplicationHandler for App {
                     // Handle ongoing drag (MouseMove / MouseUp) before anything else
                     if self.divider_drag.is_some() {
                         match &input_event {
-                            InputEvent::MouseMove { x, y, .. } => {
+                            InputEvent::MouseMove { x, .. } => {
                                 match self.divider_drag.unwrap() {
                                     DividerDrag::SidebarGraph => {
                                         // Convert mouse x to sidebar ratio of main_bounds width
                                         let ratio = (*x - main_bounds.x) / main_bounds.width;
                                         self.sidebar_ratio = ratio.clamp(0.05, 0.30);
                                     }
-                                    DividerDrag::GraphRight => {
+                                    DividerDrag::GraphStaging => {
                                         // Content area starts after sidebar
                                         let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
                                         let content_x = main_bounds.x + sidebar_w;
@@ -1568,23 +1569,19 @@ impl ApplicationHandler for App {
                                             self.graph_ratio = ratio.clamp(0.30, 0.80);
                                         }
                                     }
-                                    DividerDrag::StagingRight => {
-                                        // Staging ratio is fraction of right panel height
-                                        // Right panel starts after header + shortcut bar
-                                        let rp_y = layout.staging.y;
-                                        let rp_h = layout.staging.height + layout.right_panel.height;
-                                        if rp_h > 0.0 {
-                                            let ratio = (*y - rp_y) / rp_h;
-                                            self.staging_ratio = ratio.clamp(0.15, 0.85);
+                                    DividerDrag::StagingPreview => {
+                                        // Staging ratio is fraction of right area width
+                                        let right_area_x = layout.staging.x;
+                                        let right_area_w = layout.staging.width + layout.preview.width;
+                                        if right_area_w > 0.0 {
+                                            let ratio = (*x - right_area_x) / right_area_w;
+                                            self.staging_ratio = ratio.clamp(0.20, 0.70);
                                         }
                                     }
                                 }
-                                // Set appropriate cursor while dragging
+                                // Set appropriate cursor while dragging (all dividers are vertical)
                                 if let Some(ref render_state) = self.state {
-                                    let cursor = match self.divider_drag.unwrap() {
-                                        DividerDrag::SidebarGraph | DividerDrag::GraphRight => CursorIcon::ColResize,
-                                        DividerDrag::StagingRight => CursorIcon::RowResize,
-                                    };
+                                    let cursor = CursorIcon::ColResize;
                                     if self.current_cursor != cursor {
                                         render_state.window.set_cursor(cursor);
                                         self.current_cursor = cursor;
@@ -1620,20 +1617,17 @@ impl ApplicationHandler for App {
                                 return;
                             }
 
-                            // Divider 2: graph | right panel (vertical)
+                            // Divider 2: graph | staging (vertical)
                             let graph_edge = layout.graph.right();
                             if (*x - graph_edge).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::GraphRight);
+                                self.divider_drag = Some(DividerDrag::GraphStaging);
                                 return;
                             }
 
-                            // Divider 3: staging | right panel (horizontal, only in right column)
-                            let staging_edge = layout.staging.bottom();
-                            if (*y - staging_edge).abs() < hit_tolerance
-                                && *x >= layout.staging.x
-                                && *x <= layout.staging.right()
-                            {
-                                self.divider_drag = Some(DividerDrag::StagingRight);
+                            // Divider 3: staging | preview (vertical)
+                            let staging_edge = layout.staging.right();
+                            if (*x - staging_edge).abs() < hit_tolerance {
+                                self.divider_drag = Some(DividerDrag::StagingPreview);
                                 return;
                             }
                         }
@@ -1916,7 +1910,7 @@ impl ApplicationHandler for App {
 
                     // Route to commit detail view when active
                     if view_state.commit_detail_view.has_content() {
-                        let (detail_rect, _diff_rect) = layout.right_panel.split_vertical(0.40);
+                        let (detail_rect, _diff_rect) = layout.preview.split_vertical(0.40);
                         if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
                             if let Some(action) = view_state.commit_detail_view.take_action() {
                                 match action {
@@ -1932,10 +1926,10 @@ impl ApplicationHandler for App {
                     // Route scroll events to diff view if it has content
                     if view_state.diff_view.has_content() {
                         let diff_bounds = if view_state.commit_detail_view.has_content() {
-                            let (_detail_rect, diff_rect) = layout.right_panel.split_vertical(0.40);
+                            let (_detail_rect, diff_rect) = layout.preview.split_vertical(0.40);
                             diff_rect
                         } else {
-                            layout.right_panel
+                            layout.preview
                         };
                         if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
                             if let Some(action) = view_state.diff_view.take_action() {
@@ -2033,6 +2027,8 @@ impl ApplicationHandler for App {
                     if let InputEvent::MouseDown { x, y, .. } = &input_event {
                         if layout.staging.contains(*x, *y) {
                             view_state.focused_panel = FocusedPanel::Staging;
+                        } else if layout.preview.contains(*x, *y) {
+                            view_state.focused_panel = FocusedPanel::Preview;
                         } else if layout.graph.contains(*x, *y) {
                             view_state.focused_panel = FocusedPanel::Graph;
                         } else if layout.sidebar.contains(*x, *y) {
@@ -2219,19 +2215,16 @@ impl ApplicationHandler for App {
                                         }
                                     }
                                     StagingAction::PreviewDiff(path, staged) => {
-                                        view_state.pending_messages.push(AppMessage::ViewDiffInline(path, staged));
-                                    }
-                                    StagingAction::InlineStageHunk(path, hunk_idx) => {
-                                        view_state.pending_messages.push(AppMessage::InlineStageHunk(path, hunk_idx));
-                                    }
-                                    StagingAction::InlineUnstageHunk(path, hunk_idx) => {
-                                        view_state.pending_messages.push(AppMessage::InlineUnstageHunk(path, hunk_idx));
+                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
                                     }
                                 }
                             }
                             if response.is_consumed() {
                                 return;
                             }
+                        }
+                        FocusedPanel::Preview => {
+                            // Diff/detail view events are handled above in pre-routing
                         }
                         FocusedPanel::Sidebar => {
                             // Keyboard events handled by branch_sidebar.handle_event above
@@ -2242,7 +2235,8 @@ impl ApplicationHandler for App {
                     if let InputEvent::KeyDown { key: Key::Tab, .. } = &input_event {
                         view_state.focused_panel = match view_state.focused_panel {
                             FocusedPanel::Graph => FocusedPanel::Staging,
-                            FocusedPanel::Staging => FocusedPanel::Sidebar,
+                            FocusedPanel::Staging => FocusedPanel::Preview,
+                            FocusedPanel::Preview => FocusedPanel::Sidebar,
                             FocusedPanel::Sidebar => FocusedPanel::Graph,
                         };
                         view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
@@ -2306,19 +2300,16 @@ fn determine_cursor(
             return CursorIcon::ColResize;
         }
 
-        // Divider 2: graph | right panel (vertical)
+        // Divider 2: graph | staging (vertical)
         let graph_edge = layout.graph.right();
         if (x - graph_edge).abs() < divider_hit {
             return CursorIcon::ColResize;
         }
 
-        // Divider 3: staging | right panel (horizontal, only in right column)
-        let staging_edge = layout.staging.bottom();
-        if (y - staging_edge).abs() < divider_hit
-            && x >= layout.staging.x
-            && x <= layout.staging.right()
-        {
-            return CursorIcon::RowResize;
+        // Divider 3: staging | preview (vertical)
+        let staging_edge = layout.staging.right();
+        if (x - staging_edge).abs() < divider_hit {
+            return CursorIcon::ColResize;
         }
     }
 
@@ -2736,7 +2727,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::PANEL_STAGING.to_array(),
     ));
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.right_panel,
+        &layout.preview,
         theme::PANEL_STAGING.to_array(),
     ));
 
@@ -2755,13 +2746,10 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     let sidebar_graph_hover = in_content_area && (mx - sidebar_edge).abs() < hit_tolerance;
 
     let graph_edge = layout.graph.right();
-    let graph_right_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
+    let graph_staging_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
 
-    let staging_edge = layout.staging.bottom();
-    let staging_right_hover = in_content_area
-        && (my - staging_edge).abs() < hit_tolerance
-        && mx >= layout.staging.x
-        && mx <= layout.staging.right();
+    let staging_edge = layout.staging.right();
+    let staging_preview_hover = in_content_area && (mx - staging_edge).abs() < hit_tolerance;
 
     // Vertical divider: sidebar | graph
     // Subtle 1px line at rest, wider 2px highlighted line on hover
@@ -2777,8 +2765,8 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         ));
     }
 
-    // Vertical divider: graph | staging/secondary
-    if graph_right_hover {
+    // Vertical divider: graph | staging
+    if graph_staging_hover {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
             &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
             theme::BORDER_LIGHT.to_array(),
@@ -2790,15 +2778,15 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         ));
     }
 
-    // Horizontal divider: staging | right panel
-    if staging_right_hover {
+    // Vertical divider: staging | preview
+    if staging_preview_hover {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 2.0),
+            &Rect::new(layout.staging.right(), layout.staging.y, 2.0, layout.staging.height),
             theme::BORDER_LIGHT.to_array(),
         ));
     } else {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.staging.x, layout.staging.bottom(), layout.staging.width, 1.0),
+            &Rect::new(layout.staging.right(), layout.staging.y, 1.0, layout.staging.height),
             theme::BORDER.with_alpha(0.35).to_array(),
         ));
     }
@@ -2807,6 +2795,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     let focused_rect = match focused {
         FocusedPanel::Graph => &layout.graph,
         FocusedPanel::Staging => &layout.staging,
+        FocusedPanel::Preview => &layout.preview,
         FocusedPanel::Sidebar => &layout.sidebar,
     };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
@@ -2903,22 +2892,22 @@ fn build_ui_output(
         // Staging well (chrome layer)
         chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
 
-        // Right panel (chrome layer) - render diff/detail or empty state placeholder
+        // Preview panel (chrome layer) - render diff/detail or empty state placeholder
         if view_state.commit_detail_view.has_content() {
-            let (detail_rect, diff_rect) = layout.right_panel.split_vertical(0.40);
+            let (detail_rect, diff_rect) = layout.preview.split_vertical(0.40);
             chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
             if view_state.diff_view.has_content() {
                 chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
             }
         } else if view_state.diff_view.has_content() {
-            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.right_panel));
+            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.preview));
         } else {
             // Empty state placeholder
-            let msg = "Select a commit to view details";
+            let msg = "Select a file or commit to preview";
             let msg_w = text_renderer.measure_text(msg);
             let line_h = text_renderer.line_height();
-            let cx = layout.right_panel.x + (layout.right_panel.width - msg_w) / 2.0;
-            let cy = layout.right_panel.y + (layout.right_panel.height - line_h) / 2.0;
+            let cx = layout.preview.x + (layout.preview.width - msg_w) / 2.0;
+            let cy = layout.preview.y + (layout.preview.height - line_h) / 2.0;
             chrome_output.text_vertices.extend(text_renderer.layout_text(
                 msg, cx, cy,
                 theme::TEXT_MUTED.to_array(),
@@ -3020,6 +3009,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         view_state.shortcut_bar.set_context(match view_state.focused_panel {
             FocusedPanel::Graph => ShortcutContext::Graph,
             FocusedPanel::Staging => ShortcutContext::Staging,
+            FocusedPanel::Preview => ShortcutContext::Graph,  // Preview uses graph shortcuts
             FocusedPanel::Sidebar => ShortcutContext::Sidebar,
         });
         view_state.shortcut_bar.show_new_tab_hint = single_tab;
