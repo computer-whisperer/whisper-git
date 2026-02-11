@@ -195,10 +195,6 @@ impl GraphLayout {
         self.layouts.get(id)
     }
 
-    /// Get maximum lane index that was active at any point
-    pub fn max_lane(&self) -> usize {
-        self.max_active_lane
-    }
 }
 
 impl Default for GraphLayout {
@@ -249,6 +245,8 @@ pub struct CommitGraphView {
     pill_click_targets: Vec<PillClickTarget>,
     /// Whether the mouse is currently hovering over a clickable pill
     pub hovered_pill: bool,
+    /// Cached adaptive graph width based on visible rows (updated each frame)
+    adaptive_graph_width: f32,
 }
 
 impl Default for CommitGraphView {
@@ -277,6 +275,7 @@ impl Default for CommitGraphView {
             row_y_offsets: Vec::new(),
             pill_click_targets: Vec::new(),
             hovered_pill: false,
+            adaptive_graph_width: 0.0,
         }
     }
 }
@@ -396,12 +395,35 @@ impl CommitGraphView {
         }
     }
 
-    /// Calculate the width needed for the graph portion
-    fn graph_width(&self) -> f32 {
-        let lanes = (self.layout.max_lane() + 1).max(1);
+    /// Calculate the width needed for the graph portion based on global max lane
+    fn graph_width_for_lanes(&self, max_lane: usize) -> f32 {
+        let lanes = (max_lane + 1).max(1);
         let computed = lanes as f32 * self.lane_width + self.lane_width * 0.5;
         // Smaller minimum for compact layout
         computed.max(self.lane_width * 1.5)
+    }
+
+    /// Update the adaptive graph width based on the max lane visible on screen.
+    /// Scans only commits that are within the visible viewport bounds.
+    fn update_adaptive_graph_width(&mut self, commits: &[CommitInfo], bounds: &Rect) {
+        let header_offset = self.header_offset();
+        let buffer = self.row_height * 2.0;
+        let mut max_visible_lane: usize = 0;
+
+        for (row, commit) in commits.iter().enumerate() {
+            let y = self.row_y(row, bounds, header_offset);
+            // Only consider rows visible on screen (with a small buffer)
+            if y < bounds.y - buffer || y > bounds.bottom() + buffer {
+                continue;
+            }
+            if let Some(layout) = self.layout.get(&commit.id) {
+                if layout.lane > max_visible_lane {
+                    max_visible_lane = layout.lane;
+                }
+            }
+        }
+
+        self.adaptive_graph_width = self.graph_width_for_lanes(max_visible_lane);
     }
 
     /// Get x position for a lane
@@ -763,8 +785,11 @@ impl CommitGraphView {
         let scroll_offset_items = (self.scroll_offset / self.row_height).round() as usize;
         self.scrollbar.set_content(equivalent_total_rows, visible_rows, scroll_offset_items);
 
+        // Compute adaptive graph width based on visible rows
+        self.update_adaptive_graph_width(commits, &bounds);
+
         // Background strip for graph column - subtle elevation
-        let graph_bg_width = self.graph_width() + self.lane_width * 1.5;
+        let graph_bg_width = self.adaptive_graph_width + self.lane_width * 1.5;
         let graph_bg = Rect::new(bounds.x, bounds.y, graph_bg_width, bounds.height);
         vertices.extend(create_rect_vertices(
             &graph_bg,
@@ -1213,8 +1238,8 @@ impl CommitGraphView {
         let line_height = text_renderer.line_height();
         let scrollbar_width = self.scrollbar_width();
 
-        // Graph offset for text - right after the graph column
-        let text_x = bounds.x + self.lane_left_pad() + self.graph_width() + self.lane_width * 1.0;
+        // Graph offset for text - right after the graph column (uses adaptive width)
+        let text_x = bounds.x + self.lane_left_pad() + self.adaptive_graph_width + self.lane_width * 1.0;
 
         // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
         let time_col_width: f32 = 80.0;
