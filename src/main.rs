@@ -363,11 +363,6 @@ impl App {
             match GitRepo::open(repo_path) {
                 Ok(repo) => {
                     let name = repo.repo_name();
-                    let location: String = repo.workdir()
-                        .map(|p| format!("{:?}", p))
-                        .unwrap_or_else(|| format!("{:?} (bare)", repo.repo_name()));
-                    println!("Opening repo from {}", location);
-
                     tab_bar.add_tab(name.clone());
                     tabs.push((
                         RepoTab {
@@ -724,7 +719,6 @@ impl App {
         }
 
         if changed {
-            println!("Filesystem change detected, refreshing...");
             self.status_dirty = true;
             let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
             if rx.is_some() { self.diff_stats_receiver = rx; }
@@ -770,21 +764,15 @@ impl App {
                     view_state.fetch_receiver = None;
                     view_state.showed_timeout_toast[0] = false;
                     if result.success {
-                        println!("Fetch completed successfully");
-                        if !result.error.is_empty() {
-                            println!("{}", result.error.trim());
-                        }
                         self.toast_manager.push("Fetch complete", ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
-                        eprintln!("Fetch failed: {}", result.error);
                         let (msg, _) = classify_git_error("Fetch", &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("Fetch background thread terminated unexpectedly");
                     view_state.header_bar.fetching = false;
                     view_state.fetch_receiver = None;
                     view_state.showed_timeout_toast[0] = false;
@@ -807,21 +795,15 @@ impl App {
                     view_state.pull_receiver = None;
                     view_state.showed_timeout_toast[1] = false;
                     if result.success {
-                        println!("Pull completed successfully");
-                        if !result.error.is_empty() {
-                            println!("{}", result.error.trim());
-                        }
                         self.toast_manager.push("Pull complete", ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
-                        eprintln!("Pull failed: {}", result.error);
                         let (msg, _) = classify_git_error("Pull", &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("Pull background thread terminated unexpectedly");
                     view_state.header_bar.pulling = false;
                     view_state.pull_receiver = None;
                     view_state.showed_timeout_toast[1] = false;
@@ -844,21 +826,15 @@ impl App {
                     view_state.push_receiver = None;
                     view_state.showed_timeout_toast[2] = false;
                     if result.success {
-                        println!("Push completed successfully");
-                        if !result.error.is_empty() {
-                            println!("{}", result.error.trim());
-                        }
                         self.toast_manager.push("Push complete", ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
-                        eprintln!("Push failed: {}", result.error);
                         let (msg, _) = classify_git_error("Push", &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("Push background thread terminated unexpectedly");
                     view_state.header_bar.pushing = false;
                     view_state.push_receiver = None;
                     view_state.showed_timeout_toast[2] = false;
@@ -900,7 +876,6 @@ impl App {
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    eprintln!("{} background thread terminated unexpectedly", label);
                     view_state.generic_op_receiver = None;
                     view_state.showed_timeout_toast[3] = false;
                     self.toast_manager.push(
@@ -923,8 +898,6 @@ impl App {
         match GitRepo::open(&path) {
             Ok(repo) => {
                 let name = repo.repo_name();
-                println!("Opening repo {}", name);
-
                 self.tab_bar.add_tab(name.clone());
                 let mut view_state = TabViewState::new();
 
@@ -953,7 +926,6 @@ impl App {
                 );
             }
             Err(e) => {
-                eprintln!("Failed to open repo at {:?}: {}", path, e);
                 self.toast_manager.push(
                     format!("Failed to open: {}", e),
                     ToastSeverity::Error,
@@ -1378,7 +1350,6 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             repo_tab.commits = commits;
         }
         Err(e) => {
-            eprintln!("Failed to load commit graph: {}", e);
             toast_manager.push(
                 format!("Failed to load commits: {}", e),
                 ToastSeverity::Error,
@@ -1390,20 +1361,20 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();
 
     let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
-        eprintln!("Failed to load branch tips: {}", e);
+        toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     let tags = repo.tags().unwrap_or_else(|e| {
-        eprintln!("Failed to load tags: {}", e);
+        toast_manager.push(format!("Failed to load tags: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     let current = repo.current_branch().unwrap_or_else(|e| {
-        eprintln!("Failed to get current branch: {}", e);
+        toast_manager.push(format!("Failed to get current branch: {}", e), ToastSeverity::Error);
         String::new()
     });
 
     let worktrees = repo.worktrees().unwrap_or_else(|e| {
-        eprintln!("Failed to load worktrees: {}", e);
+        toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
@@ -1415,7 +1386,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.branch_sidebar.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
-        eprintln!("Failed to load submodules: {}", e);
+        toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     view_state.submodule_strip.submodules = submodules.clone();
@@ -1430,7 +1401,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     }
 
     let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
-        eprintln!("Failed to compute ahead/behind: {}", e);
+        toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
         (0, 0)
     });
     view_state.header_bar.set_repo_info(
@@ -1474,13 +1445,13 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     let rx = refresh_repo_state(repo_tab, view_state, toast_manager);
 
     // Start filesystem watcher for auto-refresh
-    start_watcher(repo_tab, view_state);
+    start_watcher(repo_tab, view_state, toast_manager);
 
     rx
 }
 
 /// Start (or restart) a filesystem watcher for the given tab's repo.
-fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState) {
+fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) {
     // Drop any existing watcher first
     view_state.watcher = None;
     view_state.watcher_rx = None;
@@ -1491,12 +1462,14 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState) {
 
     match RepoWatcher::new(workdir, git_dir) {
         Ok((watcher, rx)) => {
-            println!("Filesystem watcher started for {}", workdir.display());
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
         }
         Err(e) => {
-            eprintln!("Failed to start filesystem watcher: {}", e);
+            toast_manager.push(
+                format!("Filesystem watcher failed: {}", e),
+                ToastSeverity::Error,
+            );
         }
     }
 }
@@ -2686,7 +2659,10 @@ fn handle_context_menu_action(
             }
         }
         _ => {
-            eprintln!("Unknown context menu action: {}", action_id);
+            toast_manager.push(
+                format!("Unknown action: {}", action_id),
+                ToastSeverity::Error,
+            );
         }
     }
 

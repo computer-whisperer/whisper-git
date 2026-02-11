@@ -166,7 +166,10 @@ fn start_remote_op(
     header_bar: &mut crate::ui::widgets::HeaderBar,
 ) -> bool {
     if receiver.is_some() {
-        eprintln!("{} already in progress", op_name);
+        toast_manager.push(
+            format!("{} already in progress", op_name),
+            ToastSeverity::Info,
+        );
         return false;
     }
     if let Some(workdir) = repo.working_dir_path() {
@@ -175,7 +178,6 @@ fn start_remote_op(
         set_header_flag(header_bar);
         true
     } else {
-        eprintln!("No working directory for {}", op_name);
         toast_manager.push(
             format!("Cannot {}: no working directory", op_name.to_lowercase()),
             ToastSeverity::Error,
@@ -201,7 +203,6 @@ pub fn handle_app_message(
     match msg {
         AppMessage::StageFile(path) => {
             if let Err(e) = staging_repo.stage_file(&path) {
-                eprintln!("Failed to stage {}: {}", path, e);
                 toast_manager.push(
                     format!("Stage failed: {}", e),
                     ToastSeverity::Error,
@@ -210,7 +211,6 @@ pub fn handle_app_message(
         }
         AppMessage::UnstageFile(path) => {
             if let Err(e) = staging_repo.unstage_file(&path) {
-                eprintln!("Failed to unstage {}: {}", path, e);
                 toast_manager.push(
                     format!("Unstage failed: {}", e),
                     ToastSeverity::Error,
@@ -257,7 +257,6 @@ pub fn handle_app_message(
             }
             match staging_repo.commit(&message) {
                 Ok(oid) => {
-                    println!("Created commit: {}", oid);
                     refresh_repo_state(repo, commits, view_state, toast_manager);
                     view_state.staging_well.clear_and_focus();
                     toast_manager.push(
@@ -266,7 +265,6 @@ pub fn handle_app_message(
                     );
                 }
                 Err(e) => {
-                    eprintln!("Failed to commit: {}", e);
                     toast_manager.push(
                         format!("Commit failed: {}", e),
                         ToastSeverity::Error,
@@ -355,7 +353,6 @@ pub fn handle_app_message(
                     *view_state.right_panel_mode = RightPanelMode::Browse;
                 }
                 Err(e) => {
-                    eprintln!("Failed to load diff for {}: {}", oid, e);
                     toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
@@ -366,7 +363,6 @@ pub fn handle_app_message(
                     view_state.diff_view.set_diff(diff_files, path);
                 }
                 Err(e) => {
-                    eprintln!("Failed to load diff for file '{}': {}", path, e);
                     toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
@@ -388,7 +384,6 @@ pub fn handle_app_message(
                     *view_state.last_diff_commit = None;
                 }
                 Err(e) => {
-                    eprintln!("Failed to load diff for {}: {}", path, e);
                     toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
@@ -412,7 +407,6 @@ pub fn handle_app_message(
         AppMessage::DeleteBranch(name) => {
             match repo.delete_branch(&name) {
                 Ok(()) => {
-                    println!("Deleted branch: {}", name);
                     refresh_repo_state(repo, commits, view_state, toast_manager);
                     toast_manager.push(
                         format!("Deleted branch {}", name),
@@ -420,7 +414,6 @@ pub fn handle_app_message(
                     );
                 }
                 Err(e) => {
-                    eprintln!("Failed to delete branch '{}': {}", name, e);
                     // Show root cause for a cleaner message
                     let root = e.root_cause().to_string();
                     toast_manager.push(
@@ -447,7 +440,6 @@ pub fn handle_app_message(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to stage hunk: {}", e);
                     toast_manager.push(
                         format!("Stage hunk failed: {}", e),
                         ToastSeverity::Error,
@@ -472,7 +464,6 @@ pub fn handle_app_message(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to unstage hunk: {}", e);
                     toast_manager.push(
                         format!("Unstage hunk failed: {}", e),
                         ToastSeverity::Error,
@@ -684,7 +675,6 @@ pub fn handle_app_message(
             }
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
-                    println!("Amended commit: {}", oid);
                     refresh_repo_state(repo, commits, view_state, toast_manager);
                     view_state.staging_well.exit_amend_mode();
                     toast_manager.push(
@@ -693,7 +683,6 @@ pub fn handle_app_message(
                     );
                 }
                 Err(e) => {
-                    eprintln!("Failed to amend: {}", e);
                     toast_manager.push(
                         format!("Amend failed: {}", e),
                         ToastSeverity::Error,
@@ -827,7 +816,6 @@ fn refresh_repo_state(
     match repo.commit_graph(MAX_COMMITS) {
         Ok(c) => *commits = c,
         Err(e) => {
-            eprintln!("Failed to load commit graph: {}", e);
             toast_manager.push(
                 format!("Failed to load commits: {}", e),
                 ToastSeverity::Error,
@@ -839,20 +827,20 @@ fn refresh_repo_state(
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();
 
     let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
-        eprintln!("Failed to load branch tips: {}", e);
+        toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     let tags = repo.tags().unwrap_or_else(|e| {
-        eprintln!("Failed to load tags: {}", e);
+        toast_manager.push(format!("Failed to load tags: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     let current = repo.current_branch().unwrap_or_else(|e| {
-        eprintln!("Failed to get current branch: {}", e);
+        toast_manager.push(format!("Failed to get current branch: {}", e), ToastSeverity::Error);
         String::new()
     });
 
     let worktrees = repo.worktrees().unwrap_or_else(|e| {
-        eprintln!("Failed to load worktrees: {}", e);
+        toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
@@ -864,14 +852,14 @@ fn refresh_repo_state(
     view_state.branch_sidebar.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
-        eprintln!("Failed to load submodules: {}", e);
+        toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
         Vec::new()
     });
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
     let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
-        eprintln!("Failed to compute ahead/behind: {}", e);
+        toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
         (0, 0)
     });
     view_state.header_bar.set_repo_info(
