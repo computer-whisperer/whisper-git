@@ -2046,6 +2046,101 @@ impl ApplicationHandler for App {
                         }
                     }
 
+                    // Route scroll events to the panel under the mouse cursor (hover-based, not focus-based)
+                    if let InputEvent::Scroll { x, y, .. } = &input_event {
+                        if layout.graph.contains(*x, *y) {
+                            let prev_selected = view_state.commit_graph_view.selected_commit;
+                            let response = view_state.commit_graph_view.handle_event(&input_event, &repo_tab.commits, layout.graph);
+                            if view_state.commit_graph_view.selected_commit != prev_selected
+                                && let Some(oid) = view_state.commit_graph_view.selected_commit
+                                    && view_state.last_diff_commit != Some(oid) {
+                                        view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                                    }
+                            if let Some(action) = view_state.commit_graph_view.take_action() {
+                                match action {
+                                    GraphAction::LoadMore => {
+                                        view_state.pending_messages.push(AppMessage::LoadMoreCommits);
+                                    }
+                                    GraphAction::SwitchWorktree(name) => {
+                                        if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
+                                            view_state.staging_well.switch_worktree(idx);
+                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                                if wt_ctx.is_current {
+                                                    view_state.worktree_repo = None;
+                                                } else {
+                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if response.is_consumed() {
+                                return;
+                            }
+                        } else if layout.staging.contains(*x, *y) {
+                            let response = view_state.staging_well.handle_event(&input_event, layout.staging);
+                            if let Some(action) = view_state.staging_well.take_action() {
+                                match action {
+                                    StagingAction::StageFile(path) => {
+                                        view_state.pending_messages.push(AppMessage::StageFile(path));
+                                    }
+                                    StagingAction::UnstageFile(path) => {
+                                        view_state.pending_messages.push(AppMessage::UnstageFile(path));
+                                    }
+                                    StagingAction::StageAll => {
+                                        view_state.pending_messages.push(AppMessage::StageAll);
+                                    }
+                                    StagingAction::UnstageAll => {
+                                        view_state.pending_messages.push(AppMessage::UnstageAll);
+                                    }
+                                    StagingAction::Commit(message) => {
+                                        view_state.pending_messages.push(AppMessage::Commit(message));
+                                    }
+                                    StagingAction::AmendCommit(message) => {
+                                        view_state.pending_messages.push(AppMessage::AmendCommit(message));
+                                    }
+                                    StagingAction::ToggleAmend => {
+                                        view_state.pending_messages.push(AppMessage::ToggleAmend);
+                                    }
+                                    StagingAction::ViewDiff(path) => {
+                                        let staged = view_state.staging_well.staged_list.files
+                                            .iter().any(|f| f.path == path);
+                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                    }
+                                    StagingAction::SwitchWorktree(index) => {
+                                        view_state.staging_well.switch_worktree(index);
+                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                            if wt_ctx.is_current {
+                                                view_state.worktree_repo = None;
+                                            } else {
+                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                            }
+                                        }
+                                    }
+                                    StagingAction::PreviewDiff(path, staged) => {
+                                        view_state.pending_messages.push(AppMessage::ViewDiffInline(path, staged));
+                                    }
+                                    StagingAction::InlineStageHunk(path, hunk_idx) => {
+                                        view_state.pending_messages.push(AppMessage::InlineStageHunk(path, hunk_idx));
+                                    }
+                                    StagingAction::InlineUnstageHunk(path, hunk_idx) => {
+                                        view_state.pending_messages.push(AppMessage::InlineUnstageHunk(path, hunk_idx));
+                                    }
+                                }
+                            }
+                            if response.is_consumed() {
+                                return;
+                            }
+                        } else if layout.sidebar.contains(*x, *y) {
+                            // Sidebar scroll: delegate to sidebar handle_event (already routed above at line 1764,
+                            // but if it wasn't consumed there, try again here)
+                            // Note: sidebar is already routed unconditionally above, so scroll should be handled there.
+                        }
+                        // Scroll events should not fall through to focus-based routing
+                        return;
+                    }
+
                     // Route to focused panel
                     match view_state.focused_panel {
                         FocusedPanel::Graph => {
