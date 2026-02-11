@@ -181,6 +181,11 @@ impl BranchSidebar {
         }
     }
 
+    /// Returns true if the filter search bar has text focus
+    pub fn has_text_focus(&self) -> bool {
+        self.filter_focused
+    }
+
     /// Update cached metrics from the text renderer (call on scale change)
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         self.line_height = text_renderer.line_height() * 1.2;

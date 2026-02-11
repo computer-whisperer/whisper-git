@@ -131,7 +131,7 @@ impl ShortcutBar {
     }
 
     fn hints_for_context(&self) -> Vec<ShortcutHint> {
-        match self.context {
+        let mut hints = match self.context {
             ShortcutContext::Graph => vec![
                 ShortcutHint { key: "j/k", action: "Navigate" },
                 ShortcutHint { key: "Enter", action: "Select" },
@@ -150,6 +150,12 @@ impl ShortcutBar {
                 ShortcutHint { key: "d", action: "Delete" },
                 ShortcutHint { key: "Tab", action: "Next Panel" },
             ],
-        }
+        };
+        // Global git operation shortcuts shown in all contexts
+        hints.push(ShortcutHint { key: "C-S-F", action: "Fetch" });
+        hints.push(ShortcutHint { key: "C-S-L", action: "Pull" });
+        hints.push(ShortcutHint { key: "C-S-P", action: "Push" });
+        hints.push(ShortcutHint { key: "`", action: "Terminal" });
+        hints
     }
 }
