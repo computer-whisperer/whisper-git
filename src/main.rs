@@ -245,6 +245,12 @@ struct App {
     shortcut_bar_visible: bool,
     /// Current cursor icon (cached to avoid redundant Wayland protocol calls)
     current_cursor: CursorIcon,
+    /// Dirty flag: true when refresh_status() should run on next frame
+    status_dirty: bool,
+    /// Timestamp of last refresh_status() call, for periodic refresh
+    last_status_refresh: Instant,
+    /// Receiver for async diff stats computation
+    diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -279,18 +285,17 @@ impl App {
         for repo_path in &repo_paths {
             match GitRepo::open(repo_path) {
                 Ok(repo) => {
-                    let commits = repo.commit_graph(MAX_COMMITS).unwrap_or_default();
                     let name = repo.repo_name();
                     let location: String = repo.workdir()
                         .map(|p| format!("{:?}", p))
                         .unwrap_or_else(|| format!("{:?} (bare)", repo.repo_name()));
-                    println!("Loaded {} commits from {}", commits.len(), location);
+                    println!("Opening repo from {}", location);
 
                     tab_bar.add_tab(name.clone());
                     tabs.push((
                         RepoTab {
                             repo: Some(repo),
-                            commits,
+                            commits: Vec::new(),
                             name,
                             _path: repo_path.clone(),
                         },
@@ -344,6 +349,9 @@ impl App {
             staging_ratio: 0.45,
             shortcut_bar_visible,
             current_cursor: CursorIcon::Default,
+            status_dirty: true,
+            last_status_refresh: Instant::now(),
+            diff_stats_receiver: None,
         })
     }
 
@@ -472,7 +480,8 @@ impl App {
         let row_scale = self.settings_dialog.row_scale;
         for (repo_tab, view_state) in &mut self.tabs {
             view_state.commit_graph_view.row_scale = row_scale;
-            init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager);
+            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager);
+            if rx.is_some() { self.diff_stats_receiver = rx; }
         }
 
         self.state = Some(RenderState {
@@ -594,6 +603,9 @@ impl App {
             return;
         };
 
+        // Any normal message likely changes state, so mark status dirty
+        self.status_dirty = true;
+
         for msg in normal_messages {
             let mut msg_view_state = MessageViewState {
                 commit_graph_view: &mut view_state.commit_graph_view,
@@ -620,6 +632,15 @@ impl App {
                 &ctx,
             );
         }
+
+        // Spawn async diff stats for commits missing stats (loaded by message handlers)
+        let needs_stats: Vec<Oid> = repo_tab.commits.iter()
+            .filter(|c| c.insertions == 0 && c.deletions == 0)
+            .map(|c| c.id)
+            .collect();
+        if !needs_stats.is_empty() && self.diff_stats_receiver.is_none() {
+            self.diff_stats_receiver = Some(repo.compute_diff_stats_async(needs_stats));
+        }
     }
 
     fn poll_watcher(&mut self) {
@@ -634,7 +655,33 @@ impl App {
 
         if changed {
             println!("Filesystem change detected, refreshing...");
-            refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+            self.status_dirty = true;
+            let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+            if rx.is_some() { self.diff_stats_receiver = rx; }
+        }
+    }
+
+    fn poll_diff_stats(&mut self) {
+        let rx = match self.diff_stats_receiver {
+            Some(ref rx) => rx,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok(stats) => {
+                self.diff_stats_receiver = None;
+                if let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) {
+                    for (oid, ins, del) in stats {
+                        if let Some(commit) = repo_tab.commits.iter_mut().find(|c| c.id == oid) {
+                            commit.insertions = ins;
+                            commit.deletions = del;
+                        }
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.diff_stats_receiver = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -658,7 +705,8 @@ impl App {
                             println!("{}", result.error.trim());
                         }
                         self.toast_manager.push("Fetch complete", ToastSeverity::Success);
-                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
                         eprintln!("Fetch failed: {}", result.error);
                         let (msg, _) = classify_git_error("Fetch", &result.error);
@@ -694,7 +742,8 @@ impl App {
                             println!("{}", result.error.trim());
                         }
                         self.toast_manager.push("Pull complete", ToastSeverity::Success);
-                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
                         eprintln!("Pull failed: {}", result.error);
                         let (msg, _) = classify_git_error("Pull", &result.error);
@@ -730,7 +779,8 @@ impl App {
                             println!("{}", result.error.trim());
                         }
                         self.toast_manager.push("Push complete", ToastSeverity::Success);
-                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
                         eprintln!("Push failed: {}", result.error);
                         let (msg, _) = classify_git_error("Push", &result.error);
@@ -762,7 +812,8 @@ impl App {
                     view_state.showed_timeout_toast[3] = false;
                     if result.success {
                         self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
-                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        if rx.is_some() { self.diff_stats_receiver = rx; }
                         // Also refresh submodules/worktrees/stashes
                         if let Some(ref repo) = repo_tab.repo {
                             if let Ok(submodules) = repo.submodules() {
@@ -801,24 +852,25 @@ impl App {
     fn open_repo_tab(&mut self, path: PathBuf) {
         match GitRepo::open(&path) {
             Ok(repo) => {
-                let commits = repo.commit_graph(MAX_COMMITS).unwrap_or_default();
                 let name = repo.repo_name();
-                println!("Opened {} with {} commits", name, commits.len());
+                println!("Opening repo {}", name);
 
                 self.tab_bar.add_tab(name.clone());
                 let mut view_state = TabViewState::new();
 
                 // Initialize the view if render state exists
+                // (init_tab_view -> refresh_repo_state will load commits)
                 let mut repo_tab = RepoTab {
                     repo: Some(repo),
-                    commits,
+                    commits: Vec::new(),
                     name,
                     _path: path,
                 };
 
                 if let Some(ref render_state) = self.state {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
-                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager);
+                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager);
+                    if rx.is_some() { self.diff_stats_receiver = rx; }
                 }
 
                 self.tabs.push((repo_tab, view_state));
@@ -865,8 +917,10 @@ impl App {
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
 /// Call this after any operation that changes branches, commits, or remote state.
-fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) {
-    let Some(ref repo) = repo_tab.repo else { return };
+/// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
+/// async diff stats computation that should be stored in `App::diff_stats_receiver`.
+fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+    let Some(ref repo) = repo_tab.repo else { return None };
 
     match repo.commit_graph(MAX_COMMITS) {
         Ok(commits) => {
@@ -937,10 +991,18 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
+
+    // Spawn async diff stats computation
+    if !repo_tab.commits.is_empty() {
+        let oids: Vec<Oid> = repo_tab.commits.iter().map(|c| c.id).collect();
+        Some(repo.compute_diff_stats_async(oids))
+    } else {
+        None
+    }
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager) {
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -954,35 +1016,16 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
             repo.current_branch().unwrap_or_else(|_| "unknown".to_string()),
             0, 0,
         );
-
-        // Set working dir status on graph view
-        view_state.commit_graph_view.working_dir_status = repo.status().ok();
-
-        // Set staging status
-        view_state.header_bar.has_staged = repo.status()
-            .map(|s| !s.staged.is_empty())
-            .unwrap_or(false);
-
-        // Load submodules and worktrees
-        if let Ok(submodules) = repo.submodules() {
-            view_state.submodule_strip.submodules = submodules.clone();
-            view_state.branch_sidebar.submodules = submodules;
-        }
-        if let Ok(worktrees) = repo.worktrees() {
-            let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
-            view_state.staging_well.set_worktrees(&worktrees, current_workdir);
-            view_state.branch_sidebar.worktrees = worktrees;
-        }
-
-        // Load stashes
-        view_state.branch_sidebar.stashes = repo.stash_list();
     }
 
-    // Refresh commits, branches, tags, head, and header info
-    refresh_repo_state(repo_tab, view_state, toast_manager);
+    // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
+    // (refresh_repo_state handles all of these — no need to call them separately)
+    let rx = refresh_repo_state(repo_tab, view_state, toast_manager);
 
     // Start filesystem watcher for auto-refresh
     start_watcher(repo_tab, view_state);
+
+    rx
 }
 
 /// Start (or restart) a filesystem watcher for the given tab's repo.
@@ -1094,7 +1137,7 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
 
     true
 }
@@ -1137,7 +1180,7 @@ fn exit_submodule(
     repo_tab.name = saved.repo_name;
 
     // Re-init views with parent data
-    init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
@@ -1285,11 +1328,22 @@ impl ApplicationHandler for App {
                 self.poll_watcher();
                 // Poll background remote operations
                 self.poll_remote_ops();
+                // Poll async diff stats
+                self.poll_diff_stats();
                 // Process any pending messages
                 self.process_messages();
-                // Refresh working directory status (runs every frame so worktree
-                // switches, external edits, etc. are reflected immediately)
-                self.refresh_status();
+                // Refresh working directory status only when dirty or on a periodic timer
+                {
+                    let now = Instant::now();
+                    if now.duration_since(self.last_status_refresh).as_millis() >= 1000 {
+                        self.status_dirty = true;
+                    }
+                    if self.status_dirty {
+                        self.refresh_status();
+                        self.status_dirty = false;
+                        self.last_status_refresh = now;
+                    }
+                }
 
                 // Poll native file picker for results
                 self.repo_dialog.poll_picker();
