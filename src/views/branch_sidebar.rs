@@ -146,7 +146,7 @@ impl BranchSidebar {
     /// Update cached metrics from the text renderer (call on scale change)
     pub fn sync_metrics(&mut self, text_renderer: &TextRenderer) {
         self.line_height = text_renderer.line_height() * 1.2;
-        self.section_header_height = text_renderer.line_height() * 1.6;
+        self.section_header_height = text_renderer.line_height() * 1.3;
     }
 
     /// Update filter cursor blink state. Call once per frame.
@@ -170,10 +170,10 @@ impl BranchSidebar {
         name.to_lowercase().contains(&self.filter_query.to_lowercase())
     }
 
-    /// Total height consumed by a section header including padding and separator.
-    /// Must match `layout_section_header()`: top_pad(4) + header_height + bottom_pad(2) + separator(1).
+    /// Total height consumed by a section header including padding.
+    /// Must match `layout_section_header()`: top_pad(2) + header_height + bottom_pad(2).
     fn section_header_total_height(&self) -> f32 {
-        self.section_header_height + 7.0
+        self.section_header_height + 4.0
     }
 
     /// Height of the filter input bar including padding
@@ -1754,13 +1754,12 @@ impl BranchSidebar {
 
     /// Layout a section header (e.g., "LOCAL  3") and return the new y position.
     /// Performs bounds checking to skip rendering if the header is outside visible area.
-    /// Includes extra vertical padding and a 1px separator line below.
-    /// Uses `bold_renderer` for the section title text.
+    /// Uses regular weight text at 85% scale with muted color for a subtle appearance.
     #[allow(clippy::too_many_arguments)]
     fn layout_section_header(
         &self,
         text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
+        _bold_renderer: &TextRenderer,
         output: &mut WidgetOutput,
         inner: &Rect,
         y: f32,
@@ -1770,54 +1769,76 @@ impl BranchSidebar {
         header_height: f32,
         bounds: &Rect,
     ) -> f32 {
-        let top_pad = 4.0;
+        let top_pad = 2.0;
         let bottom_pad = 2.0;
-        let total_height = top_pad + header_height + bottom_pad + 1.0; // +1 for separator
+        let inset = 6.0;
+        let total_height = top_pad + header_height + bottom_pad;
         let visible = y + total_height >= bounds.y && y < bounds.bottom();
         if visible {
-            // Section header background (rounded corners)
-            let header_rect = Rect::new(inner.x, y + top_pad, inner.width, header_height);
-            output.spline_vertices.extend(create_rounded_rect_vertices(
-                &header_rect,
-                theme::SURFACE_RAISED.to_array(),
-                4.0,
-            ));
+            let empty = count == 0;
+            let header_scale = 0.85;
+            let text_h = text_renderer.line_height() * header_scale;
+            let text_y = y + top_pad + (header_height - text_h) * 0.5;
 
-            let text_y = y + top_pad + 4.0;
+            // Only show background for non-empty sections
+            if !empty {
+                let header_rect = Rect::new(
+                    inner.x + inset,
+                    y + top_pad,
+                    inner.width - inset * 2.0,
+                    header_height,
+                );
+                output.spline_vertices.extend(create_rounded_rect_vertices(
+                    &header_rect,
+                    theme::SURFACE_RAISED.with_alpha(0.3).to_array(),
+                    3.0,
+                ));
+            }
 
-            // Collapse indicator - Unicode triangle (▶ collapsed / ▼ expanded)
-            let indicator = if collapsed { "\u{25B6}" } else { "\u{25BC}" }; // ▶ / ▼
-            output.bold_text_vertices.extend(bold_renderer.layout_text(
+            // Dimmer color for empty sections
+            let label_color = if empty {
+                theme::TEXT_MUTED.with_alpha(0.4).to_array()
+            } else {
+                theme::TEXT_MUTED.to_array()
+            };
+
+            // Collapse indicator - small chevron
+            let indicator = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
+            output.text_vertices.extend(text_renderer.layout_text_scaled(
                 indicator,
-                inner.x + 6.0,
+                inner.x + inset + 4.0,
                 text_y,
-                theme::TEXT_BRIGHT.to_array(),
+                label_color,
+                header_scale,
             ));
 
-            // Section title in bold
-            output.bold_text_vertices.extend(bold_renderer.layout_text(
+            // Section title in regular weight, muted color, smaller scale
+            let indicator_width = text_renderer.measure_text_scaled(indicator, header_scale) + 2.0;
+            output.text_vertices.extend(text_renderer.layout_text_scaled(
                 title,
-                inner.x + 20.0,
+                inner.x + inset + 4.0 + indicator_width,
                 text_y,
-                theme::TEXT_BRIGHT.to_array(),
+                label_color,
+                header_scale,
             ));
 
-            // Count badge in smaller/muted text (regular weight)
+            // Count badge - even smaller, more muted
             let count_text = format!("{}", count);
-            let title_width = bold_renderer.measure_text(title);
-            output.text_vertices.extend(text_renderer.layout_text_small(
+            let title_width = text_renderer.measure_text_scaled(title, header_scale);
+            let badge_scale = 0.75;
+            let badge_h = text_renderer.line_height() * badge_scale;
+            let badge_y = y + top_pad + (header_height - badge_h) * 0.5;
+            let badge_color = if empty {
+                theme::TEXT_MUTED.with_alpha(0.3).to_array()
+            } else {
+                theme::TEXT_MUTED.with_alpha(0.5).to_array()
+            };
+            output.text_vertices.extend(text_renderer.layout_text_scaled(
                 &count_text,
-                inner.x + 20.0 + title_width + 8.0,
-                text_y + (text_renderer.line_height() - text_renderer.line_height_small()) * 0.5,
-                theme::TEXT_MUTED.to_array(),
-            ));
-
-            // 1px separator line below header
-            let sep_y = y + top_pad + header_height + bottom_pad;
-            let sep_rect = Rect::new(inner.x, sep_y, inner.width, 1.0);
-            output.spline_vertices.extend(create_rect_vertices(
-                &sep_rect,
-                theme::BORDER.to_array(),
+                inner.x + inset + 4.0 + indicator_width + title_width + 6.0,
+                badge_y,
+                badge_color,
+                badge_scale,
             ));
         }
 
