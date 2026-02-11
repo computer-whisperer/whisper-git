@@ -2509,7 +2509,8 @@ fn handle_context_menu_action(
         }
         "discard" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::DiscardFile(param.to_string()));
+                confirm_dialog.show("Discard Changes", &format!("Discard changes to '{}'? This cannot be undone.", param));
+                *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
             }
         }
         "delete_submodule" => {
