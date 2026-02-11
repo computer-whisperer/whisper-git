@@ -545,6 +545,7 @@ impl BranchSidebar {
                             MenuItem::new("Push", "push"),
                             MenuItem::new("Pull", "pull"),
                             MenuItem::new("Pull (Rebase)", "pull_rebase"),
+                            MenuItem::new("Force Push", "force_push"),
                             MenuItem::separator(),
                             MenuItem::new("Merge into Current", "merge"),
                             MenuItem::new("Rebase Current onto", "rebase"),

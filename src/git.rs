@@ -1295,6 +1295,7 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver
         let result = std::process::Command::new("git")
             .args(&args)
             .current_dir(&workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output();
         let op_result = match result {
             Ok(output) => RemoteOpResult {
@@ -1321,6 +1322,11 @@ pub fn fetch_remote_async(workdir: PathBuf, remote: String) -> Receiver<RemoteOp
 /// Spawn a background thread to run `git push`
 pub fn push_remote_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
     run_git_async(vec!["push".into(), remote, branch], workdir, "push")
+}
+
+/// Spawn a background thread to run `git push --force-with-lease`
+pub fn push_force_async(workdir: PathBuf, remote: String, branch: String) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["push".into(), "--force-with-lease".into(), remote, branch], workdir, "push")
 }
 
 /// Spawn a background thread to run `git pull`
