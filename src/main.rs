@@ -8,6 +8,7 @@ mod views;
 mod watcher;
 
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -155,8 +156,10 @@ struct TabViewState {
     /// Track whether we already showed the "still running" toast for each op
     showed_timeout_toast: [bool; 4],
     submodule_strip: SubmoduleStatusStrip,
-    /// Secondary repo handle for staging in a non-current worktree
-    worktree_repo: Option<GitRepo>,
+    /// Cache of opened worktree repos keyed by path, to avoid re-discovering on switch
+    worktree_repo_cache: HashMap<PathBuf, GitRepo>,
+    /// Path of the currently active worktree (None = main worktree)
+    active_worktree_path: Option<PathBuf>,
     /// Submodule drill-down state (None when viewing root repo)
     submodule_focus: Option<SubmoduleFocus>,
     /// Filesystem watcher for auto-refresh on external changes
@@ -176,11 +179,24 @@ impl TabViewState {
         self.diff_view.clear();
         if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
             if wt_ctx.is_current {
-                self.worktree_repo = None;
+                self.active_worktree_path = None;
             } else {
-                self.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                let path = wt_ctx.path.clone();
+                // Only open the repo if it's not already cached
+                if !self.worktree_repo_cache.contains_key(&path) {
+                    if let Ok(repo) = GitRepo::open(&path) {
+                        self.worktree_repo_cache.insert(path.clone(), repo);
+                    }
+                }
+                self.active_worktree_path = Some(path);
             }
         }
+    }
+
+    /// Get a reference to the active worktree repo, if any.
+    fn active_worktree_repo(&self) -> Option<&GitRepo> {
+        self.active_worktree_path.as_ref()
+            .and_then(|path| self.worktree_repo_cache.get(path))
     }
 
     /// Switch to a named worktree (looks up index by name).
@@ -262,7 +278,8 @@ impl TabViewState {
             generic_op_receiver: None,
             showed_timeout_toast: [false; 4],
             submodule_strip: SubmoduleStatusStrip::new(),
-            worktree_repo: None,
+            worktree_repo_cache: HashMap::new(),
+            active_worktree_path: None,
             submodule_focus: None,
             watcher: None,
             watcher_rx: None,
@@ -582,7 +599,7 @@ impl App {
             let Some(ref repo) = repo_tab.repo else { return };
 
             // Active worktree status for staging well
-            let staging_repo = view_state.worktree_repo.as_ref().unwrap_or(repo);
+            let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
             if let Ok(status) = staging_repo.status() {
                 view_state.staging_well.update_status(&status);
             }
@@ -686,7 +703,9 @@ impl App {
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
             };
-            let staging_repo = view_state.worktree_repo.as_ref().unwrap_or(repo);
+            let staging_repo = view_state.active_worktree_path.as_ref()
+                .and_then(|p| view_state.worktree_repo_cache.get(p))
+                .unwrap_or(repo);
             handle_app_message(
                 msg,
                 repo,
@@ -1383,6 +1402,11 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
     let current_workdir = repo.workdir().unwrap_or(std::path::Path::new(""));
     view_state.staging_well.set_worktrees(&worktrees, current_workdir);
+    // Prune cached worktree repos for paths that no longer exist
+    let valid_paths: std::collections::HashSet<PathBuf> = worktrees.iter()
+        .map(|wt| PathBuf::from(&wt.path))
+        .collect();
+    view_state.worktree_repo_cache.retain(|path, _| valid_paths.contains(path));
     view_state.branch_sidebar.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
@@ -1538,7 +1562,8 @@ fn enter_submodule(
     view_state.diff_view.clear();
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
-    view_state.worktree_repo = None;
+    view_state.worktree_repo_cache.clear();
+    view_state.active_worktree_path = None;
 
     // Swap in submodule data
     let sub_commits = sub_repo.commit_graph(MAX_COMMITS).unwrap_or_default();
@@ -1591,7 +1616,8 @@ fn exit_submodule(
     view_state.diff_view.clear();
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
-    view_state.worktree_repo = None;
+    view_state.worktree_repo_cache.clear();
+    view_state.active_worktree_path = None;
 
     // Restore parent data
     let scroll_offset = saved.graph_scroll_offset;
