@@ -4,6 +4,60 @@ use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
 
+/// Find the byte offset of the previous word boundary from cursor position within a line.
+fn word_boundary_left(text: &str, cursor: usize) -> usize {
+    let before = &text[..cursor];
+    let mut chars: Vec<(usize, char)> = before.char_indices().collect();
+    if chars.is_empty() {
+        return 0;
+    }
+    // Skip whitespace/non-alnum going left
+    while let Some(&(_, c)) = chars.last() {
+        if c.is_alphanumeric() {
+            break;
+        }
+        chars.pop();
+    }
+    // Skip alnum going left
+    while let Some(&(_, c)) = chars.last() {
+        if !c.is_alphanumeric() {
+            break;
+        }
+        chars.pop();
+    }
+    chars.last().map(|&(i, c)| i + c.len_utf8()).unwrap_or(0)
+}
+
+/// Find the byte offset of the next word boundary from cursor position within a line.
+fn word_boundary_right(text: &str, cursor: usize) -> usize {
+    let after = &text[cursor..];
+    let mut iter = after.char_indices();
+    // Skip alnum going right
+    let mut offset = 0;
+    for (i, c) in iter.by_ref() {
+        if !c.is_alphanumeric() {
+            offset = i;
+            break;
+        }
+        offset = i + c.len_utf8();
+    }
+    // If we consumed all alnum chars, check if we stopped in non-alnum
+    let remaining = &after[offset..];
+    if remaining.is_empty() {
+        return cursor + offset;
+    }
+    let first_remaining = remaining.chars().next().unwrap();
+    if !first_remaining.is_alphanumeric() {
+        for (i, c) in remaining.char_indices() {
+            if c.is_alphanumeric() {
+                return cursor + offset + i;
+            }
+        }
+        return text.len();
+    }
+    cursor + offset
+}
+
 /// A multi-line text editing area
 pub struct TextArea {
     state: WidgetState,
@@ -190,6 +244,50 @@ impl TextArea {
         }
     }
 
+    fn move_cursor_to(&mut self, line: usize, col: usize, extend_selection: bool) {
+        if extend_selection && self.selection_start.is_none() {
+            self.selection_start = Some((self.cursor_line, self.cursor_col));
+        } else if !extend_selection {
+            self.selection_start = None;
+        }
+        self.cursor_line = line.min(self.lines.len() - 1);
+        self.cursor_col = col.min(self.lines[self.cursor_line].len());
+    }
+
+    /// Delete from cursor to the previous word boundary on the current line.
+    fn delete_word_backward(&mut self) {
+        if self.cursor_col > 0 {
+            let line = &self.lines[self.cursor_line];
+            let target = word_boundary_left(line, self.cursor_col);
+            self.lines[self.cursor_line].drain(target..self.cursor_col);
+            self.cursor_col = target;
+            self.modified = true;
+        } else if self.cursor_line > 0 {
+            // At start of line, join with previous (same as delete_backward)
+            let current_line = self.lines.remove(self.cursor_line);
+            self.cursor_line -= 1;
+            self.cursor_col = self.lines[self.cursor_line].len();
+            self.lines[self.cursor_line].push_str(&current_line);
+            self.modified = true;
+        }
+    }
+
+    /// Delete from cursor to the next word boundary on the current line.
+    fn delete_word_forward(&mut self) {
+        let line_len = self.current_line().len();
+        if self.cursor_col < line_len {
+            let line = &self.lines[self.cursor_line];
+            let target = word_boundary_right(line, self.cursor_col);
+            self.lines[self.cursor_line].drain(self.cursor_col..target);
+            self.modified = true;
+        } else if self.cursor_line < self.lines.len() - 1 {
+            // At end of line, join with next (same as delete_forward)
+            let next_line = self.lines.remove(self.cursor_line + 1);
+            self.lines[self.cursor_line].push_str(&next_line);
+            self.modified = true;
+        }
+    }
+
     fn ensure_cursor_visible(&mut self, visible_lines: usize) {
         if self.cursor_line < self.scroll_offset {
             self.scroll_offset = self.cursor_line;
@@ -246,32 +344,87 @@ impl Widget for TextArea {
             }
             InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
                 match key {
+                    Key::Left if modifiers.ctrl => {
+                        let line = &self.lines[self.cursor_line];
+                        let target = word_boundary_left(line, self.cursor_col);
+                        self.move_cursor_to(self.cursor_line, target, modifiers.shift);
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Right if modifiers.ctrl => {
+                        let line = &self.lines[self.cursor_line];
+                        let target = word_boundary_right(line, self.cursor_col);
+                        self.move_cursor_to(self.cursor_line, target, modifiers.shift);
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
                     Key::Left => {
+                        if modifiers.shift && self.selection_start.is_none() {
+                            self.selection_start = Some((self.cursor_line, self.cursor_col));
+                        } else if !modifiers.shift {
+                            self.selection_start = None;
+                        }
                         self.move_cursor(-1, 0);
                         return EventResponse::Consumed;
                     }
                     Key::Right => {
+                        if modifiers.shift && self.selection_start.is_none() {
+                            self.selection_start = Some((self.cursor_line, self.cursor_col));
+                        } else if !modifiers.shift {
+                            self.selection_start = None;
+                        }
                         self.move_cursor(1, 0);
                         return EventResponse::Consumed;
                     }
                     Key::Up => {
+                        if modifiers.shift && self.selection_start.is_none() {
+                            self.selection_start = Some((self.cursor_line, self.cursor_col));
+                        } else if !modifiers.shift {
+                            self.selection_start = None;
+                        }
                         self.move_cursor(0, -1);
                         let visible_lines = (bounds.height / 24.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
                     Key::Down => {
+                        if modifiers.shift && self.selection_start.is_none() {
+                            self.selection_start = Some((self.cursor_line, self.cursor_col));
+                        } else if !modifiers.shift {
+                            self.selection_start = None;
+                        }
                         self.move_cursor(0, 1);
                         let visible_lines = (bounds.height / 24.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
+                    Key::Home if modifiers.ctrl => {
+                        // Ctrl+Home: move to start of document
+                        self.move_cursor_to(0, 0, modifiers.shift);
+                        let visible_lines = (bounds.height / 24.0) as usize;
+                        self.ensure_cursor_visible(visible_lines);
+                        return EventResponse::Consumed;
+                    }
+                    Key::End if modifiers.ctrl => {
+                        // Ctrl+End: move to end of document
+                        let last_line = self.lines.len() - 1;
+                        let last_col = self.lines[last_line].len();
+                        self.move_cursor_to(last_line, last_col, modifiers.shift);
+                        let visible_lines = (bounds.height / 24.0) as usize;
+                        self.ensure_cursor_visible(visible_lines);
+                        return EventResponse::Consumed;
+                    }
                     Key::Home => {
-                        self.cursor_col = 0;
+                        // Home: move to start of current line
+                        self.move_cursor_to(self.cursor_line, 0, modifiers.shift);
                         return EventResponse::Consumed;
                     }
                     Key::End => {
-                        self.cursor_col = self.current_line().len();
+                        // End: move to end of current line
+                        let line_len = self.current_line().len();
+                        self.move_cursor_to(self.cursor_line, line_len, modifiers.shift);
                         return EventResponse::Consumed;
                     }
                     Key::Enter => {
@@ -282,14 +435,42 @@ impl Widget for TextArea {
                         self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
+                    Key::Backspace if modifiers.ctrl => {
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else {
+                            self.delete_word_backward();
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Delete if modifiers.ctrl => {
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else {
+                            self.delete_word_forward();
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
                     Key::Backspace => {
-                        self.delete_backward();
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else {
+                            self.delete_backward();
+                        }
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Delete => {
-                        self.delete_forward();
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else {
+                            self.delete_forward();
+                        }
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;

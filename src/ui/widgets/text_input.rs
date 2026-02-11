@@ -4,6 +4,63 @@ use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
 
+/// Find the byte offset of the previous word boundary from cursor position.
+/// Word boundaries are transitions between alphanumeric and non-alphanumeric characters.
+fn word_boundary_left(text: &str, cursor: usize) -> usize {
+    let before = &text[..cursor];
+    let mut chars: Vec<(usize, char)> = before.char_indices().collect();
+    if chars.is_empty() {
+        return 0;
+    }
+    // Skip whitespace/non-alnum going left
+    while let Some(&(_, c)) = chars.last() {
+        if c.is_alphanumeric() {
+            break;
+        }
+        chars.pop();
+    }
+    // Skip alnum going left
+    while let Some(&(_, c)) = chars.last() {
+        if !c.is_alphanumeric() {
+            break;
+        }
+        chars.pop();
+    }
+    chars.last().map(|&(i, c)| i + c.len_utf8()).unwrap_or(0)
+}
+
+/// Find the byte offset of the next word boundary from cursor position.
+fn word_boundary_right(text: &str, cursor: usize) -> usize {
+    let after = &text[cursor..];
+    let mut iter = after.char_indices();
+    // Skip alnum going right
+    let mut offset = 0;
+    for (i, c) in iter.by_ref() {
+        if !c.is_alphanumeric() {
+            offset = i;
+            break;
+        }
+        offset = i + c.len_utf8();
+    }
+    // If we consumed all alnum chars, check if we stopped in non-alnum
+    let remaining = &after[offset..];
+    if remaining.is_empty() {
+        return cursor + offset;
+    }
+    // Skip non-alnum going right (whitespace/punctuation)
+    let first_remaining = remaining.chars().next().unwrap();
+    if !first_remaining.is_alphanumeric() {
+        // We stopped at non-alnum, skip through them
+        for (i, c) in remaining.char_indices() {
+            if c.is_alphanumeric() {
+                return cursor + offset + i;
+            }
+        }
+        return text.len();
+    }
+    cursor + offset
+}
+
 /// A single-line text input field
 pub struct TextInput {
     state: WidgetState,
@@ -119,6 +176,15 @@ impl TextInput {
             self.cursor = (self.cursor + delta as usize).min(self.text.len());
         }
     }
+
+    fn move_cursor_to(&mut self, pos: usize, extend_selection: bool) {
+        if extend_selection && self.selection_start.is_none() {
+            self.selection_start = Some(self.cursor);
+        } else if !extend_selection {
+            self.selection_start = None;
+        }
+        self.cursor = pos.min(self.text.len());
+    }
 }
 
 impl Default for TextInput {
@@ -149,6 +215,20 @@ impl Widget for TextInput {
             }
             InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
                 match key {
+                    Key::Left if modifiers.ctrl => {
+                        let target = word_boundary_left(&self.text, self.cursor);
+                        self.move_cursor_to(target, modifiers.shift);
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Right if modifiers.ctrl => {
+                        let target = word_boundary_right(&self.text, self.cursor);
+                        self.move_cursor_to(target, modifiers.shift);
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
                     Key::Left => {
                         self.move_cursor(-1, modifiers.shift);
                         return EventResponse::Consumed;
@@ -173,6 +253,31 @@ impl Widget for TextInput {
                             self.selection_start = None;
                         }
                         self.cursor = self.text.len();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Backspace if modifiers.ctrl => {
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else if self.cursor > 0 {
+                            let target = word_boundary_left(&self.text, self.cursor);
+                            self.text.drain(target..self.cursor);
+                            self.cursor = target;
+                            self.modified = true;
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
+                    Key::Delete if modifiers.ctrl => {
+                        if self.selection_start.is_some() {
+                            self.delete_selection();
+                        } else if self.cursor < self.text.len() {
+                            let target = word_boundary_right(&self.text, self.cursor);
+                            self.text.drain(self.cursor..target);
+                            self.modified = true;
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::Backspace => {
