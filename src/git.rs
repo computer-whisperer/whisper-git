@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -1086,6 +1087,16 @@ pub struct SubmoduleInfo {
     pub ahead: usize,              // commits workdir is ahead of pinned
 }
 
+/// Per-commit submodule entry: what a commit tree pins for each submodule.
+#[derive(Clone, Debug)]
+pub struct CommitSubmoduleEntry {
+    pub name: String,
+    pub path: String,
+    pub pinned_oid: Oid,
+    pub changed: bool,
+    pub parent_oid: Option<Oid>,
+}
+
 /// Worktree information
 #[derive(Clone, Debug)]
 pub struct WorktreeInfo {
@@ -1148,9 +1159,13 @@ impl FullCommitInfo {
 }
 
 impl GitRepo {
-    /// Get the working directory path as a PathBuf
-    pub fn working_dir_path(&self) -> Option<PathBuf> {
-        self.repo.workdir().map(|p| p.to_path_buf())
+    /// Get a suitable directory for running git CLI commands.
+    /// Returns the workdir if available, otherwise falls back to the git dir.
+    /// This allows push/fetch/pull to work on bare repos.
+    pub fn git_command_dir(&self) -> PathBuf {
+        self.repo.workdir()
+            .unwrap_or_else(|| self.repo.path())
+            .to_path_buf()
     }
 
     /// Check if git user.name and user.email are configured.
@@ -1380,6 +1395,119 @@ impl GitRepo {
             author_time: author.when().seconds(),
             parent_short_ids,
         })
+    }
+
+    /// Get submodule entries pinned by a specific commit's tree.
+    ///
+    /// Walks the tree for entries with `ObjectType::Commit` (git's representation
+    /// of submodule pointers). Parses `.gitmodules` blob from the same tree for
+    /// name→path mapping. Compares against parent commit's tree to detect changes.
+    pub fn submodules_at_commit(&self, oid: Oid) -> Result<Vec<CommitSubmoduleEntry>> {
+        let commit = self.repo.find_commit(oid)
+            .context("Failed to find commit")?;
+        let tree = commit.tree().context("Failed to get commit tree")?;
+
+        // Collect parent tree submodule entries for change detection
+        let parent_pins: HashMap<String, Oid> = if commit.parent_count() > 0 {
+            if let Ok(parent) = commit.parent(0) {
+                if let Ok(parent_tree) = parent.tree() {
+                    Self::collect_submodule_pins(&parent_tree)
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+
+        // Parse .gitmodules from this tree for name→path mapping
+        let name_map = self.parse_gitmodules_from_tree(&tree);
+
+        // Collect submodule entries from this commit's tree
+        let pins = Self::collect_submodule_pins(&tree);
+
+        let mut entries = Vec::new();
+        for (path, pinned_oid) in &pins {
+            let name = name_map.get(path).cloned().unwrap_or_else(|| path.clone());
+            let parent_oid = parent_pins.get(path).copied();
+            let changed = match parent_oid {
+                Some(parent) => parent != *pinned_oid,
+                None => true, // new submodule
+            };
+
+            entries.push(CommitSubmoduleEntry {
+                name,
+                path: path.clone(),
+                pinned_oid: *pinned_oid,
+                changed,
+                parent_oid,
+            });
+        }
+
+        // Sort: changed entries first, then by name
+        entries.sort_by(|a, b| b.changed.cmp(&a.changed).then(a.name.cmp(&b.name)));
+
+        Ok(entries)
+    }
+
+    /// Collect all submodule pin entries (ObjectType::Commit) from a tree.
+    fn collect_submodule_pins(tree: &git2::Tree) -> HashMap<String, Oid> {
+        let mut pins = HashMap::new();
+        for entry in tree.iter() {
+            if entry.kind() == Some(git2::ObjectType::Commit) {
+                if let Some(name) = entry.name() {
+                    pins.insert(name.to_string(), entry.id());
+                }
+            }
+        }
+        pins
+    }
+
+    /// Parse `.gitmodules` blob from a tree to build a path→name mapping.
+    fn parse_gitmodules_from_tree(&self, tree: &git2::Tree) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        let Some(entry) = tree.get_name(".gitmodules") else {
+            return map;
+        };
+        let Ok(obj) = entry.to_object(&self.repo) else {
+            return map;
+        };
+        let Ok(blob) = obj.peel_to_blob() else {
+            return map;
+        };
+
+        // Simple line-based parser for .gitmodules INI format
+        let content = String::from_utf8_lossy(blob.content());
+        let mut current_name: Option<String> = None;
+        let mut current_path: Option<String> = None;
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("[submodule ") {
+                // Flush previous entry
+                if let (Some(path), Some(name)) = (&current_path, &current_name) {
+                    map.insert(path.clone(), name.clone());
+                }
+                // Parse name from [submodule "name"]
+                current_name = trimmed
+                    .strip_prefix("[submodule \"")
+                    .and_then(|s| s.strip_suffix("\"]"))
+                    .map(|s| s.to_string());
+                current_path = None;
+            } else if let Some(value) = trimmed.strip_prefix("path") {
+                let value = value.trim().strip_prefix('=').unwrap_or(value).trim();
+                current_path = Some(value.to_string());
+            }
+        }
+        // Flush last entry
+        if let (Some(path), Some(name)) = (&current_path, &current_name) {
+            map.insert(path.clone(), name.clone());
+        }
+
+        map
     }
 
     /// Get diff for a specific file in a commit

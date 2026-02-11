@@ -2,7 +2,7 @@
 
 use git2::Oid;
 
-use crate::git::{DiffFile, FullCommitInfo};
+use crate::git::{CommitSubmoduleEntry, DiffFile, FullCommitInfo};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::{Rect, TextRenderer};
@@ -12,6 +12,7 @@ use crate::ui::text_util::truncate_to_width;
 #[derive(Clone, Debug)]
 pub enum CommitDetailAction {
     ViewFileDiff(Oid, String),
+    OpenSubmodule(String),
 }
 
 /// View showing commit metadata and a list of changed files
@@ -20,6 +21,10 @@ pub struct CommitDetailView {
     commit_info: Option<FullCommitInfo>,
     /// Files changed in this commit (summary only, not full diffs)
     changed_files: Vec<DiffFile>,
+    /// Submodule entries at this commit
+    submodule_entries: Vec<CommitSubmoduleEntry>,
+    /// Hit-test bounds for submodule rows: (rect, name)
+    submodule_bounds: Vec<(Rect, String)>,
     /// Currently selected file index
     selected_file: Option<usize>,
     /// Scroll offset for the file list
@@ -37,6 +42,8 @@ impl CommitDetailView {
         Self {
             commit_info: None,
             changed_files: Vec::new(),
+            submodule_entries: Vec::new(),
+            submodule_bounds: Vec::new(),
             selected_file: None,
             file_scroll_offset: 0.0,
             file_content_height: 0.0,
@@ -46,9 +53,11 @@ impl CommitDetailView {
     }
 
     /// Set the commit to display
-    pub fn set_commit(&mut self, info: FullCommitInfo, diff_files: Vec<DiffFile>) {
+    pub fn set_commit(&mut self, info: FullCommitInfo, diff_files: Vec<DiffFile>, submodule_entries: Vec<CommitSubmoduleEntry>) {
         self.commit_info = Some(info);
         self.changed_files = diff_files;
+        self.submodule_entries = submodule_entries;
+        self.submodule_bounds.clear();
         self.selected_file = if self.changed_files.is_empty() { None } else { Some(0) };
         self.file_scroll_offset = 0.0;
     }
@@ -57,6 +66,8 @@ impl CommitDetailView {
     pub fn clear(&mut self) {
         self.commit_info = None;
         self.changed_files.clear();
+        self.submodule_entries.clear();
+        self.submodule_bounds.clear();
         self.selected_file = None;
         self.file_scroll_offset = 0.0;
     }
@@ -95,6 +106,16 @@ impl CommitDetailView {
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if self.commit_info.is_none() {
             return EventResponse::Ignored;
+        }
+
+        // Check submodule row clicks first
+        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+            for (rect, name) in &self.submodule_bounds {
+                if rect.contains(*x, *y) {
+                    self.pending_action = Some(CommitDetailAction::OpenSubmodule(name.clone()));
+                    return EventResponse::Consumed;
+                }
+            }
         }
 
         let (_meta_rect, file_rect) = self.compute_regions(bounds);
@@ -351,8 +372,91 @@ impl CommitDetailView {
             fy += line_height;
         }
 
+        // --- Submodule Section (if any) ---
+        self.submodule_bounds.clear();
+        if !self.submodule_entries.is_empty() {
+            // Divider
+            if fy + 8.0 > visible_top && fy < visible_bottom {
+                let div_rect = Rect::new(file_inner.x, fy + 4.0, file_inner.width, 1.0);
+                output.spline_vertices.extend(create_rect_vertices(
+                    &div_rect,
+                    theme::BORDER.to_array(),
+                ));
+            }
+            fy += 10.0;
+
+            // Section header
+            let changed_count = self.submodule_entries.iter().filter(|e| e.changed).count();
+            let sm_header = if changed_count > 0 {
+                format!("Submodules ({} changed)", changed_count)
+            } else {
+                format!("Submodules ({})", self.submodule_entries.len())
+            };
+            if fy + line_height > visible_top && fy < visible_bottom {
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &sm_header,
+                    file_inner.x,
+                    fy,
+                    theme::TEXT_MUTED.to_array(),
+                ));
+            }
+            fy += line_height + 4.0;
+
+            for entry in &self.submodule_entries {
+                if fy >= visible_bottom {
+                    break;
+                }
+                if fy + line_height > visible_top {
+                    let row_rect = Rect::new(file_inner.x - 4.0, fy, file_inner.width + 8.0, line_height);
+
+                    // Changed entries get amber highlight
+                    let name_color = if entry.changed {
+                        theme::BRANCH_RELEASE.to_array() // amber
+                    } else {
+                        theme::TEXT.to_array()
+                    };
+
+                    // Name
+                    let name = &entry.name;
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        name,
+                        file_inner.x + 8.0,
+                        fy,
+                        name_color,
+                    ));
+
+                    // Short SHA on the right
+                    let sha_str = if entry.changed {
+                        if let Some(parent_oid) = entry.parent_oid {
+                            format!("{} \u{2192} {}", &parent_oid.to_string()[..7], &entry.pinned_oid.to_string()[..7])
+                        } else {
+                            format!("{}", &entry.pinned_oid.to_string()[..7])
+                        }
+                    } else {
+                        format!("{}", &entry.pinned_oid.to_string()[..7])
+                    };
+                    let sha_width = text_renderer.measure_text(&sha_str);
+                    let sha_x = file_inner.right() - sha_width;
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        &sha_str,
+                        sha_x,
+                        fy,
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+
+                    self.submodule_bounds.push((row_rect, entry.name.clone()));
+                }
+                fy += line_height;
+            }
+        }
+
         // Track file list content height for scrolling
-        self.file_content_height = (self.changed_files.len() as f32 + 1.5) * line_height;
+        let extra_submodule_h = if !self.submodule_entries.is_empty() {
+            10.0 + line_height + 4.0 + self.submodule_entries.len() as f32 * line_height
+        } else {
+            0.0
+        };
+        self.file_content_height = (self.changed_files.len() as f32 + 1.5) * line_height + extra_submodule_h;
 
         output
     }

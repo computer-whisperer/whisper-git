@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::git::{WorkingDirStatus, WorktreeInfo};
+use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -35,6 +35,8 @@ pub enum StagingAction {
     SwitchWorktree(usize),
     /// Preview diff in the preview panel (file_path, is_staged)
     PreviewDiff(String, bool),
+    /// Open (drill into) a submodule by name
+    OpenSubmodule(String),
 }
 
 /// The staging well view containing commit message and file lists
@@ -71,6 +73,10 @@ pub struct StagingWell {
     pill_bar_rects: Vec<Rect>,
     /// Flag to request an immediate status refresh (e.g., after worktree switch)
     pub status_refresh_needed: bool,
+    /// Submodule info for the current worktree/repo
+    pub submodules: Vec<SubmoduleInfo>,
+    /// Hit-test bounds for submodule rows: (rect, submodule_name)
+    submodule_bounds: Vec<(Rect, String)>,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -80,6 +86,8 @@ struct StagingRegions {
     unstaged: Rect,
     staged_header: Rect,
     staged: Rect,
+    /// Area for the submodule section (between staged and commit area, zero-height if none)
+    submodules: Rect,
     commit_area: Rect,
     subject: Rect,
     body: Rect,
@@ -111,6 +119,8 @@ impl StagingWell {
             active_worktree_idx: 0,
             pill_bar_rects: Vec::new(),
             status_refresh_needed: false,
+            submodules: Vec::new(),
+            submodule_bounds: Vec::new(),
         }
     }
 
@@ -130,6 +140,11 @@ impl StagingWell {
 
         self.staged_list.set_files(staged);
         self.unstaged_list.set_files(unstaged);
+    }
+
+    /// Set the submodule list for the current repo/worktree.
+    pub fn set_submodules(&mut self, subs: Vec<SubmoduleInfo>) {
+        self.submodules = subs;
     }
 
     /// Returns true if any button in the staging well is hovered
@@ -646,6 +661,16 @@ impl StagingWell {
             return EventResponse::Consumed;
         }
 
+        // Check clicks on submodule rows
+        if let InputEvent::MouseDown { x, y, .. } = event {
+            for (rect, name) in &self.submodule_bounds {
+                if rect.contains(*x, *y) {
+                    self.pending_action = Some(StagingAction::OpenSubmodule(name.clone()));
+                    return EventResponse::Consumed;
+                }
+            }
+        }
+
         // For MouseDown, determine focus section before routing
         // New order: 0=unstaged, 1=staged, 2=subject, 3=body
         if let InputEvent::MouseDown { x, y, .. } = event {
@@ -752,12 +777,23 @@ impl StagingWell {
         let gap_small = padding * 0.5;
         let base_body_height = 80.0 * s;
 
+        // Submodule section: allocate a fixed height if submodules exist
+        let sm_section_header_h = if self.submodules.is_empty() { 0.0 } else { 22.0 * s };
+        let sm_row_h = 20.0 * s; // approximate line_height * 1.2
+        let sm_max_rows = self.submodules.len().min(8) as f32;
+        let sm_total_h = if self.submodules.is_empty() {
+            0.0
+        } else {
+            divider_gap + sm_section_header_h + sm_max_rows * sm_row_h + 4.0 * s
+        };
+
         // File lists: when empty, collapse to zero height (header-only).
         // The header is already accounted for separately.
         let file_area_budget = (inner.height
             - section_header_height * 2.0
             - divider_gap
             - divider_gap
+            - sm_total_h
             - commit_title_height
             - subject_height
             - gap_small
@@ -788,7 +824,10 @@ impl StagingWell {
         let (staged_header, remaining) = remaining.take_top(section_header_height);
         let (staged, remaining) = remaining.take_top(staged_list_h);
 
-        // Divider between staged and commit area
+        // --- Submodule section (between staged and commit, only if submodules exist) ---
+        let (submodules, remaining) = remaining.take_top(sm_total_h);
+
+        // Divider between staged/submodules and commit area
         let (_div2, remaining) = remaining.take_top(divider_gap);
 
         // --- Commit message area ---
@@ -849,6 +888,7 @@ impl StagingWell {
             unstaged,
             staged_header,
             staged,
+            submodules,
             commit_area,
             subject,
             body,
@@ -1088,6 +1128,88 @@ impl StagingWell {
 
         // Commit button
         output.extend(self.commit_btn.layout(text_renderer, regions.commit_btn));
+
+        // =============================================================
+        // 5. SUBMODULES SECTION (between staged and commit, only if any exist)
+        // =============================================================
+        self.submodule_bounds.clear();
+        if !self.submodules.is_empty() && regions.submodules.height > 0.0 {
+            let sm_rect = regions.submodules;
+            let sm_row_h = text_renderer.line_height() * 1.2;
+            let sm_left = sm_rect.x;
+            let sm_width = sm_rect.width;
+
+            // Divider at top of submodule section
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(sm_left, sm_rect.y, sm_width, 1.0),
+                theme::BORDER.to_array(),
+            ));
+
+            // Section header
+            let header_y = sm_rect.y + 4.0 * s;
+            let sm_header_h = 22.0 * s;
+            let sm_title = format!("Submodules ({})", self.submodules.len());
+            output.text_vertices.extend(text_renderer.layout_text(
+                &sm_title,
+                sm_left + 4.0 * s,
+                header_y + 2.0 * s,
+                theme::TEXT_MUTED.to_array(),
+            ));
+
+            // Submodule rows
+            let mut row_y = header_y + sm_header_h;
+            let sm_bottom = sm_rect.bottom();
+            for sm in &self.submodules {
+                if row_y + sm_row_h > sm_bottom {
+                    break;
+                }
+
+                let row_rect = Rect::new(sm_left, row_y, sm_width, sm_row_h);
+                self.submodule_bounds.push((row_rect, sm.name.clone()));
+
+                // Status dot color
+                let dot_color = if sm.is_dirty {
+                    theme::STATUS_BEHIND // amber
+                } else if sm.branch == "detached" {
+                    theme::STATUS_DIRTY // red
+                } else {
+                    theme::STATUS_CLEAN // green
+                };
+
+                // Status dot
+                let dot = "\u{25CF}"; // ●
+                let dot_x = sm_left + 4.0 * s;
+                output.text_vertices.extend(text_renderer.layout_text(
+                    dot,
+                    dot_x,
+                    row_y + 2.0,
+                    dot_color.to_array(),
+                ));
+                let dot_w = text_renderer.measure_text(dot) + 4.0;
+
+                // Name
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &sm.name,
+                    dot_x + dot_w,
+                    row_y + 2.0,
+                    theme::TEXT.to_array(),
+                ));
+
+                // Short pinned SHA on right
+                if let Some(oid) = sm.head_oid {
+                    let short_sha = &oid.to_string()[..7];
+                    let sha_w = text_renderer.measure_text(short_sha);
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        short_sha,
+                        sm_left + sm_width - sha_w - 4.0 * s,
+                        row_y + 2.0,
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                }
+
+                row_y += sm_row_h;
+            }
+        }
 
         output
     }

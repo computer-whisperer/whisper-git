@@ -35,7 +35,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
@@ -154,7 +154,6 @@ struct TabViewState {
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
     /// Track whether we already showed the "still running" toast for each op
     showed_timeout_toast: [bool; 4],
-    submodule_strip: SubmoduleStatusStrip,
     /// Cache of opened worktree repos keyed by path, to avoid re-discovering on switch
     worktree_repo_cache: HashMap<PathBuf, GitRepo>,
     /// Path of the currently active worktree (None = main worktree)
@@ -239,6 +238,9 @@ impl TabViewState {
             StagingAction::PreviewDiff(path, staged) => {
                 self.pending_messages.push(AppMessage::ViewDiff(path, staged));
             }
+            StagingAction::OpenSubmodule(name) => {
+                self.pending_messages.push(AppMessage::EnterSubmodule(name));
+            }
         }
     }
 
@@ -274,7 +276,6 @@ impl TabViewState {
             push_receiver: None,
             generic_op_receiver: None,
             showed_timeout_toast: [false; 4],
-            submodule_strip: SubmoduleStatusStrip::new(),
             worktree_repo_cache: HashMap::new(),
             active_worktree_path: None,
             submodule_focus: None,
@@ -690,7 +691,6 @@ impl App {
                 commit_detail_view: &mut view_state.commit_detail_view,
                 branch_sidebar: &mut view_state.branch_sidebar,
                 header_bar: &mut view_state.header_bar,
-                submodule_strip: &mut view_state.submodule_strip,
                 last_diff_commit: &mut view_state.last_diff_commit,
                 fetch_receiver: &mut view_state.fetch_receiver,
                 pull_receiver: &mut view_state.pull_receiver,
@@ -905,11 +905,8 @@ impl App {
                         self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
-                        // Also refresh submodules/worktrees/stashes
+                        // Also refresh worktrees/stashes
                         if let Some(ref repo) = repo_tab.repo {
-                            if let Ok(submodules) = repo.submodules() {
-                                view_state.branch_sidebar.submodules = submodules;
-                            }
                             if let Ok(worktrees) = repo.worktrees() {
                                 view_state.branch_sidebar.worktrees = worktrees;
                             }
@@ -1319,15 +1316,8 @@ impl App {
                     && !view_state.branch_sidebar.has_text_focus()
                 {
                     if let Some(ref repo) = repo_tab.repo {
-                        if let Some(workdir) = repo.workdir() {
-                            let path = workdir.to_string_lossy().to_string();
-                            open_terminal_at(&path, "repo", &mut self.toast_manager);
-                        } else {
-                            self.toast_manager.push(
-                                "No working directory (bare repository)",
-                                ToastSeverity::Error,
-                            );
-                        }
+                        let path = repo.git_command_dir();
+                        open_terminal_at(&path.to_string_lossy(), "repo", &mut self.toast_manager);
                     }
                     return true;
                 }
@@ -1351,9 +1341,6 @@ impl App {
             SidebarAction::Delete(name) => {
                 self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
-            }
-            SidebarAction::OpenSubmodule(name) => {
-                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
             SidebarAction::SwitchWorktree(name) => {
                 view_state.switch_to_worktree_by_name(&name);
@@ -1453,16 +1440,15 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
         Vec::new()
     });
-    view_state.submodule_strip.submodules = submodules.clone();
-    view_state.branch_sidebar.submodules = submodules;
+    view_state.staging_well.set_submodules(submodules);
 
     view_state.branch_sidebar.stashes = repo.stash_list();
 
-    // When inside a submodule, override the strip with parent's siblings
+    // When inside a submodule, override staging well with parent's siblings
     // so users can navigate between sibling submodules
     if let Some(ref focus) = view_state.submodule_focus {
         if let Some(parent) = focus.parent_stack.last() {
-            view_state.submodule_strip.submodules = parent.parent_submodules.clone();
+            view_state.staging_well.set_submodules(parent.parent_submodules.clone());
         }
     }
 
@@ -1556,7 +1542,7 @@ fn enter_submodule(
     let Some(ref repo) = repo_tab.repo else { return false };
 
     // Find the submodule info by name
-    let sm = view_state.submodule_strip.submodules.iter()
+    let sm = view_state.staging_well.submodules.iter()
         .find(|s| s.name == name)
         .cloned();
     let Some(sm) = sm else {
@@ -1590,7 +1576,7 @@ fn enter_submodule(
     let parent_repo = repo_tab.repo.take().unwrap();
     let parent_commits = std::mem::take(&mut repo_tab.commits);
     let parent_name = repo_tab.name.clone();
-    let parent_submodules = view_state.submodule_strip.submodules.clone();
+    let parent_submodules = view_state.staging_well.submodules.clone();
 
     let saved = SavedParentState {
         repo: parent_repo,
@@ -1682,8 +1668,8 @@ fn exit_submodule(
     view_state.commit_graph_view.selected_commit = selected;
     view_state.branch_sidebar.scroll_offset = sidebar_scroll;
 
-    // Restore submodule strip siblings
-    view_state.submodule_strip.submodules = parent_submodules;
+    // Restore submodule siblings in staging well
+    view_state.staging_well.set_submodules(parent_submodules);
 
     // If stack is now empty, clear focus entirely
     let stack_empty = view_state.submodule_focus.as_ref()
@@ -2065,6 +2051,9 @@ impl App {
                             CommitDetailAction::ViewFileDiff(oid, path) => {
                                 view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
                             }
+                            CommitDetailAction::OpenSubmodule(name) => {
+                                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
+                            }
                         }
                     }
                     return;
@@ -2109,29 +2098,6 @@ impl App {
         // Right-click context menus
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
         if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = input_event {
-            // Check submodule strip first (it overlays the bottom of the graph area)
-            if !view_state.submodule_strip.submodules.is_empty() {
-                let strip_h = SubmoduleStatusStrip::height(scale);
-                let strip_bounds = Rect::new(
-                    layout.graph.x,
-                    layout.graph.bottom() - strip_h,
-                    layout.graph.width,
-                    strip_h,
-                );
-                view_state.submodule_strip.handle_event(input_event, strip_bounds);
-                if let Some(SubmoduleStripAction::OpenContextMenu(name, mx, my)) = view_state.submodule_strip.take_action() {
-                    let items = vec![
-                        MenuItem::new("Open Submodule", format!("enter_submodule:{}", name)),
-                        MenuItem::separator(),
-                        MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
-                        MenuItem::separator(),
-                        MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
-                    ];
-                    view_state.context_menu.show(items, mx, my);
-                    return;
-                }
-            }
-
             // Check which panel was right-clicked and show context menu
             if layout.graph.contains(*x, *y) {
                 if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
@@ -2152,34 +2118,6 @@ impl App {
                     view_state.context_menu.show(items, *x, *y);
                     return;
                 }
-        }
-
-        // Route left-clicks to submodule strip (before panel routing)
-        if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = input_event {
-            if !view_state.submodule_strip.submodules.is_empty() {
-                let strip_h = SubmoduleStatusStrip::height(scale);
-                let strip_bounds = Rect::new(
-                    layout.graph.x,
-                    layout.graph.bottom() - strip_h,
-                    layout.graph.width,
-                    strip_h,
-                );
-                if strip_bounds.contains(*x, *y) {
-                    view_state.submodule_strip.handle_event(input_event, strip_bounds);
-                    if let Some(action) = view_state.submodule_strip.take_action() {
-                        match action {
-                            SubmoduleStripAction::Open(name) => {
-                                if view_state.submodule_focus.is_some() {
-                                    view_state.pending_messages.push(AppMessage::ExitSubmodule);
-                                }
-                                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
-                                return;
-                            }
-                            SubmoduleStripAction::OpenContextMenu(..) => {}
-                        }
-                    }
-                }
-            }
         }
 
         // Detect clicks on panels to switch focus
@@ -2604,7 +2542,7 @@ fn handle_context_menu_action(
         }
         "open_submodule" => {
             if !param.is_empty() {
-                let path = view_state.branch_sidebar.submodules.iter()
+                let path = view_state.staging_well.submodules.iter()
                     .find(|s| s.name == param)
                     .map(|s| s.path.clone());
                 if let Some(path) = path {
@@ -2898,18 +2836,6 @@ fn build_ui_output(
         graph_output.spline_vertices.extend(pill_vertices);
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
-
-        // Submodule status strip (chrome layer, bottom of graph area)
-        if !view_state.submodule_strip.submodules.is_empty() {
-            let strip_h = SubmoduleStatusStrip::height(scale);
-            let strip_bounds = Rect::new(
-                layout.graph.x,
-                layout.graph.bottom() - strip_h,
-                layout.graph.width,
-                strip_h,
-            );
-            chrome_output.extend(view_state.submodule_strip.layout(text_renderer, strip_bounds));
-        }
 
         // Header bar (chrome layer - on top of graph)
         chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header, elapsed));
@@ -3569,7 +3495,8 @@ fn apply_screenshot_state(app: &mut App) {
                     && let Ok(info) = repo.full_commit_info(oid)
                 {
                     let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
-                    view_state.commit_detail_view.set_commit(info, diff_files.clone());
+                    let sm_entries = repo.submodules_at_commit(oid).unwrap_or_default();
+                    view_state.commit_detail_view.set_commit(info, diff_files.clone(), sm_entries);
                     if let Some(first_file) = diff_files.first() {
                         let title = first_file.path.clone();
                         view_state.diff_view.set_diff(vec![first_file.clone()], title);

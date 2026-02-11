@@ -173,18 +173,11 @@ fn start_remote_op(
         );
         return false;
     }
-    if let Some(workdir) = repo.working_dir_path() {
-        let rx = start_fn(workdir);
-        *receiver = Some((rx, std::time::Instant::now()));
-        set_header_flag(header_bar);
-        true
-    } else {
-        toast_manager.push(
-            format!("Cannot {}: no working directory", op_name.to_lowercase()),
-            ToastSeverity::Error,
-        );
-        false
-    }
+    let cmd_dir = repo.git_command_dir();
+    let rx = start_fn(cmd_dir);
+    *receiver = Some((rx, std::time::Instant::now()));
+    set_header_flag(header_bar);
+    true
 }
 
 /// Dispatch a single `AppMessage`.
@@ -369,10 +362,11 @@ pub fn handle_app_message(
         }
         AppMessage::SelectedCommit(oid) => {
             let full_info = repo.full_commit_info(oid);
+            let submodule_entries = repo.submodules_at_commit(oid).unwrap_or_default();
             match repo.diff_for_commit(oid) {
                 Ok(diff_files) => {
                     if let Ok(info) = full_info {
-                        view_state.commit_detail_view.set_commit(info, diff_files.clone());
+                        view_state.commit_detail_view.set_commit(info, diff_files.clone(), submodule_entries);
                     }
                     if let Some(first_file) = diff_files.first() {
                         let title = first_file.path.clone();
@@ -570,28 +564,26 @@ pub fn handle_app_message(
             view_state.commit_graph_view.finish_loading();
         }
         AppMessage::DeleteSubmodule(name) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::remove_submodule_async(workdir, name.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Delete submodule '{}'", name),
-                    format!("Removing submodule '{}'...", name),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::remove_submodule_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Delete submodule '{}'", name),
+                format!("Removing submodule '{}'...", name),
+                toast_manager,
+            );
         }
         AppMessage::UpdateSubmodule(name) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::update_submodule_async(workdir, name.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Update submodule '{}'", name),
-                    format!("Updating submodule '{}'...", name),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::update_submodule_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Update submodule '{}'", name),
+                format!("Updating submodule '{}'...", name),
+                toast_manager,
+            );
         }
         AppMessage::JumpToWorktreeBranch(name) => {
             // Find the worktree by name, get its branch, find the branch tip, select it
@@ -610,40 +602,37 @@ pub fn handle_app_message(
             }
         }
         AppMessage::RemoveWorktree(name) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::remove_worktree_async(workdir, name.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Remove worktree '{}'", name),
-                    format!("Removing worktree '{}'...", name),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = repo.git_command_dir();
+            let rx = git::remove_worktree_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Remove worktree '{}'", name),
+                format!("Removing worktree '{}'...", name),
+                toast_manager,
+            );
         }
         AppMessage::MergeBranch(name) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::merge_branch_async(workdir, name.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Merge '{}'", name),
-                    format!("Merging '{}'...", name),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::merge_branch_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Merge '{}'", name),
+                format!("Merging '{}'...", name),
+                toast_manager,
+            );
         }
         AppMessage::RebaseBranch(name) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::rebase_branch_async(workdir, name.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Rebase onto '{}'", name),
-                    format!("Rebasing onto '{}'...", name),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::rebase_branch_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Rebase onto '{}'", name),
+                format!("Rebasing onto '{}'...", name),
+                toast_manager,
+            );
         }
         AppMessage::CreateBranch(name, oid) => {
             handle_repo_mutation(
@@ -670,77 +659,71 @@ pub fn handle_app_message(
             );
         }
         AppMessage::StashPush => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::stash_push_async(workdir);
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    "Stash push".to_string(),
-                    "Stashing changes...".to_string(),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::stash_push_async(cmd_dir);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                "Stash push".to_string(),
+                "Stashing changes...".to_string(),
+                toast_manager,
+            );
         }
         AppMessage::StashPop => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::stash_pop_async(workdir);
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    "Stash pop".to_string(),
-                    "Popping stash...".to_string(),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::stash_pop_async(cmd_dir);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                "Stash pop".to_string(),
+                "Popping stash...".to_string(),
+                toast_manager,
+            );
         }
         AppMessage::StashApply(index) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::stash_apply_async(workdir, index);
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Stash apply @{{{}}}", index),
-                    format!("Applying stash@{{{}}}...", index),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::stash_apply_async(cmd_dir, index);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Stash apply @{{{}}}", index),
+                format!("Applying stash@{{{}}}...", index),
+                toast_manager,
+            );
         }
         AppMessage::StashDrop(index) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::stash_drop_async(workdir, index);
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Stash drop @{{{}}}", index),
-                    format!("Dropping stash@{{{}}}...", index),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::stash_drop_async(cmd_dir, index);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Stash drop @{{{}}}", index),
+                format!("Dropping stash@{{{}}}...", index),
+                toast_manager,
+            );
         }
         AppMessage::StashPopIndex(index) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let rx = git::stash_pop_index_async(workdir, index);
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Stash pop @{{{}}}", index),
-                    format!("Popping stash@{{{}}}...", index),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::stash_pop_index_async(cmd_dir, index);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Stash pop @{{{}}}", index),
+                format!("Popping stash@{{{}}}...", index),
+                toast_manager,
+            );
         }
         AppMessage::CherryPick(oid) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let sha = oid.to_string();
-                let rx = git::cherry_pick_async(workdir, sha.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Cherry-pick {}", &sha[..7]),
-                    format!("Cherry-picking {}...", &sha[..7]),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let sha = oid.to_string();
+            let rx = git::cherry_pick_async(cmd_dir, sha.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Cherry-pick {}", &sha[..7]),
+                format!("Cherry-picking {}...", &sha[..7]),
+                toast_manager,
+            );
         }
         AppMessage::AmendCommit(message) => {
             if !validate_commit_preconditions(&message, staging_repo, toast_manager) {
@@ -776,17 +759,16 @@ pub fn handle_app_message(
             }
         }
         AppMessage::RevertCommit(oid) => {
-            if let Some(workdir) = repo.working_dir_path() {
-                let sha = oid.to_string();
-                let rx = git::revert_commit_async(workdir, sha.clone());
-                queue_async_op(
-                    view_state.generic_op_receiver,
-                    rx,
-                    format!("Revert {}", &sha[..7]),
-                    format!("Reverting {}...", &sha[..7]),
-                    toast_manager,
-                );
-            }
+            let cmd_dir = staging_repo.git_command_dir();
+            let sha = oid.to_string();
+            let rx = git::revert_commit_async(cmd_dir, sha.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Revert {}", &sha[..7]),
+                format!("Reverting {}...", &sha[..7]),
+                toast_manager,
+            );
         }
         AppMessage::ResetToCommit(oid, mode) => {
             let mode_name = match mode {
@@ -869,7 +851,6 @@ pub struct MessageViewState<'a> {
     pub commit_detail_view: &'a mut CommitDetailView,
     pub branch_sidebar: &'a mut BranchSidebar,
     pub header_bar: &'a mut crate::ui::widgets::HeaderBar,
-    pub submodule_strip: &'a mut crate::ui::widgets::SubmoduleStatusStrip,
     pub last_diff_commit: &'a mut Option<Oid>,
     pub fetch_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
     pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
@@ -949,8 +930,7 @@ fn refresh_repo_state(
         toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
         Vec::new()
     });
-    view_state.submodule_strip.submodules = submodules.clone();
-    view_state.branch_sidebar.submodules = submodules;
+    view_state.staging_well.set_submodules(submodules);
 
     view_state.branch_sidebar.stashes = repo.stash_list();
 

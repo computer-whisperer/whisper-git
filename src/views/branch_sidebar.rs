@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::git::{BranchTip, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo, format_relative_time};
+use crate::git::{BranchTip, StashEntry, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -19,7 +19,6 @@ pub enum SidebarAction {
     SwitchWorktree(String),
     ApplyStash(usize),
     DropStash(usize),
-    OpenSubmodule(String),
     DeleteTag(String),
 }
 
@@ -31,7 +30,6 @@ enum SidebarItem {
     RemoteHeader(String),         // remote name like "origin"
     RemoteBranch(String, String), // (remote, branch)
     Tag(String),
-    SubmoduleEntry(String),       // submodule name
     WorktreeEntry(String),        // worktree name
     StashEntry(usize),  // stash index
 }
@@ -53,7 +51,6 @@ struct FilteredData {
     local: Vec<String>,
     remotes: Vec<(String, Vec<String>)>,
     tags: Vec<String>,
-    submodules: Vec<String>,
     worktrees: Vec<String>,
     stashes: Vec<(usize, String, i64)>,
 }
@@ -68,8 +65,6 @@ pub struct BranchSidebar {
     pub tags: Vec<String>,
     /// Current branch name (for highlighting)
     pub current_branch: String,
-    /// Submodules in the repository
-    pub submodules: Vec<SubmoduleInfo>,
     /// Worktrees in the repository
     pub worktrees: Vec<WorktreeInfo>,
     /// Stash entries
@@ -80,8 +75,6 @@ pub struct BranchSidebar {
     pub remote_collapsed: bool,
     /// Whether the TAGS section is collapsed
     pub tags_collapsed: bool,
-    /// Whether the SUBMODULES section is collapsed
-    pub submodules_collapsed: bool,
     /// Whether the WORKTREES section is collapsed
     pub worktrees_collapsed: bool,
     /// Whether the STASHES section is collapsed
@@ -151,13 +144,11 @@ impl BranchSidebar {
             remote_branches: HashMap::new(),
             tags: Vec::new(),
             current_branch: String::new(),
-            submodules: Vec::new(),
             worktrees: Vec::new(),
             stashes: Vec::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
-            submodules_collapsed: false,
             worktrees_collapsed: false,
             stashes_collapsed: false,
             collapsed_remotes: HashSet::new(),
@@ -420,23 +411,6 @@ impl BranchSidebar {
             }
         }
 
-        // SUBMODULES section (only if any exist)
-        if !self.submodules.is_empty() {
-            let sm_filtered: Vec<SubmoduleInfo> = if filtering {
-                self.submodules.iter().filter(|s| self.matches_filter(&s.name)).cloned().collect()
-            } else {
-                self.submodules.clone()
-            };
-            if !filtering || !sm_filtered.is_empty() {
-                self.visible_items.push(SidebarItem::SectionHeader("SUBMODULES"));
-                if !self.submodules_collapsed {
-                    for sm in &sm_filtered {
-                        self.visible_items.push(SidebarItem::SubmoduleEntry(sm.name.clone()));
-                    }
-                }
-            }
-        }
-
         // WORKTREES section (only if any exist)
         if !self.worktrees.is_empty() {
             let wt_filtered: Vec<WorktreeInfo> = if filtering {
@@ -552,9 +526,6 @@ impl BranchSidebar {
                     SidebarItem::WorktreeEntry(name) => {
                         self.pending_action = Some(SidebarAction::SwitchWorktree(name.clone()));
                     }
-                    SidebarItem::SubmoduleEntry(name) => {
-                        self.pending_action = Some(SidebarAction::OpenSubmodule(name.clone()));
-                    }
                     SidebarItem::Tag(name) => {
                         self.pending_action = Some(SidebarAction::Checkout(name.clone()));
                     }
@@ -655,20 +626,6 @@ impl BranchSidebar {
                         ];
                         for item in &mut items {
                             item.action_id = format!("{}:{}", item.action_id, full);
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::SubmoduleEntry(name) => {
-                        let mut items = vec![
-                            MenuItem::new("Open in Terminal", "open_submodule"),
-                            MenuItem::new("Update Submodule", "update_submodule"),
-                            MenuItem::separator(),
-                            MenuItem::new("Delete Submodule", "delete_submodule"),
-                        ];
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, name);
-                            }
                         }
                         return Some(items);
                     }
@@ -979,7 +936,6 @@ impl BranchSidebar {
                                         "LOCAL" => self.local_collapsed = !self.local_collapsed,
                                         "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
                                         "TAGS" => self.tags_collapsed = !self.tags_collapsed,
-                                        "SUBMODULES" => self.submodules_collapsed = !self.submodules_collapsed,
                                         "WORKTREES" => self.worktrees_collapsed = !self.worktrees_collapsed,
                                         "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
                                         _ => {}
@@ -1062,12 +1018,6 @@ impl BranchSidebar {
             self.tags.clone()
         };
 
-        let submodules: Vec<String> = if filtering {
-            self.submodules.iter().filter(|s| self.matches_filter(&s.name)).map(|s| s.name.clone()).collect()
-        } else {
-            self.submodules.iter().map(|s| s.name.clone()).collect()
-        };
-
         let worktrees: Vec<String> = if filtering {
             self.worktrees.iter().filter(|w| self.matches_filter(&w.name)).map(|w| w.name.clone()).collect()
         } else {
@@ -1080,7 +1030,7 @@ impl BranchSidebar {
             self.stashes.iter().map(|s| (s.index, s.message.clone(), s.time)).collect()
         };
 
-        FilteredData { local, remotes, tags, submodules, worktrees, stashes }
+        FilteredData { local, remotes, tags, worktrees, stashes }
     }
 
     /// Render hover/focus highlight backgrounds for a sidebar item row.
@@ -1445,83 +1395,6 @@ impl BranchSidebar {
         (y, item_idx)
     }
 
-    /// Layout the SUBMODULES section. Returns (new_y, new_item_idx).
-    fn layout_submodules_section(
-        &self,
-        params: &LayoutParams,
-        bold_renderer: &TextRenderer,
-        output: &mut WidgetOutput,
-        filtered_submodules: &[String],
-        y: f32,
-        item_idx: usize,
-    ) -> (f32, usize) {
-        let mut y = y;
-        let mut item_idx = item_idx;
-
-        y = self.layout_section_header(
-            params.text_renderer, bold_renderer, output, &params.inner, y,
-            "SUBMODULES", filtered_submodules.len(), self.submodules_collapsed,
-            params.section_header_height, &params.bounds, params.content_top,
-        );
-        item_idx += 1; // SectionHeader("SUBMODULES")
-
-        if !self.submodules_collapsed {
-            for sm_name in filtered_submodules {
-                let visible = y >= params.content_top && y < params.bounds.bottom();
-                if visible {
-                    let name_color = self.layout_item_highlight(
-                        output, &params.inner, y, params.line_height, item_idx,
-                        theme::TEXT.to_array(), theme::TEXT_BRIGHT.to_array(),
-                    );
-
-                    // Submodule icon: ■ in green
-                    let icon = "\u{25A0}"; // ■
-                    output.text_vertices.extend(params.text_renderer.layout_text(
-                        icon,
-                        params.inner.x + params.indent,
-                        y + 2.0,
-                        theme::BRANCH_FEATURE.to_array(),
-                    ));
-                    let icon_width = params.text_renderer.measure_text(icon) + 4.0;
-
-                    // Check dirty status
-                    let is_dirty = self.submodules.iter()
-                        .any(|s| s.name == *sm_name && s.is_dirty);
-
-                    // Show dirty indicator after name if dirty
-                    let dirty_marker = " \u{25CF}M"; // ●M
-                    let suffix_width = if is_dirty {
-                        params.text_renderer.measure_text(dirty_marker)
-                    } else {
-                        0.0
-                    };
-
-                    let display_name = truncate_to_width(sm_name, params.text_renderer, params.inner.width - params.indent - icon_width - suffix_width);
-                    output.text_vertices.extend(params.text_renderer.layout_text(
-                        &display_name,
-                        params.inner.x + params.indent + icon_width,
-                        y + 2.0,
-                        name_color,
-                    ));
-
-                    if is_dirty {
-                        let name_width = params.text_renderer.measure_text(&display_name);
-                        output.text_vertices.extend(params.text_renderer.layout_text(
-                            dirty_marker,
-                            params.inner.x + params.indent + icon_width + name_width,
-                            y + 2.0,
-                            theme::STATUS_DIRTY.to_array(),
-                        ));
-                    }
-                }
-                y += params.line_height;
-                item_idx += 1;
-            }
-        }
-
-        (y, item_idx)
-    }
-
     /// Layout the WORKTREES section. Returns (new_y, new_item_idx).
     fn layout_worktrees_section(
         &self,
@@ -1735,7 +1608,6 @@ impl BranchSidebar {
         show_local: bool,
         show_remote: bool,
         show_tags: bool,
-        show_submodules: bool,
         show_worktrees: bool,
         show_stashes: bool,
     ) -> f32 {
@@ -1765,13 +1637,6 @@ impl BranchSidebar {
             total_h += section_header_total;
             if !self.tags_collapsed {
                 total_h += data.tags.len() as f32 * line_height;
-            }
-        }
-        if show_submodules {
-            total_h += section_gap;
-            total_h += section_header_total;
-            if !self.submodules_collapsed {
-                total_h += data.submodules.len() as f32 * line_height;
             }
         }
         if show_worktrees {
@@ -1822,7 +1687,6 @@ impl BranchSidebar {
         let show_local = !filtering || !data.local.is_empty();
         let show_remote = !filtering || !data.remotes.is_empty();
         let show_tags = !filtering || !data.tags.is_empty();
-        let show_submodules = !self.submodules.is_empty() && (!filtering || !data.submodules.is_empty());
         let show_worktrees = !self.worktrees.is_empty() && (!filtering || !data.worktrees.is_empty());
         let show_stashes = !self.stashes.is_empty() && (!filtering || !data.stashes.is_empty());
 
@@ -1853,11 +1717,6 @@ impl BranchSidebar {
             (y, item_idx) = self.layout_tags_section(&params, bold_renderer, &mut output, &data.tags, y, item_idx);
         }
 
-        if show_submodules {
-            y += section_gap;
-            (y, item_idx) = self.layout_submodules_section(&params, bold_renderer, &mut output, &data.submodules, y, item_idx);
-        }
-
         if show_worktrees {
             y += section_gap;
             (y, item_idx) = self.layout_worktrees_section(&params, bold_renderer, &mut output, &data.worktrees, y, item_idx);
@@ -1875,7 +1734,7 @@ impl BranchSidebar {
         self.content_height = self.compute_content_height(
             &data, filter_bar_h, line_height, section_gap,
             show_local, show_remote, show_tags,
-            show_submodules, show_worktrees, show_stashes,
+            show_worktrees, show_stashes,
         );
 
         // Update and render scrollbar
