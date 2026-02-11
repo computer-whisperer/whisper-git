@@ -143,11 +143,13 @@ struct TabViewState {
     context_menu_commit: Option<Oid>,
     last_diff_commit: Option<Oid>,
     pending_messages: Vec<AppMessage>,
-    fetch_receiver: Option<Receiver<RemoteOpResult>>,
-    pull_receiver: Option<Receiver<RemoteOpResult>>,
-    push_receiver: Option<Receiver<RemoteOpResult>>,
+    fetch_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
+    pull_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
+    push_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
     /// Generic async receiver for submodule/worktree ops (label for toast)
-    generic_op_receiver: Option<(Receiver<RemoteOpResult>, String)>,
+    generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
+    /// Track whether we already showed the "still running" toast for each op
+    showed_timeout_toast: [bool; 4],
     submodule_strip: SubmoduleStatusStrip,
     /// Secondary repo handle for staging in a non-current worktree
     worktree_repo: Option<GitRepo>,
@@ -174,6 +176,7 @@ impl TabViewState {
             pull_receiver: None,
             push_receiver: None,
             generic_op_receiver: None,
+            showed_timeout_toast: [false; 4],
             submodule_strip: SubmoduleStatusStrip::new(),
             worktree_repo: None,
             submodule_focus: None,
@@ -457,7 +460,7 @@ impl App {
         let row_scale = self.settings_dialog.row_scale;
         for (repo_tab, view_state) in &mut self.tabs {
             view_state.commit_graph_view.row_scale = row_scale;
-            init_tab_view(repo_tab, view_state, &text_renderer, scale);
+            init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager);
         }
 
         self.state = Some(RenderState {
@@ -538,10 +541,10 @@ impl App {
                             enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
                         }
                         AppMessage::ExitSubmodule => {
-                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale);
+                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
                         }
                         AppMessage::ExitToDepth(depth) => {
-                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale);
+                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
                         }
                         _ => unreachable!(),
                     }
@@ -608,96 +611,170 @@ impl App {
     }
 
     fn poll_remote_ops(&mut self) {
+        use std::sync::mpsc::TryRecvError;
+
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let now = Instant::now();
+        const TIMEOUT_SECS: u64 = 60;
 
         // Poll fetch
-        if let Some(ref rx) = view_state.fetch_receiver
-            && let Ok(result) = rx.try_recv() {
-                view_state.header_bar.fetching = false;
-                view_state.fetch_receiver = None;
-                if result.success {
-                    println!("Fetch completed successfully");
-                    if !result.error.is_empty() {
-                        println!("{}", result.error.trim());
+        if let Some((ref rx, started)) = view_state.fetch_receiver {
+            match rx.try_recv() {
+                Ok(result) => {
+                    view_state.header_bar.fetching = false;
+                    view_state.fetch_receiver = None;
+                    view_state.showed_timeout_toast[0] = false;
+                    if result.success {
+                        println!("Fetch completed successfully");
+                        if !result.error.is_empty() {
+                            println!("{}", result.error.trim());
+                        }
+                        self.toast_manager.push("Fetch complete", ToastSeverity::Success);
+                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                    } else {
+                        eprintln!("Fetch failed: {}", result.error);
+                        self.toast_manager.push(
+                            format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                            ToastSeverity::Error,
+                        );
                     }
-                    self.toast_manager.push("Fetch complete", ToastSeverity::Success);
-                    refresh_repo_state(repo_tab, view_state);
-                } else {
-                    eprintln!("Fetch failed: {}", result.error);
-                    self.toast_manager.push(
-                        format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                        ToastSeverity::Error,
-                    );
+                }
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("Fetch background thread terminated unexpectedly");
+                    view_state.header_bar.fetching = false;
+                    view_state.fetch_receiver = None;
+                    view_state.showed_timeout_toast[0] = false;
+                    self.toast_manager.push("Fetch failed: background thread terminated", ToastSeverity::Error);
+                }
+                Err(TryRecvError::Empty) => {
+                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[0] {
+                        view_state.showed_timeout_toast[0] = true;
+                        self.toast_manager.push("Fetch still running...", ToastSeverity::Info);
+                    }
                 }
             }
+        }
 
         // Poll pull
-        if let Some(ref rx) = view_state.pull_receiver
-            && let Ok(result) = rx.try_recv() {
-                view_state.header_bar.pulling = false;
-                view_state.pull_receiver = None;
-                if result.success {
-                    println!("Pull completed successfully");
-                    if !result.error.is_empty() {
-                        println!("{}", result.error.trim());
+        if let Some((ref rx, started)) = view_state.pull_receiver {
+            match rx.try_recv() {
+                Ok(result) => {
+                    view_state.header_bar.pulling = false;
+                    view_state.pull_receiver = None;
+                    view_state.showed_timeout_toast[1] = false;
+                    if result.success {
+                        println!("Pull completed successfully");
+                        if !result.error.is_empty() {
+                            println!("{}", result.error.trim());
+                        }
+                        self.toast_manager.push("Pull complete", ToastSeverity::Success);
+                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                    } else {
+                        eprintln!("Pull failed: {}", result.error);
+                        self.toast_manager.push(
+                            format!("Pull failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                            ToastSeverity::Error,
+                        );
                     }
-                    self.toast_manager.push("Pull complete", ToastSeverity::Success);
-                    refresh_repo_state(repo_tab, view_state);
-                } else {
-                    eprintln!("Pull failed: {}", result.error);
-                    self.toast_manager.push(
-                        format!("Pull failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                        ToastSeverity::Error,
-                    );
+                }
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("Pull background thread terminated unexpectedly");
+                    view_state.header_bar.pulling = false;
+                    view_state.pull_receiver = None;
+                    view_state.showed_timeout_toast[1] = false;
+                    self.toast_manager.push("Pull failed: background thread terminated", ToastSeverity::Error);
+                }
+                Err(TryRecvError::Empty) => {
+                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[1] {
+                        view_state.showed_timeout_toast[1] = true;
+                        self.toast_manager.push("Pull still running...", ToastSeverity::Info);
+                    }
                 }
             }
+        }
 
         // Poll push (also does full refresh to update ahead/behind and branch state)
-        if let Some(ref rx) = view_state.push_receiver
-            && let Ok(result) = rx.try_recv() {
-                view_state.header_bar.pushing = false;
-                view_state.push_receiver = None;
-                if result.success {
-                    println!("Push completed successfully");
-                    if !result.error.is_empty() {
-                        println!("{}", result.error.trim());
+        if let Some((ref rx, started)) = view_state.push_receiver {
+            match rx.try_recv() {
+                Ok(result) => {
+                    view_state.header_bar.pushing = false;
+                    view_state.push_receiver = None;
+                    view_state.showed_timeout_toast[2] = false;
+                    if result.success {
+                        println!("Push completed successfully");
+                        if !result.error.is_empty() {
+                            println!("{}", result.error.trim());
+                        }
+                        self.toast_manager.push("Push complete", ToastSeverity::Success);
+                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                    } else {
+                        eprintln!("Push failed: {}", result.error);
+                        self.toast_manager.push(
+                            format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
+                            ToastSeverity::Error,
+                        );
                     }
-                    self.toast_manager.push("Push complete", ToastSeverity::Success);
-                    refresh_repo_state(repo_tab, view_state);
-                } else {
-                    eprintln!("Push failed: {}", result.error);
-                    self.toast_manager.push(
-                        format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                        ToastSeverity::Error,
-                    );
+                }
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("Push background thread terminated unexpectedly");
+                    view_state.header_bar.pushing = false;
+                    view_state.push_receiver = None;
+                    view_state.showed_timeout_toast[2] = false;
+                    self.toast_manager.push("Push failed: background thread terminated", ToastSeverity::Error);
+                }
+                Err(TryRecvError::Empty) => {
+                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[2] {
+                        view_state.showed_timeout_toast[2] = true;
+                        self.toast_manager.push("Push still running...", ToastSeverity::Info);
+                    }
                 }
             }
+        }
 
         // Poll generic async ops (submodule/worktree operations)
-        if let Some((ref rx, ref label)) = view_state.generic_op_receiver
-            && let Ok(result) = rx.try_recv() {
-                let label = label.clone();
-                view_state.generic_op_receiver = None;
-                if result.success {
-                    self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
-                    refresh_repo_state(repo_tab, view_state);
-                    // Also refresh submodules/worktrees/stashes
-                    if let Some(ref repo) = repo_tab.repo {
-                        if let Ok(submodules) = repo.submodules() {
-                            view_state.branch_sidebar.submodules = submodules;
+        if let Some((ref rx, ref label, started)) = view_state.generic_op_receiver {
+            let label = label.clone();
+            match rx.try_recv() {
+                Ok(result) => {
+                    view_state.generic_op_receiver = None;
+                    view_state.showed_timeout_toast[3] = false;
+                    if result.success {
+                        self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
+                        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        // Also refresh submodules/worktrees/stashes
+                        if let Some(ref repo) = repo_tab.repo {
+                            if let Ok(submodules) = repo.submodules() {
+                                view_state.branch_sidebar.submodules = submodules;
+                            }
+                            if let Ok(worktrees) = repo.worktrees() {
+                                view_state.branch_sidebar.worktrees = worktrees;
+                            }
+                            view_state.branch_sidebar.stashes = repo.stash_list();
                         }
-                        if let Ok(worktrees) = repo.worktrees() {
-                            view_state.branch_sidebar.worktrees = worktrees;
-                        }
-                        view_state.branch_sidebar.stashes = repo.stash_list();
+                    } else {
+                        self.toast_manager.push(
+                            format!("{} failed: {}", label, result.error.lines().next().unwrap_or("unknown error")),
+                            ToastSeverity::Error,
+                        );
                     }
-                } else {
+                }
+                Err(TryRecvError::Disconnected) => {
+                    eprintln!("{} background thread terminated unexpectedly", label);
+                    view_state.generic_op_receiver = None;
+                    view_state.showed_timeout_toast[3] = false;
                     self.toast_manager.push(
-                        format!("{} failed: {}", label, result.error.lines().next().unwrap_or("unknown error")),
+                        format!("{} failed: background thread terminated", label),
                         ToastSeverity::Error,
                     );
                 }
+                Err(TryRecvError::Empty) => {
+                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[3] {
+                        view_state.showed_timeout_toast[3] = true;
+                        self.toast_manager.push(format!("{} still running...", label), ToastSeverity::Info);
+                    }
+                }
             }
+        }
     }
 
     /// Open a new repo and add it as a tab
@@ -721,7 +798,7 @@ impl App {
 
                 if let Some(ref render_state) = self.state {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
-                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32);
+                    init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager);
                 }
 
                 self.tabs.push((repo_tab, view_state));
@@ -768,18 +845,42 @@ impl App {
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
 /// Call this after any operation that changes branches, commits, or remote state.
-fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
+fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) {
     let Some(ref repo) = repo_tab.repo else { return };
 
-    repo_tab.commits = repo.commit_graph(MAX_COMMITS).unwrap_or_default();
+    match repo.commit_graph(MAX_COMMITS) {
+        Ok(commits) => {
+            repo_tab.commits = commits;
+        }
+        Err(e) => {
+            eprintln!("Failed to load commit graph: {}", e);
+            toast_manager.push(
+                format!("Failed to load commits: {}", e),
+                ToastSeverity::Error,
+            );
+            repo_tab.commits = Vec::new();
+        }
+    }
     view_state.commit_graph_view.update_layout(&repo_tab.commits);
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();
 
-    let branch_tips = repo.branch_tips().unwrap_or_default();
-    let tags = repo.tags().unwrap_or_default();
-    let current = repo.current_branch().unwrap_or_default();
+    let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
+        eprintln!("Failed to load branch tips: {}", e);
+        Vec::new()
+    });
+    let tags = repo.tags().unwrap_or_else(|e| {
+        eprintln!("Failed to load tags: {}", e);
+        Vec::new()
+    });
+    let current = repo.current_branch().unwrap_or_else(|e| {
+        eprintln!("Failed to get current branch: {}", e);
+        String::new()
+    });
 
-    let worktrees = repo.worktrees().unwrap_or_default();
+    let worktrees = repo.worktrees().unwrap_or_else(|e| {
+        eprintln!("Failed to load worktrees: {}", e);
+        Vec::new()
+    });
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
@@ -788,7 +889,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
     view_state.staging_well.set_worktrees(&worktrees, current_workdir);
     view_state.branch_sidebar.worktrees = worktrees;
 
-    let submodules = repo.submodules().unwrap_or_default();
+    let submodules = repo.submodules().unwrap_or_else(|e| {
+        eprintln!("Failed to load submodules: {}", e);
+        Vec::new()
+    });
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
@@ -800,7 +904,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
         }
     }
 
-    let (ahead, behind) = repo.ahead_behind().unwrap_or((0, 0));
+    let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
+        eprintln!("Failed to compute ahead/behind: {}", e);
+        (0, 0)
+    });
     view_state.header_bar.set_repo_info(
         view_state.header_bar.repo_name.clone(),
         current,
@@ -813,7 +920,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState) {
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32) {
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager) {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -852,7 +959,7 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     }
 
     // Refresh commits, branches, tags, head, and header info
-    refresh_repo_state(repo_tab, view_state);
+    refresh_repo_state(repo_tab, view_state, toast_manager);
 }
 
 /// Drill into a named submodule: saves parent state and swaps repo to the submodule.
@@ -942,7 +1049,7 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    init_tab_view(repo_tab, view_state, text_renderer, scale);
+    init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
 
     true
 }
@@ -954,6 +1061,7 @@ fn exit_submodule(
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
     scale: f32,
+    toast_manager: &mut ToastManager,
 ) -> bool {
     // Pop saved state from the focus stack (release borrow before init_tab_view)
     let saved = {
@@ -984,7 +1092,7 @@ fn exit_submodule(
     repo_tab.name = saved.repo_name;
 
     // Re-init views with parent data
-    init_tab_view(repo_tab, view_state, text_renderer, scale);
+    init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
@@ -1017,6 +1125,7 @@ fn exit_to_depth(
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
     scale: f32,
+    toast_manager: &mut ToastManager,
 ) {
     let current_depth = view_state.submodule_focus.as_ref()
         .map(|f| f.parent_stack.len())
@@ -1026,10 +1135,66 @@ fn exit_to_depth(
     }
     let pops = current_depth - depth;
     for _ in 0..pops {
-        if !exit_submodule(repo_tab, view_state, text_renderer, scale) {
+        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager) {
             break;
         }
     }
+}
+
+/// Try to open a terminal emulator at the given directory path.
+/// Checks $TERMINAL env var first, then falls back to common terminals.
+fn open_terminal_at(dir: &str, label: &str, toast_manager: &mut ToastManager) {
+    use std::process::Command;
+
+    let path = std::path::Path::new(dir);
+    if !path.exists() {
+        toast_manager.push(
+            format!("Path does not exist: {}", dir),
+            ToastSeverity::Error,
+        );
+        return;
+    }
+
+    // Check $TERMINAL env var first, then try common terminal emulators
+    let candidates: Vec<String> = if let Ok(term) = std::env::var("TERMINAL") {
+        std::iter::once(term)
+            .chain(["kitty", "alacritty", "wezterm", "foot", "xterm", "gnome-terminal", "konsole"]
+                .iter().map(|s| s.to_string()))
+            .collect()
+    } else {
+        ["kitty", "alacritty", "wezterm", "foot", "xterm", "gnome-terminal", "konsole"]
+            .iter().map(|s| s.to_string()).collect()
+    };
+
+    for terminal in &candidates {
+        let result = if terminal == "gnome-terminal" {
+            Command::new(terminal)
+                .arg("--working-directory")
+                .arg(dir)
+                .spawn()
+        } else {
+            // Most terminals accept --working-directory or use the cwd
+            Command::new(terminal)
+                .current_dir(dir)
+                .spawn()
+        };
+
+        match result {
+            Ok(_) => {
+                toast_manager.push(
+                    format!("Opened {} in {}", label, terminal),
+                    ToastSeverity::Success,
+                );
+                return;
+            }
+            Err(_) => continue,
+        }
+    }
+
+    toast_manager.push(
+        "No terminal emulator found. Set $TERMINAL env var.".to_string(),
+        ToastSeverity::Info,
+    );
 }
 
 impl ApplicationHandler for App {
@@ -1472,7 +1637,17 @@ impl ApplicationHandler for App {
                                     view_state.pending_messages.push(AppMessage::UpdateSubmodule(name));
                                 }
                                 SidebarAction::OpenSubmoduleTerminal(name) => {
-                                    self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                    let path = view_state.branch_sidebar.submodules.iter()
+                                        .find(|s| s.name == name)
+                                        .map(|s| s.path.clone());
+                                    if let Some(path) = path {
+                                        open_terminal_at(&path, &name, &mut self.toast_manager);
+                                    } else {
+                                        self.toast_manager.push(
+                                            format!("Submodule '{}' not found", name),
+                                            ToastSeverity::Error,
+                                        );
+                                    }
                                 }
                                 SidebarAction::OpenSubmodule(name) => {
                                     view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
@@ -1497,7 +1672,17 @@ impl ApplicationHandler for App {
                                     self.pending_confirm_action = Some(AppMessage::RemoveWorktree(name));
                                 }
                                 SidebarAction::OpenWorktreeTerminal(name) => {
-                                    self.toast_manager.push(format!("Open terminal for '{}' not yet implemented", name), ToastSeverity::Info);
+                                    let path = view_state.branch_sidebar.worktrees.iter()
+                                        .find(|w| w.name == name)
+                                        .map(|w| w.path.clone());
+                                    if let Some(path) = path {
+                                        open_terminal_at(&path, &name, &mut self.toast_manager);
+                                    } else {
+                                        self.toast_manager.push(
+                                            format!("Worktree '{}' not found", name),
+                                            ToastSeverity::Error,
+                                        );
+                                    }
                                 }
                                 SidebarAction::ApplyStash(index) => {
                                     view_state.pending_messages.push(AppMessage::StashApply(index));
