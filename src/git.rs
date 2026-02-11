@@ -408,7 +408,7 @@ impl GitRepo {
             let workdir_oid = sm.workdir_id();
 
             // Try to open the submodule to get more info
-            let (branch, is_dirty, ahead, behind) = if let Ok(sub_repo) = sm.open() {
+            let (branch, is_dirty, ahead) = if let Ok(sub_repo) = sm.open() {
                 let branch = sub_repo
                     .head()
                     .ok()
@@ -420,16 +420,16 @@ impl GitRepo {
                     .map(|s| !s.is_empty())
                     .unwrap_or(false);
 
-                let (ahead, behind) = match (workdir_oid, head_oid) {
+                let (ahead, _behind) = match (workdir_oid, head_oid) {
                     (Some(w), Some(h)) if w != h => {
                         sub_repo.graph_ahead_behind(w, h).unwrap_or((0, 0))
                     }
                     _ => (0, 0),
                 };
 
-                (branch, is_dirty, ahead, behind)
+                (branch, is_dirty, ahead)
             } else {
-                ("unknown".to_string(), false, 0, 0)
+                ("unknown".to_string(), false, 0)
             };
 
             infos.push(SubmoduleInfo {
@@ -440,7 +440,6 @@ impl GitRepo {
                 head_oid,
                 workdir_oid,
                 ahead,
-                behind,
             });
         }
 
@@ -883,7 +882,6 @@ pub struct SubmoduleInfo {
     pub head_oid: Option<Oid>,     // what parent's HEAD pins (sm.head_id())
     pub workdir_oid: Option<Oid>,  // what's actually checked out (sm.workdir_id())
     pub ahead: usize,              // commits workdir is ahead of pinned
-    pub behind: usize,             // commits workdir is behind pinned
 }
 
 /// Worktree information
@@ -1311,21 +1309,6 @@ impl GitRepo {
     }
 
     // ---- Remote management ----
-
-    /// List all remotes as (name, url) pairs.
-    pub fn list_remotes(&self) -> Vec<(String, String)> {
-        let mut result = Vec::new();
-        if let Ok(remotes) = self.repo.remotes() {
-            for name in remotes.iter().flatten() {
-                let url = self.repo.find_remote(name)
-                    .ok()
-                    .and_then(|r| r.url().map(|u| u.to_string()))
-                    .unwrap_or_default();
-                result.push((name.to_string(), url));
-            }
-        }
-        result
-    }
 
     /// Get the URL of a named remote.
     pub fn remote_url(&self, name: &str) -> Option<String> {

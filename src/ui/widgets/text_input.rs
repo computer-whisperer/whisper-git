@@ -91,7 +91,7 @@ impl TextInput {
     }
 
     fn insert_char(&mut self, c: char) {
-        if self.max_length > 0 && self.text.len() >= self.max_length {
+        if self.max_length > 0 && self.text.chars().count() >= self.max_length {
             return;
         }
 
@@ -338,7 +338,7 @@ impl Widget for TextInput {
 
         // Character count (for max_length) - show in corner
         if self.max_length > 0 {
-            let count_text = format!("{}", self.text.len());
+            let count_text = format!("{}", self.text.chars().count());
             let count_x = bounds.right() - text_renderer.measure_text(&count_text) - padding;
             output.text_vertices.extend(text_renderer.layout_text(
                 &count_text,

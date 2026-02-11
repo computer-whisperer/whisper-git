@@ -51,11 +51,6 @@ impl Button {
         self.state.hovered
     }
 
-    /// Returns true if the button is currently pressed
-    pub fn is_pressed(&self) -> bool {
-        self.state.pressed
-    }
-
     /// Set a badge (e.g., count indicator)
     #[allow(dead_code)]
     pub fn with_badge(mut self, badge: impl Into<String>) -> Self {

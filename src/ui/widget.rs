@@ -303,61 +303,6 @@ pub fn create_rect_outline_vertices(rect: &Rect, color: [f32; 4], thickness: f32
     vertices
 }
 
-/// Helper to create dashed rectangle outline vertices
-pub fn create_dashed_rect_outline_vertices(
-    rect: &Rect,
-    color: [f32; 4],
-    thickness: f32,
-    dash_length: f32,
-    gap_length: f32,
-) -> Vec<SplineVertex> {
-    let mut vertices = Vec::new();
-
-    // Helper to create dashes along a line
-    let create_dashes = |x0: f32, y0: f32, x1: f32, y1: f32, is_horizontal: bool| -> Vec<SplineVertex> {
-        let mut dash_vertices = Vec::new();
-        let length = if is_horizontal { (x1 - x0).abs() } else { (y1 - y0).abs() };
-        let segment_length = dash_length + gap_length;
-        let num_segments = (length / segment_length).ceil() as i32;
-
-        for i in 0..num_segments {
-            let start = i as f32 * segment_length;
-            let end = (start + dash_length).min(length);
-
-            if is_horizontal {
-                let dash_x0 = x0.min(x1) + start;
-                let dash_x1 = x0.min(x1) + end;
-                dash_vertices.extend(create_rect_vertices(
-                    &Rect::new(dash_x0, y0, dash_x1 - dash_x0, thickness),
-                    color,
-                ));
-            } else {
-                let dash_y0 = y0.min(y1) + start;
-                let dash_y1 = y0.min(y1) + end;
-                dash_vertices.extend(create_rect_vertices(
-                    &Rect::new(x0, dash_y0, thickness, dash_y1 - dash_y0),
-                    color,
-                ));
-            }
-        }
-        dash_vertices
-    };
-
-    // Top edge (horizontal)
-    vertices.extend(create_dashes(rect.x, rect.y, rect.right(), rect.y, true));
-
-    // Bottom edge (horizontal)
-    vertices.extend(create_dashes(rect.x, rect.bottom() - thickness, rect.right(), rect.bottom() - thickness, true));
-
-    // Left edge (vertical)
-    vertices.extend(create_dashes(rect.x, rect.y + thickness, rect.x, rect.bottom() - thickness, false));
-
-    // Right edge (vertical)
-    vertices.extend(create_dashes(rect.right() - thickness, rect.y + thickness, rect.right() - thickness, rect.bottom() - thickness, false));
-
-    vertices
-}
-
 /// Theme colors - Dark blue-gray palette
 pub mod theme {
     use crate::ui::Color;
@@ -380,10 +325,8 @@ pub mod theme {
     pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);    // #42A5F5 (Blue)
 
     // Branch colors - vibrant but balanced
-    pub const BRANCH_PRIMARY: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);  // #42A5F5 (Blue)
     pub const BRANCH_FEATURE: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);  // #4CAF50 (Green)
     pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);  // #FF9800 (Orange)
-    pub const BRANCH_HOTFIX: Color = Color::rgba(0.671, 0.396, 0.859, 1.0);   // #AB65DB (Purple)
     pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0);   // #9e9e9e (Gray)
 
     // Accent color for selections and focus

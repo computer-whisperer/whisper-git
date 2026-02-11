@@ -189,11 +189,6 @@ impl StagingWell {
         self.inline_diff = None;
     }
 
-    /// Whether the inline diff viewer is active.
-    pub fn is_inline_diff_active(&self) -> bool {
-        self.inline_diff.is_some()
-    }
-
     /// Returns true if any button in the staging well is hovered
     pub fn is_any_button_hovered(&self) -> bool {
         self.stage_all_btn.is_hovered()
@@ -458,12 +453,6 @@ impl StagingWell {
         self.worktree_selector_hover = None;
     }
 
-    /// Returns the active worktree path, or None if using default repo.
-    pub fn active_worktree_path(&self) -> Option<&Path> {
-        self.worktree_contexts.get(self.active_worktree_idx)
-            .map(|c| c.path.as_path())
-    }
-
     /// Returns the active worktree context, if any.
     pub fn active_worktree_context(&self) -> Option<&WorktreeContext> {
         self.worktree_contexts.get(self.active_worktree_idx)
@@ -482,11 +471,6 @@ impl StagingWell {
     /// Find a worktree index by name.
     pub fn worktree_index_by_name(&self, name: &str) -> Option<usize> {
         self.worktree_contexts.iter().position(|c| c.name == name)
-    }
-
-    /// Whether the worktree selector dropdown is currently open.
-    pub fn is_selector_open(&self) -> bool {
-        self.worktree_selector_open
     }
 
     /// Update hover state for child widgets based on mouse position
@@ -1209,7 +1193,7 @@ impl StagingWell {
         }
 
         // Character count for subject - right-aligned on commit title row
-        let subject_len = self.subject_input.text().len();
+        let subject_len = self.subject_input.text().chars().count();
         let char_count = format!("{}/72", subject_len);
         let count_color = if subject_len > 72 {
             theme::STATUS_DIRTY // Red when over limit

@@ -1762,6 +1762,11 @@ impl ApplicationHandler for App {
 
                     // Route to branch sidebar
                     if view_state.branch_sidebar.handle_event(&input_event, layout.sidebar).is_consumed() {
+                        // If the consumed event was a mouse click in the sidebar, update focused_panel
+                        if matches!(&input_event, InputEvent::MouseDown { .. }) {
+                            view_state.focused_panel = FocusedPanel::Sidebar;
+                            view_state.branch_sidebar.set_focused(true);
+                        }
                         if let Some(action) = view_state.branch_sidebar.take_action() {
                             match action {
                                 SidebarAction::Checkout(name) => {
