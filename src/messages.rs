@@ -488,10 +488,18 @@ pub fn handle_app_message(
             }
         }
         AppMessage::LoadMoreCommits => {
-            let current_count = commits.len();
-            let new_count = current_count + 50;
+            // Count only real commits (exclude synthetics) for the load-more request
+            let real_count = commits.iter().filter(|c| !c.is_synthetic).count();
+            let new_count = real_count + 50;
             if let Ok(new_commits) = repo.commit_graph(new_count) {
                 *commits = new_commits;
+                // Re-add synthetic entries
+                let worktrees = repo.worktrees().unwrap_or_default();
+                let mut synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
+                if !synthetics.is_empty() {
+                    synthetics.append(commits);
+                    *commits = synthetics;
+                }
                 view_state.commit_graph_view.update_layout(commits);
             }
             view_state.commit_graph_view.finish_loading();
@@ -823,7 +831,6 @@ fn refresh_repo_state(
             *commits = Vec::new();
         }
     }
-    view_state.commit_graph_view.update_layout(commits);
     view_state.commit_graph_view.head_oid = repo.head_oid().ok();
 
     let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
@@ -843,6 +850,15 @@ fn refresh_repo_state(
         toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
         Vec::new()
     });
+
+    // Prepend synthetic "uncommitted changes" entries for dirty worktrees
+    let mut synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
+    if !synthetics.is_empty() {
+        synthetics.append(commits);
+        *commits = synthetics;
+    }
+
+    view_state.commit_graph_view.update_layout(commits);
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();

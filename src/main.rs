@@ -1400,27 +1400,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     // Prepend synthetic "uncommitted changes" entries for dirty worktrees
     {
-        use crate::git::CommitInfo;
-        let mut synthetics: Vec<CommitInfo> = Vec::new();
-        if worktrees.is_empty() {
-            // Single-worktree fallback: use working_dir_status if dirty
-            if let Some(head) = head_oid {
-                if let Ok(status) = repo.status() {
-                    let count = status.total_files();
-                    if count > 0 {
-                        synthetics.push(CommitInfo::synthetic_for_working_dir(head, count));
-                    }
-                }
-            }
-        } else {
-            for wt in &worktrees {
-                if wt.is_dirty {
-                    if let Some(synthetic) = CommitInfo::synthetic_for_worktree(wt) {
-                        synthetics.push(synthetic);
-                    }
-                }
-            }
-        }
+        let mut synthetics = git::create_synthetic_entries(repo, &worktrees, &repo_tab.commits);
         if !synthetics.is_empty() {
             synthetics.append(&mut repo_tab.commits);
             repo_tab.commits = synthetics;

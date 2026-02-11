@@ -43,6 +43,88 @@ pub fn repo_state_label(state: RepositoryState) -> Option<&'static str> {
     }
 }
 
+/// Scan a directory for the most recently modified file and return its mtime
+/// as a Unix timestamp. Only checks top-level and one level deep to avoid
+/// expensive deep traversals. Skips `.git` directories.
+fn newest_mtime_in_dir(dir: &str) -> Option<i64> {
+    use std::fs;
+    let mut newest: Option<i64> = None;
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == ".git" { continue; }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                let ts = modified.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default().as_secs() as i64;
+                newest = Some(newest.map_or(ts, |n: i64| n.max(ts)));
+            }
+            // One level deep for directories
+            if meta.is_dir() {
+                if let Ok(sub_entries) = fs::read_dir(entry.path()) {
+                    for sub in sub_entries.flatten() {
+                        if let Ok(sub_meta) = sub.metadata() {
+                            if let Ok(modified) = sub_meta.modified() {
+                                let ts = modified.duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default().as_secs() as i64;
+                                newest = Some(newest.map_or(ts, |n: i64| n.max(ts)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    newest
+}
+
+/// Create synthetic "uncommitted changes" entries for dirty worktrees.
+/// This is shared between main.rs and messages.rs to avoid the bug where
+/// synthetic entries disappear after certain operations.
+pub fn create_synthetic_entries(
+    repo: &GitRepo,
+    worktrees: &[WorktreeInfo],
+    commits: &[CommitInfo],
+) -> Vec<CommitInfo> {
+    let head_oid = repo.head_oid().ok();
+    let mut synthetics: Vec<CommitInfo> = Vec::new();
+
+    if worktrees.is_empty() {
+        // Single-worktree fallback: use working_dir_status if dirty
+        if let Some(head) = head_oid {
+            if let Ok(status) = repo.status() {
+                let count = status.total_files();
+                if count > 0 {
+                    // Find parent commit time
+                    let parent_time = commits.iter()
+                        .find(|c| c.id == head)
+                        .map(|c| c.time)
+                        .unwrap_or(0);
+                    let workdir = repo.workdir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    synthetics.push(CommitInfo::synthetic_for_working_dir(head, count, &workdir, parent_time));
+                }
+            }
+        }
+    } else {
+        for wt in worktrees {
+            if wt.is_dirty {
+                // Find parent commit time
+                let parent_time = wt.head_oid
+                    .and_then(|oid| commits.iter().find(|c| c.id == oid))
+                    .map(|c| c.time)
+                    .unwrap_or(0);
+                if let Some(synthetic) = CommitInfo::synthetic_for_worktree(wt, parent_time) {
+                    synthetics.push(synthetic);
+                }
+            }
+        }
+    }
+
+    synthetics
+}
+
 /// Information about a single commit
 #[derive(Debug, Clone)]
 pub struct CommitInfo {
@@ -61,6 +143,8 @@ pub struct CommitInfo {
     pub deletions: usize,
     /// True for synthetic "uncommitted changes" rows (not real commits)
     pub is_synthetic: bool,
+    /// For synthetic entries: the worktree name this entry represents
+    pub synthetic_wt_name: Option<String>,
 }
 
 impl CommitInfo {
@@ -87,6 +171,7 @@ impl CommitInfo {
             insertions: 0,
             deletions: 0,
             is_synthetic: false,
+            synthetic_wt_name: None,
         }
     }
 
@@ -97,7 +182,9 @@ impl CommitInfo {
     /// Create a synthetic "uncommitted changes" entry for a dirty worktree.
     /// Uses a deterministic sentinel Oid derived from the worktree name so each
     /// worktree gets a unique, stable fake commit ID.
-    pub fn synthetic_for_worktree(wt: &WorktreeInfo) -> Option<Self> {
+    /// The timestamp is the most recently modified file in the worktree, bounded
+    /// to no earlier than the parent commit's timestamp.
+    pub fn synthetic_for_worktree(wt: &WorktreeInfo, parent_time: i64) -> Option<Self> {
         let head = wt.head_oid?;
         // Build a deterministic sentinel Oid from the worktree name bytes (padded/hashed)
         let mut bytes = [0u8; 20];
@@ -109,10 +196,9 @@ impl CommitInfo {
         }
         let sentinel = Oid::from_bytes(&bytes).ok()?;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let mtime = newest_mtime_in_dir(&wt.path).unwrap_or(parent_time);
+        // Bound: never earlier than the parent commit
+        let time = mtime.max(parent_time);
 
         let summary = if wt.dirty_file_count == 1 {
             format!("Uncommitted changes ({}): 1 file", wt.name)
@@ -127,26 +213,28 @@ impl CommitInfo {
             body_excerpt: None,
             author: String::new(),
             author_email: String::new(),
-            time: now,
+            time,
             parent_ids: vec![head],
             insertions: 0,
             deletions: 0,
             is_synthetic: true,
+            synthetic_wt_name: Some(wt.name.clone()),
         })
     }
 
     /// Create a synthetic "uncommitted changes" entry for the current working directory
     /// (single-worktree fallback when no linked worktrees exist).
-    pub fn synthetic_for_working_dir(head_oid: Oid, dirty_count: usize) -> Self {
+    /// The timestamp is the most recently modified file in the workdir, bounded
+    /// to no earlier than the parent commit's timestamp.
+    pub fn synthetic_for_working_dir(head_oid: Oid, dirty_count: usize, workdir: &str, parent_time: i64) -> Self {
         let mut bytes = [0u8; 20];
         bytes[0] = 0xFF;
         bytes[1] = 0xFD; // distinct prefix from worktree variant
         let sentinel = Oid::from_bytes(&bytes).unwrap_or(head_oid);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let mtime = newest_mtime_in_dir(workdir).unwrap_or(parent_time);
+        // Bound: never earlier than the parent commit
+        let time = mtime.max(parent_time);
 
         let summary = if dirty_count == 1 {
             "Uncommitted changes: 1 file".to_string()
@@ -161,11 +249,12 @@ impl CommitInfo {
             body_excerpt: None,
             author: String::new(),
             author_email: String::new(),
-            time: now,
+            time,
             parent_ids: vec![head_oid],
             insertions: 0,
             deletions: 0,
             is_synthetic: true,
+            synthetic_wt_name: None, // single-worktree, no specific name
         }
     }
 }
@@ -895,10 +984,6 @@ pub struct WorkingDirStatus {
 }
 
 impl WorkingDirStatus {
-    pub fn is_clean(&self) -> bool {
-        self.staged.is_empty() && self.unstaged.is_empty()
-    }
-
     pub fn total_files(&self) -> usize {
         self.staged.len() + self.unstaged.len()
     }
