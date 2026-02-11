@@ -113,29 +113,29 @@ impl HeaderBar {
     /// Sync button labels and styles to current header state.
     /// Call this before layout so the stored buttons render the correct text.
     pub fn update_button_state(&mut self) {
-        // Fetch button label (~ as refresh icon, ASCII-safe for font atlas)
+        // Fetch button label (no prefix — Roboto lacks a refresh/circular arrow glyph)
         self.fetch_button.label = if self.fetching {
             "...".to_string()
         } else {
-            "~ Fetch".to_string()
+            "Fetch".to_string()
         };
 
-        // Pull button label with behind badge (v as down-arrow icon)
+        // Pull button label with behind badge (↓ down arrow)
         self.pull_button.label = if self.pulling {
             "...".to_string()
         } else if self.behind > 0 {
-            format!("v Pull (-{})", self.behind)
+            format!("\u{2193} Pull (-{})", self.behind)
         } else {
-            "v Pull".to_string()
+            "\u{2193} Pull".to_string()
         };
 
-        // Push button label with ahead badge (^ as up-arrow icon)
+        // Push button label with ahead badge (↑ up arrow)
         self.push_button.label = if self.pushing {
             "...".to_string()
         } else if self.ahead > 0 {
-            format!("^ Push (+{})", self.ahead)
+            format!("\u{2191} Push (+{})", self.ahead)
         } else {
-            "^ Push".to_string()
+            "\u{2191} Push".to_string()
         };
 
         // Abort button: amber/warning color scheme
@@ -207,10 +207,14 @@ impl HeaderBar {
 
         // Compute branch pill end position
         let branch_pill_x = if self.breadcrumb_segments.is_empty() {
-            let repo_x = bounds.x + 16.0;
-            let repo_w = bold_renderer.measure_text(&self.repo_name);
-            let sep_x = repo_x + repo_w + 12.0;
-            sep_x + 12.0
+            if self.repo_name == self.branch_name {
+                bounds.x + 16.0
+            } else {
+                let repo_x = bounds.x + 16.0;
+                let repo_w = bold_renderer.measure_text(&self.repo_name);
+                let sep_x = repo_x + repo_w + 12.0;
+                sep_x + 12.0
+            }
         } else if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
             last_bound.right() + 8.0 + 28.0 * scale + 8.0 + 12.0
         } else {
@@ -299,23 +303,28 @@ impl HeaderBar {
 
         if self.breadcrumb_segments.is_empty() {
             // Normal mode: repo name in bold + separator
-            let repo_x = bounds.x + 16.0;
-            output.bold_text_vertices.extend(bold_renderer.layout_text(
-                &self.repo_name,
-                repo_x,
-                text_y,
-                theme::TEXT.to_array(),
-            ));
+            // Skip repo name when it matches the branch (avoids "main | main" redundancy)
+            if self.repo_name == self.branch_name {
+                branch_pill_x = bounds.x + 16.0;
+            } else {
+                let repo_x = bounds.x + 16.0;
+                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                    &self.repo_name,
+                    repo_x,
+                    text_y,
+                    theme::TEXT.to_array(),
+                ));
 
-            let sep_x = repo_x + bold_renderer.measure_text(&self.repo_name) + 12.0;
-            let sep_height = line_height * 0.8;
-            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-            output.spline_vertices.extend(create_rect_vertices(
-                &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                theme::BORDER.to_array(),
-            ));
+                let sep_x = repo_x + bold_renderer.measure_text(&self.repo_name) + 12.0;
+                let sep_height = line_height * 0.8;
+                let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+                output.spline_vertices.extend(create_rect_vertices(
+                    &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                    theme::BORDER.to_array(),
+                ));
 
-            branch_pill_x = sep_x + 12.0;
+                branch_pill_x = sep_x + 12.0;
+            }
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
             let scale = (bounds.height / 32.0).max(1.0);
@@ -583,23 +592,28 @@ impl Widget for HeaderBar {
 
         if self.breadcrumb_segments.is_empty() {
             // Normal mode: repo name + separator
-            let repo_x = bounds.x + 16.0;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &self.repo_name,
-                repo_x,
-                text_y,
-                theme::TEXT.to_array(),
-            ));
+            // Skip repo name when it matches the branch (avoids "main | main" redundancy)
+            if self.repo_name == self.branch_name {
+                branch_pill_x = bounds.x + 16.0;
+            } else {
+                let repo_x = bounds.x + 16.0;
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &self.repo_name,
+                    repo_x,
+                    text_y,
+                    theme::TEXT.to_array(),
+                ));
 
-            let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
-            let sep_height = line_height * 0.8;
-            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-            output.spline_vertices.extend(create_rect_vertices(
-                &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                theme::BORDER.to_array(),
-            ));
+                let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
+                let sep_height = line_height * 0.8;
+                let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
+                output.spline_vertices.extend(create_rect_vertices(
+                    &Rect::new(sep_x, sep_y, 1.0, sep_height),
+                    theme::BORDER.to_array(),
+                ));
 
-            branch_pill_x = sep_x + 12.0;
+                branch_pill_x = sep_x + 12.0;
+            }
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
             let scale = (bounds.height / 32.0).max(1.0);
