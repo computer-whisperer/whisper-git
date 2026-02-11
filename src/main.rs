@@ -35,7 +35,7 @@ use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, Vulkan
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
-use crate::messages::{AppMessage, MessageContext, MessageViewState, handle_app_message};
+use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::RepoWatcher;
 
@@ -100,10 +100,10 @@ fn parse_args() -> CliArgs {
 enum FocusedPanel {
     #[default]
     Graph,
-    Staging,
-    Preview,
+    RightPanel,
     Sidebar,
 }
+
 
 /// Saved parent state when drilling into a submodule
 struct SavedParentState {
@@ -134,6 +134,7 @@ struct RepoTab {
 /// Per-tab UI view state
 struct TabViewState {
     focused_panel: FocusedPanel,
+    right_panel_mode: RightPanelMode,
     header_bar: HeaderBar,
     shortcut_bar: ShortcutBar,
     branch_sidebar: BranchSidebar,
@@ -167,6 +168,7 @@ impl TabViewState {
     fn new() -> Self {
         Self {
             focused_panel: FocusedPanel::Graph,
+            right_panel_mode: RightPanelMode::Staging,
             header_bar: HeaderBar::new(),
             shortcut_bar: ShortcutBar::new(),
             branch_sidebar: BranchSidebar::new(),
@@ -214,10 +216,8 @@ fn main() -> Result<()> {
 enum DividerDrag {
     /// Vertical divider between sidebar and graph
     SidebarGraph,
-    /// Vertical divider between graph and staging
-    GraphStaging,
-    /// Vertical divider between staging and preview
-    StagingPreview,
+    /// Vertical divider between graph and right panel
+    GraphRight,
 }
 
 struct App {
@@ -240,8 +240,6 @@ struct App {
     sidebar_ratio: f32,
     /// Fraction of content width (after sidebar) for graph (default 0.55)
     graph_ratio: f32,
-    /// Fraction of right area width for staging (default 0.40)
-    staging_ratio: f32,
     /// Whether the shortcut bar is visible
     shortcut_bar_visible: bool,
     /// Current cursor icon (cached to avoid redundant Wayland protocol calls)
@@ -349,7 +347,6 @@ impl App {
             divider_drag: None,
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
-            staging_ratio: 0.40,
             shortcut_bar_visible,
             current_cursor: CursorIcon::Default,
             status_dirty: true,
@@ -593,7 +590,6 @@ impl App {
                 main_bounds, 4.0, scale,
                 Some(self.sidebar_ratio),
                 Some(self.graph_ratio),
-                Some(self.staging_ratio),
                 self.shortcut_bar_visible,
             );
             layout.graph
@@ -624,6 +620,7 @@ impl App {
                 pull_receiver: &mut view_state.pull_receiver,
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
+                right_panel_mode: &mut view_state.right_panel_mode,
             };
             let staging_repo = view_state.worktree_repo.as_ref().unwrap_or(repo);
             handle_app_message(
@@ -1420,7 +1417,6 @@ impl ApplicationHandler for App {
                         main_bounds, 4.0, scale,
                         Some(self.sidebar_ratio),
                         Some(self.graph_ratio),
-                        Some(self.staging_ratio),
                         self.shortcut_bar_visible,
                     );
 
@@ -1559,7 +1555,7 @@ impl ApplicationHandler for App {
                                         let ratio = (*x - main_bounds.x) / main_bounds.width;
                                         self.sidebar_ratio = ratio.clamp(0.05, 0.30);
                                     }
-                                    DividerDrag::GraphStaging => {
+                                    DividerDrag::GraphRight => {
                                         // Content area starts after sidebar
                                         let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
                                         let content_x = main_bounds.x + sidebar_w;
@@ -1567,15 +1563,6 @@ impl ApplicationHandler for App {
                                         if content_w > 0.0 {
                                             let ratio = (*x - content_x) / content_w;
                                             self.graph_ratio = ratio.clamp(0.30, 0.80);
-                                        }
-                                    }
-                                    DividerDrag::StagingPreview => {
-                                        // Staging ratio is fraction of right area width
-                                        let right_area_x = layout.staging.x;
-                                        let right_area_w = layout.staging.width + layout.preview.width;
-                                        if right_area_w > 0.0 {
-                                            let ratio = (*x - right_area_x) / right_area_w;
-                                            self.staging_ratio = ratio.clamp(0.20, 0.70);
                                         }
                                     }
                                 }
@@ -1617,17 +1604,10 @@ impl ApplicationHandler for App {
                                 return;
                             }
 
-                            // Divider 2: graph | staging (vertical)
+                            // Divider 2: graph | right panel (vertical)
                             let graph_edge = layout.graph.right();
                             if (*x - graph_edge).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::GraphStaging);
-                                return;
-                            }
-
-                            // Divider 3: staging | preview (vertical)
-                            let staging_edge = layout.staging.right();
-                            if (*x - staging_edge).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::StagingPreview);
+                                self.divider_drag = Some(DividerDrag::GraphRight);
                                 return;
                             }
                         }
@@ -1709,6 +1689,8 @@ impl ApplicationHandler for App {
                                         && idx < view_state.staging_well.worktree_count()
                                     {
                                         view_state.staging_well.switch_worktree(idx);
+                                        view_state.right_panel_mode = RightPanelMode::Staging;
+                                        view_state.diff_view.clear();
                                         if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                                             if wt_ctx.is_current {
                                                 view_state.worktree_repo = None;
@@ -1743,11 +1725,14 @@ impl ApplicationHandler for App {
                     // Handle per-tab global keys (except Tab, which is handled after panel routing)
                     if let InputEvent::KeyDown { key, .. } = &input_event
                         && key == &Key::Escape {
-                            if view_state.diff_view.has_content() {
+                            if view_state.right_panel_mode == RightPanelMode::Browse {
+                                // Return to staging mode from browse mode
+                                view_state.right_panel_mode = RightPanelMode::Staging;
+                                view_state.commit_detail_view.clear();
                                 view_state.diff_view.clear();
                                 view_state.last_diff_commit = None;
-                            } else if view_state.commit_detail_view.has_content() {
-                                view_state.commit_detail_view.clear();
+                            } else if view_state.diff_view.has_content() {
+                                view_state.diff_view.clear();
                                 view_state.last_diff_commit = None;
                             } else if view_state.submodule_focus.is_some() {
                                 view_state.pending_messages.push(AppMessage::ExitSubmodule);
@@ -1802,6 +1787,7 @@ impl ApplicationHandler for App {
                                 SidebarAction::SwitchWorktree(name) => {
                                     if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
                                         view_state.staging_well.switch_worktree(idx);
+                                        view_state.diff_view.clear();
                                         if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                                             if wt_ctx.is_current {
                                                 view_state.worktree_repo = None;
@@ -1884,7 +1870,8 @@ impl ApplicationHandler for App {
                                     view_state.pending_messages.push(AppMessage::Push);
                                 }
                                 HeaderAction::Commit => {
-                                    view_state.focused_panel = FocusedPanel::Staging;
+                                    view_state.focused_panel = FocusedPanel::RightPanel;
+                                    view_state.right_panel_mode = RightPanelMode::Staging;
                                 }
                                 HeaderAction::Help => {
                                     self.shortcut_bar_visible = !self.shortcut_bar_visible;
@@ -1908,41 +1895,54 @@ impl ApplicationHandler for App {
                         return;
                     }
 
-                    // Route to commit detail view when active
-                    if view_state.commit_detail_view.has_content() {
-                        let (detail_rect, _diff_rect) = layout.preview.split_vertical(0.40);
-                        if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
-                            if let Some(action) = view_state.commit_detail_view.take_action() {
-                                match action {
-                                    CommitDetailAction::ViewFileDiff(oid, path) => {
-                                        view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
-                                    }
-                                }
-                            }
-                            return;
-                        }
-                    }
+                    // Route events to right panel content (commit detail + diff view)
+                    {
+                        let pill_bar_h = view_state.staging_well.pill_bar_height();
+                        let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
-                    // Route scroll events to diff view if it has content
-                    if view_state.diff_view.has_content() {
-                        let diff_bounds = if view_state.commit_detail_view.has_content() {
-                            let (_detail_rect, diff_rect) = layout.preview.split_vertical(0.40);
-                            diff_rect
-                        } else {
-                            layout.preview
-                        };
-                        if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
-                            if let Some(action) = view_state.diff_view.take_action() {
-                                match action {
-                                    DiffAction::StageHunk(path, hunk_idx) => {
-                                        view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
-                                    }
-                                    DiffAction::UnstageHunk(path, hunk_idx) => {
-                                        view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                        // Route to commit detail view when in browse mode
+                        if view_state.right_panel_mode == RightPanelMode::Browse
+                            && view_state.commit_detail_view.has_content()
+                        {
+                            let (detail_rect, _diff_rect) = content_rect.split_vertical(0.40);
+                            if view_state.commit_detail_view.handle_event(&input_event, detail_rect).is_consumed() {
+                                if let Some(action) = view_state.commit_detail_view.take_action() {
+                                    match action {
+                                        CommitDetailAction::ViewFileDiff(oid, path) => {
+                                            view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
+                                        }
                                     }
                                 }
+                                return;
                             }
-                            return;
+                        }
+
+                        // Route events to diff view if it has content (both modes)
+                        if view_state.diff_view.has_content() {
+                            let diff_bounds = match view_state.right_panel_mode {
+                                RightPanelMode::Browse if view_state.commit_detail_view.has_content() => {
+                                    let (_detail_rect, diff_rect) = content_rect.split_vertical(0.40);
+                                    diff_rect
+                                }
+                                RightPanelMode::Staging => {
+                                    let (_staging_rect, diff_rect) = content_rect.split_vertical(0.45);
+                                    diff_rect
+                                }
+                                _ => content_rect,
+                            };
+                            if view_state.diff_view.handle_event(&input_event, diff_bounds).is_consumed() {
+                                if let Some(action) = view_state.diff_view.take_action() {
+                                    match action {
+                                        DiffAction::StageHunk(path, hunk_idx) => {
+                                            view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
+                                        }
+                                        DiffAction::UnstageHunk(path, hunk_idx) => {
+                                            view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                                        }
+                                    }
+                                }
+                                return;
+                            }
                         }
                     }
 
@@ -1985,8 +1985,9 @@ impl ApplicationHandler for App {
                                 view_state.context_menu.show(items, *x, *y);
                                 return;
                             }
-                        } else if layout.staging.contains(*x, *y)
-                            && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.staging) {
+                        } else if layout.right_panel.contains(*x, *y)
+                            && view_state.right_panel_mode == RightPanelMode::Staging
+                            && let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
                                 view_state.context_menu.show(items, *x, *y);
                                 return;
                             }
@@ -2025,10 +2026,8 @@ impl ApplicationHandler for App {
 
                     // Detect clicks on panels to switch focus
                     if let InputEvent::MouseDown { x, y, .. } = &input_event {
-                        if layout.staging.contains(*x, *y) {
-                            view_state.focused_panel = FocusedPanel::Staging;
-                        } else if layout.preview.contains(*x, *y) {
-                            view_state.focused_panel = FocusedPanel::Preview;
+                        if layout.right_panel.contains(*x, *y) {
+                            view_state.focused_panel = FocusedPanel::RightPanel;
                         } else if layout.graph.contains(*x, *y) {
                             view_state.focused_panel = FocusedPanel::Graph;
                         } else if layout.sidebar.contains(*x, *y) {
@@ -2040,8 +2039,32 @@ impl ApplicationHandler for App {
                             view_state.branch_sidebar.set_focused(false);
                         }
                         // Unfocus staging text inputs when focus moves away
-                        if view_state.focused_panel != FocusedPanel::Staging {
+                        if view_state.focused_panel != FocusedPanel::RightPanel
+                            || view_state.right_panel_mode != RightPanelMode::Staging {
                             view_state.staging_well.unfocus_all();
+                        }
+                    }
+
+                    // Handle worktree pill bar clicks (before content routing)
+                    if let InputEvent::MouseDown { .. } = &input_event {
+                        let pill_bar_h = view_state.staging_well.pill_bar_height();
+                        let (pill_rect, _content_rect) = layout.right_panel.take_top(pill_bar_h);
+                        if view_state.staging_well.handle_pill_event(&input_event, pill_rect).is_consumed() {
+                            if let Some(action) = view_state.staging_well.take_action() {
+                                if let StagingAction::SwitchWorktree(index) = action {
+                                    view_state.staging_well.switch_worktree(index);
+                                    view_state.right_panel_mode = RightPanelMode::Staging;
+                                    view_state.diff_view.clear();
+                                    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                        if wt_ctx.is_current {
+                                            view_state.worktree_repo = None;
+                                        } else {
+                                            view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                        }
+                                    }
+                                }
+                            }
+                            return;
                         }
                     }
 
@@ -2063,6 +2086,7 @@ impl ApplicationHandler for App {
                                     GraphAction::SwitchWorktree(name) => {
                                         if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
                                             view_state.staging_well.switch_worktree(idx);
+                                            view_state.diff_view.clear();
                                             if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                                                 if wt_ctx.is_current {
                                                     view_state.worktree_repo = None;
@@ -2077,8 +2101,12 @@ impl ApplicationHandler for App {
                             if response.is_consumed() {
                                 return;
                             }
-                        } else if layout.staging.contains(*x, *y) {
-                            let response = view_state.staging_well.handle_event(&input_event, layout.staging);
+                        } else if layout.right_panel.contains(*x, *y)
+                            && view_state.right_panel_mode == RightPanelMode::Staging {
+                            let pill_bar_h = view_state.staging_well.pill_bar_height();
+                            let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                            let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                            let response = view_state.staging_well.handle_event(&input_event, staging_rect);
                             if let Some(action) = view_state.staging_well.take_action() {
                                 match action {
                                     StagingAction::StageFile(path) => {
@@ -2109,6 +2137,8 @@ impl ApplicationHandler for App {
                                     }
                                     StagingAction::SwitchWorktree(index) => {
                                         view_state.staging_well.switch_worktree(index);
+                                        view_state.right_panel_mode = RightPanelMode::Staging;
+                                        view_state.diff_view.clear();
                                         if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                                             if wt_ctx.is_current {
                                                 view_state.worktree_repo = None;
@@ -2152,6 +2182,7 @@ impl ApplicationHandler for App {
                                     GraphAction::SwitchWorktree(name) => {
                                         if let Some(idx) = view_state.staging_well.worktree_index_by_name(&name) {
                                             view_state.staging_well.switch_worktree(idx);
+                                            view_state.diff_view.clear();
                                             if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                                                 if wt_ctx.is_current {
                                                     view_state.worktree_repo = None;
@@ -2167,58 +2198,63 @@ impl ApplicationHandler for App {
                                 return;
                             }
                         }
-                        FocusedPanel::Staging => {
-                            let response = view_state.staging_well.handle_event(&input_event, layout.staging);
+                        FocusedPanel::RightPanel => {
+                            if view_state.right_panel_mode == RightPanelMode::Staging {
+                                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                                let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                                let response = view_state.staging_well.handle_event(&input_event, staging_rect);
 
-                            if let Some(action) = view_state.staging_well.take_action() {
-                                match action {
-                                    StagingAction::StageFile(path) => {
-                                        view_state.pending_messages.push(AppMessage::StageFile(path));
-                                    }
-                                    StagingAction::UnstageFile(path) => {
-                                        view_state.pending_messages.push(AppMessage::UnstageFile(path));
-                                    }
-                                    StagingAction::StageAll => {
-                                        view_state.pending_messages.push(AppMessage::StageAll);
-                                    }
-                                    StagingAction::UnstageAll => {
-                                        view_state.pending_messages.push(AppMessage::UnstageAll);
-                                    }
-                                    StagingAction::Commit(message) => {
-                                        view_state.pending_messages.push(AppMessage::Commit(message));
-                                    }
-                                    StagingAction::AmendCommit(message) => {
-                                        view_state.pending_messages.push(AppMessage::AmendCommit(message));
-                                    }
-                                    StagingAction::ToggleAmend => {
-                                        view_state.pending_messages.push(AppMessage::ToggleAmend);
-                                    }
-                                    StagingAction::ViewDiff(path) => {
-                                        let staged = view_state.staging_well.staged_list.files
-                                            .iter().any(|f| f.path == path);
-                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
-                                    }
-                                    StagingAction::SwitchWorktree(index) => {
-                                        view_state.staging_well.switch_worktree(index);
-                                        if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-                                            if wt_ctx.is_current {
-                                                view_state.worktree_repo = None;
-                                            } else {
-                                                view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                if let Some(action) = view_state.staging_well.take_action() {
+                                    match action {
+                                        StagingAction::StageFile(path) => {
+                                            view_state.pending_messages.push(AppMessage::StageFile(path));
+                                        }
+                                        StagingAction::UnstageFile(path) => {
+                                            view_state.pending_messages.push(AppMessage::UnstageFile(path));
+                                        }
+                                        StagingAction::StageAll => {
+                                            view_state.pending_messages.push(AppMessage::StageAll);
+                                        }
+                                        StagingAction::UnstageAll => {
+                                            view_state.pending_messages.push(AppMessage::UnstageAll);
+                                        }
+                                        StagingAction::Commit(message) => {
+                                            view_state.pending_messages.push(AppMessage::Commit(message));
+                                        }
+                                        StagingAction::AmendCommit(message) => {
+                                            view_state.pending_messages.push(AppMessage::AmendCommit(message));
+                                        }
+                                        StagingAction::ToggleAmend => {
+                                            view_state.pending_messages.push(AppMessage::ToggleAmend);
+                                        }
+                                        StagingAction::ViewDiff(path) => {
+                                            let staged = view_state.staging_well.staged_list.files
+                                                .iter().any(|f| f.path == path);
+                                            view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                        }
+                                        StagingAction::SwitchWorktree(index) => {
+                                            view_state.staging_well.switch_worktree(index);
+                                            view_state.right_panel_mode = RightPanelMode::Staging;
+                                            view_state.diff_view.clear();
+                                            if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+                                                if wt_ctx.is_current {
+                                                    view_state.worktree_repo = None;
+                                                } else {
+                                                    view_state.worktree_repo = GitRepo::open(&wt_ctx.path).ok();
+                                                }
                                             }
                                         }
-                                    }
-                                    StagingAction::PreviewDiff(path, staged) => {
-                                        view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                        StagingAction::PreviewDiff(path, staged) => {
+                                            view_state.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                                        }
                                     }
                                 }
+                                if response.is_consumed() {
+                                    return;
+                                }
                             }
-                            if response.is_consumed() {
-                                return;
-                            }
-                        }
-                        FocusedPanel::Preview => {
-                            // Diff/detail view events are handled above in pre-routing
+                            // Browse mode: diff/detail view events are handled above in pre-routing
                         }
                         FocusedPanel::Sidebar => {
                             // Keyboard events handled by branch_sidebar.handle_event above
@@ -2228,13 +2264,13 @@ impl ApplicationHandler for App {
                     // Tab to cycle panels (only when not consumed by focused panel)
                     if let InputEvent::KeyDown { key: Key::Tab, .. } = &input_event {
                         view_state.focused_panel = match view_state.focused_panel {
-                            FocusedPanel::Graph => FocusedPanel::Staging,
-                            FocusedPanel::Staging => FocusedPanel::Preview,
-                            FocusedPanel::Preview => FocusedPanel::Sidebar,
+                            FocusedPanel::Graph => FocusedPanel::RightPanel,
+                            FocusedPanel::RightPanel => FocusedPanel::Sidebar,
                             FocusedPanel::Sidebar => FocusedPanel::Graph,
                         };
                         view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
-                        if view_state.focused_panel != FocusedPanel::Staging {
+                        if view_state.focused_panel != FocusedPanel::RightPanel
+                            || view_state.right_panel_mode != RightPanelMode::Staging {
                             view_state.staging_well.unfocus_all();
                         }
                         return;
@@ -2244,7 +2280,13 @@ impl ApplicationHandler for App {
                     if let InputEvent::MouseMove { x, y, .. } = &input_event {
                         view_state.header_bar.update_hover(*x, *y, layout.header);
                         view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
-                        view_state.staging_well.update_hover(*x, *y, layout.staging);
+                        // Pass correct staging bounds (after pill bar + split)
+                        {
+                            let pill_bar_h = view_state.staging_well.pill_bar_height();
+                            let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                            let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                            view_state.staging_well.update_hover(*x, *y, staging_rect);
+                        }
 
                         // Tab bar hover needs text_renderer - update before cursor determination
                         if let Some(ref render_state) = self.state {
@@ -2294,24 +2336,21 @@ fn determine_cursor(
             return CursorIcon::ColResize;
         }
 
-        // Divider 2: graph | staging (vertical)
+        // Divider 2: graph | right panel (vertical)
         let graph_edge = layout.graph.right();
         if (x - graph_edge).abs() < divider_hit {
-            return CursorIcon::ColResize;
-        }
-
-        // Divider 3: staging | preview (vertical)
-        let staging_edge = layout.staging.right();
-        if (x - staging_edge).abs() < divider_hit {
             return CursorIcon::ColResize;
         }
     }
 
     // -- Text cursor: text input fields --
 
-    // Staging area text inputs (subject line, body area)
-    if layout.staging.contains(x, y) {
-        let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(layout.staging);
+    // Staging area text inputs (subject line, body area) - only in staging mode
+    if layout.right_panel.contains(x, y) && view_state.right_panel_mode == RightPanelMode::Staging {
+        let pill_bar_h = view_state.staging_well.pill_bar_height(); // scale already in pill_bar_height
+        let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+        let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+        let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(staging_rect);
         if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
             return CursorIcon::Text;
         }
@@ -2355,12 +2394,12 @@ fn determine_cursor(
     }
 
     // Staging well buttons (Stage All, Unstage All, Commit, Amend)
-    if layout.staging.contains(x, y) && view_state.staging_well.is_any_button_hovered() {
+    if layout.right_panel.contains(x, y) && view_state.staging_well.is_any_button_hovered() {
         return CursorIcon::Pointer;
     }
 
     // Staging well file list items (clickable to select/stage/unstage)
-    if layout.staging.contains(x, y) && view_state.staging_well.is_file_hovered() {
+    if layout.right_panel.contains(x, y) && view_state.staging_well.is_file_hovered() {
         return CursorIcon::Pointer;
     }
 
@@ -2568,6 +2607,7 @@ fn handle_context_menu_action(
             if !param.is_empty() {
                 if let Some(idx) = view_state.staging_well.worktree_index_by_name(param) {
                     view_state.staging_well.switch_worktree(idx);
+                    view_state.diff_view.clear();
                     if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
                         if wt_ctx.is_current {
                             view_state.worktree_repo = None;
@@ -2717,11 +2757,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         theme::PANEL_GRAPH.to_array(),
     ));
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.staging,
-        theme::PANEL_STAGING.to_array(),
-    ));
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.preview,
+        &layout.right_panel,
         theme::PANEL_STAGING.to_array(),
     ));
 
@@ -2740,10 +2776,7 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     let sidebar_graph_hover = in_content_area && (mx - sidebar_edge).abs() < hit_tolerance;
 
     let graph_edge = layout.graph.right();
-    let graph_staging_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
-
-    let staging_edge = layout.staging.right();
-    let staging_preview_hover = in_content_area && (mx - staging_edge).abs() < hit_tolerance;
+    let graph_right_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
 
     // Vertical divider: sidebar | graph
     // Subtle 1px line at rest, wider 2px highlighted line on hover
@@ -2759,8 +2792,8 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         ));
     }
 
-    // Vertical divider: graph | staging
-    if graph_staging_hover {
+    // Vertical divider: graph | right panel
+    if graph_right_hover {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
             &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
             theme::BORDER_LIGHT.to_array(),
@@ -2772,24 +2805,10 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         ));
     }
 
-    // Vertical divider: staging | preview
-    if staging_preview_hover {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.staging.right(), layout.staging.y, 2.0, layout.staging.height),
-            theme::BORDER_LIGHT.to_array(),
-        ));
-    } else {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.staging.right(), layout.staging.y, 1.0, layout.staging.height),
-            theme::BORDER.with_alpha(0.35).to_array(),
-        ));
-    }
-
     // Focused panel indicator: subtle accent-colored top border (2px at ~40% alpha)
     let focused_rect = match focused {
         FocusedPanel::Graph => &layout.graph,
-        FocusedPanel::Staging => &layout.staging,
-        FocusedPanel::Preview => &layout.preview,
+        FocusedPanel::RightPanel => &layout.right_panel,
         FocusedPanel::Sidebar => &layout.sidebar,
     };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
@@ -2819,7 +2838,6 @@ fn build_ui_output(
     avatar_renderer: &AvatarRenderer,
     sidebar_ratio: f32,
     graph_ratio: f32,
-    staging_ratio: f32,
     shortcut_bar_visible: bool,
     mouse_pos: (f32, f32),
     elapsed: f32,
@@ -2834,7 +2852,6 @@ fn build_ui_output(
         main_bounds, 4.0, scale,
         Some(sidebar_ratio),
         Some(graph_ratio),
-        Some(staging_ratio),
         shortcut_bar_visible,
     );
 
@@ -2883,29 +2900,58 @@ fn build_ui_output(
         // Branch sidebar (chrome layer)
         chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, bold_text_renderer, layout.sidebar));
 
-        // Staging well (chrome layer)
-        chrome_output.extend(view_state.staging_well.layout(text_renderer, layout.staging));
+        // Right panel (chrome layer) - worktree pills + mode-dependent content
+        {
+            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let (pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
-        // Preview panel (chrome layer) - render diff/detail or empty state placeholder
-        if view_state.commit_detail_view.has_content() {
-            let (detail_rect, diff_rect) = layout.preview.split_vertical(0.40);
-            chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
-            if view_state.diff_view.has_content() {
-                chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
+            // Worktree pill bar (visible when there are worktree contexts)
+            if pill_bar_h > 0.0 {
+                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect));
             }
-        } else if view_state.diff_view.has_content() {
-            chrome_output.extend(view_state.diff_view.layout(text_renderer, layout.preview));
-        } else {
-            // Empty state placeholder
-            let msg = "Select a file or commit to preview";
-            let msg_w = text_renderer.measure_text(msg);
-            let line_h = text_renderer.line_height();
-            let cx = layout.preview.x + (layout.preview.width - msg_w) / 2.0;
-            let cy = layout.preview.y + (layout.preview.height - line_h) / 2.0;
-            chrome_output.text_vertices.extend(text_renderer.layout_text(
-                msg, cx, cy,
-                theme::TEXT_MUTED.to_array(),
-            ));
+
+            match view_state.right_panel_mode {
+                RightPanelMode::Staging => {
+                    // Upper: staging well, Lower: diff view
+                    let (staging_rect, diff_rect) = content_rect.split_vertical(0.45);
+                    chrome_output.extend(view_state.staging_well.layout(text_renderer, staging_rect));
+                    if view_state.diff_view.has_content() {
+                        chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
+                    } else {
+                        let msg = "Select a file to preview its diff";
+                        let msg_w = text_renderer.measure_text(msg);
+                        let line_h = text_renderer.line_height();
+                        let cx = diff_rect.x + (diff_rect.width - msg_w) / 2.0;
+                        let cy = diff_rect.y + (diff_rect.height - line_h) / 2.0;
+                        chrome_output.text_vertices.extend(text_renderer.layout_text(
+                            msg, cx, cy,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                    }
+                }
+                RightPanelMode::Browse => {
+                    // Upper: commit detail, Lower: diff view
+                    if view_state.commit_detail_view.has_content() {
+                        let (detail_rect, diff_rect) = content_rect.split_vertical(0.40);
+                        chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
+                        if view_state.diff_view.has_content() {
+                            chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_rect));
+                        }
+                    } else if view_state.diff_view.has_content() {
+                        chrome_output.extend(view_state.diff_view.layout(text_renderer, content_rect));
+                    } else {
+                        let msg = "Select a commit to browse";
+                        let msg_w = text_renderer.measure_text(msg);
+                        let line_h = text_renderer.line_height();
+                        let cx = content_rect.x + (content_rect.width - msg_w) / 2.0;
+                        let cy = content_rect.y + (content_rect.height - line_h) / 2.0;
+                        chrome_output.text_vertices.extend(text_renderer.layout_text(
+                            msg, cx, cy,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -3002,8 +3048,10 @@ fn draw_frame(app: &mut App) -> Result<()> {
         view_state.branch_sidebar.update_filter_cursor(now);
         view_state.shortcut_bar.set_context(match view_state.focused_panel {
             FocusedPanel::Graph => ShortcutContext::Graph,
-            FocusedPanel::Staging => ShortcutContext::Staging,
-            FocusedPanel::Preview => ShortcutContext::Graph,  // Preview uses graph shortcuts
+            FocusedPanel::RightPanel => match view_state.right_panel_mode {
+                RightPanelMode::Staging => ShortcutContext::Staging,
+                RightPanelMode::Browse => ShortcutContext::Graph,
+            },
             FocusedPanel::Sidebar => ShortcutContext::Sidebar,
         });
         view_state.shortcut_bar.show_new_tab_hint = single_tab;
@@ -3029,7 +3077,6 @@ fn draw_frame(app: &mut App) -> Result<()> {
             main_bounds, 4.0, state.scale_factor as f32,
             Some(app.sidebar_ratio),
             Some(app.graph_ratio),
-            Some(app.staging_ratio),
             app.shortcut_bar_visible,
         );
         view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
@@ -3050,14 +3097,14 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
     let mouse_pos = state.input_state.mouse.position();
-    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, staging_ratio,
+        sidebar_ratio, graph_ratio,
         app.shortcut_bar_visible,
         mouse_pos,
         elapsed,
@@ -3186,14 +3233,14 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
-    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, staging_ratio,
+        sidebar_ratio, graph_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for screenshots
         elapsed,
@@ -3304,14 +3351,14 @@ fn capture_screenshot_offscreen(
 
     let extent = offscreen.extent();
     let scale_factor = state.scale_factor;
-    let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, staging_ratio,
+        sidebar_ratio, graph_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for offscreen screenshots
         elapsed,

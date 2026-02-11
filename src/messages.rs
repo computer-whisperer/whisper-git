@@ -7,6 +7,16 @@ use crate::ui::Rect;
 use crate::ui::widgets::{ToastManager, ToastSeverity};
 use crate::views::{BranchSidebar, CommitDetailView, CommitGraphView, DiffView, StagingWell};
 
+/// What content mode the right panel is showing
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RightPanelMode {
+    /// Default: file lists + commit message + buttons (upper), selected file diff (lower)
+    #[default]
+    Staging,
+    /// Shown when a commit is selected in graph: commit detail (upper), file diff (lower)
+    Browse,
+}
+
 /// Maximum number of commits to load into the graph view.
 const MAX_COMMITS: usize = 50;
 
@@ -294,6 +304,7 @@ pub fn handle_app_message(
                         view_state.diff_view.set_diff(diff_files, title);
                     }
                     *view_state.last_diff_commit = Some(oid);
+                    *view_state.right_panel_mode = RightPanelMode::Browse;
                 }
                 Err(e) => {
                     eprintln!("Failed to load diff for {}: {}", oid, e);
@@ -865,6 +876,7 @@ pub struct MessageViewState<'a> {
     pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
     pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
     pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
+    pub right_panel_mode: &'a mut RightPanelMode,
 }
 
 /// Refresh commits, branch tips, tags, and header info from the repo.

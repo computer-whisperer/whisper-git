@@ -71,8 +71,10 @@ pub struct StagingWell {
     worktree_selector_open: bool,
     /// Hovered item in the worktree selector dropdown
     worktree_selector_hover: Option<usize>,
-    /// Bounds of the worktree selector pill (for hit testing)
+    /// Bounds of the worktree selector pill (for hit testing and dropdown positioning)
     worktree_pill_bounds: Option<Rect>,
+    /// Individual pill rects in the pill bar (for click hit testing)
+    pill_bar_rects: Vec<Rect>,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -114,6 +116,7 @@ impl StagingWell {
             worktree_selector_open: false,
             worktree_selector_hover: None,
             worktree_pill_bounds: None,
+            pill_bar_rects: Vec::new(),
         }
     }
 
@@ -413,9 +416,140 @@ impl StagingWell {
         self.worktree_contexts.len()
     }
 
+    /// Height of the pill bar in pixels (0 when no worktree contexts).
+    pub fn pill_bar_height(&self) -> f32 {
+        if self.worktree_contexts.is_empty() { 0.0 } else { 26.0 * self.scale }
+    }
+
     /// Find a worktree index by name.
     pub fn worktree_index_by_name(&self, name: &str) -> Option<usize> {
         self.worktree_contexts.iter().position(|c| c.name == name)
+    }
+
+    /// Layout the worktree pill bar at the top of the right panel.
+    /// Renders a row of pills (one per worktree), active one highlighted.
+    /// Single-worktree: renders just the branch name as muted text.
+    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+        let s = self.scale;
+        self.pill_bar_rects.clear();
+
+        if self.worktree_contexts.is_empty() {
+            self.worktree_pill_bounds = None;
+            return output;
+        }
+
+        if self.worktree_contexts.len() == 1 {
+            // Single worktree: just show branch name as muted text
+            let ctx = &self.worktree_contexts[0];
+            let label = &ctx.branch;
+            let text_y = bounds.y + (bounds.height - text_renderer.line_height()) / 2.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                label,
+                bounds.x + 8.0 * s,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+            self.worktree_pill_bounds = None;
+            return output;
+        }
+
+        // Multiple worktrees: render a row of pills
+        let mut pill_x = bounds.x + 6.0 * s;
+        let pill_h = 20.0 * s;
+        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
+        let pill_gap = 4.0 * s;
+
+        for (i, ctx) in self.worktree_contexts.iter().enumerate() {
+            let is_active = i == self.active_worktree_idx;
+            let label = &ctx.name;
+            let label_w = text_renderer.measure_text(label);
+            let dot_space = if ctx.is_dirty { 10.0 * s } else { 0.0 };
+            let pill_w = label_w + 12.0 * s + dot_space;
+
+            let pill_rect = Rect::new(pill_x, pill_y, pill_w, pill_h);
+            self.pill_bar_rects.push(pill_rect);
+
+            // Pill background
+            let bg_color = if is_active {
+                theme::ACCENT.with_alpha(0.2)
+            } else {
+                theme::SURFACE_RAISED
+            };
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                bg_color.to_array(),
+                4.0 * s,
+            ));
+
+            // Pill border
+            let border_color = if is_active {
+                theme::ACCENT.with_alpha(0.5)
+            } else {
+                theme::BORDER
+            };
+            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                border_color.to_array(),
+                4.0 * s,
+                1.0,
+            ));
+
+            // Pill text
+            let text_color = if is_active { theme::TEXT_BRIGHT } else { theme::TEXT_MUTED };
+            let text_x = pill_x + 6.0 * s;
+            let text_y_pill = pill_y + (pill_h - text_renderer.line_height()) / 2.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                label,
+                text_x,
+                text_y_pill,
+                text_color.to_array(),
+            ));
+
+            // Dirty indicator dot
+            if ctx.is_dirty {
+                let dot_r = 3.0 * s;
+                let dot_cx = pill_x + pill_w - 6.0 * s - dot_r;
+                let dot_cy = pill_y + pill_h / 2.0;
+                let dot_rect = Rect::new(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2.0, dot_r * 2.0);
+                output.spline_vertices.extend(create_rounded_rect_vertices(
+                    &dot_rect,
+                    theme::STATUS_BEHIND.to_array(),
+                    dot_r,
+                ));
+            }
+
+            pill_x += pill_w + pill_gap;
+        }
+
+        // Store active pill bounds for dropdown positioning
+        self.worktree_pill_bounds = self.pill_bar_rects.get(self.active_worktree_idx).copied();
+
+        output
+    }
+
+    /// Handle events on the worktree pill bar.
+    /// Returns EventResponse::Consumed if a pill was clicked.
+    pub fn handle_pill_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
+        if self.worktree_contexts.len() < 2 {
+            return EventResponse::Ignored;
+        }
+
+        if let InputEvent::MouseDown { x, y, .. } = event {
+            if !bounds.contains(*x, *y) {
+                return EventResponse::Ignored;
+            }
+
+            // Check which pill was clicked using stored rects from last layout
+            for (i, pill_rect) in self.pill_bar_rects.iter().enumerate() {
+                if pill_rect.contains(*x, *y) {
+                    self.pending_action = Some(StagingAction::SwitchWorktree(i));
+                    return EventResponse::Consumed;
+                }
+            }
+        }
+
+        EventResponse::Ignored
     }
 
     /// Update hover state for child widgets based on mouse position
@@ -524,19 +658,6 @@ impl StagingWell {
                     }
                 }
                 _ => {}
-            }
-        }
-
-        // Check for worktree pill click
-        if let InputEvent::MouseDown { x, y, .. } = event {
-            if self.has_worktree_selector() {
-                if let Some(pill_bounds) = self.worktree_pill_bounds {
-                    if pill_bounds.contains(*x, *y) {
-                        self.worktree_selector_open = !self.worktree_selector_open;
-                        self.worktree_selector_hover = None;
-                        return EventResponse::Consumed;
-                    }
-                }
             }
         }
 
@@ -1005,47 +1126,6 @@ impl StagingWell {
             title_y,
             title_color.to_array(),
         ));
-
-        // Worktree selector pill (after title text, before char count)
-        if self.has_worktree_selector() {
-            let title_w = text_renderer.measure_text(title_text);
-            let pill_x = regions.commit_area.x + 4.0 * s + title_w + 8.0 * s;
-            let pill_h = 18.0 * s;
-            let pill_y = title_y - 1.0 * s;
-
-            let active_name = self.worktree_contexts.get(self.active_worktree_idx)
-                .map(|c| c.name.as_str())
-                .unwrap_or("?");
-            let pill_label = format!("{} \u{25BE}", active_name); // ▾ triangle
-            let pill_text_w = text_renderer.measure_text(&pill_label);
-            let pill_w = pill_text_w + 12.0 * s;
-
-            let pill_rect = Rect::new(pill_x, pill_y, pill_w, pill_h);
-            self.worktree_pill_bounds = Some(pill_rect);
-
-            // Pill background
-            output.spline_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                theme::SURFACE_RAISED.to_array(),
-                4.0 * s,
-            ));
-            // Pill border
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                theme::BORDER.to_array(),
-                4.0 * s,
-                1.0,
-            ));
-            // Pill text
-            output.text_vertices.extend(text_renderer.layout_text(
-                &pill_label,
-                pill_x + 6.0 * s,
-                pill_y + 2.0 * s,
-                theme::TEXT_MUTED.to_array(),
-            ));
-        } else {
-            self.worktree_pill_bounds = None;
-        }
 
         // Character count for subject - right-aligned on commit title row
         let subject_len = self.subject_input.text().chars().count();
