@@ -1539,7 +1539,7 @@ fn enter_submodule(
     scale: f32,
     toast_manager: &mut ToastManager,
 ) -> bool {
-    let Some(ref repo) = repo_tab.repo else { return false };
+    if repo_tab.repo.is_none() { return false; }
 
     // Find the submodule info by name
     let sm = view_state.staging_well.submodules.iter()
@@ -1550,11 +1550,11 @@ fn enter_submodule(
         return false;
     };
 
-    // Resolve absolute path
-    let parent_workdir = match repo.workdir() {
-        Some(w) => w.to_path_buf(),
+    // Resolve submodule path relative to the active worktree's workdir
+    let parent_workdir = match view_state.staging_well.active_worktree_context() {
+        Some(ctx) => ctx.path.clone(),
         None => {
-            toast_manager.push("Cannot determine parent workdir".to_string(), ToastSeverity::Error);
+            toast_manager.push("No active worktree".to_string(), ToastSeverity::Error);
             return false;
         }
     };
