@@ -125,6 +125,18 @@ pub fn create_synthetic_entries(
     synthetics
 }
 
+/// Insert synthetic entries into the commit list sorted by time.
+/// Commits are in reverse chronological order (newest first), so each
+/// synthetic is inserted at the position where its time >= the next commit's time.
+pub fn insert_synthetics_sorted(commits: &mut Vec<CommitInfo>, synthetics: Vec<CommitInfo>) {
+    for synthetic in synthetics {
+        let pos = commits.iter()
+            .position(|c| c.time <= synthetic.time)
+            .unwrap_or(commits.len());
+        commits.insert(pos, synthetic);
+    }
+}
+
 /// Information about a single commit
 #[derive(Debug, Clone)]
 pub struct CommitInfo {

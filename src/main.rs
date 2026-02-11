@@ -169,20 +169,19 @@ struct TabViewState {
 
 impl TabViewState {
     /// Switch the staging well to a different worktree by index.
-    /// Clears the diff view and updates the worktree repo handle.
-    /// If `set_staging_mode` is true, also switches right_panel_mode to Staging.
-    fn switch_to_worktree(&mut self, index: usize, set_staging_mode: bool) {
+    /// Dismisses any commit inspect activity and enters staging mode.
+    fn switch_to_worktree(&mut self, index: usize) {
         self.staging_well.switch_worktree(index);
-        if set_staging_mode {
-            self.right_panel_mode = RightPanelMode::Staging;
-        }
+        self.right_panel_mode = RightPanelMode::Staging;
         self.diff_view.clear();
+        self.commit_detail_view.clear();
+        self.commit_graph_view.selected_commit = None;
+        self.last_diff_commit = None;
         if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
             if wt_ctx.is_current {
                 self.active_worktree_path = None;
             } else {
                 let path = wt_ctx.path.clone();
-                // Only open the repo if it's not already cached
                 if !self.worktree_repo_cache.contains_key(&path) {
                     if let Ok(repo) = GitRepo::open(&path) {
                         self.worktree_repo_cache.insert(path.clone(), repo);
@@ -200,10 +199,9 @@ impl TabViewState {
     }
 
     /// Switch to a named worktree (looks up index by name).
-    /// Clears the diff view and updates the worktree repo handle.
     fn switch_to_worktree_by_name(&mut self, name: &str) {
         if let Some(idx) = self.staging_well.worktree_index_by_name(name) {
-            self.switch_to_worktree(idx, false);
+            self.switch_to_worktree(idx);
         }
     }
 
@@ -237,7 +235,7 @@ impl TabViewState {
                 self.pending_messages.push(AppMessage::ViewDiff(path, staged));
             }
             StagingAction::SwitchWorktree(index) => {
-                self.switch_to_worktree(index, true);
+                self.switch_to_worktree(index);
             }
             StagingAction::PreviewDiff(path, staged) => {
                 self.pending_messages.push(AppMessage::ViewDiff(path, staged));
@@ -1253,7 +1251,7 @@ impl App {
                     if view_state.staging_well.has_worktree_selector()
                         && idx < view_state.staging_well.worktree_count()
                     {
-                        view_state.switch_to_worktree(idx, true);
+                        view_state.switch_to_worktree(idx);
                         return true;
                     }
                 }
@@ -1398,12 +1396,11 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         Vec::new()
     });
 
-    // Prepend synthetic "uncommitted changes" entries for dirty worktrees
+    // Insert synthetic "uncommitted changes" entries sorted by time
     {
-        let mut synthetics = git::create_synthetic_entries(repo, &worktrees, &repo_tab.commits);
+        let synthetics = git::create_synthetic_entries(repo, &worktrees, &repo_tab.commits);
         if !synthetics.is_empty() {
-            synthetics.append(&mut repo_tab.commits);
-            repo_tab.commits = synthetics;
+            git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
         }
     }
 
@@ -2168,7 +2165,7 @@ impl App {
             if view_state.staging_well.handle_pill_event(input_event, pill_rect).is_consumed() {
                 if let Some(action) = view_state.staging_well.take_action() {
                     if let StagingAction::SwitchWorktree(index) = action {
-                        view_state.switch_to_worktree(index, true);
+                        view_state.switch_to_worktree(index);
                     }
                 }
                 return;
@@ -2182,9 +2179,15 @@ impl App {
                 let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid)
-                        && !repo_tab.commits.iter().any(|c| c.id == oid && c.is_synthetic) {
-                            view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                        && view_state.last_diff_commit != Some(oid) {
+                            if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
+                                // Synthetic row: switch to that worktree if named
+                                if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
+                                    view_state.switch_to_worktree_by_name(&wt_name);
+                                }
+                            } else {
+                                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                            }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
                     view_state.handle_graph_action(action);
@@ -2218,9 +2221,14 @@ impl App {
                 let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid)
-                        && !repo_tab.commits.iter().any(|c| c.id == oid && c.is_synthetic) {
-                            view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                        && view_state.last_diff_commit != Some(oid) {
+                            if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
+                                if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
+                                    view_state.switch_to_worktree_by_name(&wt_name);
+                                }
+                            } else {
+                                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                            }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
                     view_state.handle_graph_action(action);
@@ -3004,12 +3012,6 @@ fn build_ui_output(
         chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
     }
 
-    // Worktree selector dropdown (overlay layer - above staging well)
-    if let Some((_, view_state)) = tabs.get_mut(active_tab) {
-        if let Some(dropdown_output) = view_state.staging_well.layout_selector_dropdown(text_renderer) {
-            overlay_output.extend(dropdown_output);
-        }
-    }
 
     // Context menu overlay (overlay layer - on top of all panels)
     if let Some((_, view_state)) = tabs.get_mut(active_tab)
