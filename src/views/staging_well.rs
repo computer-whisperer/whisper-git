@@ -57,7 +57,7 @@ pub struct StagingWell {
     pub amend_mode: bool,
     /// Pending action
     pending_action: Option<StagingAction>,
-    /// Which section has focus (0=subject, 1=body, 2=staged, 3=unstaged)
+    /// Which section has focus (0=unstaged, 1=staged, 2=subject, 3=body)
     focus_section: usize,
     /// Display scale factor for 4K/HiDPI scaling
     pub scale: f32,
@@ -71,6 +71,23 @@ pub struct StagingWell {
     worktree_selector_hover: Option<usize>,
     /// Bounds of the worktree selector pill (for hit testing)
     worktree_pill_bounds: Option<Rect>,
+}
+
+/// Region layout results for the new top-to-bottom order:
+/// unstaged files -> staged files -> commit message -> buttons
+struct StagingRegions {
+    unstaged_header: Rect,
+    unstaged: Rect,
+    staged_header: Rect,
+    staged: Rect,
+    commit_area: Rect,
+    subject: Rect,
+    body: Rect,
+    buttons: Rect,
+    stage_all_btn: Rect,
+    unstage_all_btn: Rect,
+    amend_btn: Rect,
+    commit_btn: Rect,
 }
 
 impl StagingWell {
@@ -156,7 +173,7 @@ impl StagingWell {
     /// Call this after a successful commit so the user can immediately type the next one.
     pub fn clear_and_focus(&mut self) {
         self.clear_message();
-        self.focus_section = 0;
+        self.focus_section = 2; // subject is now section 2
         self.update_focus_state();
     }
 
@@ -175,7 +192,7 @@ impl StagingWell {
         self.amend_mode = true;
         self.subject_input.set_text(subject);
         self.body_area.set_text(body);
-        self.focus_section = 0;
+        self.focus_section = 2; // subject is now section 2
         self.update_focus_state();
     }
 
@@ -192,7 +209,7 @@ impl StagingWell {
             return None;
         }
 
-        let (_, _, staged_bounds, unstaged_bounds, _) = self.compute_regions(bounds);
+        let (unstaged_bounds, staged_bounds, _, _, _) = self.compute_regions(bounds);
 
         // Check staged files
         if staged_bounds.contains(x, y)
@@ -228,11 +245,12 @@ impl StagingWell {
         self.update_focus_state();
     }
 
+    /// New focus mapping: 0=unstaged, 1=staged, 2=subject, 3=body
     fn update_focus_state(&mut self) {
-        self.subject_input.set_focused(self.focus_section == 0);
-        self.body_area.set_focused(self.focus_section == 1);
-        self.staged_list.set_focused(self.focus_section == 2);
-        self.unstaged_list.set_focused(self.focus_section == 3);
+        self.unstaged_list.set_focused(self.focus_section == 0);
+        self.staged_list.set_focused(self.focus_section == 1);
+        self.subject_input.set_focused(self.focus_section == 2);
+        self.body_area.set_focused(self.focus_section == 3);
     }
 
     /// Check if any text input in the staging well has keyboard focus.
@@ -410,15 +428,14 @@ impl StagingWell {
 
     /// Update hover state for child widgets based on mouse position
     pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
-        let (_, _, staged_bounds, unstaged_bounds, buttons_bounds) =
-            self.compute_regions(bounds);
+        let regions = self.compute_regions_full(bounds);
 
-        self.staged_list.update_hover(x, y, staged_bounds);
-        self.unstaged_list.update_hover(x, y, unstaged_bounds);
-        self.stage_all_btn.update_hover(x, y, self.stage_all_button_bounds(buttons_bounds));
-        self.unstage_all_btn.update_hover(x, y, self.unstage_all_button_bounds(buttons_bounds));
-        self.amend_btn.update_hover(x, y, self.amend_button_bounds(buttons_bounds));
-        self.commit_btn.update_hover(x, y, self.commit_button_bounds(buttons_bounds));
+        self.unstaged_list.update_hover(x, y, regions.unstaged);
+        self.staged_list.update_hover(x, y, regions.staged);
+        self.stage_all_btn.update_hover(x, y, regions.stage_all_btn);
+        self.unstage_all_btn.update_hover(x, y, regions.unstage_all_btn);
+        self.amend_btn.update_hover(x, y, regions.amend_btn);
+        self.commit_btn.update_hover(x, y, regions.commit_btn);
 
         // Update worktree selector hover
         if self.worktree_selector_open {
@@ -520,8 +537,11 @@ impl StagingWell {
         }
 
         // Calculate sub-regions
-        let (subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
-            self.compute_regions(bounds);
+        let regions = self.compute_regions_full(bounds);
+        let unstaged_bounds = regions.unstaged;
+        let staged_bounds = regions.staged;
+        let subject_bounds = regions.subject;
+        let body_bounds = regions.body;
 
         // Tab to cycle focus within staging sections.
         // When cycling past the last section, return Ignored so Tab bubbles up
@@ -551,29 +571,30 @@ impl StagingWell {
                 return EventResponse::Consumed;
             }
 
-        // Handle button clicks first (they sit outside the focus sections)
-        if self.stage_all_btn.handle_event(event, self.stage_all_button_bounds(buttons_bounds)).is_consumed() {
+        // Handle header button clicks (Stage All, Unstage All in section headers)
+        if self.stage_all_btn.handle_event(event, regions.stage_all_btn).is_consumed() {
             if self.stage_all_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::StageAll);
             }
             return EventResponse::Consumed;
         }
 
-        if self.unstage_all_btn.handle_event(event, self.unstage_all_button_bounds(buttons_bounds)).is_consumed() {
+        if self.unstage_all_btn.handle_event(event, regions.unstage_all_btn).is_consumed() {
             if self.unstage_all_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::UnstageAll);
             }
             return EventResponse::Consumed;
         }
 
-        if self.amend_btn.handle_event(event, self.amend_button_bounds(buttons_bounds)).is_consumed() {
+        // Handle bottom button clicks (Amend, Commit)
+        if self.amend_btn.handle_event(event, regions.amend_btn).is_consumed() {
             if self.amend_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::ToggleAmend);
             }
             return EventResponse::Consumed;
         }
 
-        if self.commit_btn.handle_event(event, self.commit_button_bounds(buttons_bounds)).is_consumed() {
+        if self.commit_btn.handle_event(event, regions.commit_btn).is_consumed() {
             if self.commit_btn.was_clicked() && self.can_commit() {
                 if self.amend_mode {
                     self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
@@ -585,17 +606,18 @@ impl StagingWell {
         }
 
         // For MouseDown, determine focus section before routing
+        // New order: 0=unstaged, 1=staged, 2=subject, 3=body
         if let InputEvent::MouseDown { x, y, .. } = event {
-            if subject_bounds.contains(*x, *y) {
+            if unstaged_bounds.contains(*x, *y) {
                 self.focus_section = 0;
                 self.update_focus_state();
-            } else if body_bounds.contains(*x, *y) {
+            } else if staged_bounds.contains(*x, *y) {
                 self.focus_section = 1;
                 self.update_focus_state();
-            } else if staged_bounds.contains(*x, *y) {
+            } else if subject_bounds.contains(*x, *y) {
                 self.focus_section = 2;
                 self.update_focus_state();
-            } else if unstaged_bounds.contains(*x, *y) {
+            } else if body_bounds.contains(*x, *y) {
                 self.focus_section = 3;
                 self.update_focus_state();
             }
@@ -604,38 +626,6 @@ impl StagingWell {
         // Route to focused section
         match self.focus_section {
             0 => {
-                let response = self.subject_input.handle_event(event, subject_bounds);
-                if response.is_consumed() {
-                    return response;
-                }
-            }
-            1 => {
-                let response = self.body_area.handle_event(event, body_bounds);
-                if response.is_consumed() {
-                    return response;
-                }
-            }
-            2 => {
-                let response = self.staged_list.handle_event(event, staged_bounds);
-                if response.is_consumed() {
-                    if let Some(action) = self.staged_list.take_action() {
-                        match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::UnstageFile(path));
-                            }
-                            FileListAction::ViewDiff(path) => {
-                                self.pending_action = Some(StagingAction::ViewDiff(path));
-                            }
-                            FileListAction::UnstageAll => {
-                                self.pending_action = Some(StagingAction::UnstageAll);
-                            }
-                            _ => {}
-                        }
-                    }
-                    return response;
-                }
-            }
-            3 => {
                 let response = self.unstaged_list.handle_event(event, unstaged_bounds);
                 if response.is_consumed() {
                     if let Some(action) = self.unstaged_list.take_action() {
@@ -655,80 +645,157 @@ impl StagingWell {
                     return response;
                 }
             }
+            1 => {
+                let response = self.staged_list.handle_event(event, staged_bounds);
+                if response.is_consumed() {
+                    if let Some(action) = self.staged_list.take_action() {
+                        match action {
+                            FileListAction::ToggleStage(path) => {
+                                self.pending_action = Some(StagingAction::UnstageFile(path));
+                            }
+                            FileListAction::ViewDiff(path) => {
+                                self.pending_action = Some(StagingAction::ViewDiff(path));
+                            }
+                            FileListAction::UnstageAll => {
+                                self.pending_action = Some(StagingAction::UnstageAll);
+                            }
+                            _ => {}
+                        }
+                    }
+                    return response;
+                }
+            }
+            2 => {
+                let response = self.subject_input.handle_event(event, subject_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            }
+            3 => {
+                let response = self.body_area.handle_event(event, body_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            }
             _ => {}
         }
 
         EventResponse::Ignored
     }
 
-    /// Compute regions including the commit message wrapper area for background rendering.
-    /// Returns (commit_area, subject, body, staged, unstaged, buttons)
-    fn compute_regions_full(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
+    /// Compute all regions for the new layout order.
+    /// Top-to-bottom: unstaged header + list, staged header + list, commit area, buttons.
+    fn compute_regions_full(&self, bounds: Rect) -> StagingRegions {
         let s = self.scale;
         let padding = 8.0 * s;
         let inner = bounds.inset(padding);
 
-        // Reserve space for "Commit Message" title row
-        let title_height = 22.0 * s;
-        let (_title_row, remaining) = inner.take_top(title_height);
+        let section_header_height = 26.0 * s;
+        let divider_gap = 6.0 * s;
 
-        // Subject line: single line
+        // Bottom-up: reserve space for buttons and commit message area first
+        let button_area_height = 40.0 * s;
+        let commit_title_height = 22.0 * s;
         let subject_height = 32.0 * s;
-        let (subject, remaining) = remaining.take_top(subject_height);
-
-        // Gap
-        let (_, remaining) = remaining.take_top(padding * 0.5);
-
-        // Body area
+        let gap_small = padding * 0.5;
         let body_height = 80.0 * s;
+        let commit_total = commit_title_height + subject_height + gap_small + body_height;
+
+        // Total fixed height at bottom: divider + commit area + divider + buttons
+        let bottom_fixed = divider_gap + commit_total + divider_gap + button_area_height;
+
+        // File lists get all remaining space, split 50/50 between unstaged and staged
+        let file_area_height = (inner.height - section_header_height * 2.0 - divider_gap - bottom_fixed).max(40.0 * s);
+        let half_file = file_area_height / 2.0;
+
+        // --- Unstaged section (top) ---
+        let (unstaged_header, remaining) = inner.take_top(section_header_height);
+        let (unstaged, remaining) = remaining.take_top(half_file);
+
+        // Divider between unstaged and staged
+        let (_div1, remaining) = remaining.take_top(divider_gap);
+
+        // --- Staged section ---
+        let (staged_header, remaining) = remaining.take_top(section_header_height);
+        let (staged, remaining) = remaining.take_top(half_file);
+
+        // Divider between staged and commit area
+        let (_div2, remaining) = remaining.take_top(divider_gap);
+
+        // --- Commit message area ---
+        let (_commit_title_row, remaining) = remaining.take_top(commit_title_height);
+        let (subject, remaining) = remaining.take_top(subject_height);
+        let (_, remaining) = remaining.take_top(gap_small);
         let (body, remaining) = remaining.take_top(body_height);
 
-        // The commit area wraps title + subject + body
-        let commit_area_height = title_height + subject_height + padding * 0.5 + body_height;
-        let commit_area = Rect::new(inner.x, inner.y, inner.width, commit_area_height);
+        let commit_area = Rect::new(
+            inner.x,
+            subject.y - commit_title_height,
+            inner.width,
+            commit_total,
+        );
 
-        // Divider gap
-        let divider_gap = 8.0 * s;
-        let (_, remaining) = remaining.take_top(divider_gap);
+        // Divider before buttons
+        let (_div3, remaining) = remaining.take_top(divider_gap);
 
-        // Split remaining between staged and unstaged lists
-        let button_area_height = 40.0 * s;
-        let list_area_height = remaining.height - button_area_height;
-        let (lists_area, buttons) = remaining.take_top(list_area_height);
+        // --- Buttons ---
+        let (buttons, _) = remaining.take_top(button_area_height);
 
-        // Split lists area with a small gap between them
-        let gap = 4.0 * s;
-        let half_width = (lists_area.width - gap) / 2.0;
-        let staged = Rect::new(lists_area.x, lists_area.y, half_width, lists_area.height);
-        let unstaged = Rect::new(lists_area.x + half_width + gap, lists_area.y, half_width, lists_area.height);
+        // Stage All button in unstaged section header (right-aligned)
+        let stage_all_btn_w = 80.0 * s;
+        let stage_all_btn = Rect::new(
+            unstaged_header.right() - stage_all_btn_w,
+            unstaged_header.y + (section_header_height - 22.0 * s) / 2.0,
+            stage_all_btn_w,
+            22.0 * s,
+        );
 
-        (commit_area, subject, body, staged, unstaged, buttons)
+        // Unstage All button in staged section header (right-aligned)
+        let unstage_all_btn_w = 96.0 * s;
+        let unstage_all_btn = Rect::new(
+            staged_header.right() - unstage_all_btn_w,
+            staged_header.y + (section_header_height - 22.0 * s) / 2.0,
+            unstage_all_btn_w,
+            22.0 * s,
+        );
+
+        // Amend and Commit buttons in bottom button row
+        let commit_btn_w = if self.amend_mode { 130.0 * s } else { 110.0 * s };
+        let commit_btn = Rect::new(
+            buttons.right() - commit_btn_w,
+            buttons.y + 6.0 * s,
+            commit_btn_w,
+            28.0 * s,
+        );
+
+        let amend_btn = Rect::new(
+            commit_btn.x - 98.0 * s,
+            buttons.y + 6.0 * s,
+            90.0 * s,
+            28.0 * s,
+        );
+
+        StagingRegions {
+            unstaged_header,
+            unstaged,
+            staged_header,
+            staged,
+            commit_area,
+            subject,
+            body,
+            buttons,
+            stage_all_btn,
+            unstage_all_btn,
+            amend_btn,
+            commit_btn,
+        }
     }
 
+    /// Public region accessor for external callers.
+    /// Returns (unstaged, staged, subject, body, buttons) to match the new layout order.
     pub fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
-        let (_, subject, body, staged, unstaged, buttons) = self.compute_regions_full(bounds);
-        (subject, body, staged, unstaged, buttons)
-    }
-
-    fn stage_all_button_bounds(&self, buttons: Rect) -> Rect {
-        let s = self.scale;
-        Rect::new(buttons.x, buttons.y + 8.0 * s, 130.0 * s, 28.0 * s)
-    }
-
-    fn unstage_all_button_bounds(&self, buttons: Rect) -> Rect {
-        let s = self.scale;
-        Rect::new(buttons.x + 138.0 * s, buttons.y + 8.0 * s, 150.0 * s, 28.0 * s)
-    }
-
-    fn amend_button_bounds(&self, buttons: Rect) -> Rect {
-        let s = self.scale;
-        Rect::new(buttons.right() - 240.0 * s, buttons.y + 8.0 * s, 90.0 * s, 28.0 * s)
-    }
-
-    fn commit_button_bounds(&self, buttons: Rect) -> Rect {
-        let s = self.scale;
-        let width = if self.amend_mode { 130.0 * s } else { 110.0 * s };
-        Rect::new(buttons.right() - width, buttons.y + 8.0 * s, width, 28.0 * s)
+        let r = self.compute_regions_full(bounds);
+        (r.unstaged, r.staged, r.subject, r.body, r.buttons)
     }
 
     /// Compute the dropdown bounds below the worktree pill
@@ -765,12 +832,92 @@ impl StagingWell {
             1.0,
         ));
 
-        let (commit_area, subject_bounds, body_bounds, staged_bounds, unstaged_bounds, buttons_bounds) =
-            self.compute_regions_full(bounds);
+        let regions = self.compute_regions_full(bounds);
 
-        // --- Commit Message Area ---
+        // =============================================================
+        // 1. UNSTAGED SECTION (top)
+        // =============================================================
+
+        // Section header background
+        output.spline_vertices.extend(create_rect_vertices(
+            &regions.unstaged_header,
+            theme::STATUS_BEHIND.with_alpha(0.06).to_array(),
+        ));
+
+        // Section title
+        let unstaged_count = self.unstaged_list.files.len();
+        let unstaged_title = format!("Unstaged Changes ({})", unstaged_count);
+        output.bold_text_vertices.extend(text_renderer.layout_text(
+            &unstaged_title,
+            regions.unstaged_header.x + 4.0 * s,
+            regions.unstaged_header.y + 5.0 * s,
+            theme::STATUS_BEHIND.to_array(),
+        ));
+
+        // Stage All button in header
+        output.extend(self.stage_all_btn.layout(text_renderer, regions.stage_all_btn));
+
+        // Subtle background tint for unstaged area (orange tint)
+        output.spline_vertices.extend(create_rect_vertices(
+            &regions.unstaged,
+            theme::STATUS_BEHIND.with_alpha(0.03).to_array(),
+        ));
+
+        // Unstaged files list
+        output.extend(self.unstaged_list.layout(text_renderer, regions.unstaged));
+
+        // --- Divider between unstaged and staged ---
+        let div1_y = regions.unstaged.bottom() + 2.0 * s;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 8.0 * s, div1_y, bounds.width - 16.0 * s, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // =============================================================
+        // 2. STAGED SECTION
+        // =============================================================
+
+        // Section header background
+        output.spline_vertices.extend(create_rect_vertices(
+            &regions.staged_header,
+            theme::STATUS_CLEAN.with_alpha(0.06).to_array(),
+        ));
+
+        // Section title
+        let staged_count = self.staged_list.files.len();
+        let staged_title = format!("Staged Changes ({})", staged_count);
+        output.bold_text_vertices.extend(text_renderer.layout_text(
+            &staged_title,
+            regions.staged_header.x + 4.0 * s,
+            regions.staged_header.y + 5.0 * s,
+            theme::STATUS_CLEAN.to_array(),
+        ));
+
+        // Unstage All button in header
+        output.extend(self.unstage_all_btn.layout(text_renderer, regions.unstage_all_btn));
+
+        // Subtle background tint for staged area (green tint)
+        output.spline_vertices.extend(create_rect_vertices(
+            &regions.staged,
+            theme::STATUS_CLEAN.with_alpha(0.03).to_array(),
+        ));
+
+        // Staged files list
+        output.extend(self.staged_list.layout(text_renderer, regions.staged));
+
+        // --- Divider between staged and commit area ---
+        let div2_y = regions.staged.bottom() + 2.0 * s;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(bounds.x + 8.0 * s, div2_y, bounds.width - 16.0 * s, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // =============================================================
+        // 3. COMMIT MESSAGE AREA
+        // =============================================================
+
         // Subtle background for the commit area
-        let commit_bg = commit_area.inset(-2.0 * s);
+        let commit_bg = regions.commit_area.inset(-2.0 * s);
         output.spline_vertices.extend(create_rect_vertices(
             &commit_bg,
             theme::SURFACE_RAISED.with_alpha(0.5).to_array(),
@@ -781,13 +928,13 @@ impl StagingWell {
             1.0,
         ));
 
-        // Title in bright text, with [Amend] indicator when in amend mode
-        let title_y = bounds.y + 10.0 * s;
+        // Title
+        let title_y = regions.commit_area.y + 2.0 * s;
         let title_text = if self.amend_mode { "Amend Commit" } else { "Commit Message" };
         let title_color = if self.amend_mode { theme::STATUS_BEHIND } else { theme::TEXT_BRIGHT };
         output.text_vertices.extend(text_renderer.layout_text(
             title_text,
-            bounds.x + 12.0 * s,
+            regions.commit_area.x + 4.0 * s,
             title_y,
             title_color.to_array(),
         ));
@@ -795,7 +942,7 @@ impl StagingWell {
         // Worktree selector pill (after title text, before char count)
         if self.has_worktree_selector() {
             let title_w = text_renderer.measure_text(title_text);
-            let pill_x = bounds.x + 12.0 * s + title_w + 8.0 * s;
+            let pill_x = regions.commit_area.x + 4.0 * s + title_w + 8.0 * s;
             let pill_h = 18.0 * s;
             let pill_y = title_y - 1.0 * s;
 
@@ -833,7 +980,7 @@ impl StagingWell {
             self.worktree_pill_bounds = None;
         }
 
-        // Character count for subject - right-aligned on title row
+        // Character count for subject - right-aligned on commit title row
         let subject_len = self.subject_input.text().len();
         let char_count = format!("{}/72", subject_len);
         let count_color = if subject_len > 72 {
@@ -845,20 +992,20 @@ impl StagingWell {
         };
         output.text_vertices.extend(text_renderer.layout_text(
             &char_count,
-            bounds.right() - text_renderer.measure_text(&char_count) - 12.0 * s,
+            regions.commit_area.right() - text_renderer.measure_text(&char_count) - 4.0 * s,
             title_y,
             count_color.to_array(),
         ));
 
         // Subject input
-        output.extend(self.subject_input.layout(text_renderer, subject_bounds));
+        output.extend(self.subject_input.layout(text_renderer, regions.subject));
 
         // Character limit progress bar below subject input
         if subject_len > 0 {
             let bar_height = 2.0;
-            let bar_y = subject_bounds.bottom();
-            let bar_x = subject_bounds.x;
-            let bar_max_w = subject_bounds.width;
+            let bar_y = regions.subject.bottom();
+            let bar_x = regions.subject.x;
+            let bar_max_w = regions.subject.width;
             let ratio = (subject_len as f32 / 72.0).min(1.0);
             let bar_w = bar_max_w * ratio;
             let bar_color = if subject_len > 72 {
@@ -881,57 +1028,24 @@ impl StagingWell {
         }
 
         // Body area
-        output.extend(self.body_area.layout(text_renderer, body_bounds));
+        output.extend(self.body_area.layout(text_renderer, regions.body));
 
-        // --- Divider between commit area and file lists ---
-        let divider_y = commit_bg.bottom() + 3.0 * s;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x + 8.0 * s, divider_y, bounds.width - 16.0 * s, 1.0),
-            theme::BORDER.to_array(),
-        ));
-
-        // Subtle background tint for staged area (green tint)
-        output.spline_vertices.extend(create_rect_vertices(
-            &staged_bounds,
-            theme::STATUS_CLEAN.with_alpha(0.03).to_array(),
-        ));
-
-        // Subtle background tint for unstaged area (orange tint)
-        output.spline_vertices.extend(create_rect_vertices(
-            &unstaged_bounds,
-            theme::STATUS_BEHIND.with_alpha(0.03).to_array(),
-        ));
-
-        // Staged files list
-        output.extend(self.staged_list.layout(text_renderer, staged_bounds));
-
-        // Vertical separator between staged and unstaged sections
-        let sep_x = staged_bounds.right() + (unstaged_bounds.x - staged_bounds.right()) / 2.0 - 0.5;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(sep_x, staged_bounds.y + 4.0 * s, 1.0, staged_bounds.height - 8.0 * s),
-            theme::BORDER.to_array(),
-        ));
-
-        // Unstaged files list
-        output.extend(self.unstaged_list.layout(text_renderer, unstaged_bounds));
-
-        // --- Divider between file lists and buttons ---
-        let btn_divider_y = buttons_bounds.y;
+        // --- Divider between commit area and buttons ---
+        let btn_divider_y = regions.buttons.y - 2.0 * s;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(bounds.x + 8.0 * s, btn_divider_y, bounds.width - 16.0 * s, 1.0),
             theme::BORDER.to_array(),
         ));
 
-        // Buttons
-        output.extend(self.stage_all_btn.layout(text_renderer, self.stage_all_button_bounds(buttons_bounds)));
-        output.extend(self.unstage_all_btn.layout(text_renderer, self.unstage_all_button_bounds(buttons_bounds)));
+        // =============================================================
+        // 4. BUTTON ROW (bottom)
+        // =============================================================
 
         // Amend toggle button
-        output.extend(self.amend_btn.layout(text_renderer, self.amend_button_bounds(buttons_bounds)));
+        output.extend(self.amend_btn.layout(text_renderer, regions.amend_btn));
 
-        // Commit button (uses stored instance to preserve hover state)
-        let commit_bounds = self.commit_button_bounds(buttons_bounds);
-        output.extend(self.commit_btn.layout(text_renderer, commit_bounds));
+        // Commit button
+        output.extend(self.commit_btn.layout(text_renderer, regions.commit_btn));
 
         output
     }

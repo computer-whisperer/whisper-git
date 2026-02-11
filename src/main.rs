@@ -1846,7 +1846,7 @@ fn determine_cursor(
 
     // Staging area text inputs (subject line, body area)
     if layout.staging.contains(x, y) {
-        let (subject_bounds, body_bounds, _, _, _) = view_state.staging_well.compute_regions(layout.staging);
+        let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(layout.staging);
         if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
             return CursorIcon::Text;
         }
