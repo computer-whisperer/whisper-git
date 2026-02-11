@@ -151,6 +151,19 @@ impl HeaderBar {
             "\u{2191} Push".to_string()
         };
 
+        // Fetch/Pull/Push buttons: slightly raised above the header's SURFACE_RAISED background
+        // so they're visually distinct and look clickable (header bg is also SURFACE_RAISED).
+        let btn_bg = crate::ui::Color::rgba(0.20, 0.22, 0.28, 1.0);       // #333847 — visible step above header
+        let btn_hover = crate::ui::Color::rgba(0.24, 0.27, 0.34, 1.0);    // #3d4557 — brighter on hover
+        let btn_pressed = crate::ui::Color::rgba(0.15, 0.17, 0.22, 1.0);  // #262b38 — dimmer on press
+        for btn in [&mut self.fetch_button, &mut self.pull_button, &mut self.push_button] {
+            btn.background = btn_bg;
+            btn.hover_background = btn_hover;
+            btn.pressed_background = btn_pressed;
+            btn.text_color = theme::TEXT;
+            btn.border_color = Some(theme::BORDER);
+        }
+
         // Abort button: amber/warning color scheme
         self.abort_button.background = crate::ui::Color::rgba(0.35, 0.25, 0.10, 1.0);
         self.abort_button.hover_background = crate::ui::Color::rgba(0.45, 0.32, 0.12, 1.0);
