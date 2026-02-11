@@ -68,6 +68,8 @@ pub struct FileList {
     last_click_time: Option<Instant>,
     /// Last clicked file index for double-click detection
     last_click_index: Option<usize>,
+    /// When true, skip rendering the built-in header (parent provides its own)
+    pub hide_header: bool,
 }
 
 impl FileList {
@@ -86,6 +88,7 @@ impl FileList {
             scale: 1.0,
             last_click_time: None,
             last_click_index: None,
+            hide_header: false,
         }
     }
 
@@ -127,6 +130,9 @@ impl FileList {
     /// Consistent header height used across all methods.
     /// Includes space for the summary line when there are files.
     fn header_height(&self) -> f32 {
+        if self.hide_header {
+            return 0.0;
+        }
         if self.files.is_empty() {
             24.0 * self.scale
         } else {
@@ -137,7 +143,7 @@ impl FileList {
 
     /// Base header height (title row only, without summary line)
     fn title_row_height(&self) -> f32 {
-        24.0 * self.scale
+        if self.hide_header { 0.0 } else { 24.0 * self.scale }
     }
 
     /// Count files by status kind
@@ -375,146 +381,149 @@ impl Widget for FileList {
         let header_height = self.header_height();
         let title_row_h = self.title_row_height();
 
-        // Header background - slightly elevated with subtle tint (covers full header including summary)
-        let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &header_rect,
-            theme::SURFACE_RAISED.lighten(0.03).to_array(),
-            3.0,
-        ));
+        let sep_y = bounds.y + header_height;
 
-        // Header: arrow icon and title text
-        let arrow = if self.is_staged { "\u{25B2}" } else { "\u{25BC}" }; // ▲ Staged / ▼ Unstaged
-        let title_text = format!("{} {}", arrow, self.title);
-        output.text_vertices.extend(text_renderer.layout_text(
-            &title_text,
-            bounds.x + 10.0,
-            bounds.y + 6.0,
-            theme::TEXT_BRIGHT.to_array(),
-        ));
-
-        // File count pill badge (right of title)
-        let count_text = format!("{}", self.files.len());
-        let title_width = text_renderer.measure_text(&title_text);
-        let count_width = text_renderer.measure_text(&count_text);
-        let pill_pad_h = 6.0;
-        let pill_pad_v = 2.0;
-        let pill_x = bounds.x + 10.0 + title_width + 8.0;
-        let pill_y = bounds.y + 6.0 - pill_pad_v;
-        let pill_w = count_width + pill_pad_h * 2.0;
-        let pill_h = line_height + pill_pad_v * 2.0;
-        let pill_color = if self.is_staged {
-            theme::STATUS_CLEAN.with_alpha(0.20)
-        } else {
-            theme::STATUS_BEHIND.with_alpha(0.20)
-        };
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &Rect::new(pill_x, pill_y, pill_w, pill_h),
-            pill_color.to_array(),
-            3.0,
-        ));
-        let pill_text_color = if self.is_staged {
-            theme::STATUS_CLEAN
-        } else {
-            theme::STATUS_BEHIND
-        };
-        output.text_vertices.extend(text_renderer.layout_text(
-            &count_text,
-            pill_x + pill_pad_h,
-            bounds.y + 6.0,
-            pill_text_color.to_array(),
-        ));
-
-        // Underline accent on title row (thin line at bottom of title row, above summary)
-        let accent_color = if self.is_staged {
-            theme::STATUS_CLEAN.with_alpha(0.4)
-        } else {
-            theme::STATUS_BEHIND.with_alpha(0.4)
-        };
-        let accent_y = bounds.y + 1.0 + title_row_h - 2.0;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x + 1.0, accent_y, bounds.width - 2.0, 2.0),
-            accent_color.to_array(),
-        ));
-
-        // Totals on the right side of title row
-        let (total_add, total_del) = self.totals();
-        if total_add > 0 || total_del > 0 {
-            let stats_text = format!("+{} -{}", total_add, total_del);
-            let stats_x = bounds.right() - text_renderer.measure_text(&stats_text) - 10.0;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &stats_text,
-                stats_x,
-                bounds.y + 6.0,
-                theme::TEXT_MUTED.to_array(),
+        if !self.hide_header {
+            // Header background - slightly elevated with subtle tint (covers full header including summary)
+            let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &header_rect,
+                theme::SURFACE_RAISED.lighten(0.03).to_array(),
+                3.0,
             ));
-        }
 
-        // File change summary line below title row (when files exist)
-        if !self.files.is_empty() {
-            let (modified, added, deleted, renamed, type_change) = self.status_counts();
-            let summary_y = bounds.y + title_row_h + 1.0;
-            let mut sx = bounds.x + 10.0;
-            let small_scale = 0.85;
+            // Header: arrow icon and title text
+            let arrow = if self.is_staged { "\u{25B2}" } else { "\u{25BC}" }; // ▲ Staged / ▼ Unstaged
+            let title_text = format!("{} {}", arrow, self.title);
+            output.text_vertices.extend(text_renderer.layout_text(
+                &title_text,
+                bounds.x + 10.0,
+                bounds.y + 6.0,
+                theme::TEXT_BRIGHT.to_array(),
+            ));
 
-            // Color constants matching file_list status colors
-            let green = Color::rgba(0.400, 0.733, 0.416, 1.0);    // M green
-            let blue = Color::rgba(0.259, 0.647, 0.961, 1.0);     // A blue
-            let red = Color::rgba(0.937, 0.325, 0.314, 1.0);      // D red
-            let cyan = Color::rgba(0.149, 0.776, 0.855, 1.0);     // R cyan
-            let amber = Color::rgba(1.000, 0.718, 0.302, 1.0);    // T amber
+            // File count pill badge (right of title)
+            let count_text = format!("{}", self.files.len());
+            let title_width = text_renderer.measure_text(&title_text);
+            let count_width = text_renderer.measure_text(&count_text);
+            let pill_pad_h = 6.0;
+            let pill_pad_v = 2.0;
+            let pill_x = bounds.x + 10.0 + title_width + 8.0;
+            let pill_y = bounds.y + 6.0 - pill_pad_v;
+            let pill_w = count_width + pill_pad_h * 2.0;
+            let pill_h = line_height + pill_pad_v * 2.0;
+            let pill_color = if self.is_staged {
+                theme::STATUS_CLEAN.with_alpha(0.20)
+            } else {
+                theme::STATUS_BEHIND.with_alpha(0.20)
+            };
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &Rect::new(pill_x, pill_y, pill_w, pill_h),
+                pill_color.to_array(),
+                3.0,
+            ));
+            let pill_text_color = if self.is_staged {
+                theme::STATUS_CLEAN
+            } else {
+                theme::STATUS_BEHIND
+            };
+            output.text_vertices.extend(text_renderer.layout_text(
+                &count_text,
+                pill_x + pill_pad_h,
+                bounds.y + 6.0,
+                pill_text_color.to_array(),
+            ));
 
-            let mut parts: Vec<(&str, usize, Color)> = Vec::new();
-            if modified > 0 { parts.push(("modified", modified, green)); }
-            if added > 0 { parts.push(("added", added, blue)); }
-            if deleted > 0 { parts.push(("deleted", deleted, red)); }
-            if renamed > 0 { parts.push(("renamed", renamed, cyan)); }
-            if type_change > 0 { parts.push(("typechange", type_change, amber)); }
+            // Underline accent on title row (thin line at bottom of title row, above summary)
+            let accent_color = if self.is_staged {
+                theme::STATUS_CLEAN.with_alpha(0.4)
+            } else {
+                theme::STATUS_BEHIND.with_alpha(0.4)
+            };
+            let accent_y = bounds.y + 1.0 + title_row_h - 2.0;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(bounds.x + 1.0, accent_y, bounds.width - 2.0, 2.0),
+                accent_color.to_array(),
+            ));
 
-            for (i, (label, count, color)) in parts.iter().enumerate() {
-                let count_str = format!("{}", count);
-                // Render count in color
-                output.text_vertices.extend(text_renderer.layout_text_scaled(
-                    &count_str,
-                    sx,
-                    summary_y,
-                    color.to_array(),
-                    small_scale,
+            // Totals on the right side of title row
+            let (total_add, total_del) = self.totals();
+            if total_add > 0 || total_del > 0 {
+                let stats_text = format!("+{} -{}", total_add, total_del);
+                let stats_x = bounds.right() - text_renderer.measure_text(&stats_text) - 10.0;
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &stats_text,
+                    stats_x,
+                    bounds.y + 6.0,
+                    theme::TEXT_MUTED.to_array(),
                 ));
-                sx += text_renderer.measure_text_scaled(&count_str, small_scale);
+            }
 
-                // Render label in muted text
-                let label_str = format!(" {}", label);
-                output.text_vertices.extend(text_renderer.layout_text_scaled(
-                    &label_str,
-                    sx,
-                    summary_y,
-                    theme::TEXT_MUTED.with_alpha(0.7).to_array(),
-                    small_scale,
-                ));
-                sx += text_renderer.measure_text_scaled(&label_str, small_scale);
+            // File change summary line below title row (when files exist)
+            if !self.files.is_empty() {
+                let (modified, added, deleted, renamed, type_change) = self.status_counts();
+                let summary_y = bounds.y + title_row_h + 1.0;
+                let mut sx = bounds.x + 10.0;
+                let small_scale = 0.85;
 
-                // Comma separator
-                if i + 1 < parts.len() {
-                    let sep = ", ";
+                // Color constants matching file_list status colors
+                let green = Color::rgba(0.400, 0.733, 0.416, 1.0);    // M green
+                let blue = Color::rgba(0.259, 0.647, 0.961, 1.0);     // A blue
+                let red = Color::rgba(0.937, 0.325, 0.314, 1.0);      // D red
+                let cyan = Color::rgba(0.149, 0.776, 0.855, 1.0);     // R cyan
+                let amber = Color::rgba(1.000, 0.718, 0.302, 1.0);    // T amber
+
+                let mut parts: Vec<(&str, usize, Color)> = Vec::new();
+                if modified > 0 { parts.push(("modified", modified, green)); }
+                if added > 0 { parts.push(("added", added, blue)); }
+                if deleted > 0 { parts.push(("deleted", deleted, red)); }
+                if renamed > 0 { parts.push(("renamed", renamed, cyan)); }
+                if type_change > 0 { parts.push(("typechange", type_change, amber)); }
+
+                for (i, (label, count, color)) in parts.iter().enumerate() {
+                    let count_str = format!("{}", count);
+                    // Render count in color
                     output.text_vertices.extend(text_renderer.layout_text_scaled(
-                        sep,
+                        &count_str,
                         sx,
                         summary_y,
-                        theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                        color.to_array(),
                         small_scale,
                     ));
-                    sx += text_renderer.measure_text_scaled(sep, small_scale);
+                    sx += text_renderer.measure_text_scaled(&count_str, small_scale);
+
+                    // Render label in muted text
+                    let label_str = format!(" {}", label);
+                    output.text_vertices.extend(text_renderer.layout_text_scaled(
+                        &label_str,
+                        sx,
+                        summary_y,
+                        theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                        small_scale,
+                    ));
+                    sx += text_renderer.measure_text_scaled(&label_str, small_scale);
+
+                    // Comma separator
+                    if i + 1 < parts.len() {
+                        let sep = ", ";
+                        output.text_vertices.extend(text_renderer.layout_text_scaled(
+                            sep,
+                            sx,
+                            summary_y,
+                            theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                            small_scale,
+                        ));
+                        sx += text_renderer.measure_text_scaled(sep, small_scale);
+                    }
                 }
             }
-        }
 
-        // 1px separator line below header (including summary line)
-        let sep_y = bounds.y + header_height;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
-            theme::BORDER.to_array(),
-        ));
+            // 1px separator line below header (including summary line)
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(bounds.x + 1.0, sep_y, bounds.width - 2.0, 1.0),
+                theme::BORDER.to_array(),
+            ));
+        }
 
         // File entries
         let content_y = sep_y + 6.0 * self.scale;

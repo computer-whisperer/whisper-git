@@ -97,8 +97,8 @@ impl StagingWell {
                 .with_placeholder("Commit subject line...")
                 .with_max_length(72),
             body_area: TextArea::new(),
-            staged_list: FileList::new("Staged", true),
-            unstaged_list: FileList::new("Unstaged", false),
+            staged_list: { let mut fl = FileList::new("Staged", true); fl.hide_header = true; fl },
+            unstaged_list: { let mut fl = FileList::new("Unstaged", false); fl.hide_header = true; fl },
             stage_all_btn: Button::new("Stage All"),
             unstage_all_btn: Button::new("Unstage All"),
             commit_btn: Button::new("Commit").primary(),
@@ -847,7 +847,7 @@ impl StagingWell {
         // Section title
         let unstaged_count = self.unstaged_list.files.len();
         let unstaged_title = format!("Unstaged Changes ({})", unstaged_count);
-        output.bold_text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(text_renderer.layout_text(
             &unstaged_title,
             regions.unstaged_header.x + 4.0 * s,
             regions.unstaged_header.y + 5.0 * s,
@@ -886,7 +886,7 @@ impl StagingWell {
         // Section title
         let staged_count = self.staged_list.files.len();
         let staged_title = format!("Staged Changes ({})", staged_count);
-        output.bold_text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(text_renderer.layout_text(
             &staged_title,
             regions.staged_header.x + 4.0 * s,
             regions.staged_header.y + 5.0 * s,
