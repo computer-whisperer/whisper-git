@@ -21,6 +21,7 @@ pub enum AppMessage {
     Fetch,
     Pull,
     Push,
+    PushForce,
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
     ViewDiff(String, bool), // (path, staged)
@@ -194,6 +195,23 @@ pub fn handle_app_message(
                 let rx = git::push_remote_async(workdir, remote, branch);
                 *view_state.push_receiver = Some((rx, std::time::Instant::now()));
                 view_state.header_bar.pushing = true;
+            } else {
+                eprintln!("No working directory for push");
+            }
+        }
+        AppMessage::PushForce => {
+            if view_state.push_receiver.is_some() {
+                eprintln!("Push already in progress");
+                return false;
+            }
+            if let Some(workdir) = repo.working_dir_path() {
+                let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                println!("Force pushing {} to {} (--force-with-lease)...", branch, remote);
+                let rx = git::push_force_async(workdir, remote, branch);
+                *view_state.push_receiver = Some((rx, std::time::Instant::now()));
+                view_state.header_bar.pushing = true;
+                toast_manager.push("Force pushing...", ToastSeverity::Info);
             } else {
                 eprintln!("No working directory for push");
             }

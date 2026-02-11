@@ -543,6 +543,7 @@ impl BranchSidebar {
                             MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
                             MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
                             MenuItem::new("Push", "push"),
+                            MenuItem::new("Force Push", "force_push"),
                             MenuItem::separator(),
                             MenuItem::new("Merge into Current", "merge"),
                             MenuItem::new("Rebase Current onto", "rebase"),

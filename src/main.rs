@@ -633,10 +633,8 @@ impl App {
                         refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                     } else {
                         eprintln!("Fetch failed: {}", result.error);
-                        self.toast_manager.push(
-                            format!("Fetch failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                            ToastSeverity::Error,
-                        );
+                        let (msg, _) = classify_git_error("Fetch", &result.error);
+                        self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -671,10 +669,8 @@ impl App {
                         refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                     } else {
                         eprintln!("Pull failed: {}", result.error);
-                        self.toast_manager.push(
-                            format!("Pull failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                            ToastSeverity::Error,
-                        );
+                        let (msg, _) = classify_git_error("Pull", &result.error);
+                        self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -709,10 +705,8 @@ impl App {
                         refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                     } else {
                         eprintln!("Push failed: {}", result.error);
-                        self.toast_manager.push(
-                            format!("Push failed: {}", result.error.lines().next().unwrap_or("unknown error")),
-                            ToastSeverity::Error,
-                        );
+                        let (msg, _) = classify_git_error("Push", &result.error);
+                        self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -752,10 +746,8 @@ impl App {
                             view_state.branch_sidebar.stashes = repo.stash_list();
                         }
                     } else {
-                        self.toast_manager.push(
-                            format!("{} failed: {}", label, result.error.lines().next().unwrap_or("unknown error")),
-                            ToastSeverity::Error,
-                        );
+                        let (msg, _) = classify_git_error(&label, &result.error);
+                        self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -2096,6 +2088,39 @@ fn determine_cursor(
 // Rendering
 // ============================================================================
 
+/// Classify a git error message and return a more helpful description.
+/// Returns `(friendly_message, is_rejected_push)`.
+fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
+    let lower = stderr.to_lowercase();
+    let is_rejected = lower.contains("rejected") || lower.contains("non-fast-forward");
+
+    let friendly = if lower.contains("terminal prompts disabled") || lower.contains("could not read username") {
+        format!("{} failed: Authentication required. Configure SSH keys or a credential helper.", op)
+    } else if lower.contains("permission denied") {
+        format!("{} failed: Permission denied. Check your SSH key or access token.", op)
+    } else if lower.contains("could not read password") {
+        format!("{} failed: Password required. Set up a credential helper (git config credential.helper cache).", op)
+    } else if lower.contains("host key verification failed") {
+        format!("{} failed: SSH host key not trusted. Run ssh-keyscan to add the host.", op)
+    } else if lower.contains("repository not found") || lower.contains("404") {
+        format!("{} failed: Repository not found. Check the remote URL.", op)
+    } else if lower.contains("connection refused") || lower.contains("could not resolve") {
+        format!("{} failed: Cannot connect to remote. Check your network and remote URL.", op)
+    } else if is_rejected {
+        format!("{} rejected: Remote has new commits. Pull first, or use Force Push.", op)
+    } else {
+        // Show up to 3 lines of the error for context
+        let error_summary: String = stderr.lines().take(3).collect::<Vec<_>>().join("\n");
+        if error_summary.is_empty() {
+            format!("{} failed: unknown error", op)
+        } else {
+            format!("{} failed: {}", op, error_summary)
+        }
+    };
+
+    (friendly, is_rejected)
+}
+
 /// Handle a context menu action by dispatching to the appropriate AppMessage
 fn handle_context_menu_action(
     action_id: &str,
@@ -2164,6 +2189,10 @@ fn handle_context_menu_action(
         }
         "push" => {
             view_state.pending_messages.push(AppMessage::Push);
+        }
+        "force_push" => {
+            confirm_dialog.show("Force Push", "Force push with --force-with-lease? This may overwrite remote commits.");
+            *pending_confirm_action = Some(AppMessage::PushForce);
         }
         // Staging actions
         "stage" => {
