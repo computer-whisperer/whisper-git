@@ -2,7 +2,7 @@
 
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme};
+use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_arc_vertices, theme};
 use crate::ui::widgets::Button;
 
 /// Actions that can be triggered from the header bar
@@ -69,6 +69,9 @@ pub struct HeaderBar {
     abort_button_bounds: Option<Rect>,
     /// Whether shift was held during the last pull button click (for pull --rebase)
     pull_shift_held: bool,
+    /// Label for a generic async operation in progress (e.g. "Merging...", "Rebasing...")
+    /// When set, renders a spinning indicator in the header next to the branch pill.
+    pub generic_op_label: Option<String>,
 }
 
 impl HeaderBar {
@@ -98,6 +101,7 @@ impl HeaderBar {
             abort_button: Button::new("Abort"),
             abort_button_bounds: None,
             pull_shift_held: false,
+            generic_op_label: None,
         }
     }
 
@@ -116,17 +120,22 @@ impl HeaderBar {
 
     /// Sync button labels and styles to current header state.
     /// Call this before layout so the stored buttons render the correct text.
-    pub fn update_button_state(&mut self) {
+    /// `elapsed` is seconds since app start, used for animated dot cycling.
+    pub fn update_button_state(&mut self, elapsed: f32) {
+        // Animated dots: cycles 1..3 dots every ~1.2s
+        let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
+        let dots: String = ".".repeat(dot_count);
+
         // Fetch button label (no prefix — Roboto lacks a refresh/circular arrow glyph)
         self.fetch_button.label = if self.fetching {
-            "...".to_string()
+            format!("Fetching{}", dots)
         } else {
             "Fetch".to_string()
         };
 
         // Pull button label with behind badge (↓ down arrow)
         self.pull_button.label = if self.pulling {
-            "...".to_string()
+            format!("\u{2193} Pulling{}", dots)
         } else if self.behind > 0 {
             format!("\u{2193} Pull (-{})", self.behind)
         } else {
@@ -135,7 +144,7 @@ impl HeaderBar {
 
         // Push button label with ahead badge (↑ up arrow)
         self.push_button.label = if self.pushing {
-            "...".to_string()
+            format!("\u{2191} Pushing{}", dots)
         } else if self.ahead > 0 {
             format!("\u{2191} Push (+{})", self.ahead)
         } else {
@@ -290,8 +299,10 @@ impl Default for HeaderBar {
 
 impl HeaderBar {
     /// Layout with bold text support. Renders branch name and button labels in bold.
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    /// `elapsed` is seconds since app start, used for spinning arc and pulsing animations.
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect, elapsed: f32) -> WidgetOutput {
         let mut output = WidgetOutput::new();
+        let scale = (bounds.height / 32.0).max(1.0);
 
         // Background - elevated surface for header prominence
         output.spline_vertices.extend(create_rect_vertices(
@@ -331,7 +342,6 @@ impl HeaderBar {
             }
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
-            let scale = (bounds.height / 32.0).max(1.0);
             let mut x = bounds.x + 16.0;
             let separator = " > ";
             let sep_w = text_renderer.measure_text(separator);
@@ -433,14 +443,102 @@ impl HeaderBar {
             }
         }
 
+        // Generic operation indicator (e.g. "Merging..." with spinner)
+        // Only show when no operation_state_label is already displayed
+        if self.operation_state_label.is_none() {
+            if let Some(ref op_label) = self.generic_op_label {
+                let indicator_x = branch_pill_x + pill_w + 12.0;
+                let spinner_radius = 5.0 * scale;
+                let spinner_thickness = 1.5 * scale;
+                let spinner_cx = indicator_x + spinner_radius;
+                let spinner_cy = bounds.y + bounds.height / 2.0;
+
+                // Spinning arc: 270 degrees, 1 revolution per second
+                let rotation = elapsed * std::f32::consts::TAU;
+                let arc_span = std::f32::consts::TAU * 0.75; // 270 degrees
+                let spinner_color = theme::ACCENT.to_array();
+
+                output.spline_vertices.extend(create_arc_vertices(
+                    spinner_cx, spinner_cy,
+                    spinner_radius, spinner_thickness,
+                    rotation, arc_span,
+                    spinner_color,
+                ));
+
+                // Label text after spinner
+                let label_x = indicator_x + spinner_radius * 2.0 + 6.0 * scale;
+                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                    op_label, label_x, text_y,
+                    theme::TEXT_MUTED.to_array(),
+                ));
+            }
+        }
+
         // Button bounds
         let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
-        // Render stored buttons with bold labels
-        output.extend(self.fetch_button.layout_with_bold(text_renderer, bold_renderer, fetch_bounds));
-        output.extend(self.pull_button.layout_with_bold(text_renderer, bold_renderer, pull_bounds));
-        output.extend(self.push_button.layout_with_bold(text_renderer, bold_renderer, push_bounds));
+        // Async operation button rendering with pulsing background and spinning arc
+        let async_buttons: [(&Button, Rect, bool); 3] = [
+            (&self.fetch_button, fetch_bounds, self.fetching),
+            (&self.pull_button, pull_bounds, self.pulling),
+            (&self.push_button, push_bounds, self.pushing),
+        ];
+
+        for (button, btn_bounds, is_active) in &async_buttons {
+            if *is_active {
+                // Pulsing background: subtle glow effect
+                let pulse = (elapsed * 3.0).sin() * 0.5 + 0.5; // 0..1 at ~0.5Hz
+                let pulse_color = [
+                    theme::SURFACE_RAISED.r + (theme::ACCENT.r - theme::SURFACE_RAISED.r) * pulse * 0.12,
+                    theme::SURFACE_RAISED.g + (theme::ACCENT.g - theme::SURFACE_RAISED.g) * pulse * 0.12,
+                    theme::SURFACE_RAISED.b + (theme::ACCENT.b - theme::SURFACE_RAISED.b) * pulse * 0.12,
+                    1.0,
+                ];
+                let corner_radius = (btn_bounds.height * 0.20).min(8.0);
+                output.spline_vertices.extend(create_rounded_rect_vertices(
+                    btn_bounds,
+                    pulse_color,
+                    corner_radius,
+                ));
+
+                // Spinning arc indicator inside the button (left side)
+                let spinner_radius = 5.0 * scale;
+                let spinner_thickness = 1.5 * scale;
+                let spinner_cx = btn_bounds.x + 10.0 * scale + spinner_radius;
+                let spinner_cy = btn_bounds.y + btn_bounds.height / 2.0;
+
+                let rotation = elapsed * std::f32::consts::TAU; // 1 rev/sec
+                let arc_span = std::f32::consts::TAU * 0.75; // 270 degrees
+                let spinner_color = theme::ACCENT.with_alpha(0.9).to_array();
+
+                output.spline_vertices.extend(create_arc_vertices(
+                    spinner_cx, spinner_cy,
+                    spinner_radius, spinner_thickness,
+                    rotation, arc_span,
+                    spinner_color,
+                ));
+
+                // Render button text (shifted right to make room for spinner)
+                let display_text = &button.label;
+                let text_width = bold_renderer.measure_text(display_text);
+                let text_area_x = spinner_cx + spinner_radius + 4.0 * scale;
+                let text_area_w = btn_bounds.right() - text_area_x;
+                let text_x = text_area_x + (text_area_w - text_width) / 2.0;
+                let btn_text_y = btn_bounds.y + (btn_bounds.height - line_height) / 2.0;
+
+                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                    display_text,
+                    text_x,
+                    btn_text_y,
+                    theme::TEXT_BRIGHT.to_array(),
+                ));
+            } else {
+                output.extend(button.layout_with_bold(text_renderer, bold_renderer, *btn_bounds));
+            }
+        }
+
+        // Commit button (no async state)
         output.extend(self.commit_button.layout_with_bold(text_renderer, bold_renderer, commit_bounds));
 
         // Help and Settings buttons (ghost style - keep regular weight)

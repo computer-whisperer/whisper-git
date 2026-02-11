@@ -251,6 +251,8 @@ struct App {
     last_status_refresh: Instant,
     /// Receiver for async diff stats computation
     diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
+    /// Timestamp of app creation, for animation elapsed time
+    app_start: Instant,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -352,6 +354,7 @@ impl App {
             status_dirty: true,
             last_status_refresh: Instant::now(),
             diff_stats_receiver: None,
+            app_start: Instant::now(),
         })
     }
 
@@ -2736,6 +2739,7 @@ fn build_ui_output(
     staging_ratio: f32,
     shortcut_bar_visible: bool,
     mouse_pos: (f32, f32),
+    elapsed: f32,
 ) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
@@ -2786,7 +2790,7 @@ fn build_ui_output(
         }
 
         // Header bar (chrome layer - on top of graph)
-        chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header));
+        chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header, elapsed));
 
         // Shortcut bar (chrome layer - on top of graph) - only when visible
         if shortcut_bar_visible {
@@ -2898,8 +2902,17 @@ fn draw_frame(app: &mut App) -> Result<()> {
     // Sync button state and shortcut context before layout
     let single_tab = app.tabs.len() == 1;
     let now = Instant::now();
+    let elapsed = app.app_start.elapsed().as_secs_f32();
     if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
-        view_state.header_bar.update_button_state();
+        // Set generic op label from receiver (for spinner indicator in header)
+        view_state.header_bar.generic_op_label = view_state.generic_op_receiver
+            .as_ref()
+            .map(|(_, label, _)| {
+                let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
+                let dots: String = ".".repeat(dot_count);
+                format!("{}{}", label, dots)
+            });
+        view_state.header_bar.update_button_state(elapsed);
         view_state.staging_well.update_button_state();
         view_state.staging_well.update_cursors(now);
         view_state.commit_graph_view.search_bar.update_cursor(now);
@@ -2954,6 +2967,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let scale_factor = state.scale_factor;
     let mouse_pos = state.input_state.mouse.position();
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
@@ -2962,6 +2976,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
         mouse_pos,
+        elapsed,
     );
 
     let viewport = Viewport {
@@ -3088,6 +3103,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
@@ -3096,6 +3112,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for screenshots
+        elapsed,
     );
 
     let state = app.state.as_mut().unwrap();
@@ -3204,6 +3221,7 @@ fn capture_screenshot_offscreen(
     let extent = offscreen.extent();
     let scale_factor = state.scale_factor;
     let (sidebar_ratio, graph_ratio, staging_ratio) = (app.sidebar_ratio, app.graph_ratio, app.staging_ratio);
+    let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
@@ -3212,6 +3230,7 @@ fn capture_screenshot_offscreen(
         sidebar_ratio, graph_ratio, staging_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for offscreen screenshots
+        elapsed,
     );
 
     let state = app.state.as_mut().unwrap();

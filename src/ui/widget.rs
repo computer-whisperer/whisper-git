@@ -358,6 +358,47 @@ pub fn create_dashed_rect_outline_vertices(
     vertices
 }
 
+/// Helper to create arc (partial ring) vertices for spinner animations.
+///
+/// Draws a thick arc from `start_angle` spanning `arc_span` radians.
+/// `rotation` offsets the entire arc (for animation).
+pub fn create_arc_vertices(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    thickness: f32,
+    start_angle: f32,
+    arc_span: f32,
+    color: [f32; 4],
+) -> Vec<SplineVertex> {
+    let mut vertices = Vec::new();
+    let segments = 20;
+    let inner_radius = (radius - thickness).max(0.0);
+
+    for i in 0..segments {
+        let t1 = i as f32 / segments as f32;
+        let t2 = (i + 1) as f32 / segments as f32;
+        let a1 = start_angle + arc_span * t1;
+        let a2 = start_angle + arc_span * t2;
+
+        let outer1 = [cx + radius * a1.cos(), cy + radius * a1.sin()];
+        let outer2 = [cx + radius * a2.cos(), cy + radius * a2.sin()];
+        let inner1 = [cx + inner_radius * a1.cos(), cy + inner_radius * a1.sin()];
+        let inner2 = [cx + inner_radius * a2.cos(), cy + inner_radius * a2.sin()];
+
+        // Two triangles per segment
+        vertices.push(SplineVertex { position: outer1, color });
+        vertices.push(SplineVertex { position: outer2, color });
+        vertices.push(SplineVertex { position: inner1, color });
+
+        vertices.push(SplineVertex { position: outer2, color });
+        vertices.push(SplineVertex { position: inner2, color });
+        vertices.push(SplineVertex { position: inner1, color });
+    }
+
+    vertices
+}
+
 /// Theme colors - Dark blue-gray palette
 pub mod theme {
     use crate::ui::Color;
