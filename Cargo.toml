@@ -32,6 +32,9 @@ arboard = "3"
 # Native file dialogs
 rfd = "0.15"
 
+# Filesystem watching
+notify = "8"
+
 # Utilities
 bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"

@@ -136,6 +136,11 @@ impl GitRepo {
         self.repo.workdir()
     }
 
+    /// Get the repository's git directory (.git or .bare)
+    pub fn git_dir(&self) -> &Path {
+        self.repo.path()
+    }
+
     /// Get commits for building a graph (includes all branches)
     pub fn commit_graph(&self, max_commits: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
