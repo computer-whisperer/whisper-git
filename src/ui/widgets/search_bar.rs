@@ -192,6 +192,24 @@ impl SearchBar {
                         self.cursor = self.query.len();
                         return EventResponse::Consumed;
                     }
+                    Key::V if modifiers.only_ctrl() => {
+                        // Paste from clipboard (strip newlines for search bar)
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(pasted) = clipboard.get_text() {
+                                let clean: String = pasted.chars()
+                                    .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                                    .collect();
+                                if !clean.is_empty() {
+                                    self.query.insert_str(self.cursor, &clean);
+                                    self.cursor += clean.len();
+                                    self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
+                                }
+                            }
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        return EventResponse::Consumed;
+                    }
                     _ if key.is_printable() && !modifiers.ctrl && !modifiers.alt => {
                         // Use winit's logical key text for correct keyboard layout handling
                         if let Some(t) = text {

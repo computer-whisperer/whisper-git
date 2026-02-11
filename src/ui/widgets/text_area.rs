@@ -14,6 +14,8 @@ pub struct TextArea {
     /// Cursor position (line, column)
     cursor_line: usize,
     cursor_col: usize,
+    /// Selection anchor (line, col) - set when shift+arrow or Ctrl+A starts selection
+    selection_start: Option<(usize, usize)>,
     /// Scroll offset in lines
     scroll_offset: usize,
     /// Whether the content was modified
@@ -35,6 +37,7 @@ impl TextArea {
             lines: vec![String::new()],
             cursor_line: 0,
             cursor_col: 0,
+            selection_start: None,
             scroll_offset: 0,
             modified: false,
             inserted_from_key: false,
@@ -51,6 +54,7 @@ impl TextArea {
         }
         self.cursor_line = 0;
         self.cursor_col = 0;
+        self.selection_start = None;
         self.scroll_offset = 0;
     }
 
@@ -74,6 +78,55 @@ impl TextArea {
     #[allow(dead_code)]
     fn current_line_mut(&mut self) -> &mut String {
         &mut self.lines[self.cursor_line]
+    }
+
+    /// Get the selected text, if any
+    fn selected_text(&self) -> Option<String> {
+        let (sl, sc) = self.selection_start?;
+        let (el, ec) = (self.cursor_line, self.cursor_col);
+        // Determine start/end in document order
+        let (start_line, start_col, end_line, end_col) =
+            if (sl, sc) <= (el, ec) { (sl, sc, el, ec) } else { (el, ec, sl, sc) };
+        if start_line == end_line {
+            let line = &self.lines[start_line];
+            Some(line[start_col..end_col].to_string())
+        } else {
+            let mut result = String::new();
+            result.push_str(&self.lines[start_line][start_col..]);
+            for l in (start_line + 1)..end_line {
+                result.push('\n');
+                result.push_str(&self.lines[l]);
+            }
+            result.push('\n');
+            result.push_str(&self.lines[end_line][..end_col]);
+            Some(result)
+        }
+    }
+
+    /// Delete the selected text and collapse cursor to selection start
+    fn delete_selection(&mut self) {
+        let (sl, sc) = match self.selection_start {
+            Some(s) => s,
+            None => return,
+        };
+        let (el, ec) = (self.cursor_line, self.cursor_col);
+        let (start_line, start_col, end_line, end_col) =
+            if (sl, sc) <= (el, ec) { (sl, sc, el, ec) } else { (el, ec, sl, sc) };
+
+        if start_line == end_line {
+            self.lines[start_line].drain(start_col..end_col);
+        } else {
+            // Keep the part before selection on start_line and after selection on end_line
+            let tail = self.lines[end_line][end_col..].to_string();
+            self.lines[start_line].truncate(start_col);
+            self.lines[start_line].push_str(&tail);
+            // Remove intermediate + end lines
+            self.lines.drain((start_line + 1)..=end_line);
+        }
+        self.cursor_line = start_line;
+        self.cursor_col = start_col;
+        self.selection_start = None;
+        self.modified = true;
     }
 
     fn insert_char(&mut self, c: char) {
@@ -266,6 +319,61 @@ impl Widget for TextArea {
                         for _ in 0..4 {
                             self.insert_char(' ');
                         }
+                        return EventResponse::Consumed;
+                    }
+                    Key::A if modifiers.only_ctrl() => {
+                        // Select all
+                        self.selection_start = Some((0, 0));
+                        self.cursor_line = self.lines.len() - 1;
+                        self.cursor_col = self.lines[self.cursor_line].len();
+                        return EventResponse::Consumed;
+                    }
+                    Key::C if modifiers.only_ctrl() => {
+                        // Copy selected text to clipboard
+                        if let Some(text) = self.selected_text() {
+                            if !text.is_empty() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(text);
+                                }
+                            }
+                        }
+                        return EventResponse::Consumed;
+                    }
+                    Key::V if modifiers.only_ctrl() => {
+                        // Paste from clipboard (preserve newlines for multi-line)
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(pasted) = clipboard.get_text() {
+                                if !pasted.is_empty() {
+                                    self.delete_selection();
+                                    // Insert pasted text, handling newlines
+                                    for c in pasted.chars() {
+                                        if c == '\n' || c == '\r' {
+                                            self.insert_newline();
+                                        } else if !c.is_control() {
+                                            self.insert_char(c);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
+                        let visible_lines = (bounds.height / 24.0) as usize;
+                        self.ensure_cursor_visible(visible_lines);
+                        return EventResponse::Consumed;
+                    }
+                    Key::X if modifiers.only_ctrl() => {
+                        // Cut selected text to clipboard
+                        if let Some(text) = self.selected_text() {
+                            if !text.is_empty() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(text);
+                                }
+                            }
+                        }
+                        self.delete_selection();
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     _ if key.is_printable() && !modifiers.ctrl && !modifiers.alt => {

@@ -220,15 +220,57 @@ impl Widget for TextInput {
                         return EventResponse::Consumed;
                     }
                     Key::C if modifiers.only_ctrl() => {
-                        // Copy - would need clipboard integration
+                        // Copy selected text to clipboard
+                        if let Some(sel_start) = self.selection_start {
+                            let (begin, end) = if sel_start < self.cursor {
+                                (sel_start, self.cursor)
+                            } else {
+                                (self.cursor, sel_start)
+                            };
+                            let selected = &self.text[begin..end];
+                            if !selected.is_empty() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(selected);
+                                }
+                            }
+                        }
                         return EventResponse::Consumed;
                     }
                     Key::V if modifiers.only_ctrl() => {
-                        // Paste - would need clipboard integration
+                        // Paste from clipboard (strip newlines for single-line input)
+                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                            if let Ok(pasted) = clipboard.get_text() {
+                                // Strip newlines/carriage returns for single-line input
+                                let clean: String = pasted.chars()
+                                    .filter(|c| *c != '\n' && *c != '\r')
+                                    .collect();
+                                if !clean.is_empty() {
+                                    self.delete_selection();
+                                    self.text.insert_str(self.cursor, &clean);
+                                    self.cursor += clean.len();
+                                    self.modified = true;
+                                }
+                            }
+                        }
+                        self.cursor_visible = true;
+                        self.last_blink = std::time::Instant::now();
                         return EventResponse::Consumed;
                     }
                     Key::X if modifiers.only_ctrl() => {
-                        // Cut - would need clipboard integration
+                        // Cut selected text to clipboard
+                        if let Some(sel_start) = self.selection_start {
+                            let (begin, end) = if sel_start < self.cursor {
+                                (sel_start, self.cursor)
+                            } else {
+                                (self.cursor, sel_start)
+                            };
+                            let selected = &self.text[begin..end];
+                            if !selected.is_empty() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(selected);
+                                }
+                            }
+                        }
                         self.delete_selection();
                         return EventResponse::Consumed;
                     }
