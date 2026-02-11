@@ -12,9 +12,7 @@ use winit::window::Window;
 use super::VulkanContext;
 
 /// Manages the swapchain and associated framebuffers
-#[allow(dead_code)]
 pub struct SurfaceManager {
-    pub surface: Arc<Surface>,
     pub swapchain: Arc<Swapchain>,
     pub images: Vec<Arc<Image>>,
     pub msaa_views: Vec<Arc<ImageView>>,
@@ -38,7 +36,6 @@ impl SurfaceManager {
         let framebuffers = Self::create_framebuffers(&images, &msaa_views, &render_pass)?;
 
         Ok(Self {
-            surface,
             swapchain,
             images,
             msaa_views,

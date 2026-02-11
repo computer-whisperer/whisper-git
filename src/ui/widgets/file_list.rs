@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Color, Rect, TextRenderer};
 
@@ -44,9 +44,7 @@ pub enum FileListAction {
 }
 
 /// A scrollable list of files with status indicators
-#[allow(dead_code)]
 pub struct FileList {
-    id: WidgetId,
     state: WidgetState,
     /// Title for the list
     pub title: String,
@@ -77,7 +75,6 @@ pub struct FileList {
 impl FileList {
     pub fn new(title: impl Into<String>, is_staged: bool) -> Self {
         Self {
-            id: WidgetId::new(),
             state: WidgetState::new(),
             title: title.into(),
             files: Vec::new(),
@@ -230,10 +227,6 @@ impl FileList {
 }
 
 impl Widget for FileList {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         // Update scrollbar state
         let visible = self.visible_lines(&bounds);
@@ -709,10 +702,6 @@ impl Widget for FileList {
         output.spline_vertices.extend(scrollbar_output.spline_vertices);
 
         output
-    }
-
-    fn focusable(&self) -> bool {
-        true
     }
 
     fn set_focused(&mut self, focused: bool) {

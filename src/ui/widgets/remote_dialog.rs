@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -32,10 +32,7 @@ pub enum RemoteDialogAction {
 }
 
 /// A modal dialog for managing git remotes
-#[allow(dead_code)]
 pub struct RemoteDialog {
-    id: WidgetId,
-    state: WidgetState,
     visible: bool,
     mode: RemoteDialogMode,
     /// First input field (name for Add/Rename, URL for EditUrl)
@@ -51,8 +48,6 @@ pub struct RemoteDialog {
 impl RemoteDialog {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             visible: false,
             mode: RemoteDialogMode::Add,
             first_input: TextInput::new().with_placeholder("remote-name"),
@@ -167,10 +162,6 @@ impl RemoteDialog {
 }
 
 impl Widget for RemoteDialog {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.visible {
             return EventResponse::Ignored;

@@ -16,21 +16,10 @@ pub enum SidebarAction {
     Checkout(String),
     CheckoutRemote(String, String), // (remote, branch)
     Delete(String),
-    DeleteSubmodule(String),
-    UpdateSubmodule(String),
-    OpenSubmoduleTerminal(String),
-    JumpToWorktreeBranch(String),
-    RemoveWorktree(String),
-    OpenWorktreeTerminal(String),
     SwitchWorktree(String),
     ApplyStash(usize),
-    PopStash(usize),
     DropStash(usize),
     OpenSubmodule(String),
-    AddRemote,
-    EditRemoteUrl(String),
-    RenameRemote(String),
-    DeleteRemote(String),
     DeleteTag(String),
 }
 
@@ -44,7 +33,7 @@ enum SidebarItem {
     Tag(String),
     SubmoduleEntry(String),       // submodule name
     WorktreeEntry(String),        // worktree name
-    StashEntry(usize, String, i64),  // (index, message, time)
+    StashEntry(usize),  // stash index
 }
 
 /// Shared layout parameters passed to section rendering methods
@@ -299,10 +288,7 @@ impl BranchSidebar {
         // Update scrollbar hover
         let scrollbar_width = 8.0;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
-        let move_event = crate::input::InputEvent::MouseMove {
-            x, y,
-            modifiers: crate::input::Modifiers::empty(),
-        };
+        let move_event = crate::input::InputEvent::MouseMove { x, y };
         self.scrollbar.handle_event(&move_event, scrollbar_bounds);
 
         if !bounds.contains(x, y) {
@@ -474,7 +460,7 @@ impl BranchSidebar {
                 self.visible_items.push(SidebarItem::SectionHeader("STASHES"));
                 if !self.stashes_collapsed {
                     for stash in &stash_filtered {
-                        self.visible_items.push(SidebarItem::StashEntry(stash.index, stash.message.clone(), stash.time));
+                        self.visible_items.push(SidebarItem::StashEntry(stash.index));
                     }
                 }
             }
@@ -567,7 +553,7 @@ impl BranchSidebar {
                     SidebarItem::Tag(name) => {
                         self.pending_action = Some(SidebarAction::Checkout(name.clone()));
                     }
-                    SidebarItem::StashEntry(index, _, _) => {
+                    SidebarItem::StashEntry(index) => {
                         self.pending_action = Some(SidebarAction::ApplyStash(*index));
                     }
                     _ => {}
@@ -585,7 +571,7 @@ impl BranchSidebar {
                 Some(SidebarItem::Tag(name)) => {
                     self.pending_action = Some(SidebarAction::DeleteTag(name.clone()));
                 }
-                Some(SidebarItem::StashEntry(index, _, _)) => {
+                Some(SidebarItem::StashEntry(index)) => {
                     self.pending_action = Some(SidebarAction::DropStash(*index));
                 }
                 _ => {}
@@ -707,7 +693,7 @@ impl BranchSidebar {
                         }
                         return Some(items);
                     }
-                    SidebarItem::StashEntry(index, _, _) => {
+                    SidebarItem::StashEntry(index) => {
                         let idx_str = index.to_string();
                         let mut items = vec![
                             MenuItem::new("Apply Stash", "apply_stash"),

@@ -37,12 +37,6 @@ impl ShortcutBar {
         self.context = context;
     }
 
-    /// The height of the shortcut bar in pixels (scale-aware)
-    #[allow(dead_code)]
-    pub fn height(scale: f32) -> f32 {
-        26.0 * scale
-    }
-
     /// Render the shortcut bar into the given bounds
     pub fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();

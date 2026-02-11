@@ -23,10 +23,7 @@ pub enum InputEvent {
         /// when IME doesn't fire on X11/Wayland)
         text: Option<String>,
     },
-    KeyUp {
-        key: Key,
-        modifiers: Modifiers,
-    },
+    KeyUp,
 
     /// Text input (for text fields)
     TextInput(String),
@@ -51,7 +48,6 @@ pub enum InputEvent {
     MouseMove {
         x: f32,
         y: f32,
-        modifiers: Modifiers,
     },
 
     /// Mouse scroll (wheel)
@@ -144,10 +140,7 @@ impl InputState {
                     }
                     winit::event::ElementState::Released => {
                         self.keyboard.set_pressed(key, false);
-                        Some(InputEvent::KeyUp {
-                            key,
-                            modifiers: self.modifiers,
-                        })
+                        Some(InputEvent::KeyUp)
                     }
                 }
             }
@@ -159,7 +152,6 @@ impl InputState {
                 Some(InputEvent::MouseMove {
                     x,
                     y,
-                    modifiers: self.modifiers,
                 })
             }
 

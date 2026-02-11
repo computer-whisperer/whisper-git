@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -15,10 +15,7 @@ pub enum ConfirmDialogAction {
 }
 
 /// A modal confirmation dialog with OK and Cancel buttons
-#[allow(dead_code)]
 pub struct ConfirmDialog {
-    id: WidgetId,
-    state: WidgetState,
     visible: bool,
     title: String,
     message: String,
@@ -30,8 +27,6 @@ pub struct ConfirmDialog {
 impl ConfirmDialog {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             visible: false,
             title: String::new(),
             message: String::new(),
@@ -71,10 +66,6 @@ impl ConfirmDialog {
 }
 
 impl Widget for ConfirmDialog {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.visible {
             return EventResponse::Ignored;

@@ -89,12 +89,6 @@ impl SearchBar {
         }
     }
 
-    /// Get current match index
-    #[allow(dead_code)]
-    pub fn current_match(&self) -> usize {
-        self.current_match
-    }
-
     /// Cycle to next match
     pub fn next_match(&mut self) {
         if self.match_count > 0 {

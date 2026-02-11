@@ -3,28 +3,8 @@
 //! Provides a retained-mode widget system where widgets track their own state
 //! but regenerate vertices each frame (immediate-mode rendering).
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, SplineVertex, TextRenderer, TextVertex};
-
-/// Unique identifier for widgets
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct WidgetId(pub u64);
-
-impl WidgetId {
-    /// Generate a new unique widget ID
-    pub fn new() -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(1);
-        WidgetId(COUNTER.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl Default for WidgetId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Common widget state
 #[derive(Clone, Debug, Default)]
@@ -87,11 +67,7 @@ impl Default for WidgetOutput {
 }
 
 /// The core widget trait
-#[allow(dead_code)]
 pub trait Widget {
-    /// Get this widget's unique ID
-    fn id(&self) -> WidgetId;
-
     /// Handle an input event, returning whether it was consumed
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         let _ = (event, bounds);
@@ -106,11 +82,6 @@ pub trait Widget {
     /// Layout the widget and produce rendering output
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput;
 
-    /// Check if this widget can receive focus
-    fn focusable(&self) -> bool {
-        false
-    }
-
     /// Set focus state
     fn set_focused(&mut self, focused: bool) {
         let _ = focused;
@@ -119,12 +90,6 @@ pub trait Widget {
     /// Get focus state
     fn is_focused(&self) -> bool {
         false
-    }
-
-    /// Get the widget's preferred size (for layout calculations)
-    fn preferred_size(&self, text_renderer: &TextRenderer) -> (f32, f32) {
-        let _ = text_renderer;
-        (0.0, 0.0)
     }
 }
 

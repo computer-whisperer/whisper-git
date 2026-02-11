@@ -2,17 +2,13 @@
 
 use crate::input::{InputEvent, EventResponse, MouseButton};
 use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetState, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
+use crate::ui::widget::{Widget, WidgetState, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
 
 /// A clickable button with text
-#[allow(dead_code)]
 pub struct Button {
-    id: WidgetId,
     state: WidgetState,
     /// The button label
     pub label: String,
-    /// Badge text (e.g., "+3" for commits ahead)
-    pub badge: Option<String>,
     /// Whether the button was just clicked
     clicked: bool,
     /// Normal background color
@@ -25,24 +21,19 @@ pub struct Button {
     pub text_color: Color,
     /// Border color
     pub border_color: Option<Color>,
-    /// Padding inside the button
-    pub padding: f32,
 }
 
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
-            id: WidgetId::new(),
             state: WidgetState::new(),
             label: label.into(),
-            badge: None,
             clicked: false,
             background: theme::SURFACE_RAISED,
             hover_background: Color::rgba(0.22, 0.22, 0.22, 1.0), // Noticeably lighter on hover
             pressed_background: theme::SURFACE,
             text_color: theme::TEXT,
             border_color: Some(theme::BORDER),
-            padding: 8.0,
         }
     }
 
@@ -51,27 +42,11 @@ impl Button {
         self.state.hovered
     }
 
-    /// Set a badge (e.g., count indicator)
-    #[allow(dead_code)]
-    pub fn with_badge(mut self, badge: impl Into<String>) -> Self {
-        self.badge = Some(badge.into());
-        self
-    }
-
     /// Check if the button was clicked this frame (and clear the flag)
     pub fn was_clicked(&mut self) -> bool {
         let clicked = self.clicked;
         self.clicked = false;
         clicked
-    }
-
-    /// Set the background color scheme
-    #[allow(dead_code)]
-    pub fn with_colors(mut self, normal: Color, hover: Color, pressed: Color) -> Self {
-        self.background = normal;
-        self.hover_background = hover;
-        self.pressed_background = pressed;
-        self
     }
 
     /// Make this a primary action button
@@ -141,13 +116,8 @@ impl Button {
 
         // Draw label text in bold
         let line_height = text_renderer.line_height();
-        let display_text = if let Some(ref badge) = self.badge {
-            format!("{} ({})", self.label, badge)
-        } else {
-            self.label.clone()
-        };
 
-        let text_width = bold_renderer.measure_text(&display_text);
+        let text_width = bold_renderer.measure_text(&self.label);
         let text_x = bounds.x + (bounds.width - text_width) / 2.0;
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
@@ -158,7 +128,7 @@ impl Button {
         };
 
         output.bold_text_vertices.extend(bold_renderer.layout_text(
-            &display_text,
+            &self.label,
             text_x,
             text_y,
             text_color.to_array(),
@@ -169,10 +139,6 @@ impl Button {
 }
 
 impl Widget for Button {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.state.enabled {
             return EventResponse::Ignored;
@@ -251,13 +217,8 @@ impl Widget for Button {
 
         // Draw label text - brighter on hover/press
         let line_height = text_renderer.line_height();
-        let display_text = if let Some(ref badge) = self.badge {
-            format!("{} ({})", self.label, badge)
-        } else {
-            self.label.clone()
-        };
 
-        let text_width = text_renderer.measure_text(&display_text);
+        let text_width = text_renderer.measure_text(&self.label);
         let text_x = draw_bounds.x + (draw_bounds.width - text_width) / 2.0;
         let text_y = draw_bounds.y + (draw_bounds.height - line_height) / 2.0;
 
@@ -268,7 +229,7 @@ impl Widget for Button {
         };
 
         output.text_vertices.extend(text_renderer.layout_text(
-            &display_text,
+            &self.label,
             text_x,
             text_y,
             text_color.to_array(),
@@ -277,22 +238,7 @@ impl Widget for Button {
         output
     }
 
-    fn focusable(&self) -> bool {
-        self.state.enabled
-    }
-
     fn set_focused(&mut self, focused: bool) {
         self.state.focused = focused;
-    }
-
-    fn preferred_size(&self, text_renderer: &TextRenderer) -> (f32, f32) {
-        let line_height = text_renderer.line_height();
-        let text = if let Some(ref badge) = self.badge {
-            format!("{} ({})", self.label, badge)
-        } else {
-            self.label.clone()
-        };
-        let text_width = text_renderer.measure_text(&text);
-        (text_width + self.padding * 2.0, line_height + self.padding * 2.0)
     }
 }

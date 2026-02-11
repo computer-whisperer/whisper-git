@@ -1,11 +1,10 @@
 //! Panel widget - a container with optional background and border
 
 use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, create_rect_outline_vertices, theme};
+use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, create_rect_outline_vertices, theme};
 
 /// A panel container with background color and optional border
 pub struct Panel {
-    id: WidgetId,
     /// Background color (None for transparent)
     pub background: Option<Color>,
     /// Border color (None for no border)
@@ -19,7 +18,6 @@ pub struct Panel {
 impl Panel {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
             background: Some(theme::SURFACE),
             border: Some(theme::BORDER),
             border_thickness: 1.0,
@@ -70,10 +68,6 @@ impl Default for Panel {
 }
 
 impl Widget for Panel {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn layout(&self, _text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 

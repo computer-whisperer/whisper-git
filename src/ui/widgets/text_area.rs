@@ -1,13 +1,11 @@
 //! Multi-line text area widget
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
 
 /// A multi-line text editing area
-#[allow(dead_code)]
 pub struct TextArea {
-    id: WidgetId,
     state: WidgetState,
     /// Lines of text
     lines: Vec<String>,
@@ -32,7 +30,6 @@ pub struct TextArea {
 impl TextArea {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
             state: WidgetState::new(),
             lines: vec![String::new()],
             cursor_line: 0,
@@ -63,21 +60,8 @@ impl TextArea {
         self.lines.join("\n")
     }
 
-    /// Check if the content was modified and clear the flag
-    #[allow(dead_code)]
-    pub fn take_modified(&mut self) -> bool {
-        let modified = self.modified;
-        self.modified = false;
-        modified
-    }
-
     fn current_line(&self) -> &String {
         &self.lines[self.cursor_line]
-    }
-
-    #[allow(dead_code)]
-    fn current_line_mut(&mut self) -> &mut String {
-        &mut self.lines[self.cursor_line]
     }
 
     /// Get the selected text, if any
@@ -235,10 +219,6 @@ impl Default for TextArea {
 }
 
 impl Widget for TextArea {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
             InputEvent::MouseDown {
@@ -489,10 +469,6 @@ impl Widget for TextArea {
         }
 
         output
-    }
-
-    fn focusable(&self) -> bool {
-        self.state.enabled
     }
 
     fn set_focused(&mut self, focused: bool) {

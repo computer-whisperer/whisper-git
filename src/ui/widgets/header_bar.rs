@@ -2,7 +2,7 @@
 
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_arc_vertices, theme};
+use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_arc_vertices, theme};
 use crate::ui::widgets::Button;
 
 /// Actions that can be triggered from the header bar
@@ -24,9 +24,7 @@ pub enum HeaderAction {
 }
 
 /// Header bar widget displaying repo info and action buttons
-#[allow(dead_code)]
 pub struct HeaderBar {
-    id: WidgetId,
     /// Repository name
     pub repo_name: String,
     /// Current branch name
@@ -77,7 +75,6 @@ pub struct HeaderBar {
 impl HeaderBar {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
             repo_name: String::new(),
             branch_name: String::new(),
             ahead: 0,
@@ -575,10 +572,6 @@ impl HeaderBar {
 }
 
 impl Widget for HeaderBar {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);

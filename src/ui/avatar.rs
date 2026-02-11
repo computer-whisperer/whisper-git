@@ -49,10 +49,7 @@ const SLOTS_PER_ROW: u32 = ATLAS_WIDTH / AVATAR_SIZE;
 // ============================================================================
 
 /// State of an avatar download
-#[allow(dead_code)]
 enum AvatarState {
-    /// Not yet requested
-    NotRequested,
     /// Download in progress
     Loading,
     /// Successfully downloaded and decoded
@@ -124,13 +121,6 @@ impl AvatarCache {
         newly_loaded
     }
 
-    /// Check if an avatar is loaded for the given email.
-    #[allow(dead_code)]
-    pub fn is_loaded(&self, email: &str) -> bool {
-        let key = email.trim().to_lowercase();
-        matches!(self.states.get(&key), Some(AvatarState::Loaded { .. }))
-    }
-
     /// Get loaded avatar data (rgba, size) for the given email.
     pub fn get_loaded(&self, email: &str) -> Option<(&[u8], u32)> {
         let key = email.trim().to_lowercase();
@@ -138,16 +128,6 @@ impl AvatarCache {
             Some(AvatarState::Loaded { rgba, size }) => Some((rgba, *size)),
             _ => None,
         }
-    }
-
-    /// Check if avatar is in a terminal state (loaded or failed).
-    #[allow(dead_code)]
-    pub fn is_resolved(&self, email: &str) -> bool {
-        let key = email.trim().to_lowercase();
-        matches!(
-            self.states.get(&key),
-            Some(AvatarState::Loaded { .. } | AvatarState::Failed)
-        )
     }
 }
 

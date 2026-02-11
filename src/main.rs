@@ -129,7 +129,6 @@ struct RepoTab {
     repo: Option<GitRepo>,
     commits: Vec<CommitInfo>,
     name: String,
-    _path: PathBuf,
 }
 
 /// Per-tab UI view state
@@ -384,7 +383,6 @@ impl App {
                             repo: Some(repo),
                             commits: Vec::new(),
                             name,
-                            _path: repo_path.clone(),
                         },
                         TabViewState::new(),
                     ));
@@ -402,7 +400,6 @@ impl App {
                             repo: None,
                             commits: Vec::new(),
                             name,
-                            _path: repo_path.clone(),
                         },
                         TabViewState::new(),
                     ));
@@ -933,7 +930,6 @@ impl App {
                     repo: Some(repo),
                     commits: Vec::new(),
                     name,
-                    _path: path,
                 };
 
                 if let Some(ref render_state) = self.state {
@@ -1271,7 +1267,7 @@ impl App {
 
     /// Handle a sidebar action by dispatching to the appropriate pending message or dialog.
     fn handle_sidebar_action(&mut self, action: SidebarAction) {
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((_repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
         match action {
             SidebarAction::Checkout(name) => {
@@ -1284,77 +1280,18 @@ impl App {
                 self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
             }
-            SidebarAction::DeleteSubmodule(name) => {
-                self.confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", name));
-                self.pending_confirm_action = Some(AppMessage::DeleteSubmodule(name));
-            }
-            SidebarAction::UpdateSubmodule(name) => {
-                view_state.pending_messages.push(AppMessage::UpdateSubmodule(name));
-            }
-            SidebarAction::OpenSubmoduleTerminal(name) => {
-                let path = view_state.branch_sidebar.submodules.iter()
-                    .find(|s| s.name == name)
-                    .map(|s| s.path.clone());
-                if let Some(path) = path {
-                    open_terminal_at(&path, &name, &mut self.toast_manager);
-                } else {
-                    self.toast_manager.push(
-                        format!("Submodule '{}' not found", name),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
             SidebarAction::OpenSubmodule(name) => {
                 view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
             SidebarAction::SwitchWorktree(name) => {
                 view_state.switch_to_worktree_by_name(&name);
             }
-            SidebarAction::JumpToWorktreeBranch(name) => {
-                view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(name));
-            }
-            SidebarAction::RemoveWorktree(name) => {
-                self.confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", name));
-                self.pending_confirm_action = Some(AppMessage::RemoveWorktree(name));
-            }
-            SidebarAction::OpenWorktreeTerminal(name) => {
-                let path = view_state.branch_sidebar.worktrees.iter()
-                    .find(|w| w.name == name)
-                    .map(|w| w.path.clone());
-                if let Some(path) = path {
-                    open_terminal_at(&path, &name, &mut self.toast_manager);
-                } else {
-                    self.toast_manager.push(
-                        format!("Worktree '{}' not found", name),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
             SidebarAction::ApplyStash(index) => {
                 view_state.pending_messages.push(AppMessage::StashApply(index));
-            }
-            SidebarAction::PopStash(index) => {
-                view_state.pending_messages.push(AppMessage::StashPopIndex(index));
             }
             SidebarAction::DropStash(index) => {
                 self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
                 self.pending_confirm_action = Some(AppMessage::StashDrop(index));
-            }
-            SidebarAction::AddRemote => {
-                self.remote_dialog.show_add();
-            }
-            SidebarAction::EditRemoteUrl(name) => {
-                let current_url = repo_tab.repo.as_ref()
-                    .and_then(|r| r.remote_url(&name))
-                    .unwrap_or_default();
-                self.remote_dialog.show_edit_url(&name, &current_url);
-            }
-            SidebarAction::RenameRemote(name) => {
-                self.remote_dialog.show_rename(&name);
-            }
-            SidebarAction::DeleteRemote(name) => {
-                self.confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", name));
-                self.pending_confirm_action = Some(AppMessage::DeleteRemote(name));
             }
             SidebarAction::DeleteTag(name) => {
                 self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));

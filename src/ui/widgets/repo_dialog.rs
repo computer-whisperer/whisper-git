@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, create_rounded_rect_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -18,10 +18,7 @@ pub enum RepoDialogAction {
 }
 
 /// A modal dialog for opening a repository by path
-#[allow(dead_code)]
 pub struct RepoDialog {
-    id: WidgetId,
-    state: WidgetState,
     visible: bool,
     path_input: TextInput,
     browse_button: Button,
@@ -40,8 +37,6 @@ pub struct RepoDialog {
 impl RepoDialog {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             visible: false,
             path_input: TextInput::new().with_placeholder("/path/to/repository"),
             browse_button: Button::new("Browse..."),
@@ -195,10 +190,6 @@ impl RepoDialog {
 }
 
 impl Widget for RepoDialog {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.visible {
             return EventResponse::Ignored;

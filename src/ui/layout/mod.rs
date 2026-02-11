@@ -1,7 +1,5 @@
-//! Layout module - rectangle math and flex layout system
+//! Layout module - rectangle math and screen layout
 
-#[allow(dead_code)]
-mod flex;
 mod screen;
 
 pub use screen::ScreenLayout;
@@ -30,11 +28,6 @@ impl Rect {
 
     pub fn bottom(&self) -> f32 {
         self.y + self.height
-    }
-
-    #[allow(dead_code)]
-    pub fn center(&self) -> (f32, f32) {
-        (self.x + self.width / 2.0, self.y + self.height / 2.0)
     }
 
     pub fn contains(&self, x: f32, y: f32) -> bool {
@@ -80,15 +73,6 @@ impl Rect {
         let height = height.min(self.height);
         let top = Rect::new(self.x, self.y, self.width, height);
         let bottom = Rect::new(self.x, self.y + height, self.width, self.height - height);
-        (top, bottom)
-    }
-
-    /// Take a fixed height from the bottom
-    #[allow(dead_code)]
-    pub fn take_bottom(&self, height: f32) -> (Rect, Rect) {
-        let height = height.min(self.height);
-        let top = Rect::new(self.x, self.y, self.width, self.height - height);
-        let bottom = Rect::new(self.x, self.y + self.height - height, self.width, height);
         (top, bottom)
     }
 
@@ -141,17 +125,6 @@ impl Color {
         }
     }
 
-    /// Darken the color
-    #[allow(dead_code)]
-    pub fn darken(&self, amount: f32) -> Self {
-        Self {
-            r: (self.r - amount).max(0.0),
-            g: (self.g - amount).max(0.0),
-            b: (self.b - amount).max(0.0),
-            a: self.a,
-        }
-    }
-
     /// Set the alpha value
     pub fn with_alpha(&self, alpha: f32) -> Self {
         Self {
@@ -162,22 +135,11 @@ impl Color {
         }
     }
 
-    // Common colors
-    #[allow(dead_code)]
-    pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
-    #[allow(dead_code)]
-    pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
-    #[allow(dead_code)]
-    pub const RED: Self = Self::rgb(1.0, 0.0, 0.0);
-    #[allow(dead_code)]
-    pub const GREEN: Self = Self::rgb(0.0, 1.0, 0.0);
-    #[allow(dead_code)]
-    pub const BLUE: Self = Self::rgb(0.0, 0.0, 1.0);
     pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
 }
 
 impl Default for Color {
     fn default() -> Self {
-        Self::WHITE
+        Self::rgb(1.0, 1.0, 1.0)
     }
 }

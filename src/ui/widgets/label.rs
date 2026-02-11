@@ -1,7 +1,7 @@
 //! Label widget - static text display
 
 use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetId, WidgetOutput, theme};
+use crate::ui::widget::{Widget, WidgetOutput, theme};
 
 /// Text alignment options
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -14,7 +14,6 @@ pub enum TextAlign {
 
 /// A static text label
 pub struct Label {
-    id: WidgetId,
     /// The text to display
     pub text: String,
     /// Text color
@@ -28,7 +27,6 @@ pub struct Label {
 impl Label {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
-            id: WidgetId::new(),
             text: text.into(),
             color: theme::TEXT,
             align: TextAlign::Left,
@@ -67,10 +65,6 @@ impl Label {
 }
 
 impl Widget for Label {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
@@ -105,9 +99,4 @@ impl Widget for Label {
         output
     }
 
-    fn preferred_size(&self, text_renderer: &TextRenderer) -> (f32, f32) {
-        let line_height = text_renderer.line_height();
-        let text_width = text_renderer.measure_text(&self.text);
-        (text_width, line_height)
-    }
 }

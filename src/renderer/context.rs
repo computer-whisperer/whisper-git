@@ -12,7 +12,6 @@ use vulkano::{
 };
 
 /// Core Vulkan context - created once at startup
-#[allow(dead_code)]
 pub struct VulkanContext {
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
@@ -21,7 +20,6 @@ pub struct VulkanContext {
     pub command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
 }
 
-#[allow(dead_code)]
 impl VulkanContext {
     /// Create context with a surface (needed for device selection)
     pub fn with_surface(instance: Arc<Instance>, surface: &Surface) -> Result<Self> {

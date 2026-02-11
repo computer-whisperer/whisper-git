@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, MouseButton};
 use crate::ui::widget::{
-    create_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_rect_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::{Rect, TextRenderer};
 
@@ -30,10 +30,7 @@ struct CachedBounds {
 }
 
 /// A horizontal tab bar displayed at the top of the window
-#[allow(dead_code)]
 pub struct TabBar {
-    id: WidgetId,
-    state: WidgetState,
     tabs: Vec<Tab>,
     active: usize,
     hovered_tab: Option<usize>,
@@ -47,8 +44,6 @@ pub struct TabBar {
 impl TabBar {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             tabs: Vec::new(),
             active: 0,
             hovered_tab: None,
@@ -69,27 +64,9 @@ impl TabBar {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn active_index(&self) -> usize {
-        self.active
-    }
-
-    #[allow(dead_code)]
-    pub fn tab_count(&self) -> usize {
-        self.tabs.len()
-    }
-
     /// Returns true if any tab, close button, or new button is hovered
     pub fn is_any_hovered(&self) -> bool {
         self.hovered_tab.is_some() || self.hovered_close.is_some() || self.hovered_new
-    }
-
-    /// Update tab name (e.g. when repo info changes)
-    #[allow(dead_code)]
-    pub fn set_tab_name(&mut self, index: usize, name: String) {
-        if let Some(tab) = self.tabs.get_mut(index) {
-            tab.name = name;
-        }
     }
 
     /// Remove a tab and return the new active index
@@ -188,10 +165,6 @@ impl TabBar {
 }
 
 impl Widget for TabBar {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
             InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {

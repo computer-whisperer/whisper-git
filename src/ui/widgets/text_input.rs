@@ -1,13 +1,11 @@
 //! Single-line text input widget
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState};
+use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
 
 /// A single-line text input field
-#[allow(dead_code)]
 pub struct TextInput {
-    id: WidgetId,
     state: WidgetState,
     /// The current text content
     pub text: String,
@@ -33,7 +31,6 @@ pub struct TextInput {
 impl TextInput {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
             state: WidgetState::new(),
             text: String::new(),
             placeholder: String::new(),
@@ -62,14 +59,6 @@ impl TextInput {
         self.text = text.into();
         self.cursor = self.text.len();
         self.selection_start = None;
-    }
-
-    /// Check if the content was modified and clear the flag
-    #[allow(dead_code)]
-    pub fn take_modified(&mut self) -> bool {
-        let modified = self.modified;
-        self.modified = false;
-        modified
     }
 
     /// Update cursor blink state. Call once per frame.
@@ -139,10 +128,6 @@ impl Default for TextInput {
 }
 
 impl Widget for TextInput {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
             InputEvent::MouseDown {
@@ -391,10 +376,6 @@ impl Widget for TextInput {
         }
 
         output
-    }
-
-    fn focusable(&self) -> bool {
-        self.state.enabled
     }
 
     fn set_focused(&mut self, focused: bool) {

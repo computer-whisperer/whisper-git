@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -14,10 +14,7 @@ pub enum SettingsDialogAction {
 }
 
 /// A modal dialog for configuring application settings
-#[allow(dead_code)]
 pub struct SettingsDialog {
-    id: WidgetId,
-    state: WidgetState,
     visible: bool,
     close_button: Button,
     pending_action: Option<SettingsDialogAction>,
@@ -30,8 +27,6 @@ pub struct SettingsDialog {
 impl SettingsDialog {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             visible: false,
             close_button: Button::new("Close"),
             pending_action: None,
@@ -85,10 +80,6 @@ impl SettingsDialog {
 }
 
 impl Widget for SettingsDialog {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.visible {
             return EventResponse::Ignored;

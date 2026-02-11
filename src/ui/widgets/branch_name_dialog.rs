@@ -4,7 +4,7 @@ use git2::Oid;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, theme, Widget, WidgetId, WidgetOutput, WidgetState,
+    create_dialog_backdrop, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -17,10 +17,7 @@ pub enum BranchNameDialogAction {
 }
 
 /// A modal dialog for entering a new branch or tag name
-#[allow(dead_code)]
 pub struct BranchNameDialog {
-    id: WidgetId,
-    state: WidgetState,
     visible: bool,
     name_input: TextInput,
     create_button: Button,
@@ -34,8 +31,6 @@ pub struct BranchNameDialog {
 impl BranchNameDialog {
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new(),
-            state: WidgetState::new(),
             visible: false,
             name_input: TextInput::new().with_placeholder("branch-name"),
             create_button: Button::new("Create").primary(),
@@ -100,10 +95,6 @@ impl BranchNameDialog {
 }
 
 impl Widget for BranchNameDialog {
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.visible {
             return EventResponse::Ignored;
