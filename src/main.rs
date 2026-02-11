@@ -1796,6 +1796,10 @@ impl ApplicationHandler for App {
                                     self.confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", name));
                                     self.pending_confirm_action = Some(AppMessage::DeleteRemote(name));
                                 }
+                                SidebarAction::DeleteTag(name) => {
+                                    self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
+                                    self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
+                                }
                             }
                         }
                         return;
@@ -2357,8 +2361,35 @@ fn handle_context_menu_action(
                 view_state.pending_messages.push(AppMessage::EnterSubmodule(param.to_string()));
             }
         }
-        "open_submodule" | "open_worktree" => {
-            toast_manager.push("Open terminal not yet implemented".to_string(), ToastSeverity::Info);
+        "open_submodule" => {
+            if !param.is_empty() {
+                let path = view_state.branch_sidebar.submodules.iter()
+                    .find(|s| s.name == param)
+                    .map(|s| s.path.clone());
+                if let Some(path) = path {
+                    open_terminal_at(&path, param, toast_manager);
+                } else {
+                    toast_manager.push(
+                        format!("Submodule '{}' not found", param),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+        "open_worktree" => {
+            if !param.is_empty() {
+                let path = view_state.branch_sidebar.worktrees.iter()
+                    .find(|w| w.name == param)
+                    .map(|w| w.path.clone());
+                if let Some(path) = path {
+                    open_terminal_at(&path, param, toast_manager);
+                } else {
+                    toast_manager.push(
+                        format!("Worktree '{}' not found", param),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
         }
         "switch_worktree" => {
             if !param.is_empty() {

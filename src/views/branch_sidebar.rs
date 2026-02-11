@@ -31,6 +31,7 @@ pub enum SidebarAction {
     EditRemoteUrl(String),
     RenameRemote(String),
     DeleteRemote(String),
+    DeleteTag(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -506,17 +507,33 @@ impl BranchSidebar {
                     SidebarItem::SubmoduleEntry(name) => {
                         self.pending_action = Some(SidebarAction::OpenSubmodule(name.clone()));
                     }
+                    SidebarItem::Tag(name) => {
+                        self.pending_action = Some(SidebarAction::Checkout(name.clone()));
+                    }
+                    SidebarItem::StashEntry(index, _, _) => {
+                        self.pending_action = Some(SidebarAction::ApplyStash(*index));
+                    }
                     _ => {}
                 }
             }
     }
 
-    /// Delete the currently focused branch (only local branches)
+    /// Delete the currently focused branch/tag or drop stash
     fn delete_focused(&mut self) {
-        if let Some(idx) = self.focused_index
-            && let Some(SidebarItem::LocalBranch(name)) = self.visible_items.get(idx) {
-                self.pending_action = Some(SidebarAction::Delete(name.clone()));
+        if let Some(idx) = self.focused_index {
+            match self.visible_items.get(idx) {
+                Some(SidebarItem::LocalBranch(name)) => {
+                    self.pending_action = Some(SidebarAction::Delete(name.clone()));
+                }
+                Some(SidebarItem::Tag(name)) => {
+                    self.pending_action = Some(SidebarAction::DeleteTag(name.clone()));
+                }
+                Some(SidebarItem::StashEntry(index, _, _)) => {
+                    self.pending_action = Some(SidebarAction::DropStash(*index));
+                }
+                _ => {}
             }
+        }
     }
 
     /// Get context menu items for the branch at (x, y), if any.

@@ -125,15 +125,35 @@ pub fn handle_app_message(
         }
         AppMessage::StageAll => {
             if let Ok(status) = staging_repo.status() {
+                let total = status.unstaged.len();
+                let mut failed = 0;
                 for file in &status.unstaged {
-                    let _ = staging_repo.stage_file(&file.path);
+                    if staging_repo.stage_file(&file.path).is_err() {
+                        failed += 1;
+                    }
+                }
+                if failed > 0 {
+                    toast_manager.push(
+                        format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
         AppMessage::UnstageAll => {
             if let Ok(status) = staging_repo.status() {
+                let total = status.staged.len();
+                let mut failed = 0;
                 for file in &status.staged {
-                    let _ = staging_repo.unstage_file(&file.path);
+                    if staging_repo.unstage_file(&file.path).is_err() {
+                        failed += 1;
+                    }
+                }
+                if failed > 0 {
+                    toast_manager.push(
+                        format!("Unstaged {}/{} files ({} failed)", total - failed, total, failed),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -184,6 +204,7 @@ pub fn handle_app_message(
                 view_state.header_bar.fetching = true;
             } else {
                 eprintln!("No working directory for fetch");
+                toast_manager.push("Cannot fetch: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::Pull => {
@@ -200,6 +221,7 @@ pub fn handle_app_message(
                 view_state.header_bar.pulling = true;
             } else {
                 eprintln!("No working directory for pull");
+                toast_manager.push("Cannot pull: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::PullRebase => {
@@ -216,6 +238,7 @@ pub fn handle_app_message(
                 view_state.header_bar.pulling = true;
             } else {
                 eprintln!("No working directory for pull --rebase");
+                toast_manager.push("Cannot pull: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::Push => {
@@ -232,6 +255,7 @@ pub fn handle_app_message(
                 view_state.header_bar.pushing = true;
             } else {
                 eprintln!("No working directory for push");
+                toast_manager.push("Cannot push: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::PushForce => {
@@ -249,6 +273,7 @@ pub fn handle_app_message(
                 toast_manager.push("Force pushing...", ToastSeverity::Info);
             } else {
                 eprintln!("No working directory for push");
+                toast_manager.push("Cannot push: no working directory".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::SelectedCommit(oid) => {
@@ -272,6 +297,7 @@ pub fn handle_app_message(
                 }
                 Err(e) => {
                     eprintln!("Failed to load diff for {}: {}", oid, e);
+                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
         }
@@ -282,6 +308,7 @@ pub fn handle_app_message(
                 }
                 Err(e) => {
                     eprintln!("Failed to load diff for file '{}': {}", path, e);
+                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
         }
@@ -303,6 +330,7 @@ pub fn handle_app_message(
                 }
                 Err(e) => {
                     eprintln!("Failed to load diff for {}: {}", path, e);
+                    toast_manager.push(format!("Failed to load diff: {}", e), ToastSeverity::Error);
                 }
             }
         }
