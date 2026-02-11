@@ -1,38 +1,80 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-/// Debounce interval: coalesce rapid filesystem events into a single refresh signal.
-const DEBOUNCE_MS: u64 = 500;
+use crate::git::WorktreeInfo;
+
+/// Debounce interval for working-tree file edits (ms).
+const WORKTREE_DEBOUNCE_MS: u64 = 500;
+
+/// Debounce interval for git metadata changes (ms) — faster response for branch/commit updates.
+const METADATA_DEBOUNCE_MS: u64 = 150;
+
+/// Hard cap: force-emit even if events keep arriving (ms).
+const MAX_DELAY_MS: u64 = 2000;
+
+/// Classifies filesystem events so the consumer can respond proportionally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsChangeKind {
+    /// File edits outside .git — lightweight status refresh only.
+    WorkingTree,
+    /// HEAD, refs, index, packed-refs, etc. — full repo state refresh.
+    GitMetadata,
+    /// .bare/worktrees/ add/remove — full refresh + update watcher paths.
+    WorktreeStructure,
+}
+
+impl FsChangeKind {
+    /// Higher value = higher priority when coalescing events.
+    pub fn priority(self) -> u8 {
+        match self {
+            FsChangeKind::WorkingTree => 0,
+            FsChangeKind::GitMetadata => 1,
+            FsChangeKind::WorktreeStructure => 2,
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        if other.priority() > self.priority() { other } else { self }
+    }
+}
 
 /// Watches a repository's working directory and git metadata files for changes,
-/// sending a debounced `()` signal when something relevant changes.
+/// sending a debounced `FsChangeKind` signal when something relevant changes.
 pub struct RepoWatcher {
-    _watcher: RecommendedWatcher,
+    watcher: RecommendedWatcher,
+    /// Paths we're actively watching (for diffing when worktrees change).
+    watched_worktree_dirs: HashSet<PathBuf>,
 }
 
 impl RepoWatcher {
     /// Create a new watcher for the given workdir and git dir.
     ///
-    /// Returns the watcher handle and a receiver that yields `()` after a
-    /// debounced period of quiet following filesystem changes.
-    pub fn new(workdir: &Path, git_dir: &Path) -> notify::Result<(Self, Receiver<()>)> {
-        let (debounce_tx, debounce_rx) = mpsc::channel::<()>();
-        let (raw_tx, raw_rx) = mpsc::channel::<Event>();
+    /// `worktrees` provides the initial list of worktree metadata dirs to watch.
+    /// Returns the watcher handle and a receiver that yields `FsChangeKind` after
+    /// a debounced period of quiet following filesystem changes.
+    pub fn new(
+        workdir: &Path,
+        git_dir: &Path,
+        worktrees: &[WorktreeInfo],
+    ) -> notify::Result<(Self, Receiver<FsChangeKind>)> {
+        let (debounce_tx, debounce_rx) = mpsc::channel::<FsChangeKind>();
+        let (raw_tx, raw_rx) = mpsc::channel::<FsChangeKind>();
 
-        // Spawn a debounce thread that coalesces rapid events
+        // Spawn tiered debounce thread
         spawn_debounce_thread(raw_rx, debounce_tx);
 
-        // Build the event filter with cloned paths for the closure
+        // Build the event classifier with cloned paths for the closure
         let git_dir_owned = git_dir.to_path_buf();
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 if let Ok(event) = res {
-                    if is_relevant_event(&event, &git_dir_owned) {
-                        let _ = watcher_tx.send(event);
+                    if let Some(kind) = classify_event(&event, &git_dir_owned) {
+                        let _ = watcher_tx.send(kind);
                     }
                 }
             },
@@ -42,99 +84,242 @@ impl RepoWatcher {
         // Watch the working directory recursively for file edits
         watcher.watch(workdir, RecursiveMode::Recursive)?;
 
-        // Watch specific git metadata paths (non-recursive) for branch/commit changes.
-        // These fire when the user runs git commands externally.
+        // Watch git metadata paths for branch/commit changes
         let refs_dir = git_dir.join("refs");
         let _ = watcher.watch(git_dir, RecursiveMode::NonRecursive);
         let _ = watcher.watch(&refs_dir, RecursiveMode::Recursive);
 
-        Ok((RepoWatcher { _watcher: watcher }, debounce_rx))
+        // Watch worktrees directory for structural changes (add/remove worktree)
+        let worktrees_dir = git_dir.join("worktrees");
+        if worktrees_dir.is_dir() {
+            let _ = watcher.watch(&worktrees_dir, RecursiveMode::Recursive);
+        }
+
+        // Watch each existing worktree's git metadata dir
+        let mut watched_worktree_dirs = HashSet::new();
+        for wt in worktrees {
+            let wt_meta_dir = git_dir.join("worktrees").join(&wt.name);
+            if wt_meta_dir.is_dir() {
+                let _ = watcher.watch(&wt_meta_dir, RecursiveMode::NonRecursive);
+                watched_worktree_dirs.insert(wt_meta_dir);
+            }
+        }
+
+        Ok((
+            RepoWatcher {
+                watcher,
+                watched_worktree_dirs,
+            },
+            debounce_rx,
+        ))
+    }
+
+    /// Add a path to watch. Ignores errors gracefully (e.g., path doesn't exist).
+    pub fn watch_path(&mut self, path: &Path, recursive: bool) {
+        let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        let _ = self.watcher.watch(path, mode);
+    }
+
+    /// Remove a path from watching. Ignores errors gracefully.
+    pub fn unwatch_path(&mut self, path: &Path) {
+        let _ = self.watcher.unwatch(path);
+    }
+
+    /// Diff current watch set against worktree list, adding/removing watches as needed.
+    pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], git_dir: &Path) {
+        let desired: HashSet<PathBuf> = worktrees
+            .iter()
+            .map(|wt| git_dir.join("worktrees").join(&wt.name))
+            .filter(|p| p.is_dir())
+            .collect();
+
+        // Remove watches for worktrees that no longer exist
+        let to_remove: Vec<PathBuf> = self
+            .watched_worktree_dirs
+            .difference(&desired)
+            .cloned()
+            .collect();
+        for path in &to_remove {
+            self.unwatch_path(path);
+            self.watched_worktree_dirs.remove(path);
+        }
+
+        // Add watches for new worktrees
+        let to_add: Vec<PathBuf> = desired
+            .difference(&self.watched_worktree_dirs)
+            .cloned()
+            .collect();
+        for path in &to_add {
+            self.watch_path(path, false);
+            self.watched_worktree_dirs.insert(path.clone());
+        }
     }
 }
 
-/// Returns true if the event is something we care about (file create/modify/remove),
-/// filtering out noisy internal `.git/` churn we don't need.
-fn is_relevant_event(event: &Event, git_dir: &Path) -> bool {
+/// Classifies a filesystem event into a change kind, or None if irrelevant.
+fn classify_event(event: &Event, git_dir: &Path) -> Option<FsChangeKind> {
     // Only care about data-changing events
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
-        _ => return false,
+        _ => return None,
     }
 
+    let mut result: Option<FsChangeKind> = None;
+
     for path in &event.paths {
-        // If the path is inside the git dir, only allow specific metadata files
         if path.starts_with(git_dir) {
             if let Ok(relative) = path.strip_prefix(git_dir) {
                 let rel_str = relative.to_string_lossy();
-                // HEAD, index, refs/*, MERGE_HEAD, REBASE_HEAD, CHERRY_PICK_HEAD
+
+                // Worktree structure changes (new/removed worktree dirs)
+                if rel_str.starts_with("worktrees") {
+                    // Depth check: worktrees/<name> is depth 2, deeper is metadata
+                    let depth = relative.components().count();
+                    if depth <= 2 {
+                        // New/removed worktree directory
+                        result = Some(match result {
+                            Some(k) => k.max(FsChangeKind::WorktreeStructure),
+                            None => FsChangeKind::WorktreeStructure,
+                        });
+                    } else {
+                        // Metadata inside a worktree dir (HEAD, index, etc.)
+                        result = Some(match result {
+                            Some(k) => k.max(FsChangeKind::GitMetadata),
+                            None => FsChangeKind::GitMetadata,
+                        });
+                    }
+                    continue;
+                }
+
+                // Git metadata files
                 if rel_str == "HEAD"
                     || rel_str == "index"
                     || rel_str.starts_with("refs")
                     || rel_str == "MERGE_HEAD"
                     || rel_str == "REBASE_HEAD"
                     || rel_str == "CHERRY_PICK_HEAD"
+                    || rel_str == "packed-refs"
+                    || rel_str == "FETCH_HEAD"
+                    || rel_str == "ORIG_HEAD"
+                    || rel_str == "config"
                 {
-                    return true;
+                    result = Some(match result {
+                        Some(k) => k.max(FsChangeKind::GitMetadata),
+                        None => FsChangeKind::GitMetadata,
+                    });
+                    continue;
                 }
+
                 // Skip everything else inside .git (objects, logs, etc.)
                 continue;
             }
         }
-        // Paths outside .git are always relevant
-        return true;
+        // Paths outside .git are working tree changes
+        result = Some(match result {
+            Some(k) => k.max(FsChangeKind::WorkingTree),
+            None => FsChangeKind::WorkingTree,
+        });
     }
 
-    false
+    result
 }
 
-/// Spawns a background thread that receives raw events and, after `DEBOUNCE_MS`
-/// of quiet, sends a single `()` on `out_tx`. Multiple rapid events collapse
-/// into one signal.
-fn spawn_debounce_thread(raw_rx: Receiver<Event>, out_tx: Sender<()>) {
+/// Spawns a background thread with tiered debounce:
+/// - Metadata lane: 150ms debounce (fast response for git ops)
+/// - Worktree lane: 500ms debounce (normal for file edits)
+/// Both have a 2-second hard cap to prevent indefinite deferral.
+fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChangeKind>) {
     std::thread::Builder::new()
         .name("fs-watcher-debounce".into())
         .spawn(move || {
-            let mut last_event: Option<Instant> = None;
+            // Track pending events per lane
+            let mut metadata_first: Option<Instant> = None; // first event in current burst
+            let mut metadata_last: Option<Instant> = None;  // last event in current burst
+            let mut metadata_kind = FsChangeKind::GitMetadata;
+
+            let mut worktree_first: Option<Instant> = None;
+            let mut worktree_last: Option<Instant> = None;
 
             loop {
-                let timeout = match last_event {
-                    Some(t) => {
-                        let elapsed = t.elapsed();
-                        let debounce = Duration::from_millis(DEBOUNCE_MS);
-                        if elapsed >= debounce {
-                            // Debounce period passed, fire immediately
-                            last_event = None;
-                            if out_tx.send(()).is_err() {
-                                return; // Main thread gone
-                            }
-                            Duration::from_millis(DEBOUNCE_MS)
-                        } else {
-                            debounce - elapsed
-                        }
-                    }
-                    None => Duration::from_secs(60), // Idle: long wait
+                // Compute timeout: minimum of both lanes' next fire time
+                let now = Instant::now();
+                let meta_timeout = lane_timeout(metadata_last, metadata_first, METADATA_DEBOUNCE_MS, MAX_DELAY_MS, now);
+                let wt_timeout = lane_timeout(worktree_last, worktree_first, WORKTREE_DEBOUNCE_MS, MAX_DELAY_MS, now);
+                let timeout = match (meta_timeout, wt_timeout) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (Some(a), None) => a,
+                    (None, Some(b)) => b,
+                    (None, None) => Duration::from_secs(60),
                 };
 
                 match raw_rx.recv_timeout(timeout) {
-                    Ok(_event) => {
-                        // Got an event, reset the debounce timer
-                        last_event = Some(Instant::now());
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        // Timeout expired
-                        if last_event.is_some() {
-                            last_event = None;
-                            if out_tx.send(()).is_err() {
-                                return;
+                    Ok(kind) => {
+                        let now = Instant::now();
+                        match kind {
+                            FsChangeKind::WorkingTree => {
+                                if worktree_first.is_none() {
+                                    worktree_first = Some(now);
+                                }
+                                worktree_last = Some(now);
+                            }
+                            FsChangeKind::GitMetadata | FsChangeKind::WorktreeStructure => {
+                                if metadata_first.is_none() {
+                                    metadata_first = Some(now);
+                                }
+                                metadata_last = Some(now);
+                                metadata_kind = metadata_kind.max(kind);
                             }
                         }
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        // Watcher dropped, exit thread
-                        return;
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // Check which lane(s) should fire
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+
+                // Check and fire lanes
+                let now = Instant::now();
+
+                if let (Some(first), Some(last)) = (metadata_first, metadata_last) {
+                    let debounce_elapsed = now.duration_since(last) >= Duration::from_millis(METADATA_DEBOUNCE_MS);
+                    let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
+                    if debounce_elapsed || cap_elapsed {
+                        if out_tx.send(metadata_kind).is_err() { return; }
+                        metadata_first = None;
+                        metadata_last = None;
+                        metadata_kind = FsChangeKind::GitMetadata;
+                    }
+                }
+
+                if let (Some(first), Some(last)) = (worktree_first, worktree_last) {
+                    let debounce_elapsed = now.duration_since(last) >= Duration::from_millis(WORKTREE_DEBOUNCE_MS);
+                    let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
+                    if debounce_elapsed || cap_elapsed {
+                        if out_tx.send(FsChangeKind::WorkingTree).is_err() { return; }
+                        worktree_first = None;
+                        worktree_last = None;
                     }
                 }
             }
         })
         .expect("Failed to spawn fs-watcher-debounce thread");
+}
+
+/// Compute how long until a lane should fire, or None if it has no pending events.
+fn lane_timeout(
+    last: Option<Instant>,
+    first: Option<Instant>,
+    debounce_ms: u64,
+    max_delay_ms: u64,
+    now: Instant,
+) -> Option<Duration> {
+    let last = last?;
+    let first = first?;
+
+    let debounce_remaining = Duration::from_millis(debounce_ms)
+        .saturating_sub(now.duration_since(last));
+    let cap_remaining = Duration::from_millis(max_delay_ms)
+        .saturating_sub(now.duration_since(first));
+
+    Some(debounce_remaining.min(cap_remaining))
 }

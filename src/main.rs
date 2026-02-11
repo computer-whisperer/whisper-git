@@ -38,7 +38,7 @@ use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, SubmoduleStatusStrip, SubmoduleStripAction, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
-use crate::watcher::RepoWatcher;
+use crate::watcher::{FsChangeKind, RepoWatcher};
 
 /// Maximum number of commits to load into the graph view.
 const MAX_COMMITS: usize = 50;
@@ -163,7 +163,7 @@ struct TabViewState {
     submodule_focus: Option<SubmoduleFocus>,
     /// Filesystem watcher for auto-refresh on external changes
     watcher: Option<RepoWatcher>,
-    watcher_rx: Option<Receiver<()>>,
+    watcher_rx: Option<Receiver<FsChangeKind>>,
 }
 
 impl TabViewState {
@@ -735,16 +735,38 @@ impl App {
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
         let Some(ref rx) = view_state.watcher_rx else { return };
 
-        // Drain all pending signals (there may be more than one if debounce fired multiple times)
-        let mut changed = false;
-        while rx.try_recv().is_ok() {
-            changed = true;
+        // Drain all pending signals, track the highest-priority kind
+        let mut max_kind: Option<FsChangeKind> = None;
+        while let Ok(kind) = rx.try_recv() {
+            max_kind = Some(match max_kind {
+                Some(prev) => if kind.priority() > prev.priority() { kind } else { prev },
+                None => kind,
+            });
         }
 
-        if changed {
-            self.status_dirty = true;
-            let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
-            if rx.is_some() { self.diff_stats_receiver = rx; }
+        match max_kind {
+            Some(FsChangeKind::WorkingTree) => {
+                // Lightweight: just mark status dirty, no commit graph rebuild
+                self.status_dirty = true;
+            }
+            Some(FsChangeKind::GitMetadata) => {
+                self.status_dirty = true;
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                if rx.is_some() { self.diff_stats_receiver = rx; }
+            }
+            Some(FsChangeKind::WorktreeStructure) => {
+                self.status_dirty = true;
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                if rx.is_some() { self.diff_stats_receiver = rx; }
+                // Update watcher paths for new/removed worktrees
+                if let Some(ref repo) = repo_tab.repo {
+                    let git_dir = repo.git_dir().to_path_buf();
+                    if let Some(ref mut w) = view_state.watcher {
+                        w.update_worktree_watches(&view_state.branch_sidebar.worktrees, &git_dir);
+                    }
+                }
+            }
+            None => {}
         }
     }
 
@@ -1434,6 +1456,8 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
+    view_state.branch_sidebar.stashes = repo.stash_list();
+
     // When inside a submodule, override the strip with parent's siblings
     // so users can navigate between sibling submodules
     if let Some(ref focus) = view_state.submodule_focus {
@@ -1505,7 +1529,7 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
     let Some(workdir) = repo.workdir() else { return };
     let git_dir = repo.git_dir();
 
-    match RepoWatcher::new(workdir, git_dir) {
+    match RepoWatcher::new(workdir, git_dir, &view_state.branch_sidebar.worktrees) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
@@ -1815,7 +1839,7 @@ impl ApplicationHandler for App {
                 // Refresh working directory status only when dirty or on a periodic timer
                 {
                     let now = Instant::now();
-                    if now.duration_since(self.last_status_refresh).as_millis() >= 1000 {
+                    if now.duration_since(self.last_status_refresh).as_millis() >= 3000 {
                         self.status_dirty = true;
                     }
                     if self.status_dirty {

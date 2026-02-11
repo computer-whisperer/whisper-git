@@ -578,7 +578,32 @@ impl GitRepo {
 
     /// Get submodules
     pub fn submodules(&self) -> Result<Vec<SubmoduleInfo>> {
-        let submodules = self.repo.submodules().context("Failed to get submodules")?;
+        // For bare repos, load submodules from the first worktree that has a .gitmodules
+        let wt_repo_holder;
+        let repo_ref = if self.repo.workdir().is_none() {
+            let wt_names = match self.repo.worktrees() {
+                Ok(names) => names,
+                Err(_) => return Ok(Vec::new()),
+            };
+            let mut found = None;
+            for name in wt_names.iter().flatten() {
+                if let Ok(wt) = self.repo.find_worktree(name) {
+                    if let Ok(r) = Repository::open(wt.path()) {
+                        if r.workdir().map(|w| w.join(".gitmodules").exists()).unwrap_or(false) {
+                            found = Some(r);
+                            break;
+                        }
+                    }
+                }
+            }
+            match found {
+                Some(r) => { wt_repo_holder = r; &wt_repo_holder }
+                None => return Ok(Vec::new()),
+            }
+        } else {
+            &self.repo
+        };
+        let submodules = repo_ref.submodules().context("Failed to get submodules")?;
 
         let mut infos = Vec::new();
         for sm in submodules {

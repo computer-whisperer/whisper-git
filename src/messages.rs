@@ -952,6 +952,8 @@ fn refresh_repo_state(
     view_state.submodule_strip.submodules = submodules.clone();
     view_state.branch_sidebar.submodules = submodules;
 
+    view_state.branch_sidebar.stashes = repo.stash_list();
+
     let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
         (0, 0)
