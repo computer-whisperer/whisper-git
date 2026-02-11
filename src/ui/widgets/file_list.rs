@@ -39,6 +39,8 @@ pub enum FileListAction {
     StageAll,
     /// Unstage all files
     UnstageAll,
+    /// Selection changed (single-click or j/k navigation) - auto-preview diff
+    SelectionChanged(String),
 }
 
 /// A scrollable list of files with status indicators
@@ -284,6 +286,9 @@ impl Widget for FileList {
                             self.selected = Some(file_idx);
                             self.last_click_time = Some(now);
                             self.last_click_index = Some(file_idx);
+                            // Emit selection changed for auto-preview
+                            let path = self.files[file_idx].path.clone();
+                            self.pending_action = Some(FileListAction::SelectionChanged(path));
                             return EventResponse::Consumed;
                         }
                     }
@@ -296,9 +301,13 @@ impl Widget for FileList {
                             if idx + 1 < self.files.len() {
                                 self.selected = Some(idx + 1);
                                 self.ensure_selection_visible(&bounds);
+                                let path = self.files[idx + 1].path.clone();
+                                self.pending_action = Some(FileListAction::SelectionChanged(path));
                             }
                         } else if !self.files.is_empty() {
                             self.selected = Some(0);
+                            let path = self.files[0].path.clone();
+                            self.pending_action = Some(FileListAction::SelectionChanged(path));
                         }
                         return EventResponse::Consumed;
                     }
@@ -307,9 +316,13 @@ impl Widget for FileList {
                             if idx > 0 {
                                 self.selected = Some(idx - 1);
                                 self.ensure_selection_visible(&bounds);
+                                let path = self.files[idx - 1].path.clone();
+                                self.pending_action = Some(FileListAction::SelectionChanged(path));
                             }
                         } else if !self.files.is_empty() {
                             self.selected = Some(0);
+                            let path = self.files[0].path.clone();
+                            self.pending_action = Some(FileListAction::SelectionChanged(path));
                         }
                         return EventResponse::Consumed;
                     }

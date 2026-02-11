@@ -2061,6 +2061,15 @@ impl ApplicationHandler for App {
                                             }
                                         }
                                     }
+                                    StagingAction::PreviewDiff(path, staged) => {
+                                        view_state.pending_messages.push(AppMessage::ViewDiffInline(path, staged));
+                                    }
+                                    StagingAction::InlineStageHunk(path, hunk_idx) => {
+                                        view_state.pending_messages.push(AppMessage::InlineStageHunk(path, hunk_idx));
+                                    }
+                                    StagingAction::InlineUnstageHunk(path, hunk_idx) => {
+                                        view_state.pending_messages.push(AppMessage::InlineUnstageHunk(path, hunk_idx));
+                                    }
                                 }
                             }
                             if response.is_consumed() {
