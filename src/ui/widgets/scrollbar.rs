@@ -150,7 +150,9 @@ impl Scrollbar {
         EventResponse::Ignored
     }
 
-    /// Render the scrollbar
+    /// Render the scrollbar.
+    /// Always renders at reduced opacity when content overflows;
+    /// full opacity on hover or drag.
     pub fn layout(&self, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
@@ -158,21 +160,25 @@ impl Scrollbar {
             return output;
         }
 
-        // Track background
-        let track_color = theme::SURFACE.with_alpha(0.5);
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            track_color.to_array(),
-        ));
+        let active = self.dragging || self.hovered;
 
-        // Thumb
+        // Track background (only when actively interacting)
+        if active {
+            let track_color = theme::SURFACE.with_alpha(0.5);
+            output.spline_vertices.extend(create_rect_vertices(
+                &bounds,
+                track_color.to_array(),
+            ));
+        }
+
+        // Thumb - always visible at 30% alpha, brighter on hover/drag
         let thumb = self.thumb_rect(&bounds);
         let thumb_color = if self.dragging {
             theme::ACCENT.with_alpha(0.7)
         } else if self.hovered {
             theme::ACCENT.with_alpha(0.45)
         } else {
-            theme::TEXT_MUTED.with_alpha(0.3)
+            theme::TEXT_MUTED.with_alpha(0.15)
         };
 
         // Rounded corners via inset for visual softness

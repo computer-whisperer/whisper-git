@@ -2915,29 +2915,29 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     let graph_right_hover = in_content_area && (mx - graph_edge).abs() < hit_tolerance;
 
     // Vertical divider: sidebar | graph
-    // Subtle 1px line at rest, wider 2px highlighted line on hover
+    // Visible 2px line at rest, wider 3px highlighted line on hover
     if sidebar_graph_hover {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
+            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 3.0, layout.sidebar.height),
             theme::BORDER_LIGHT.to_array(),
         ));
     } else {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 1.0, layout.sidebar.height),
-            theme::BORDER.with_alpha(0.35).to_array(),
+            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
+            theme::BORDER.with_alpha(0.50).to_array(),
         ));
     }
 
     // Vertical divider: graph | right panel
     if graph_right_hover {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
+            &Rect::new(layout.graph.right(), layout.graph.y, 3.0, layout.graph.height),
             theme::BORDER_LIGHT.to_array(),
         ));
     } else {
         output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.graph.right(), layout.graph.y, 1.0, layout.graph.height),
-            theme::BORDER.with_alpha(0.35).to_array(),
+            &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
+            theme::BORDER.with_alpha(0.50).to_array(),
         ));
     }
 
@@ -2956,21 +2956,21 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
             ));
         } else {
             output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                &Rect::new(layout.right_panel.x, split_y, layout.right_panel.width, 1.0),
-                theme::BORDER.with_alpha(0.35).to_array(),
+                &Rect::new(layout.right_panel.x, split_y, layout.right_panel.width, 2.0),
+                theme::BORDER.with_alpha(0.50).to_array(),
             ));
         }
     }
 
-    // Focused panel indicator: subtle accent-colored top border (2px at ~40% alpha)
+    // Focused panel indicator: accent-colored top border (3px at ~60% alpha)
     let focused_rect = match focused {
         FocusedPanel::Graph => &layout.graph,
         FocusedPanel::RightPanel => &layout.right_panel,
         FocusedPanel::Sidebar => &layout.sidebar,
     };
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 2.0),
-        theme::ACCENT.with_alpha(0.4).to_array(),
+        &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 3.0),
+        theme::ACCENT.with_alpha(0.6).to_array(),
     ));
 }
 
