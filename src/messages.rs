@@ -44,6 +44,7 @@ pub enum AppMessage {
     StageHunk(String, usize),    // (file_path, hunk_index)
     UnstageHunk(String, usize),  // (file_path, hunk_index)
     DiscardFile(String),
+    DiscardHunk(String, usize),  // (file_path, hunk_index)
     LoadMoreCommits,
     DeleteSubmodule(String),
     UpdateSubmodule(String),
@@ -523,6 +524,31 @@ pub fn handle_app_message(
                 Err(e) => {
                     toast_manager.push(
                         format!("Discard failed: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+        AppMessage::DiscardHunk(path, hunk_idx) => {
+            match staging_repo.discard_hunk(&path, hunk_idx) {
+                Ok(()) => {
+                    toast_manager.push(
+                        format!("Discarded hunk {} in {}", hunk_idx + 1, path),
+                        ToastSeverity::Info,
+                    );
+                    // Refresh the diff view with remaining hunks
+                    if let Ok(hunks) = staging_repo.diff_working_file(&path, false) {
+                        if hunks.is_empty() {
+                            view_state.diff_view.clear();
+                        } else {
+                            let diff_file = DiffFile::from_hunks(path.clone(), hunks);
+                            view_state.diff_view.set_diff(vec![diff_file], path);
+                        }
+                    }
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Discard hunk failed: {}", e),
                         ToastSeverity::Error,
                     );
                 }

@@ -21,6 +21,9 @@ mod diff_colors {
     pub const STAGE_BUTTON_BG: Color = Color::rgba(0.180, 0.180, 0.220, 1.0);    // subtle blue-gray
     pub const STAGE_BUTTON_HOVER: Color = Color::rgba(0.220, 0.220, 0.280, 1.0); // brighter on hover
     pub const STAGE_BUTTON_TEXT: Color = Color::rgba(0.671, 0.396, 0.859, 1.0);  // purple like hunk headers
+    pub const DISCARD_BUTTON_BG: Color = Color::rgba(0.280, 0.120, 0.120, 1.0);    // dark red
+    pub const DISCARD_BUTTON_HOVER: Color = Color::rgba(0.360, 0.140, 0.140, 1.0); // brighter red on hover
+    pub const DISCARD_BUTTON_TEXT: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);  // red text
 }
 
 /// Action emitted by the diff view
@@ -30,6 +33,8 @@ pub enum DiffAction {
     StageHunk(String, usize),
     /// Unstage a specific hunk (file_path, hunk_index)
     UnstageHunk(String, usize),
+    /// Discard a specific hunk from the working tree (file_path, hunk_index)
+    DiscardHunk(String, usize),
 }
 
 /// View for displaying diffs
@@ -54,6 +59,10 @@ pub struct DiffView {
     hunk_button_bounds: Vec<(usize, usize, Rect)>,
     /// Which hunk button is hovered
     hovered_hunk_button: Option<(usize, usize)>,
+    /// Discard hunk button bounds for click detection: (file_idx, hunk_idx, Rect)
+    discard_button_bounds: Vec<(usize, usize, Rect)>,
+    /// Which discard button is hovered
+    hovered_discard_button: Option<(usize, usize)>,
     /// Y offsets of file headers (relative to content start), computed during layout
     file_y_offsets: Vec<f32>,
     /// Y offsets of hunk headers (relative to content start), computed during layout
@@ -77,6 +86,8 @@ impl DiffView {
             pending_action: None,
             hunk_button_bounds: Vec::new(),
             hovered_hunk_button: None,
+            discard_button_bounds: Vec::new(),
+            hovered_discard_button: None,
             file_y_offsets: Vec::new(),
             hunk_y_offsets: Vec::new(),
             viewport_height: 0.0,
@@ -93,6 +104,8 @@ impl DiffView {
         self.showing_staged = false;
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
+        self.discard_button_bounds.clear();
+        self.hovered_discard_button = None;
         self.file_y_offsets.clear();
         self.hunk_y_offsets.clear();
     }
@@ -111,6 +124,8 @@ impl DiffView {
         self.title.clear();
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
+        self.discard_button_bounds.clear();
+        self.hovered_discard_button = None;
         self.file_y_offsets.clear();
         self.hunk_y_offsets.clear();
     }
@@ -160,6 +175,15 @@ impl DiffView {
                 if !bounds.contains(*x, *y) {
                     return EventResponse::Ignored;
                 }
+                // Check if a discard hunk button was clicked
+                for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
+                    if btn_rect.contains(*x, *y)
+                        && let Some(file) = self.diff_files.get(file_idx) {
+                            let path = file.path.clone();
+                            self.pending_action = Some(DiffAction::DiscardHunk(path, hunk_idx));
+                            return EventResponse::Consumed;
+                        }
+                }
                 // Check if a hunk stage button was clicked
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
                     if btn_rect.contains(*x, *y)
@@ -178,6 +202,7 @@ impl DiffView {
             InputEvent::MouseMove { x, y, .. } => {
                 if !bounds.contains(*x, *y) {
                     self.hovered_hunk_button = None;
+                    self.hovered_discard_button = None;
                     return EventResponse::Ignored;
                 }
                 let mut found = None;
@@ -188,6 +213,14 @@ impl DiffView {
                     }
                 }
                 self.hovered_hunk_button = found;
+                let mut discard_found = None;
+                for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
+                    if btn_rect.contains(*x, *y) {
+                        discard_found = Some((file_idx, hunk_idx));
+                        break;
+                    }
+                }
+                self.hovered_discard_button = discard_found;
                 EventResponse::Ignored
             }
             InputEvent::KeyDown { key, modifiers, .. } => {
@@ -325,6 +358,7 @@ impl DiffView {
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         self.hunk_button_bounds.clear();
+        self.discard_button_bounds.clear();
         self.file_y_offsets.clear();
         self.hunk_y_offsets.clear();
 
@@ -455,6 +489,33 @@ impl DiffView {
                         ));
 
                         self.hunk_button_bounds.push((file_idx, hunk_idx, btn_rect));
+
+                        // Discard Hunk button (only for unstaged diffs, to the left of Stage Hunk)
+                        if !self.showing_staged {
+                            let discard_label = "Discard Hunk";
+                            let discard_w = text_renderer.measure_text(discard_label) + 12.0;
+                            let discard_x = btn_x - discard_w - 6.0;
+                            let discard_rect = Rect::new(discard_x, btn_y, discard_w, btn_h);
+
+                            let is_discard_hovered = self.hovered_discard_button == Some((file_idx, hunk_idx));
+                            let discard_bg = if is_discard_hovered {
+                                diff_colors::DISCARD_BUTTON_HOVER
+                            } else {
+                                diff_colors::DISCARD_BUTTON_BG
+                            };
+                            output.spline_vertices.extend(create_rect_vertices(
+                                &discard_rect,
+                                discard_bg.to_array(),
+                            ));
+                            output.text_vertices.extend(text_renderer.layout_text(
+                                discard_label,
+                                discard_x + 6.0,
+                                btn_y,
+                                diff_colors::DISCARD_BUTTON_TEXT.to_array(),
+                            ));
+
+                            self.discard_button_bounds.push((file_idx, hunk_idx, discard_rect));
+                        }
                     }
                 }
                 y += line_height;

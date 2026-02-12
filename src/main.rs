@@ -1485,6 +1485,20 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
     view_state.staging_well.set_worktrees(&worktrees);
     view_state.staging_well.current_branch = current.clone();
+    // Sync active_worktree_path with staging well's selection so status loads from the right repo
+    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+        if wt_ctx.is_current {
+            view_state.active_worktree_path = None;
+        } else {
+            let path = wt_ctx.path.clone();
+            if !view_state.worktree_repo_cache.contains_key(&path) {
+                if let Ok(wt_repo) = GitRepo::open(&path) {
+                    view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
+                }
+            }
+            view_state.active_worktree_path = Some(path);
+        }
+    }
     // Prune cached worktree repos for paths that no longer exist
     let valid_paths: std::collections::HashSet<PathBuf> = worktrees.iter()
         .map(|wt| PathBuf::from(&wt.path))
@@ -2148,6 +2162,13 @@ impl App {
                             DiffAction::UnstageHunk(path, hunk_idx) => {
                                 view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
                             }
+                            DiffAction::DiscardHunk(path, hunk_idx) => {
+                                self.confirm_dialog.show(
+                                    "Discard Hunk",
+                                    "Discard this hunk? This cannot be undone.",
+                                );
+                                self.pending_confirm_action = Some(AppMessage::DiscardHunk(path, hunk_idx));
+                            }
                         }
                     }
                     return;
@@ -2184,7 +2205,9 @@ impl App {
                 }
                 // Then check staging file lists
                 if view_state.right_panel_mode == RightPanelMode::Staging {
-                    if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, layout.right_panel) {
+                    let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                    let (staging_rect, _) = content_rect.split_vertical(self.staging_preview_ratio);
+                    if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, staging_rect) {
                         view_state.context_menu.show(items, *x, *y);
                         return;
                     }

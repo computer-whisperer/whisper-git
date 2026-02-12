@@ -1623,6 +1623,40 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Discard a single hunk from the working tree by applying the reverse patch
+    /// directly to the working directory (no --cached).
+    pub fn discard_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
+        let hunks = self.diff_working_file(file_path, false)?;
+        let hunk = hunks.get(hunk_index)
+            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
+
+        let patch = Self::build_hunk_patch(file_path, file_path, hunk);
+        let workdir = self.repo.workdir()
+            .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
+
+        let output = std::process::Command::new("git")
+            .args(["apply", "--reverse", "--unidiff-zero", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(workdir)
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                if let Some(ref mut stdin) = child.stdin {
+                    stdin.write_all(patch.as_bytes())?;
+                }
+                child.wait_with_output()
+            })
+            .with_context(|| "Failed to run git apply --reverse")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to discard hunk: {}", stderr);
+        }
+        Ok(())
+    }
+
     /// Build a minimal unified-diff patch for a single hunk.
     fn build_hunk_patch(old_path: &str, new_path: &str, hunk: &DiffHunk) -> String {
         let mut patch = String::new();
