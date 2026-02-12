@@ -9,6 +9,8 @@ use crate::ui::{Rect, TextRenderer};
 pub enum SearchAction {
     /// The search query changed
     QueryChanged(String),
+    /// Navigate to the current match (Enter / Shift+Enter)
+    Navigate,
     /// The search bar was closed
     Closed,
 }
@@ -81,6 +83,11 @@ impl SearchBar {
         self.pending_action = Some(SearchAction::Closed);
     }
 
+    /// Get the current match index (0-based)
+    pub fn current_match(&self) -> usize {
+        self.current_match
+    }
+
     /// Set the match count (called from parent after filtering)
     pub fn set_match_count(&mut self, count: usize) {
         self.match_count = count;
@@ -144,6 +151,7 @@ impl SearchBar {
                         } else {
                             self.next_match();
                         }
+                        self.pending_action = Some(SearchAction::Navigate);
                         return EventResponse::Consumed;
                     }
                     Key::Backspace => {
