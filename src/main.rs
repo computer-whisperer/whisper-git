@@ -415,6 +415,8 @@ impl App {
         settings_dialog.show_avatars = config.avatars_enabled;
         settings_dialog.scroll_speed = if config.fast_scroll { 2.0 } else { 1.0 };
         settings_dialog.row_scale = config.row_scale;
+        settings_dialog.abbreviate_worktree_names = config.abbreviate_worktree_names;
+        settings_dialog.time_spacing_strength = config.time_spacing_strength;
         let shortcut_bar_visible = config.shortcut_bar_visible;
 
         Ok(Self {
@@ -566,8 +568,12 @@ impl App {
         // Initialize all tab views
         let scale = window_scale as f32;
         let row_scale = self.settings_dialog.row_scale;
+        let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
+        let time_strength = self.settings_dialog.time_spacing_strength;
         for (repo_tab, view_state) in &mut self.tabs {
             view_state.commit_graph_view.row_scale = row_scale;
+            view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
+            view_state.commit_graph_view.time_spacing_strength = time_strength;
             let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager);
             if rx.is_some() { self.diff_stats_receiver = rx; }
         }
@@ -957,6 +963,8 @@ impl App {
 
                 if let Some(ref render_state) = self.state {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
+                    view_state.commit_graph_view.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
+                    view_state.commit_graph_view.time_spacing_strength = self.settings_dialog.time_spacing_strength;
                     let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager);
                     if rx.is_some() { self.diff_stats_receiver = rx; }
                 }
@@ -1078,15 +1086,22 @@ impl App {
                 match action {
                     SettingsDialogAction::Close => {
                         let row_scale = self.settings_dialog.row_scale;
+                        let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
+                        let time_strength = self.settings_dialog.time_spacing_strength;
                         if let Some(ref state) = self.state {
-                            for (_, view_state) in &mut self.tabs {
+                            for (repo_tab, view_state) in &mut self.tabs {
                                 view_state.commit_graph_view.row_scale = row_scale;
+                                view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
+                                view_state.commit_graph_view.time_spacing_strength = time_strength;
                                 view_state.commit_graph_view.sync_metrics(&state.text_renderer);
+                                view_state.commit_graph_view.compute_row_offsets(&repo_tab.commits);
                             }
                         }
                         self.config.avatars_enabled = self.settings_dialog.show_avatars;
                         self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
                         self.config.row_scale = self.settings_dialog.row_scale;
+                        self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
+                        self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
                         self.config.save();
                     }
                 }
@@ -1429,6 +1444,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.commit_graph_view.worktrees = worktrees.clone();
     view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
     view_state.staging_well.set_worktrees(&worktrees);
+    view_state.staging_well.current_branch = current.clone();
     // Prune cached worktree repos for paths that no longer exist
     let valid_paths: std::collections::HashSet<PathBuf> = worktrees.iter()
         .map(|wt| PathBuf::from(&wt.path))
@@ -2061,7 +2077,11 @@ impl App {
             }
 
             // Route events to diff view if it has content (both modes)
-            if view_state.diff_view.has_content() {
+            // Skip keyboard events when staging well has text focus (commit message editing)
+            if view_state.diff_view.has_content()
+                && !(view_state.staging_well.has_text_focus()
+                    && matches!(input_event, InputEvent::KeyDown { .. }))
+            {
                 let header_h = 28.0 * scale;
                 let diff_bounds = match view_state.right_panel_mode {
                     RightPanelMode::Browse if view_state.commit_detail_view.has_content() => {
@@ -2177,6 +2197,12 @@ impl App {
                                 // Synthetic row: switch to that worktree if named
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
                                     view_state.switch_to_worktree_by_name(&wt_name);
+                                } else {
+                                    // Single-worktree: enter staging mode directly
+                                    view_state.right_panel_mode = RightPanelMode::Staging;
+                                    view_state.last_diff_commit = None;
+                                    view_state.commit_detail_view.clear();
+                                    view_state.diff_view.clear();
                                 }
                             } else {
                                 view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
@@ -2218,6 +2244,12 @@ impl App {
                             if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
                                     view_state.switch_to_worktree_by_name(&wt_name);
+                                } else {
+                                    // Single-worktree: enter staging mode directly
+                                    view_state.right_panel_mode = RightPanelMode::Staging;
+                                    view_state.last_diff_commit = None;
+                                    view_state.commit_detail_view.clear();
+                                    view_state.diff_view.clear();
                                 }
                             } else {
                                 view_state.pending_messages.push(AppMessage::SelectedCommit(oid));

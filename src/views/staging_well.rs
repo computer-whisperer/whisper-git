@@ -24,7 +24,7 @@ pub struct WorktreeContext {
 
 /// Compute short display names by stripping the longest common prefix
 /// (up to and including the last separator: `-`, `_`, or `/`).
-fn compute_display_names(names: &[String]) -> Vec<String> {
+pub(crate) fn compute_display_names(names: &[String]) -> Vec<String> {
     if names.len() < 2 {
         return names.to_vec();
     }
@@ -110,6 +110,8 @@ pub struct StagingWell {
     pub submodules: Vec<SubmoduleInfo>,
     /// Hit-test bounds for submodule rows: (rect, submodule_name)
     submodule_bounds: Vec<(Rect, String)>,
+    /// Current branch name (for single-worktree header display)
+    pub current_branch: String,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -155,6 +157,7 @@ impl StagingWell {
             status_refresh_needed: false,
             submodules: Vec::new(),
             submodule_bounds: Vec::new(),
+            current_branch: String::new(),
         }
     }
 
@@ -469,11 +472,16 @@ impl StagingWell {
         self.worktree_contexts.len()
     }
 
-    /// Height of the pill bar in pixels (0 when no worktree contexts).
+    /// Height of the pill bar in pixels.
+    /// Shows branch name header even for single-worktree repos.
     pub fn pill_bar_height(&self) -> f32 {
         let s = self.scale;
         if self.worktree_contexts.is_empty() {
-            0.0
+            if self.current_branch.is_empty() {
+                0.0
+            } else {
+                32.0 * s
+            }
         } else if self.worktree_contexts.len() == 1 {
             26.0 * s
         } else {
@@ -498,6 +506,21 @@ impl StagingWell {
         self.pill_bar_rects.clear();
 
         if self.worktree_contexts.is_empty() {
+            if !self.current_branch.is_empty() {
+                // Single-worktree repo: show branch name as a bold header
+                let bar_rect = Rect::new(bounds.x, bounds.y, bounds.width, bounds.height);
+                output.spline_vertices.extend(create_rect_vertices(
+                    &bar_rect,
+                    theme::SURFACE_RAISED.to_array(),
+                ));
+                let text_y = bounds.y + (bounds.height - text_renderer.line_height()) / 2.0;
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &self.current_branch,
+                    bounds.x + 10.0 * s,
+                    text_y,
+                    theme::TEXT_BRIGHT.to_array(),
+                ));
+            }
             return output;
         }
 

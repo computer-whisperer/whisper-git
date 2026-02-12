@@ -10,7 +10,14 @@ pub struct Config {
     pub shortcut_bar_visible: bool,
     #[serde(default)]
     pub recent_repos: Vec<String>,
+    #[serde(default = "default_true")]
+    pub abbreviate_worktree_names: bool,
+    #[serde(default = "default_one")]
+    pub time_spacing_strength: f32,
 }
+
+fn default_true() -> bool { true }
+fn default_one() -> f32 { 1.0 }
 
 /// Maximum number of recent repos to remember
 const MAX_RECENT_REPOS: usize = 10;
@@ -23,6 +30,8 @@ impl Default for Config {
             row_scale: 1.0,
             shortcut_bar_visible: true,
             recent_repos: Vec::new(),
+            abbreviate_worktree_names: true,
+            time_spacing_strength: 1.0,
         }
     }
 }

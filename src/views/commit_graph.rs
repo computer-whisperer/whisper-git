@@ -17,6 +17,7 @@ use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, Te
 use crate::ui::text_util::truncate_to_width;
 
 use crate::ui::widget::theme::LANE_COLORS;
+use crate::views::staging_well::compute_display_names;
 
 /// Actions emitted by the commit graph view
 pub enum GraphAction {
@@ -245,6 +246,10 @@ pub struct CommitGraphView {
     pill_click_targets: Vec<PillClickTarget>,
     /// Whether the mouse is currently hovering over a clickable pill
     pub hovered_pill: bool,
+    /// Whether to abbreviate worktree names in pills (strip common prefix)
+    pub abbreviate_worktree_names: bool,
+    /// Time spacing strength multiplier (0.3 = low, 1.0 = normal, 2.0 = high)
+    pub time_spacing_strength: f32,
     /// Cached adaptive graph width based on visible rows (updated each frame)
     adaptive_graph_width: f32,
 }
@@ -276,6 +281,8 @@ impl Default for CommitGraphView {
             pill_click_targets: Vec::new(),
             hovered_pill: false,
             adaptive_graph_width: 0.0,
+            abbreviate_worktree_names: true,
+            time_spacing_strength: 1.0,
         }
     }
 }
@@ -369,7 +376,7 @@ impl CommitGraphView {
     /// difference between adjacent and distant commits is less dramatic, and the
     /// base_seconds reference is 7200 (2 hours) to further smooth the log curve
     /// and reduce sensitivity to small time differences.
-    fn compute_row_offsets(&mut self, commits: &[CommitInfo]) {
+    pub(crate) fn compute_row_offsets(&mut self, commits: &[CommitInfo]) {
         self.row_y_offsets.clear();
         if commits.is_empty() {
             return;
@@ -389,7 +396,7 @@ impl CommitGraphView {
             let delta_seconds = (commits[i - 1].time - commits[i].time).unsigned_abs() as f64;
             let clamped_delta = delta_seconds.min(max_delta);
             let ratio = (1.0 + clamped_delta / base_seconds).ln() / log_max;
-            let gap = min_gap + (max_gap - min_gap) * ratio as f32;
+            let gap = min_gap + (max_gap - min_gap) * ratio as f32 * self.time_spacing_strength;
             accumulated += gap;
             self.row_y_offsets.push(accumulated);
         }
@@ -1283,6 +1290,15 @@ impl CommitGraphView {
                 acc
             });
 
+        // Pre-compute abbreviated worktree names if enabled
+        let wt_display_names: HashMap<String, String> = if self.abbreviate_worktree_names && self.worktrees.len() >= 2 {
+            let names: Vec<String> = self.worktrees.iter().map(|wt| wt.name.clone()).collect();
+            let abbreviated = compute_display_names(&names);
+            names.into_iter().zip(abbreviated).collect()
+        } else {
+            HashMap::new()
+        };
+
         let pill_params = PillParams {
             char_width: text_renderer.char_width(),
             line_height,
@@ -1320,7 +1336,8 @@ impl CommitGraphView {
 
                 // WT: pill if this synthetic is for a named worktree
                 if let Some(ref wt_name) = commit.synthetic_wt_name {
-                    let wt_label = format!("WT:{}", wt_name);
+                    let display_name = wt_display_names.get(wt_name).unwrap_or(wt_name);
+                    let wt_label = format!("WT:{}", display_name);
                     let wt_width = text_renderer.measure_text(&wt_label);
                     if current_x + wt_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width
                         <= pill_params.time_col_left - pill_params.col_gap
@@ -1415,6 +1432,7 @@ impl CommitGraphView {
                     text_renderer, &pill_params, y,
                     worktrees_by_oid.get(&commit.id),
                     current_x, &mut vertices, &mut pill_vertices,
+                    &wt_display_names,
                 );
                 current_x = new_x;
                 self.pill_click_targets.extend(wt_targets);
@@ -1593,11 +1611,13 @@ impl CommitGraphView {
         mut current_x: f32,
         vertices: &mut Vec<TextVertex>,
         pill_vertices: &mut Vec<SplineVertex>,
+        wt_display_names: &HashMap<String, String>,
     ) -> (f32, Vec<PillClickTarget>) {
         let mut click_targets = Vec::new();
         let Some(wts) = wts else { return (current_x, click_targets) };
         for wt in wts {
-            let wt_label = format!("WT:{}", wt.name);
+            let display_name = wt_display_names.get(&wt.name).unwrap_or(&wt.name);
+            let wt_label = format!("WT:{}", display_name);
             let wt_width = text_renderer.measure_text(&wt_label);
             if current_x + wt_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
                 break;
