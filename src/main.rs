@@ -1057,6 +1057,11 @@ impl App {
                             view_state.pending_messages.push(AppMessage::CreateWorktree(name, source));
                         }
                     }
+                    BranchNameDialogAction::Rename(new_name, old_name) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::RenameBranch(old_name, new_name));
+                        }
+                    }
                     BranchNameDialogAction::Cancel => {}
                 }
             }
@@ -1413,6 +1418,9 @@ impl App {
             SidebarAction::DeleteTag(name) => {
                 self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
+            }
+            SidebarAction::RenameBranch(old_name) => {
+                self.branch_name_dialog.show_for_rename(&old_name);
             }
         }
     }
@@ -2636,6 +2644,11 @@ fn handle_context_menu_action(
                     remote.to_string(),
                     branch.to_string(),
                 ));
+            }
+        }
+        "rename" => {
+            if !param.is_empty() {
+                branch_name_dialog.show_for_rename(param);
             }
         }
         "delete" => {
