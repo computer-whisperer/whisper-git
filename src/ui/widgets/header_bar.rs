@@ -477,9 +477,9 @@ impl HeaderBar {
             after_pill_x += 4.0;
         }
 
-        // Remote name indicator (e.g. "← origin") in muted text after branch pill
+        // Remote name indicator (e.g. "origin") in muted text after branch pill
         if !self.remote_name.is_empty() {
-            let remote_label = format!("\u{2190} {}", self.remote_name);
+            let remote_label = format!("{}", self.remote_name);
             let remote_x = after_pill_x + 8.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 &remote_label,
@@ -877,10 +877,10 @@ impl Widget for HeaderBar {
             theme::ACCENT.to_array(),
         ));
 
-        // Remote name indicator (e.g. "← origin") in muted text after branch pill
+        // Remote name indicator (e.g. "origin") in muted text after branch pill
         let mut after_pill_x = branch_pill_x + pill_w;
         if !self.remote_name.is_empty() {
-            let remote_label = format!("\u{2190} {}", self.remote_name);
+            let remote_label = format!("{}", self.remote_name);
             let remote_x = after_pill_x + 8.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 &remote_label,
