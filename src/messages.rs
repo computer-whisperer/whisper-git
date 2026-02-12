@@ -330,6 +330,7 @@ pub fn handle_app_message(
         AppMessage::FetchAll => {
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch All",
+                "all remotes".to_string(),
                 |wd| git::fetch_all_async(wd),
                 |hb| hb.fetching = true,
                 toast_manager, view_state.header_bar,
