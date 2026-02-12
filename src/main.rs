@@ -312,6 +312,8 @@ enum DividerDrag {
     SidebarGraph,
     /// Vertical divider between graph and right panel
     GraphRight,
+    /// Horizontal divider between staging and preview within the right panel
+    StagingPreview,
 }
 
 struct App {
@@ -336,6 +338,8 @@ struct App {
     graph_ratio: f32,
     /// Whether the shortcut bar is visible
     shortcut_bar_visible: bool,
+    /// Fraction of right panel height for staging (default 0.45), remainder is preview
+    staging_preview_ratio: f32,
     /// Current cursor icon (cached to avoid redundant Wayland protocol calls)
     current_cursor: CursorIcon,
     /// Dirty flag: true when refresh_status() should run on next frame
@@ -436,6 +440,7 @@ impl App {
             divider_drag: None,
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
+            staging_preview_ratio: 0.45,
             shortcut_bar_visible,
             current_cursor: CursorIcon::Default,
             status_dirty: true,
@@ -1047,6 +1052,11 @@ impl App {
                             }
                         }
                     }
+                    BranchNameDialogAction::CreateWorktree(name, source) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::CreateWorktree(name, source));
+                        }
+                    }
                     BranchNameDialogAction::Cancel => {}
                 }
             }
@@ -1152,8 +1162,9 @@ impl App {
         // Handle ongoing drag (MouseMove / MouseUp) before anything else
         if self.divider_drag.is_some() {
             match input_event {
-                InputEvent::MouseMove { x, .. } => {
-                    match self.divider_drag.unwrap() {
+                InputEvent::MouseMove { x, y, .. } => {
+                    let drag_kind = self.divider_drag.unwrap();
+                    match drag_kind {
                         DividerDrag::SidebarGraph => {
                             let ratio = (*x - main_bounds.x) / main_bounds.width;
                             self.sidebar_ratio = ratio.clamp(0.05, 0.30);
@@ -1167,9 +1178,23 @@ impl App {
                                 self.graph_ratio = ratio.clamp(0.30, 0.80);
                             }
                         }
+                        DividerDrag::StagingPreview => {
+                            // Compute pill bar height to get content rect
+                            if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
+                                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                                let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                                if content_rect.height > 0.0 {
+                                    let ratio = (*y - content_rect.y) / content_rect.height;
+                                    self.staging_preview_ratio = ratio.clamp(0.20, 0.80);
+                                }
+                            }
+                        }
                     }
                     if let Some(ref render_state) = self.state {
-                        let cursor = CursorIcon::ColResize;
+                        let cursor = match drag_kind {
+                            DividerDrag::StagingPreview => CursorIcon::RowResize,
+                            _ => CursorIcon::ColResize,
+                        };
                         if self.current_cursor != cursor {
                             render_state.window.set_cursor(cursor);
                             self.current_cursor = cursor;
@@ -1206,6 +1231,21 @@ impl App {
                 if (*x - graph_edge).abs() < hit_tolerance {
                     self.divider_drag = Some(DividerDrag::GraphRight);
                     return true;
+                }
+
+                // Horizontal divider: staging | preview (within right panel, staging mode only)
+                if layout.right_panel.contains(*x, *y) {
+                    if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
+                        if view_state.right_panel_mode == RightPanelMode::Staging {
+                            let pill_bar_h = view_state.staging_well.pill_bar_height();
+                            let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                            let split_y = content_rect.y + content_rect.height * self.staging_preview_ratio;
+                            if (*y - split_y).abs() < hit_tolerance {
+                                self.divider_drag = Some(DividerDrag::StagingPreview);
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2090,7 +2130,7 @@ impl App {
                         body
                     }
                     RightPanelMode::Staging => {
-                        let (_staging_rect, diff_rect) = content_rect.split_vertical(0.45);
+                        let (_staging_rect, diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                         let (_hdr, body) = diff_rect.take_top(header_h);
                         body
                     }
@@ -2218,7 +2258,7 @@ impl App {
                 && view_state.right_panel_mode == RightPanelMode::Staging {
                 let pill_bar_h = view_state.staging_well.pill_bar_height();
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 let response = view_state.staging_well.handle_event(input_event, staging_rect);
                 if let Some(action) = view_state.staging_well.take_action() {
                     view_state.handle_staging_action(action);
@@ -2266,7 +2306,7 @@ impl App {
                 if view_state.right_panel_mode == RightPanelMode::Staging {
                     let pill_bar_h = view_state.staging_well.pill_bar_height();
                     let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                    let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                    let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                     let response = view_state.staging_well.handle_event(input_event, staging_rect);
 
                     if let Some(action) = view_state.staging_well.take_action() {
@@ -2305,7 +2345,7 @@ impl App {
             {
                 let pill_bar_h = view_state.staging_well.pill_bar_height();
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+                let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 view_state.staging_well.update_hover(*x, *y, staging_rect);
             }
 
@@ -2314,7 +2354,7 @@ impl App {
                     self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
                 }
 
-                let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count);
+                let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count, self.staging_preview_ratio);
                 if self.current_cursor != cursor {
                     render_state.window.set_cursor(cursor);
                     self.current_cursor = cursor;
@@ -2334,6 +2374,7 @@ fn determine_cursor(
     view_state: &TabViewState,
     tab_bar: &TabBar,
     tab_count: usize,
+    staging_preview_ratio: f32,
 ) -> CursorIcon {
     // Wider hit zone for dividers (8px) makes dragging much easier
     let divider_hit = 8.0;
@@ -2351,6 +2392,18 @@ fn determine_cursor(
         if (x - graph_edge).abs() < divider_hit {
             return CursorIcon::ColResize;
         }
+
+        // Divider 3: staging | preview (horizontal, within right panel, staging mode only)
+        if layout.right_panel.contains(x, y)
+            && view_state.right_panel_mode == RightPanelMode::Staging
+        {
+            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
+            let split_y = content_rect.y + content_rect.height * staging_preview_ratio;
+            if (y - split_y).abs() < divider_hit {
+                return CursorIcon::RowResize;
+            }
+        }
     }
 
     // -- Text cursor: text input fields --
@@ -2359,7 +2412,7 @@ fn determine_cursor(
     if layout.right_panel.contains(x, y) && view_state.right_panel_mode == RightPanelMode::Staging {
         let pill_bar_h = view_state.staging_well.pill_bar_height(); // scale already in pill_bar_height
         let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-        let (staging_rect, _diff_rect) = content_rect.split_vertical(0.45);
+        let (staging_rect, _diff_rect) = content_rect.split_vertical(staging_preview_ratio);
         let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(staging_rect);
         if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
             return CursorIcon::Text;
@@ -2689,6 +2742,19 @@ fn handle_context_menu_action(
                 branch_name_dialog.show(&default_name, oid);
             }
         }
+        "create_worktree" => {
+            if param.is_empty() {
+                // From commit graph: use short SHA as source
+                if let Some(oid) = view_state.context_menu_commit {
+                    let short = &oid.to_string()[..7];
+                    let default_name = format!("wt-{}", short);
+                    branch_name_dialog.show_for_worktree(&default_name, short);
+                }
+            } else {
+                // From branch sidebar: use branch name as source
+                branch_name_dialog.show_for_worktree(param, param);
+            }
+        }
         "create_tag" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
@@ -2759,7 +2825,7 @@ fn handle_context_menu_action(
 
 /// Add panel backgrounds, borders, and visual chrome to the output.
 /// `mouse_pos` is used to highlight dividers on hover for drag affordance.
-fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel, mouse_pos: (f32, f32)) {
+fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel, mouse_pos: (f32, f32), staging_mode: bool, staging_preview_ratio: f32, pill_bar_h: f32) {
     // Panel backgrounds for depth separation
     output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
         &layout.graph,
@@ -2814,6 +2880,27 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         ));
     }
 
+    // Horizontal divider: staging | preview (within right panel, staging mode only)
+    if staging_mode {
+        let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
+        let split_y = content_rect.y + content_rect.height * staging_preview_ratio;
+        let hit_tolerance = 8.0;
+        let staging_preview_hover = layout.right_panel.contains(mx, my)
+            && (my - split_y).abs() < hit_tolerance;
+
+        if staging_preview_hover {
+            output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(layout.right_panel.x, split_y - 1.0, layout.right_panel.width, 3.0),
+                theme::BORDER_LIGHT.to_array(),
+            ));
+        } else {
+            output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(layout.right_panel.x, split_y, layout.right_panel.width, 1.0),
+                theme::BORDER.with_alpha(0.35).to_array(),
+            ));
+        }
+    }
+
     // Focused panel indicator: subtle accent-colored top border (2px at ~40% alpha)
     let focused_rect = match focused {
         FocusedPanel::Graph => &layout.graph,
@@ -2847,6 +2934,7 @@ fn build_ui_output(
     avatar_renderer: &AvatarRenderer,
     sidebar_ratio: f32,
     graph_ratio: f32,
+    staging_preview_ratio: f32,
     shortcut_bar_visible: bool,
     mouse_pos: (f32, f32),
     elapsed: f32,
@@ -2871,7 +2959,13 @@ fn build_ui_output(
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
-    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused, mouse_pos);
+    let staging_mode = tabs.get(active_tab)
+        .map(|(_, vs)| vs.right_panel_mode == RightPanelMode::Staging)
+        .unwrap_or(false);
+    let pill_bar_h = tabs.get(active_tab)
+        .map(|(_, vs)| vs.staging_well.pill_bar_height())
+        .unwrap_or(0.0);
+    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused, mouse_pos, staging_mode, staging_preview_ratio, pill_bar_h);
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
@@ -2910,7 +3004,7 @@ fn build_ui_output(
             match view_state.right_panel_mode {
                 RightPanelMode::Staging => {
                     // Upper: staging well, Lower: diff view with header
-                    let (staging_rect, diff_rect) = content_rect.split_vertical(0.45);
+                    let (staging_rect, diff_rect) = content_rect.split_vertical(staging_preview_ratio);
                     chrome_output.extend(view_state.staging_well.layout(text_renderer, staging_rect));
 
                     // Preview header bar
@@ -3168,7 +3262,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio,
+        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
         app.shortcut_bar_visible,
         mouse_pos,
         elapsed,
@@ -3304,7 +3398,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio,
+        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for screenshots
         elapsed,
@@ -3422,7 +3516,7 @@ fn capture_screenshot_offscreen(
         &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio,
+        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for offscreen screenshots
         elapsed,

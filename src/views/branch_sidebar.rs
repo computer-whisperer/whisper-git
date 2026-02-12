@@ -566,6 +566,7 @@ impl BranchSidebar {
                             MenuItem::separator(),
                             MenuItem::new("Merge into Current", "merge"),
                             MenuItem::new("Rebase Current onto", "rebase"),
+                            MenuItem::new("Create Worktree", "create_worktree"),
                         ];
                         // Tag the action_id with the branch name using a separator
                         // We'll parse it in main.rs: "checkout:branch_name"

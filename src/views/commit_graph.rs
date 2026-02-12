@@ -700,6 +700,7 @@ impl CommitGraphView {
                 items.push(MenuItem::new("Cherry-pick", "cherry_pick"));
                 items.push(MenuItem::new("Revert Commit", "revert_commit"));
                 items.push(MenuItem::new("Create Branch Here", "create_branch"));
+                items.push(MenuItem::new("Create Worktree Here", "create_worktree"));
                 items.push(MenuItem::new("Create Tag Here", "create_tag"));
                 items.push(MenuItem::separator());
                 items.push(MenuItem::new("Reset Soft to Here", "reset_soft"));

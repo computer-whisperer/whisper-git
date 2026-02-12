@@ -68,6 +68,7 @@ pub enum AppMessage {
     ExitSubmodule,
     ExitToDepth(usize),
     AbortOperation,
+    CreateWorktree(String, String), // (name, source_ref)
     AddRemote(String, String),     // (name, url)
     DeleteRemote(String),
     RenameRemote(String, String),  // (old_name, new_name)
@@ -609,6 +610,29 @@ pub fn handle_app_message(
                 rx,
                 format!("Remove worktree '{}'", name),
                 format!("Removing worktree '{}'...", name),
+                toast_manager,
+            );
+        }
+        AppMessage::CreateWorktree(name, source) => {
+            let cmd_dir = repo.git_command_dir();
+            // Compute worktree path: sibling directory to the current workdir
+            let wt_path = cmd_dir.parent()
+                .unwrap_or(&cmd_dir)
+                .join(&name)
+                .to_string_lossy()
+                .to_string();
+            // Heuristic: if source looks like a hex SHA (7+ hex chars), use detached mode
+            let is_sha = source.len() >= 7 && source.chars().all(|c| c.is_ascii_hexdigit());
+            let rx = if is_sha {
+                git::create_worktree_detached_async(cmd_dir, wt_path, source.clone())
+            } else {
+                git::create_worktree_async(cmd_dir, wt_path, source.clone())
+            };
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Create worktree '{}'", name),
+                format!("Creating worktree '{}'...", name),
                 toast_manager,
             );
         }

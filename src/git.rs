@@ -104,7 +104,11 @@ pub fn create_synthetic_entries(
                     let workdir = repo.workdir()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    synthetics.push(CommitInfo::synthetic_for_working_dir(head, count, &workdir, parent_time));
+                    let (ins, del) = repo.working_tree_diff_stats();
+                    let mut entry = CommitInfo::synthetic_for_working_dir(head, count, &workdir, parent_time);
+                    entry.insertions = ins;
+                    entry.deletions = del;
+                    synthetics.push(entry);
                 }
             }
         }
@@ -116,7 +120,13 @@ pub fn create_synthetic_entries(
                     .and_then(|oid| commits.iter().find(|c| c.id == oid))
                     .map(|c| c.time)
                     .unwrap_or(0);
-                if let Some(synthetic) = CommitInfo::synthetic_for_worktree(wt, parent_time) {
+                if let Some(mut synthetic) = CommitInfo::synthetic_for_worktree(wt, parent_time) {
+                    // Compute diff stats for this worktree
+                    if let Ok(wt_repo) = GitRepo::open(&wt.path) {
+                        let (ins, del) = wt_repo.working_tree_diff_stats();
+                        synthetic.insertions = ins;
+                        synthetic.deletions = del;
+                    }
                     synthetics.push(synthetic);
                 }
             }
@@ -312,6 +322,32 @@ impl GitRepo {
     /// Get the repository's git directory (.git or .bare)
     pub fn git_dir(&self) -> &Path {
         self.repo.path()
+    }
+
+    /// Compute aggregate diff stats for the working tree (staged + unstaged).
+    /// Returns (insertions, deletions).
+    pub fn working_tree_diff_stats(&self) -> (usize, usize) {
+        let mut ins = 0usize;
+        let mut del = 0usize;
+        // Staged: HEAD-to-index
+        if let Ok(head_ref) = self.repo.head() {
+            if let Ok(head_tree) = head_ref.peel_to_tree() {
+                if let Ok(diff) = self.repo.diff_tree_to_index(Some(&head_tree), None, None) {
+                    if let Ok(stats) = diff.stats() {
+                        ins += stats.insertions();
+                        del += stats.deletions();
+                    }
+                }
+            }
+        }
+        // Unstaged: index-to-workdir
+        if let Ok(diff) = self.repo.diff_index_to_workdir(None, None) {
+            if let Ok(stats) = diff.stats() {
+                ins += stats.insertions();
+                del += stats.deletions();
+            }
+        }
+        (ins, del)
     }
 
     /// Get commits for building a graph (includes all branches)
@@ -1720,6 +1756,14 @@ define_async_git_op! {
     /// Spawn a background thread to update a submodule
     update_submodule_async(name: String) =>
         ["submodule", "update", "--init", name], "submodule update";
+
+    /// Spawn a background thread to create a worktree for a branch
+    create_worktree_async(path: String, branch: String) =>
+        ["worktree", "add", path, branch], "worktree add";
+
+    /// Spawn a background thread to create a detached worktree at a commit
+    create_worktree_detached_async(path: String, commitish: String) =>
+        ["worktree", "add", "--detach", path, commitish], "worktree add";
 
     /// Spawn a background thread to remove a worktree
     remove_worktree_async(name: String) =>

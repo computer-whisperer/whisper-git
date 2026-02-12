@@ -13,6 +13,8 @@ use crate::ui::{Rect, TextRenderer};
 #[derive(Clone, Debug)]
 pub enum BranchNameDialogAction {
     Create(String, Oid),
+    /// Create a worktree with (name, source_ref)
+    CreateWorktree(String, String),
     Cancel,
 }
 
@@ -26,6 +28,8 @@ pub struct BranchNameDialog {
     pending_action: Option<BranchNameDialogAction>,
     /// Title shown in the dialog (e.g. "Create Branch" or "Create Tag")
     title: String,
+    /// When set, dialog is in worktree mode: stores the source ref (branch name or SHA)
+    worktree_source: Option<String>,
 }
 
 impl BranchNameDialog {
@@ -38,6 +42,7 @@ impl BranchNameDialog {
             target_oid: None,
             pending_action: None,
             title: "Create Branch".to_string(),
+            worktree_source: None,
         }
     }
 
@@ -51,6 +56,20 @@ impl BranchNameDialog {
         self.name_input.set_text(default_name);
         self.name_input.set_focused(true);
         self.target_oid = Some(oid);
+        self.worktree_source = None;
+        self.pending_action = None;
+    }
+
+    /// Show the dialog in worktree creation mode.
+    /// `default_name` is pre-filled, `source_ref` is the branch or SHA to base the worktree on.
+    pub fn show_for_worktree(&mut self, default_name: &str, source_ref: &str) {
+        self.visible = true;
+        self.title = "Create Worktree".to_string();
+        self.name_input = TextInput::new().with_placeholder("worktree-name");
+        self.name_input.set_text(default_name);
+        self.name_input.set_focused(true);
+        self.target_oid = None;
+        self.worktree_source = Some(source_ref.to_string());
         self.pending_action = None;
     }
 
@@ -63,6 +82,7 @@ impl BranchNameDialog {
         self.visible = false;
         self.name_input.set_focused(false);
         self.target_oid = None;
+        self.worktree_source = None;
     }
 
     pub fn is_visible(&self) -> bool {
@@ -78,7 +98,10 @@ impl BranchNameDialog {
         if name.is_empty() {
             return;
         }
-        if let Some(oid) = self.target_oid {
+        if let Some(ref source) = self.worktree_source {
+            self.pending_action = Some(BranchNameDialogAction::CreateWorktree(name, source.clone()));
+            self.hide();
+        } else if let Some(oid) = self.target_oid {
             self.pending_action = Some(BranchNameDialogAction::Create(name, oid));
             self.hide();
         }
