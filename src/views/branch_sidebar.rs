@@ -571,9 +571,15 @@ impl BranchSidebar {
                 let full = format!("{}/{}", remote, branch);
                 let mut items = vec![
                     MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
+                    MenuItem::new("Merge into Current", "merge_remote"),
+                    MenuItem::new("Rebase Current onto", "rebase_remote"),
+                    MenuItem::separator(),
+                    MenuItem::new("Delete Remote Branch", "delete_remote_branch"),
                 ];
                 for item in &mut items {
-                    item.action_id = format!("{}:{}", item.action_id, full);
+                    if !item.is_separator {
+                        item.action_id = format!("{}:{}", item.action_id, full);
+                    }
                 }
                 Some(items)
             }

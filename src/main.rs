@@ -2890,6 +2890,26 @@ fn handle_context_menu_action(
                 *pending_confirm_action = Some(AppMessage::DeleteRemote(param.to_string()));
             }
         }
+        "merge_remote" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Merge Remote Branch", &format!("Merge '{}' into current branch?", param));
+                *pending_confirm_action = Some(AppMessage::MergeBranch(param.to_string()));
+            }
+        }
+        "rebase_remote" => {
+            if !param.is_empty() {
+                confirm_dialog.show("Rebase onto Remote Branch", &format!("Rebase current branch onto '{}'?", param));
+                *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+            }
+        }
+        "delete_remote_branch" => {
+            if !param.is_empty() {
+                if let Some((remote, branch)) = param.split_once('/') {
+                    confirm_dialog.show("Delete Remote Branch", &format!("Delete branch '{}' from remote '{}'? This cannot be undone.", branch, remote));
+                    *pending_confirm_action = Some(AppMessage::DeleteRemoteBranch(remote.to_string(), branch.to_string()));
+                }
+            }
+        }
         _ => {
             toast_manager.push(
                 format!("Unknown action: {}", action_id),
