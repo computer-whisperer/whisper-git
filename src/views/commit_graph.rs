@@ -413,7 +413,7 @@ impl CommitGraphView {
     /// Scans only commits that are within the visible viewport bounds.
     fn update_adaptive_graph_width(&mut self, commits: &[CommitInfo], bounds: &Rect) {
         let header_offset = self.header_offset();
-        let buffer = self.row_height * 2.0;
+        let buffer = self.row_height * 5.0;
         let mut max_visible_lane: usize = 0;
 
         for (row, commit) in commits.iter().enumerate() {
@@ -876,7 +876,7 @@ impl CommitGraphView {
                 continue;
             }
             let y = self.row_y(row, &bounds, header_offset);
-            let buffer = self.row_height * 5.0;
+            let buffer = self.row_height * 15.0;
             if y < bounds.y - buffer || y > bounds.bottom() + buffer {
                 continue;
             }
@@ -904,8 +904,8 @@ impl CommitGraphView {
             let x = self.lane_x(layout.lane, &bounds);
             let y = self.row_y(row, &bounds, header_offset);
 
-            // Skip if outside visible area (5-row buffer for stable connection lines)
-            let buffer = self.row_height * 5.0;
+            // Skip if outside visible area (15-row buffer for stable connection lines)
+            let buffer = self.row_height * 15.0;
             if y < bounds.y - buffer || y > bounds.bottom() + buffer {
                 continue;
             }
@@ -1339,8 +1339,8 @@ impl CommitGraphView {
             // row_y returns the center of the row; offset text to center it vertically
             let y = self.row_y(row, &bounds, header_offset) - line_height / 2.0;
 
-            // Skip if outside visible bounds (2-row buffer for smooth scrolling)
-            let text_buffer = self.row_height * 2.0;
+            // Skip if outside visible bounds (10-row buffer for smooth scrolling)
+            let text_buffer = self.row_height * 10.0;
             if y < bounds.y - text_buffer || y > bounds.bottom() + text_buffer {
                 continue;
             }
