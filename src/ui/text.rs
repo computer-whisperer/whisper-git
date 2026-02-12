@@ -207,6 +207,7 @@ impl TextRenderer {
         // Characters to include in atlas: printable ASCII + UI symbols present in Roboto
         let mut chars: Vec<char> = (32u8..127u8).map(|c| c as char).collect();
         chars.extend([
+            '\u{2190}', // ← Left arrow (remote indicator)
             '\u{2191}', // ↑ Up arrow (Push)
             '\u{2193}', // ↓ Down arrow (Pull)
             '\u{25CF}', // ● Filled circle

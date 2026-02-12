@@ -70,6 +70,8 @@ pub struct HeaderBar {
     /// Label for a generic async operation in progress (e.g. "Merging...", "Rebasing...")
     /// When set, renders a spinning indicator in the header next to the branch pill.
     pub generic_op_label: Option<String>,
+    /// Tracking remote name (e.g. "origin"). Shown next to branch pill when non-empty.
+    pub remote_name: String,
 }
 
 impl HeaderBar {
@@ -99,6 +101,7 @@ impl HeaderBar {
             abort_button_bounds: None,
             pull_shift_held: false,
             generic_op_label: None,
+            remote_name: String::new(),
         }
     }
 
@@ -465,6 +468,19 @@ impl HeaderBar {
                 after_pill_x += bold_renderer.measure_text(&behind_text);
             }
             after_pill_x += 4.0;
+        }
+
+        // Remote name indicator (e.g. "← origin") in muted text after branch pill
+        if !self.remote_name.is_empty() {
+            let remote_label = format!("\u{2190} {}", self.remote_name);
+            let remote_x = after_pill_x + 8.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &remote_label,
+                remote_x,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+            after_pill_x = remote_x + text_renderer.measure_text(&remote_label);
         }
 
         // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
@@ -854,10 +870,24 @@ impl Widget for HeaderBar {
             theme::ACCENT.to_array(),
         ));
 
+        // Remote name indicator (e.g. "← origin") in muted text after branch pill
+        let mut after_pill_x = branch_pill_x + pill_w;
+        if !self.remote_name.is_empty() {
+            let remote_label = format!("\u{2190} {}", self.remote_name);
+            let remote_x = after_pill_x + 8.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &remote_label,
+                remote_x,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+            after_pill_x = remote_x + text_renderer.measure_text(&remote_label);
+        }
+
         // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
         if let Some(label) = self.operation_state_label {
             // Amber warning text after the branch pill
-            let label_x = branch_pill_x + pill_w + 12.0;
+            let label_x = after_pill_x + 12.0;
             let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
             output.text_vertices.extend(text_renderer.layout_text(
                 label,
