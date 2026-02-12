@@ -30,11 +30,11 @@ pub enum AppMessage {
     StageAll,
     UnstageAll,
     Commit(String),
-    Fetch,
-    Pull,
-    PullRebase,
-    Push,
-    PushForce,
+    Fetch(Option<String>),
+    Pull(Option<String>),
+    PullRebase(Option<String>),
+    Push(Option<String>),
+    PushForce(Option<String>),
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
     ViewDiff(String, bool), // (path, staged)
@@ -310,8 +310,10 @@ pub fn handle_app_message(
                 }
             }
         }
-        AppMessage::Fetch => {
-            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+        AppMessage::Fetch(remote_name) => {
+            let remote = remote_name.unwrap_or_else(|| {
+                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+            });
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch",
                 |wd| git::fetch_remote_async(wd, remote),
@@ -321,8 +323,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::Pull => {
-            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+        AppMessage::Pull(remote_name) => {
+            let remote = remote_name.unwrap_or_else(|| {
+                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+            });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull",
@@ -333,8 +337,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::PullRebase => {
-            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+        AppMessage::PullRebase(remote_name) => {
+            let remote = remote_name.unwrap_or_else(|| {
+                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+            });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull",
@@ -345,8 +351,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::Push => {
-            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+        AppMessage::Push(remote_name) => {
+            let remote = remote_name.unwrap_or_else(|| {
+                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+            });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push",
@@ -357,8 +365,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::PushForce => {
-            let remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+        AppMessage::PushForce(remote_name) => {
+            let remote = remote_name.unwrap_or_else(|| {
+                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+            });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push",

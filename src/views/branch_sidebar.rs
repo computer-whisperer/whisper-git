@@ -541,13 +541,22 @@ impl BranchSidebar {
                     MenuItem::new("Pull", "pull"),
                     MenuItem::new("Pull (Rebase)", "pull_rebase"),
                     MenuItem::new("Force Push", "force_push"),
-                    MenuItem::separator(),
-                    MenuItem::new("Merge into Current", "merge"),
-                    MenuItem::new("Rebase Current onto", "rebase"),
-                    MenuItem::new("Create Worktree", "create_worktree"),
                 ];
+                // Add "Push to {remote}" for each configured remote
+                let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
+                remote_names.sort();
+                for remote in &remote_names {
+                    items.push(MenuItem::new(
+                        format!("Push to {}", remote),
+                        format!("push_to_remote:{}", remote),
+                    ));
+                }
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Merge into Current", "merge"));
+                items.push(MenuItem::new("Rebase Current onto", "rebase"));
+                items.push(MenuItem::new("Create Worktree", "create_worktree"));
                 for item in &mut items {
-                    if !item.is_separator {
+                    if !item.is_separator && !item.action_id.starts_with("push_to_remote:") {
                         item.action_id = format!("{}:{}", item.action_id, name);
                     }
                 }
@@ -555,6 +564,8 @@ impl BranchSidebar {
             }
             SidebarItem::RemoteHeader(name) => {
                 let mut items = vec![
+                    MenuItem::new(format!("Fetch from {}", name), "fetch_remote"),
+                    MenuItem::separator(),
                     MenuItem::new("Edit URL...", "edit_remote_url"),
                     MenuItem::new("Rename...", "rename_remote"),
                     MenuItem::separator(),

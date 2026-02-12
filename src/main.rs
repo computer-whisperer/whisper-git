@@ -1349,28 +1349,28 @@ impl App {
         // Ctrl+Shift+F: Fetch
         if *key == Key::F && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Fetch);
+                view_state.pending_messages.push(AppMessage::Fetch(None));
                 return true;
             }
         }
         // Ctrl+Shift+L: Pull
         if *key == Key::L && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Pull);
+                view_state.pending_messages.push(AppMessage::Pull(None));
                 return true;
             }
         }
         // Ctrl+Shift+P: Push
         if *key == Key::P && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Push);
+                view_state.pending_messages.push(AppMessage::Push(None));
                 return true;
             }
         }
         // Ctrl+Shift+R: Pull --rebase
         if *key == Key::R && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::PullRebase);
+                view_state.pending_messages.push(AppMessage::PullRebase(None));
                 return true;
             }
         }
@@ -2084,16 +2084,16 @@ impl App {
                 use crate::ui::widgets::HeaderAction;
                 match action {
                     HeaderAction::Fetch => {
-                        view_state.pending_messages.push(AppMessage::Fetch);
+                        view_state.pending_messages.push(AppMessage::Fetch(None));
                     }
                     HeaderAction::Pull => {
-                        view_state.pending_messages.push(AppMessage::Pull);
+                        view_state.pending_messages.push(AppMessage::Pull(None));
                     }
                     HeaderAction::PullRebase => {
-                        view_state.pending_messages.push(AppMessage::PullRebase);
+                        view_state.pending_messages.push(AppMessage::PullRebase(None));
                     }
                     HeaderAction::Push => {
-                        view_state.pending_messages.push(AppMessage::Push);
+                        view_state.pending_messages.push(AppMessage::Push(None));
                     }
                     HeaderAction::Commit => {
                         view_state.focused_panel = FocusedPanel::RightPanel;
@@ -2662,17 +2662,27 @@ fn handle_context_menu_action(
             }
         }
         "push" => {
-            view_state.pending_messages.push(AppMessage::Push);
+            view_state.pending_messages.push(AppMessage::Push(None));
         }
         "pull" => {
-            view_state.pending_messages.push(AppMessage::Pull);
+            view_state.pending_messages.push(AppMessage::Pull(None));
         }
         "pull_rebase" => {
-            view_state.pending_messages.push(AppMessage::PullRebase);
+            view_state.pending_messages.push(AppMessage::PullRebase(None));
         }
         "force_push" => {
             confirm_dialog.show("Force Push", "Force push with --force-with-lease? This may overwrite remote commits.");
-            *pending_confirm_action = Some(AppMessage::PushForce);
+            *pending_confirm_action = Some(AppMessage::PushForce(None));
+        }
+        "fetch_remote" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::Fetch(Some(param.to_string())));
+            }
+        }
+        "push_to_remote" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::Push(Some(param.to_string())));
+            }
         }
         // Staging actions
         "stage" => {
