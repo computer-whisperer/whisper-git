@@ -1546,6 +1546,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         ahead,
         behind,
     );
+    view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
 
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
@@ -1577,6 +1578,7 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
             repo.current_branch().unwrap_or_else(|_| "unknown".to_string()),
             0, 0,
         );
+        view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
     }
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes

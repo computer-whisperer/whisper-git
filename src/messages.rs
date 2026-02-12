@@ -1024,4 +1024,5 @@ fn refresh_repo_state(
         ahead,
         behind,
     );
+    view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
 }
