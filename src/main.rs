@@ -1524,6 +1524,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     view_state.branch_sidebar.stashes = repo.stash_list();
 
+    // Compute ahead/behind for all local branches (sidebar indicators)
+    let ab_cache = repo.all_branches_ahead_behind();
+    view_state.branch_sidebar.update_ahead_behind(ab_cache);
+
     // When inside a submodule, override staging well with parent's siblings
     // so users can navigate between sibling submodules
     if let Some(ref focus) = view_state.submodule_focus {

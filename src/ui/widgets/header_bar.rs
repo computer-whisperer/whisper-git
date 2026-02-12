@@ -440,9 +440,36 @@ impl HeaderBar {
             theme::ACCENT.to_array(),
         ));
 
+        // Ahead/behind indicators next to the branch pill
+        let mut after_pill_x = branch_pill_x + pill_w;
+        if self.ahead > 0 || self.behind > 0 {
+            after_pill_x += 8.0;
+            if self.ahead > 0 {
+                let ahead_text = format!("\u{2191}{}", self.ahead);
+                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                    &ahead_text,
+                    after_pill_x,
+                    text_y,
+                    theme::STATUS_CLEAN.to_array(),
+                ));
+                after_pill_x += bold_renderer.measure_text(&ahead_text) + 4.0;
+            }
+            if self.behind > 0 {
+                let behind_text = format!("\u{2193}{}", self.behind);
+                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                    &behind_text,
+                    after_pill_x,
+                    text_y,
+                    theme::STATUS_BEHIND.to_array(),
+                ));
+                after_pill_x += bold_renderer.measure_text(&behind_text);
+            }
+            after_pill_x += 4.0;
+        }
+
         // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
         if let Some(label) = self.operation_state_label {
-            let label_x = branch_pill_x + pill_w + 12.0;
+            let label_x = after_pill_x + 12.0;
             let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
             output.bold_text_vertices.extend(bold_renderer.layout_text(
                 label, label_x, text_y, label_color,
@@ -457,7 +484,7 @@ impl HeaderBar {
         // Only show when no operation_state_label is already displayed
         if self.operation_state_label.is_none() {
             if let Some(ref op_label) = self.generic_op_label {
-                let indicator_x = branch_pill_x + pill_w + 12.0;
+                let indicator_x = after_pill_x + 12.0;
                 let spinner_radius = 5.0 * scale;
                 let spinner_thickness = 1.5 * scale;
                 let spinner_cx = indicator_x + spinner_radius;

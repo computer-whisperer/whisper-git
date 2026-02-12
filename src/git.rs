@@ -483,6 +483,29 @@ impl GitRepo {
         anyhow::bail!("No HEAD or branch tips found")
     }
 
+    /// Get ahead/behind counts for all local branches that have an upstream.
+    /// Returns a map of branch_name -> (ahead, behind).
+    pub fn all_branches_ahead_behind(&self) -> HashMap<String, (usize, usize)> {
+        let mut result = HashMap::new();
+        let Ok(branches) = self.repo.branches(Some(git2::BranchType::Local)) else {
+            return result;
+        };
+        for branch_result in branches {
+            let Ok((branch, _)) = branch_result else { continue };
+            let Ok(Some(name)) = branch.name() else { continue };
+            let name = name.to_string();
+            let Ok(upstream) = branch.upstream() else { continue };
+            let Some(local_oid) = branch.get().resolve().ok().and_then(|r| r.target()) else { continue };
+            let Some(upstream_oid) = upstream.get().resolve().ok().and_then(|r| r.target()) else { continue };
+            if let Ok((ahead, behind)) = self.repo.graph_ahead_behind(local_oid, upstream_oid) {
+                if ahead > 0 || behind > 0 {
+                    result.insert(name, (ahead, behind));
+                }
+            }
+        }
+        result
+    }
+
     /// Get ahead/behind count relative to upstream
     pub fn ahead_behind(&self) -> Result<(usize, usize)> {
         let head = match self.repo.head() {
