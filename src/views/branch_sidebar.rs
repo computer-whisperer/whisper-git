@@ -19,6 +19,7 @@ pub enum SidebarAction {
     ApplyStash(usize),
     DropStash(usize),
     DeleteTag(String),
+    RenameBranch(String), // old_name — new name comes from dialog
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -524,6 +525,7 @@ impl BranchSidebar {
             SidebarItem::LocalBranch(name) => {
                 let mut items = vec![
                     MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
+                    MenuItem::new("Rename...", "rename"),
                     MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
                     MenuItem::new("Push", "push"),
                     MenuItem::new("Pull", "pull"),

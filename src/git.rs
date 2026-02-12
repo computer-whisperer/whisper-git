@@ -1309,6 +1309,15 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Rename a local branch
+    pub fn rename_branch(&self, old_name: &str, new_name: &str, force: bool) -> Result<()> {
+        let mut branch = self.repo.find_branch(old_name, git2::BranchType::Local)
+            .with_context(|| format!("Branch '{}' not found", old_name))?;
+        branch.rename(new_name, force)
+            .with_context(|| format!("Failed to rename branch '{}' to '{}'", old_name, new_name))?;
+        Ok(())
+    }
+
     /// Reset HEAD to a given commit
     pub fn reset_to_commit(&self, oid: Oid, mode: git2::ResetType) -> Result<()> {
         let commit = self.repo.find_commit(oid)

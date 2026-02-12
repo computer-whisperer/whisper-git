@@ -41,6 +41,7 @@ pub enum AppMessage {
     CheckoutBranch(String),
     CheckoutRemoteBranch(String, String),
     DeleteBranch(String),
+    RenameBranch(String, String), // (old_name, new_name)
     StageHunk(String, usize),    // (file_path, hunk_index)
     UnstageHunk(String, usize),  // (file_path, hunk_index)
     DiscardFile(String),
@@ -460,6 +461,24 @@ pub fn handle_app_message(
                     let root = e.root_cause().to_string();
                     toast_manager.push(
                         format!("Cannot delete '{}': {}", name, root),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+        AppMessage::RenameBranch(old_name, new_name) => {
+            match repo.rename_branch(&old_name, &new_name, false) {
+                Ok(()) => {
+                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                    toast_manager.push(
+                        format!("Renamed branch '{}' to '{}'", old_name, new_name),
+                        ToastSeverity::Success,
+                    );
+                }
+                Err(e) => {
+                    let root = e.root_cause().to_string();
+                    toast_manager.push(
+                        format!("Cannot rename '{}': {}", old_name, root),
                         ToastSeverity::Error,
                     );
                 }

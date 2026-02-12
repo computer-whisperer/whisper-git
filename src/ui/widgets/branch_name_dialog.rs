@@ -15,6 +15,8 @@ pub enum BranchNameDialogAction {
     Create(String, Oid),
     /// Create a worktree with (name, source_ref)
     CreateWorktree(String, String),
+    /// Rename a branch: (new_name, old_name)
+    Rename(String, String),
     Cancel,
 }
 
@@ -30,6 +32,8 @@ pub struct BranchNameDialog {
     title: String,
     /// When set, dialog is in worktree mode: stores the source ref (branch name or SHA)
     worktree_source: Option<String>,
+    /// When set, dialog is in rename mode: stores the old branch name
+    rename_source: Option<String>,
 }
 
 impl BranchNameDialog {
@@ -43,6 +47,7 @@ impl BranchNameDialog {
             pending_action: None,
             title: "Create Branch".to_string(),
             worktree_source: None,
+            rename_source: None,
         }
     }
 
@@ -57,6 +62,7 @@ impl BranchNameDialog {
         self.name_input.set_focused(true);
         self.target_oid = Some(oid);
         self.worktree_source = None;
+        self.rename_source = None;
         self.pending_action = None;
     }
 
@@ -70,7 +76,23 @@ impl BranchNameDialog {
         self.name_input.set_focused(true);
         self.target_oid = None;
         self.worktree_source = Some(source_ref.to_string());
+        self.rename_source = None;
         self.pending_action = None;
+    }
+
+    /// Show the dialog in branch rename mode.
+    /// `old_name` is the branch being renamed, pre-filled as the default text.
+    pub fn show_for_rename(&mut self, old_name: &str) {
+        self.visible = true;
+        self.title = "Rename Branch".to_string();
+        self.name_input = TextInput::new().with_placeholder("new-branch-name");
+        self.name_input.set_text(old_name);
+        self.name_input.set_focused(true);
+        self.target_oid = None;
+        self.worktree_source = None;
+        self.rename_source = Some(old_name.to_string());
+        self.pending_action = None;
+        self.create_button = Button::new("Rename").primary();
     }
 
     /// Returns the current dialog title (e.g. "Create Branch" or "Create Tag")
@@ -83,6 +105,8 @@ impl BranchNameDialog {
         self.name_input.set_focused(false);
         self.target_oid = None;
         self.worktree_source = None;
+        self.rename_source = None;
+        self.create_button = Button::new("Create").primary();
     }
 
     pub fn is_visible(&self) -> bool {
@@ -98,7 +122,10 @@ impl BranchNameDialog {
         if name.is_empty() {
             return;
         }
-        if let Some(ref source) = self.worktree_source {
+        if let Some(ref old_name) = self.rename_source {
+            self.pending_action = Some(BranchNameDialogAction::Rename(name, old_name.clone()));
+            self.hide();
+        } else if let Some(ref source) = self.worktree_source {
             self.pending_action = Some(BranchNameDialogAction::CreateWorktree(name, source.clone()));
             self.hide();
         } else if let Some(oid) = self.target_oid {
