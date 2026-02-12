@@ -147,9 +147,9 @@ struct TabViewState {
     context_menu_commit: Option<Oid>,
     last_diff_commit: Option<Oid>,
     pending_messages: Vec<AppMessage>,
-    fetch_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
-    pull_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
-    push_receiver: Option<(Receiver<RemoteOpResult>, Instant)>,
+    fetch_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
+    pull_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
+    push_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
     /// Generic async receiver for submodule/worktree ops (label for toast)
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
     /// Track whether we already showed the "still running" toast for each op
@@ -817,14 +817,15 @@ impl App {
         const TIMEOUT_SECS: u64 = 60;
 
         // Poll fetch
-        if let Some((ref rx, started)) = view_state.fetch_receiver {
+        if let Some((ref rx, started, ref remote_name)) = view_state.fetch_receiver {
             match rx.try_recv() {
                 Ok(result) => {
+                    let remote = remote_name.clone();
                     view_state.header_bar.fetching = false;
                     view_state.fetch_receiver = None;
                     view_state.showed_timeout_toast[0] = false;
                     if result.success {
-                        self.toast_manager.push("Fetch complete", ToastSeverity::Success);
+                        self.toast_manager.push(format!("Fetched from {}", remote), ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
@@ -848,14 +849,15 @@ impl App {
         }
 
         // Poll pull
-        if let Some((ref rx, started)) = view_state.pull_receiver {
+        if let Some((ref rx, started, ref remote_name)) = view_state.pull_receiver {
             match rx.try_recv() {
                 Ok(result) => {
+                    let remote = remote_name.clone();
                     view_state.header_bar.pulling = false;
                     view_state.pull_receiver = None;
                     view_state.showed_timeout_toast[1] = false;
                     if result.success {
-                        self.toast_manager.push("Pull complete", ToastSeverity::Success);
+                        self.toast_manager.push(format!("Pulled from {}", remote), ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {
@@ -879,14 +881,15 @@ impl App {
         }
 
         // Poll push (also does full refresh to update ahead/behind and branch state)
-        if let Some((ref rx, started)) = view_state.push_receiver {
+        if let Some((ref rx, started, ref remote_name)) = view_state.push_receiver {
             match rx.try_recv() {
                 Ok(result) => {
+                    let remote = remote_name.clone();
                     view_state.header_bar.pushing = false;
                     view_state.push_receiver = None;
                     view_state.showed_timeout_toast[2] = false;
                     if result.success {
-                        self.toast_manager.push("Push complete", ToastSeverity::Success);
+                        self.toast_manager.push(format!("Pushed to {}", remote), ToastSeverity::Success);
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     } else {

@@ -163,9 +163,10 @@ fn handle_repo_mutation(
 /// verify a working directory exists, then launch the async function and
 /// store the receiver. Returns `false` if the operation was already busy.
 fn start_remote_op(
-    receiver: &mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    receiver: &mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
     repo: &GitRepo,
     op_name: &str,
+    remote_name: String,
     start_fn: impl FnOnce(PathBuf) -> Receiver<RemoteOpResult>,
     set_header_flag: impl FnOnce(&mut crate::ui::widgets::HeaderBar),
     toast_manager: &mut ToastManager,
@@ -187,7 +188,7 @@ fn start_remote_op(
     }
     let cmd_dir = repo.git_command_dir();
     let rx = start_fn(cmd_dir);
-    *receiver = Some((rx, std::time::Instant::now()));
+    *receiver = Some((rx, std::time::Instant::now(), remote_name));
     set_header_flag(header_bar);
     true
 }
@@ -316,9 +317,10 @@ pub fn handle_app_message(
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
+            let remote_for_closure = remote.clone();
             if !start_remote_op(
-                view_state.fetch_receiver, repo, "Fetch",
-                |wd| git::fetch_remote_async(wd, remote),
+                view_state.fetch_receiver, repo, "Fetch", remote,
+                |wd| git::fetch_remote_async(wd, remote_for_closure),
                 |hb| hb.fetching = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -340,9 +342,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            let remote_for_closure = remote.clone();
             if !start_remote_op(
-                view_state.pull_receiver, repo, "Pull",
-                |wd| git::pull_remote_async(wd, remote, branch),
+                view_state.pull_receiver, repo, "Pull", remote,
+                |wd| git::pull_remote_async(wd, remote_for_closure, branch),
                 |hb| hb.pulling = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -354,9 +357,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            let remote_for_closure = remote.clone();
             if !start_remote_op(
-                view_state.pull_receiver, repo, "Pull",
-                |wd| git::pull_rebase_async(wd, remote, branch),
+                view_state.pull_receiver, repo, "Pull", remote,
+                |wd| git::pull_rebase_async(wd, remote_for_closure, branch),
                 |hb| hb.pulling = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -368,9 +372,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            let remote_for_closure = remote.clone();
             if !start_remote_op(
-                view_state.push_receiver, repo, "Push",
-                |wd| git::push_remote_async(wd, remote, branch),
+                view_state.push_receiver, repo, "Push", remote,
+                |wd| git::push_remote_async(wd, remote_for_closure, branch),
                 |hb| hb.pushing = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -382,9 +387,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+            let remote_for_closure = remote.clone();
             if !start_remote_op(
-                view_state.push_receiver, repo, "Push",
-                |wd| git::push_force_async(wd, remote, branch),
+                view_state.push_receiver, repo, "Push", remote,
+                |wd| git::push_force_async(wd, remote_for_closure, branch),
                 |hb| hb.pushing = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -962,9 +968,9 @@ pub struct MessageViewState<'a> {
     pub branch_sidebar: &'a mut BranchSidebar,
     pub header_bar: &'a mut crate::ui::widgets::HeaderBar,
     pub last_diff_commit: &'a mut Option<Oid>,
-    pub fetch_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
-    pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
-    pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant)>,
+    pub fetch_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
+    pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
+    pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
     pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
     pub right_panel_mode: &'a mut RightPanelMode,
     pub worktrees: &'a mut Vec<WorktreeInfo>,
