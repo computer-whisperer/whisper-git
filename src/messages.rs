@@ -984,6 +984,10 @@ fn refresh_repo_state(
 
     view_state.branch_sidebar.stashes = repo.stash_list();
 
+    // Compute ahead/behind for all local branches (sidebar indicators)
+    let ab_cache = repo.all_branches_ahead_behind();
+    view_state.branch_sidebar.update_ahead_behind(ab_cache);
+
     let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
         (0, 0)

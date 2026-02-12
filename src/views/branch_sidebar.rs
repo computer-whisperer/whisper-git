@@ -96,6 +96,8 @@ pub struct BranchSidebar {
     scrollbar: Scrollbar,
     /// Cached bounds for scroll-to-focused calculations
     last_bounds: Option<Rect>,
+    /// Ahead/behind counts per local branch name (only entries with non-zero values)
+    ahead_behind_cache: HashMap<String, (usize, usize)>,
     /// Filter query text for searching branches/tags/stashes
     filter_query: String,
     /// Cursor position in the filter query
@@ -138,6 +140,7 @@ impl BranchSidebar {
             tags: Vec::new(),
             current_branch: String::new(),
             stashes: Vec::new(),
+            ahead_behind_cache: HashMap::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
@@ -286,6 +289,11 @@ impl BranchSidebar {
 
         self.tags = tags.iter().map(|t| t.name.clone()).collect();
         self.tags.sort();
+    }
+
+    /// Update the ahead/behind cache for local branches
+    pub fn update_ahead_behind(&mut self, data: HashMap<String, (usize, usize)>) {
+        self.ahead_behind_cache = data;
     }
 
     /// Take the pending action (consume it)
@@ -1096,7 +1104,22 @@ impl BranchSidebar {
                     ));
                     let icon_width = params.text_renderer.measure_text(icon) + 4.0;
 
-                    let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent - icon_width);
+                    // Compute ahead/behind indicator width for right-alignment
+                    let ab = self.ahead_behind_cache.get(branch.as_str());
+                    let mut ab_total_width = 0.0f32;
+                    if let Some(&(ahead, behind)) = ab {
+                        if ahead > 0 {
+                            let ahead_text = format!("\u{2191}{}", ahead);
+                            ab_total_width += params.text_renderer.measure_text(&ahead_text) + 6.0;
+                        }
+                        if behind > 0 {
+                            let behind_text = format!("\u{2193}{}", behind);
+                            ab_total_width += params.text_renderer.measure_text(&behind_text) + 6.0;
+                        }
+                    }
+
+                    let name_max_width = params.inner.width - params.indent - icon_width - ab_total_width;
+                    let display_name = truncate_to_width(branch, params.text_renderer, name_max_width);
                     if is_current {
                         // Active branch in bold
                         output.bold_text_vertices.extend(bold_renderer.layout_text(
@@ -1112,6 +1135,34 @@ impl BranchSidebar {
                             y + 2.0,
                             color,
                         ));
+                    }
+
+                    // Render ahead/behind indicators (right-aligned)
+                    if let Some(&(ahead, behind)) = ab {
+                        let mut indicator_x = params.inner.right();
+                        if behind > 0 {
+                            let behind_text = format!("\u{2193}{}", behind);
+                            let behind_w = params.text_renderer.measure_text(&behind_text);
+                            indicator_x -= behind_w;
+                            output.text_vertices.extend(params.text_renderer.layout_text(
+                                &behind_text,
+                                indicator_x,
+                                y + 2.0,
+                                theme::STATUS_BEHIND.to_array(),
+                            ));
+                            indicator_x -= 6.0;
+                        }
+                        if ahead > 0 {
+                            let ahead_text = format!("\u{2191}{}", ahead);
+                            let ahead_w = params.text_renderer.measure_text(&ahead_text);
+                            indicator_x -= ahead_w;
+                            output.text_vertices.extend(params.text_renderer.layout_text(
+                                &ahead_text,
+                                indicator_x,
+                                y + 2.0,
+                                theme::STATUS_CLEAN.to_array(),
+                            ));
+                        }
                     }
                 }
                 y += params.line_height;
