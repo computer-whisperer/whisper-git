@@ -126,29 +126,36 @@ impl HeaderBar {
         let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
         let dots: String = ".".repeat(dot_count);
 
+        // Remote name suffix for button labels (e.g. " origin")
+        let remote_suffix = if self.remote_name.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", self.remote_name)
+        };
+
         // Fetch button label (no prefix — Roboto lacks a refresh/circular arrow glyph)
         self.fetch_button.label = if self.fetching {
-            format!("Fetching{}", dots)
+            format!("Fetching{}{}", remote_suffix, dots)
         } else {
-            "Fetch".to_string()
+            format!("Fetch{}", remote_suffix)
         };
 
         // Pull button label with behind badge (↓ down arrow)
         self.pull_button.label = if self.pulling {
-            format!("\u{2193} Pulling{}", dots)
+            format!("\u{2193} Pulling{}{}", remote_suffix, dots)
         } else if self.behind > 0 {
-            format!("\u{2193} Pull (-{})", self.behind)
+            format!("\u{2193} Pull{} (-{})", remote_suffix, self.behind)
         } else {
-            "\u{2193} Pull".to_string()
+            format!("\u{2193} Pull{}", remote_suffix)
         };
 
         // Push button label with ahead badge (↑ up arrow)
         self.push_button.label = if self.pushing {
-            format!("\u{2191} Pushing{}", dots)
+            format!("\u{2191} Pushing{}{}", remote_suffix, dots)
         } else if self.ahead > 0 {
-            format!("\u{2191} Push (+{})", self.ahead)
+            format!("\u{2191} Push{} (+{})", remote_suffix, self.ahead)
         } else {
-            "\u{2191} Push".to_string()
+            format!("\u{2191} Push{}", remote_suffix)
         };
 
         // Fetch/Pull/Push buttons: slightly raised above the header's SURFACE_RAISED background
@@ -279,7 +286,7 @@ impl HeaderBar {
         let scale = (bounds.height / 32.0).max(1.0);
         let button_height = bounds.height - 8.0 * scale;
         let button_y = bounds.y + 4.0 * scale;
-        let button_width = 110.0 * scale;
+        let button_width = 130.0 * scale;
         let icon_button_width = 32.0 * scale;
         let gap = 8.0 * scale;
 
