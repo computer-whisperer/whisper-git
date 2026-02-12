@@ -373,17 +373,19 @@ impl BranchSidebar {
             }
         }
 
-        // TAGS section
-        let tags_filtered: Vec<String> = if filtering {
-            self.tags.iter().filter(|t| self.matches_filter(t)).cloned().collect()
-        } else {
-            self.tags.clone()
-        };
-        if !filtering || !tags_filtered.is_empty() {
-            self.visible_items.push(SidebarItem::SectionHeader("TAGS"));
-            if !self.tags_collapsed {
-                for tag in &tags_filtered {
-                    self.visible_items.push(SidebarItem::Tag(tag.clone()));
+        // TAGS section (only if any exist)
+        if !self.tags.is_empty() {
+            let tags_filtered: Vec<String> = if filtering {
+                self.tags.iter().filter(|t| self.matches_filter(t)).cloned().collect()
+            } else {
+                self.tags.clone()
+            };
+            if !filtering || !tags_filtered.is_empty() {
+                self.visible_items.push(SidebarItem::SectionHeader("TAGS"));
+                if !self.tags_collapsed {
+                    for tag in &tags_filtered {
+                        self.visible_items.push(SidebarItem::Tag(tag.clone()));
+                    }
                 }
             }
         }

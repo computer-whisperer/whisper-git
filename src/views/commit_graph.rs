@@ -830,7 +830,7 @@ impl CommitGraphView {
         let time_col_left = time_col_right - time_col_width;
         let stats_col_right = time_col_left - col_gap;
         let stats_col_left = stats_col_right - stats_col_width;
-        let separator_color = theme::BORDER.with_alpha(0.12).to_array();
+        let separator_color = theme::BORDER.with_alpha(0.20).to_array();
 
         // Separator between commit message and diff stats
         vertices.extend(create_rect_vertices(
@@ -854,6 +854,10 @@ impl CommitGraphView {
         // appear behind everything else (spline vertices render in order).
         for (row, commit) in commits.iter().enumerate() {
             if row % 2 == 0 {
+                continue;
+            }
+            // Skip zebra stripe for selected row (selection highlight replaces it)
+            if self.selected_commit == Some(commit.id) {
                 continue;
             }
             let y = self.row_y(row, &bounds, header_offset);
@@ -1030,7 +1034,7 @@ impl CommitGraphView {
 
         // Selected-row left accent bar (VS Code style active line indicator)
         if is_selected {
-            let accent_bar_width = 3.0;
+            let accent_bar_width = 4.0;
             let accent_rect = Rect::new(
                 bounds.x,
                 y - self.row_height / 2.0,
