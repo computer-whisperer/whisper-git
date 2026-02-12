@@ -440,7 +440,7 @@ impl App {
             divider_drag: None,
             sidebar_ratio: 0.14,
             graph_ratio: 0.55,
-            staging_preview_ratio: 0.45,
+            staging_preview_ratio: 0.40,
             shortcut_bar_visible,
             current_cursor: CursorIcon::Default,
             status_dirty: true,
@@ -1195,7 +1195,7 @@ impl App {
                                 let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
                                 if content_rect.height > 0.0 {
                                     let ratio = (*y - content_rect.y) / content_rect.height;
-                                    self.staging_preview_ratio = ratio.clamp(0.20, 0.80);
+                                    self.staging_preview_ratio = ratio.clamp(0.30, 0.70);
                                 }
                             }
                         }
