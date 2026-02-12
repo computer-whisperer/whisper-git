@@ -784,11 +784,19 @@ impl GitRepo {
                         let is_remote = branch_type == git2::BranchType::Remote;
                         let is_head = head_oid == Some(oid);
 
+                        let upstream = if !is_remote {
+                            branch.upstream().ok()
+                                .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()))
+                        } else {
+                            None
+                        };
+
                         tips.push(BranchTip {
                             name,
                             oid,
                             is_remote,
                             is_head,
+                            upstream,
                         });
                     }
         }
@@ -1183,6 +1191,8 @@ pub struct BranchTip {
     pub oid: Oid,
     pub is_remote: bool,
     pub is_head: bool,
+    /// Upstream tracking branch name (e.g. "origin/main"), if any
+    pub upstream: Option<String>,
 }
 
 /// Tag information
