@@ -55,32 +55,25 @@ impl Config {
         serde_json::from_str(&data).unwrap_or_default()
     }
 
-    pub fn save(&self) {
-        let Some(dir) = Self::config_dir() else {
-            return;
-        };
-        if let Err(e) = fs::create_dir_all(&dir) {
-            eprintln!("Failed to create config dir: {e}");
-            return;
-        }
-        let Some(path) = Self::config_path() else {
-            return;
-        };
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => {
-                if let Err(e) = fs::write(&path, json) {
-                    eprintln!("Failed to save config: {e}");
-                }
-            }
-            Err(e) => eprintln!("Failed to serialize config: {e}"),
-        }
+    pub fn save(&self) -> Result<(), String> {
+        let dir = Self::config_dir()
+            .ok_or_else(|| "Could not determine config directory".to_string())?;
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("Failed to create config dir: {e}"))?;
+        let path = Self::config_path()
+            .ok_or_else(|| "Could not determine config path".to_string())?;
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| format!("Failed to serialize config: {e}"))?;
+        fs::write(&path, json)
+            .map_err(|e| format!("Failed to save config: {e}"))?;
+        Ok(())
     }
 
     /// Add a repo path to the recent repos list (most recent first, deduped).
-    pub fn add_recent_repo(&mut self, path: &str) {
+    pub fn add_recent_repo(&mut self, path: &str) -> Result<(), String> {
         self.recent_repos.retain(|p| p != path);
         self.recent_repos.insert(0, path.to_string());
         self.recent_repos.truncate(MAX_RECENT_REPOS);
-        self.save();
+        self.save()
     }
 }

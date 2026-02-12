@@ -1112,7 +1112,9 @@ impl App {
                         self.config.row_scale = self.settings_dialog.row_scale;
                         self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
                         self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
-                        self.config.save();
+                        if let Err(e) = self.config.save() {
+                            self.toast_manager.push(e, ToastSeverity::Error);
+                        }
                     }
                 }
             }
@@ -1913,7 +1915,9 @@ impl ApplicationHandler for App {
                     match action {
                         RepoDialogAction::Open(path) => {
                             let path_str = path.to_string_lossy().to_string();
-                            self.config.add_recent_repo(&path_str);
+                            if let Err(e) = self.config.add_recent_repo(&path_str) {
+                                self.toast_manager.push(e, ToastSeverity::Error);
+                            }
                             self.open_repo_tab(path);
                         }
                         RepoDialogAction::Cancel => {}
@@ -2086,7 +2090,9 @@ impl App {
                     HeaderAction::Help => {
                         self.shortcut_bar_visible = !self.shortcut_bar_visible;
                         self.config.shortcut_bar_visible = self.shortcut_bar_visible;
-                        self.config.save();
+                        if let Err(e) = self.config.save() {
+                            self.toast_manager.push(e, ToastSeverity::Error);
+                        }
                     }
                     HeaderAction::Settings => {
                         self.settings_dialog.show();

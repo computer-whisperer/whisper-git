@@ -1210,6 +1210,11 @@ impl GitRepo {
         self.repo.signature().is_ok()
     }
 
+    /// Check if any remotes are configured.
+    pub fn has_remotes(&self) -> bool {
+        self.repo.remotes().map_or(false, |r| !r.is_empty())
+    }
+
     /// Find the default remote name (usually "origin")
     pub fn default_remote(&self) -> Result<String> {
         // Try to find the upstream remote for the current branch

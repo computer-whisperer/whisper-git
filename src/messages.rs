@@ -175,6 +175,13 @@ fn start_remote_op(
         );
         return false;
     }
+    if !repo.has_remotes() {
+        toast_manager.push(
+            "No remotes configured. Add one via the REMOTE section in the sidebar.",
+            ToastSeverity::Error,
+        );
+        return false;
+    }
     let cmd_dir = repo.git_command_dir();
     let rx = start_fn(cmd_dir);
     *receiver = Some((rx, std::time::Instant::now()));
