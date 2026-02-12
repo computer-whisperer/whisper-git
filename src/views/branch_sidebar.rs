@@ -206,6 +206,40 @@ impl BranchSidebar {
         self.section_header_height + 8.0 // same as section header height plus some gap
     }
 
+    /// Find the index of the visible item at the given Y coordinate.
+    /// Returns None if Y is in the filter bar, outside bounds, or past all items.
+    fn item_index_at_y(&self, y: f32, bounds: Rect) -> Option<usize> {
+        let padding = 8.0;
+        let inner = bounds.inset(padding);
+        let section_header_total = self.section_header_total_height();
+        let section_gap = 8.0;
+        let filter_offset = self.filter_bar_height();
+        let content_top = bounds.y + padding + filter_offset;
+
+        if y < content_top { return None; }
+
+        let mut item_y = inner.y + filter_offset - self.scroll_offset;
+        for (idx, item) in self.visible_items.iter().enumerate() {
+            let h = match item {
+                SidebarItem::SectionHeader(_) => section_header_total,
+                _ => self.line_height,
+            };
+
+            if y >= item_y && y < item_y + h && item_y >= content_top {
+                return Some(idx);
+            }
+
+            item_y += h;
+            if !matches!(item, SidebarItem::SectionHeader(_))
+                && idx + 1 < self.visible_items.len()
+                && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_))
+            {
+                item_y += section_gap;
+            }
+        }
+        None
+    }
+
     /// Returns true if a clickable sidebar item is currently hovered
     pub fn is_item_hovered(&self) -> bool {
         self.hovered_index.is_some()
@@ -283,56 +317,8 @@ impl BranchSidebar {
             return;
         }
 
-        let padding = 8.0;
-        let inner = bounds.inset(padding);
-        let line_height = self.line_height;
-        let section_header_total = self.section_header_total_height();
-        let section_gap = 8.0;
-        let filter_offset = self.filter_bar_height();
-        let content_top = bounds.y + padding + filter_offset;
-
-        // If mouse is in the filter bar region, no item hover
-        if y < content_top {
-            self.hovered_index = None;
-            return;
-        }
-
-        let mut item_y = inner.y + filter_offset - self.scroll_offset;
-        for (idx, item) in self.visible_items.iter().enumerate() {
-            let h = match item {
-                SidebarItem::SectionHeader(_) => section_header_total,
-                _ => line_height,
-            };
-
-            if y >= item_y && y < item_y + h {
-                // Only highlight navigable items, not section headers
-                // Also skip items that are behind the filter bar
-                if item_y < content_top {
-                    self.hovered_index = None;
-                    return;
-                }
-                match item {
-                    SidebarItem::SectionHeader(_) => {
-                        self.hovered_index = None;
-                    }
-                    _ => {
-                        self.hovered_index = Some(idx);
-                    }
-                }
-                return;
-            }
-
-            item_y += h;
-
-            // Section gaps
-            if !matches!(item, SidebarItem::SectionHeader(_))
-                && idx + 1 < self.visible_items.len()
-                    && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
-                        item_y += section_gap;
-                    }
-        }
-
-        self.hovered_index = None;
+        self.hovered_index = self.item_index_at_y(y, bounds)
+            .filter(|&i| !matches!(self.visible_items[i], SidebarItem::SectionHeader(_)));
     }
 
     /// Build the flattened visible_items list based on collapsed state and filter
@@ -533,119 +519,83 @@ impl BranchSidebar {
             return None;
         }
 
-        let padding = 8.0;
-        let inner = bounds.inset(padding);
-        let line_height = self.line_height;
-        let section_header_total = self.section_header_total_height();
-        let section_gap = 8.0;
-        let filter_offset = self.filter_bar_height();
-        let content_top = bounds.y + padding + filter_offset;
-
-        // Click is in the filter bar region - no context menu
-        if y < content_top {
-            return None;
-        }
-
-        let mut item_y = inner.y + filter_offset - self.scroll_offset;
-        for (idx, item) in self.visible_items.iter().enumerate() {
-            let h = match item {
-                SidebarItem::SectionHeader(_) => section_header_total,
-                _ => line_height,
-            };
-
-            if y >= item_y && y < item_y + h {
-                match item {
-                    SidebarItem::LocalBranch(name) => {
-                        let mut items = vec![
-                            MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
-                            MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
-                            MenuItem::new("Push", "push"),
-                            MenuItem::new("Pull", "pull"),
-                            MenuItem::new("Pull (Rebase)", "pull_rebase"),
-                            MenuItem::new("Force Push", "force_push"),
-                            MenuItem::separator(),
-                            MenuItem::new("Merge into Current", "merge"),
-                            MenuItem::new("Rebase Current onto", "rebase"),
-                            MenuItem::new("Create Worktree", "create_worktree"),
-                        ];
-                        // Tag the action_id with the branch name using a separator
-                        // We'll parse it in main.rs: "checkout:branch_name"
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, name);
-                            }
-                        }
-                        return Some(items);
+        let idx = self.item_index_at_y(y, bounds)?;
+        match &self.visible_items[idx] {
+            SidebarItem::LocalBranch(name) => {
+                let mut items = vec![
+                    MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
+                    MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
+                    MenuItem::new("Push", "push"),
+                    MenuItem::new("Pull", "pull"),
+                    MenuItem::new("Pull (Rebase)", "pull_rebase"),
+                    MenuItem::new("Force Push", "force_push"),
+                    MenuItem::separator(),
+                    MenuItem::new("Merge into Current", "merge"),
+                    MenuItem::new("Rebase Current onto", "rebase"),
+                    MenuItem::new("Create Worktree", "create_worktree"),
+                ];
+                for item in &mut items {
+                    if !item.is_separator {
+                        item.action_id = format!("{}:{}", item.action_id, name);
                     }
-                    SidebarItem::RemoteHeader(name) => {
-                        let mut items = vec![
-                            MenuItem::new("Edit URL...", "edit_remote_url"),
-                            MenuItem::new("Rename...", "rename_remote"),
-                            MenuItem::separator(),
-                            MenuItem::new("Delete Remote", "delete_remote"),
-                        ];
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, name);
-                            }
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::RemoteBranch(remote, branch) => {
-                        let full = format!("{}/{}", remote, branch);
-                        let mut items = vec![
-                            MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
-                        ];
-                        for item in &mut items {
-                            item.action_id = format!("{}:{}", item.action_id, full);
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::Tag(name) => {
-                        let mut items = vec![
-                            MenuItem::new("Delete Tag", "delete_tag"),
-                        ];
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, name);
-                            }
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::StashEntry(index) => {
-                        let idx_str = index.to_string();
-                        let mut items = vec![
-                            MenuItem::new("Apply Stash", "apply_stash"),
-                            MenuItem::new("Pop Stash", "pop_stash"),
-                            MenuItem::separator(),
-                            MenuItem::new("Drop Stash", "drop_stash"),
-                        ];
-                        for item in &mut items {
-                            if !item.is_separator {
-                                item.action_id = format!("{}:{}", item.action_id, idx_str);
-                            }
-                        }
-                        return Some(items);
-                    }
-                    SidebarItem::SectionHeader("REMOTE") => {
-                        let items = vec![
-                            MenuItem::new("Add Remote...", "add_remote"),
-                        ];
-                        return Some(items);
-                    }
-                    _ => return None,
                 }
+                Some(items)
             }
-
-            item_y += h;
-            if !matches!(item, SidebarItem::SectionHeader(_))
-                && idx + 1 < self.visible_items.len()
-                    && matches!(&self.visible_items[idx + 1], SidebarItem::SectionHeader(_)) {
-                        item_y += section_gap;
+            SidebarItem::RemoteHeader(name) => {
+                let mut items = vec![
+                    MenuItem::new("Edit URL...", "edit_remote_url"),
+                    MenuItem::new("Rename...", "rename_remote"),
+                    MenuItem::separator(),
+                    MenuItem::new("Delete Remote", "delete_remote"),
+                ];
+                for item in &mut items {
+                    if !item.is_separator {
+                        item.action_id = format!("{}:{}", item.action_id, name);
                     }
+                }
+                Some(items)
+            }
+            SidebarItem::RemoteBranch(remote, branch) => {
+                let full = format!("{}/{}", remote, branch);
+                let mut items = vec![
+                    MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
+                ];
+                for item in &mut items {
+                    item.action_id = format!("{}:{}", item.action_id, full);
+                }
+                Some(items)
+            }
+            SidebarItem::Tag(name) => {
+                let mut items = vec![
+                    MenuItem::new("Delete Tag", "delete_tag"),
+                ];
+                for item in &mut items {
+                    if !item.is_separator {
+                        item.action_id = format!("{}:{}", item.action_id, name);
+                    }
+                }
+                Some(items)
+            }
+            SidebarItem::StashEntry(index) => {
+                let idx_str = index.to_string();
+                let mut items = vec![
+                    MenuItem::new("Apply Stash", "apply_stash"),
+                    MenuItem::new("Pop Stash", "pop_stash"),
+                    MenuItem::separator(),
+                    MenuItem::new("Drop Stash", "drop_stash"),
+                ];
+                for item in &mut items {
+                    if !item.is_separator {
+                        item.action_id = format!("{}:{}", item.action_id, idx_str);
+                    }
+                }
+                Some(items)
+            }
+            SidebarItem::SectionHeader("REMOTE") => {
+                Some(vec![MenuItem::new("Add Remote...", "add_remote")])
+            }
+            _ => None,
         }
-
-        None
     }
 
     /// Compute the filter bar bounds within the sidebar
@@ -868,64 +818,35 @@ impl BranchSidebar {
             }
             InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let padding = 8.0;
-                    let inner = bounds.inset(padding);
-                    let line_height = self.line_height;
-                    let section_header_total = self.section_header_total_height();
-                    let section_gap = 8.0;
-
-                    // Offset start Y by filter bar height
-                    let filter_offset = self.filter_bar_height();
-                    let content_top = bounds.y + padding + filter_offset;
-                    let mut item_y = inner.y + filter_offset - self.scroll_offset;
-                    for (idx, item) in self.visible_items.iter().enumerate() {
-                        let h = match item {
-                            SidebarItem::SectionHeader(_) => section_header_total,
-                            _ => line_height,
-                        };
-
-                        // Skip items behind the filter bar
-                        if *y >= item_y && *y < item_y + h && item_y >= content_top {
-                            match item {
-                                SidebarItem::SectionHeader(name) => {
-                                    // Toggle collapse
-                                    match *name {
-                                        "LOCAL" => self.local_collapsed = !self.local_collapsed,
-                                        "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
-                                        "TAGS" => self.tags_collapsed = !self.tags_collapsed,
-                                        "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
-                                        _ => {}
-                                    }
-                                    self.build_visible_items();
-                                    return EventResponse::Consumed;
+                    if let Some(idx) = self.item_index_at_y(*y, bounds) {
+                        match &self.visible_items[idx] {
+                            SidebarItem::SectionHeader(name) => {
+                                // Toggle collapse
+                                match *name {
+                                    "LOCAL" => self.local_collapsed = !self.local_collapsed,
+                                    "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
+                                    "TAGS" => self.tags_collapsed = !self.tags_collapsed,
+                                    "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
+                                    _ => {}
                                 }
-                                SidebarItem::RemoteHeader(name) => {
-                                    // Toggle per-remote collapse
-                                    if self.collapsed_remotes.contains(name) {
-                                        self.collapsed_remotes.remove(name);
-                                    } else {
-                                        self.collapsed_remotes.insert(name.clone());
-                                    }
-                                    self.build_visible_items();
-                                    return EventResponse::Consumed;
+                                self.build_visible_items();
+                                return EventResponse::Consumed;
+                            }
+                            SidebarItem::RemoteHeader(name) => {
+                                // Toggle per-remote collapse
+                                if self.collapsed_remotes.contains(name) {
+                                    self.collapsed_remotes.remove(name);
+                                } else {
+                                    self.collapsed_remotes.insert(name.clone());
                                 }
-                                _ => {
-                                    self.focused_index = Some(idx);
-                                    return EventResponse::Consumed;
-                                }
+                                self.build_visible_items();
+                                return EventResponse::Consumed;
+                            }
+                            _ => {
+                                self.focused_index = Some(idx);
+                                return EventResponse::Consumed;
                             }
                         }
-
-                        item_y += h;
-
-                        // Add section gaps after the last item before the next section header
-                        // We detect this by checking if the next item is a section header
-                        if let SidebarItem::SectionHeader(_) = item {
-                            // No extra gap right after header
-                        } else if idx + 1 < self.visible_items.len()
-                            && let SidebarItem::SectionHeader(_) = &self.visible_items[idx + 1] {
-                                item_y += section_gap;
-                            }
                     }
 
                     return EventResponse::Consumed;

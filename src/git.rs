@@ -1767,7 +1767,7 @@ define_async_git_op! {
 
     /// Spawn a background thread to remove a worktree
     remove_worktree_async(name: String) =>
-        ["worktree", "remove", name], "worktree remove";
+        ["worktree", "remove", "--force", name], "worktree remove";
 
     /// Spawn a background thread to merge a branch into the current branch
     merge_branch_async(branch_name: String) =>

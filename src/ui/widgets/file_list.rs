@@ -574,14 +574,14 @@ impl Widget for FileList {
 
             output.text_vertices.extend(text_renderer.layout_text(
                 status_letter,
-                bounds.x + 10.0,
-                y + 2.0,
+                bounds.x + 10.0 * self.scale,
+                y + 2.0 * self.scale,
                 status_color.to_array(),
             ));
 
             // File path - split into directory (dim) and filename (bright)
-            let path_x_offset = 26.0; // After status letter
-            let max_path_width = bounds.width - path_x_offset - 30.0;
+            let path_x_offset = 30.0 * self.scale; // After status letter
+            let max_path_width = bounds.width - path_x_offset - 30.0 * self.scale;
             let path = truncate_path_to_width(&file.path, text_renderer, max_path_width);
 
             let (dir_part, file_part) = match path.rfind('/') {
@@ -601,7 +601,7 @@ impl Widget for FileList {
                 output.text_vertices.extend(text_renderer.layout_text(
                     dir_part,
                     text_x,
-                    y + 2.0,
+                    y + 2.0 * self.scale,
                     dir_color.to_array(),
                 ));
                 text_x += text_renderer.measure_text(dir_part);
@@ -616,18 +616,18 @@ impl Widget for FileList {
             output.text_vertices.extend(text_renderer.layout_text(
                 file_part,
                 text_x,
-                y + 2.0,
+                y + 2.0 * self.scale,
                 file_color.to_array(),
             ));
 
             // +/- counts on the right
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
-                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 10.0;
+                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 10.0 * self.scale;
                 output.text_vertices.extend(text_renderer.layout_text(
                     &stats,
                     stats_x,
-                    y + 2.0,
+                    y + 2.0 * self.scale,
                     theme::TEXT_MUTED.to_array(),
                 ));
             }

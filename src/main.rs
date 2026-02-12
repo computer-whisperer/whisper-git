@@ -2488,6 +2488,32 @@ fn determine_cursor(
 // Rendering
 // ============================================================================
 
+/// Render the preview/diff panel header bar (SURFACE_RAISED background + bold title).
+/// Returns the body rect below the header.
+fn render_preview_header(
+    output: &mut WidgetOutput,
+    rect: Rect,
+    title: &str,
+    is_placeholder: bool,
+    scale: f32,
+    bold_text_renderer: &TextRenderer,
+) -> Rect {
+    let header_h = 28.0 * scale;
+    let (header_rect, body_rect) = rect.take_top(header_h);
+    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+        &header_rect,
+        theme::SURFACE_RAISED.to_array(),
+    ));
+    let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
+    let header_text_x = header_rect.x + 12.0 * scale;
+    let color = if is_placeholder { theme::TEXT_MUTED } else { theme::TEXT_BRIGHT };
+    output.bold_text_vertices.extend(bold_text_renderer.layout_text(
+        title, header_text_x, header_text_y,
+        color.to_array(),
+    ));
+    body_rect
+}
+
 /// Classify a git error message and return a more helpful description.
 /// Returns `(friendly_message, is_rejected_push)`.
 fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
@@ -2684,7 +2710,13 @@ fn handle_context_menu_action(
         }
         "remove_worktree" => {
             if !param.is_empty() {
-                confirm_dialog.show("Remove Worktree", &format!("Remove worktree '{}'?", param));
+                let is_dirty = view_state.worktrees.iter().any(|w| w.name == param && w.is_dirty);
+                let msg = if is_dirty {
+                    format!("Remove worktree '{}'? This worktree has uncommitted changes that will be lost.", param)
+                } else {
+                    format!("Remove worktree '{}'?", param)
+                };
+                confirm_dialog.show("Remove Worktree", &msg);
                 *pending_confirm_action = Some(AppMessage::RemoveWorktree(param.to_string()));
             }
         }
@@ -3007,29 +3039,11 @@ fn build_ui_output(
                     let (staging_rect, diff_rect) = content_rect.split_vertical(staging_preview_ratio);
                     chrome_output.extend(view_state.staging_well.layout(text_renderer, staging_rect));
 
-                    // Preview header bar
-                    let header_h = 28.0 * scale;
-                    let (header_rect, diff_body_rect) = diff_rect.take_top(header_h);
-                    chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                        &header_rect,
-                        theme::SURFACE_RAISED.to_array(),
-                    ));
-                    let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
-                    let header_text_x = header_rect.x + 12.0 * scale;
-                    if view_state.diff_view.has_content() {
-                        let title = view_state.diff_view.title();
-                        chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                            title, header_text_x, header_text_y,
-                            theme::TEXT_BRIGHT.to_array(),
-                        ));
-                    } else {
-                        chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                            "Preview", header_text_x, header_text_y,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
-                    }
+                    let has_diff = view_state.diff_view.has_content();
+                    let title = if has_diff { view_state.diff_view.title() } else { "Preview" };
+                    let diff_body_rect = render_preview_header(&mut chrome_output, diff_rect, title, !has_diff, scale, bold_text_renderer);
 
-                    if view_state.diff_view.has_content() {
+                    if has_diff {
                         chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                     } else {
                         let msg = "Select a file to preview its diff";
@@ -3049,61 +3063,19 @@ fn build_ui_output(
                         let (detail_rect, diff_rect) = content_rect.split_vertical(0.40);
                         chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
 
-                        // Preview header bar
-                        let header_h = 28.0 * scale;
-                        let (header_rect, diff_body_rect) = diff_rect.take_top(header_h);
-                        chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                            &header_rect,
-                            theme::SURFACE_RAISED.to_array(),
-                        ));
-                        let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
-                        let header_text_x = header_rect.x + 12.0 * scale;
-                        if view_state.diff_view.has_content() {
-                            let title = view_state.diff_view.title();
-                            chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                                title, header_text_x, header_text_y,
-                                theme::TEXT_BRIGHT.to_array(),
-                            ));
-                        } else {
-                            chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                                "Diff", header_text_x, header_text_y,
-                                theme::TEXT_MUTED.to_array(),
-                            ));
-                        }
+                        let has_diff = view_state.diff_view.has_content();
+                        let title = if has_diff { view_state.diff_view.title() } else { "Diff" };
+                        let diff_body_rect = render_preview_header(&mut chrome_output, diff_rect, title, !has_diff, scale, bold_text_renderer);
 
-                        if view_state.diff_view.has_content() {
+                        if has_diff {
                             chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                         }
                     } else if view_state.diff_view.has_content() {
-                        // Preview header bar (full area, no commit detail)
-                        let header_h = 28.0 * scale;
-                        let (header_rect, diff_body_rect) = content_rect.take_top(header_h);
-                        chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                            &header_rect,
-                            theme::SURFACE_RAISED.to_array(),
-                        ));
-                        let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
-                        let header_text_x = header_rect.x + 12.0 * scale;
                         let title = view_state.diff_view.title();
-                        chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                            title, header_text_x, header_text_y,
-                            theme::TEXT_BRIGHT.to_array(),
-                        ));
+                        let diff_body_rect = render_preview_header(&mut chrome_output, content_rect, title, false, scale, bold_text_renderer);
                         chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                     } else {
-                        // Preview header bar (empty state)
-                        let header_h = 28.0 * scale;
-                        let (header_rect, body_rect) = content_rect.take_top(header_h);
-                        chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                            &header_rect,
-                            theme::SURFACE_RAISED.to_array(),
-                        ));
-                        let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
-                        let header_text_x = header_rect.x + 12.0 * scale;
-                        chrome_output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-                            "Preview", header_text_x, header_text_y,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
+                        let body_rect = render_preview_header(&mut chrome_output, content_rect, "Preview", true, scale, bold_text_renderer);
                         let msg = "Select a commit to browse";
                         let msg_w = text_renderer.measure_text(msg);
                         let line_h = text_renderer.line_height();
