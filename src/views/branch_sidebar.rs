@@ -99,6 +99,8 @@ pub struct BranchSidebar {
     last_bounds: Option<Rect>,
     /// Ahead/behind counts per local branch name (only entries with non-zero values)
     ahead_behind_cache: HashMap<String, (usize, usize)>,
+    /// Upstream tracking branch per local branch (e.g. "main" -> "origin/main")
+    upstream_map: HashMap<String, String>,
     /// Filter query text for searching branches/tags/stashes
     filter_query: String,
     /// Cursor position in the filter query
@@ -142,6 +144,7 @@ impl BranchSidebar {
             current_branch: String::new(),
             stashes: Vec::new(),
             ahead_behind_cache: HashMap::new(),
+            upstream_map: HashMap::new(),
             local_collapsed: false,
             remote_collapsed: false,
             tags_collapsed: false,
@@ -267,6 +270,7 @@ impl BranchSidebar {
         // Separate local and remote branches
         self.local_branches.clear();
         self.remote_branches.clear();
+        self.upstream_map.clear();
 
         for tip in branch_tips {
             if tip.is_remote {
@@ -279,6 +283,9 @@ impl BranchSidebar {
                 }
             } else {
                 self.local_branches.push(tip.name.clone());
+                if let Some(upstream) = &tip.upstream {
+                    self.upstream_map.insert(tip.name.clone(), upstream.clone());
+                }
             }
         }
 
@@ -1139,7 +1146,16 @@ impl BranchSidebar {
                         }
                     }
 
-                    let name_max_width = params.inner.width - params.indent - icon_width - ab_total_width;
+                    // Compute upstream tracking label width
+                    let upstream_scale = 0.85;
+                    let upstream_label = self.upstream_map.get(branch.as_str())
+                        .map(|u| format!("\u{2192} {}", u));
+                    let upstream_width = upstream_label.as_ref()
+                        .map(|label| params.text_renderer.measure_text_scaled(label, upstream_scale) + 6.0)
+                        .unwrap_or(0.0);
+
+                    let right_reserved = ab_total_width + upstream_width;
+                    let name_max_width = params.inner.width - params.indent - icon_width - right_reserved;
                     let display_name = truncate_to_width(branch, params.text_renderer, name_max_width);
                     if is_current {
                         // Active branch in bold
@@ -1159,31 +1175,47 @@ impl BranchSidebar {
                     }
 
                     // Render ahead/behind indicators (right-aligned)
+                    let mut right_x = params.inner.right();
                     if let Some(&(ahead, behind)) = ab {
-                        let mut indicator_x = params.inner.right();
                         if behind > 0 {
                             let behind_text = format!("\u{2193}{}", behind);
                             let behind_w = params.text_renderer.measure_text(&behind_text);
-                            indicator_x -= behind_w;
+                            right_x -= behind_w;
                             output.text_vertices.extend(params.text_renderer.layout_text(
                                 &behind_text,
-                                indicator_x,
+                                right_x,
                                 y + 2.0,
                                 theme::STATUS_BEHIND.to_array(),
                             ));
-                            indicator_x -= 6.0;
+                            right_x -= 6.0;
                         }
                         if ahead > 0 {
                             let ahead_text = format!("\u{2191}{}", ahead);
                             let ahead_w = params.text_renderer.measure_text(&ahead_text);
-                            indicator_x -= ahead_w;
+                            right_x -= ahead_w;
                             output.text_vertices.extend(params.text_renderer.layout_text(
                                 &ahead_text,
-                                indicator_x,
+                                right_x,
                                 y + 2.0,
                                 theme::STATUS_CLEAN.to_array(),
                             ));
+                            right_x -= 6.0;
                         }
+                    }
+
+                    // Render upstream tracking label (right-aligned, after ahead/behind)
+                    if let Some(label) = &upstream_label {
+                        let label_w = params.text_renderer.measure_text_scaled(label, upstream_scale);
+                        right_x -= label_w;
+                        // Vertically center the smaller text
+                        let y_offset = params.line_height * (1.0 - upstream_scale) * 0.3;
+                        output.text_vertices.extend(params.text_renderer.layout_text_scaled(
+                            label,
+                            right_x,
+                            y + 2.0 + y_offset,
+                            theme::TEXT_MUTED.to_array(),
+                            upstream_scale,
+                        ));
                     }
                 }
                 y += params.line_height;
