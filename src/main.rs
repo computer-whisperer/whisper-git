@@ -2681,6 +2681,16 @@ fn handle_context_menu_action(
                 view_state.pending_messages.push(AppMessage::Fetch(Some(param.to_string())));
             }
         }
+        "pull_from_remote" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::Pull(Some(param.to_string())));
+            }
+        }
+        "pull_rebase_from_remote" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::PullRebase(Some(param.to_string())));
+            }
+        }
         "push_to_remote" => {
             if !param.is_empty() {
                 view_state.pending_messages.push(AppMessage::Push(Some(param.to_string())));

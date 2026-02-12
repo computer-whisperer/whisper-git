@@ -542,10 +542,18 @@ impl BranchSidebar {
                     MenuItem::new("Pull (Rebase)", "pull_rebase"),
                     MenuItem::new("Force Push", "force_push"),
                 ];
-                // Add "Push to {remote}" for each configured remote
+                // Add per-remote push/pull items for each configured remote
                 let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
                 remote_names.sort();
                 for remote in &remote_names {
+                    items.push(MenuItem::new(
+                        format!("Pull from {}", remote),
+                        format!("pull_from_remote:{}", remote),
+                    ));
+                    items.push(MenuItem::new(
+                        format!("Pull (Rebase) from {}", remote),
+                        format!("pull_rebase_from_remote:{}", remote),
+                    ));
                     items.push(MenuItem::new(
                         format!("Push to {}", remote),
                         format!("push_to_remote:{}", remote),
@@ -556,7 +564,11 @@ impl BranchSidebar {
                 items.push(MenuItem::new("Rebase Current onto", "rebase"));
                 items.push(MenuItem::new("Create Worktree", "create_worktree"));
                 for item in &mut items {
-                    if !item.is_separator && !item.action_id.starts_with("push_to_remote:") {
+                    if !item.is_separator
+                        && !item.action_id.starts_with("push_to_remote:")
+                        && !item.action_id.starts_with("pull_from_remote:")
+                        && !item.action_id.starts_with("pull_rebase_from_remote:")
+                    {
                         item.action_id = format!("{}:{}", item.action_id, name);
                     }
                 }
