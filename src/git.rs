@@ -1808,6 +1808,10 @@ define_async_git_op! {
     fetch_remote_async(remote: String) =>
         ["fetch", "--prune", remote], "fetch";
 
+    /// Spawn a background thread to run `git fetch --all --prune`
+    fetch_all_async() =>
+        ["fetch", "--all", "--prune"], "fetch --all";
+
     /// Spawn a background thread to run `git push`
     push_remote_async(remote: String, branch: String) =>
         ["push", remote, branch], "push";

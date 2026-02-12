@@ -633,7 +633,10 @@ impl BranchSidebar {
                 Some(items)
             }
             SidebarItem::SectionHeader("REMOTE") => {
-                Some(vec![MenuItem::new("Add Remote...", "add_remote")])
+                Some(vec![
+                    MenuItem::new("Fetch All Remotes", "fetch_all"),
+                    MenuItem::new("Add Remote...", "add_remote"),
+                ])
             }
             _ => None,
         }
