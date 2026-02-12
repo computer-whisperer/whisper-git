@@ -1840,6 +1840,10 @@ define_async_git_op! {
     remove_worktree_async(name: String) =>
         ["worktree", "remove", "--force", name], "worktree remove";
 
+    /// Spawn a background thread to delete a branch on the remote
+    delete_remote_branch_async(remote: String, branch: String) =>
+        ["push", remote, "--delete", branch], "delete remote branch";
+
     /// Spawn a background thread to merge a branch into the current branch
     merge_branch_async(branch_name: String) =>
         ["merge", branch_name], "merge";

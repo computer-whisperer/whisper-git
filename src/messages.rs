@@ -75,6 +75,7 @@ pub enum AppMessage {
     DeleteRemote(String),
     RenameRemote(String, String),  // (old_name, new_name)
     SetRemoteUrl(String, String),  // (name, new_url)
+    DeleteRemoteBranch(String, String), // (remote, branch)
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -912,6 +913,18 @@ pub fn handle_app_message(
                 format!("Updated URL for '{}'", name),
                 "Failed to update remote URL",
                 repo, commits, view_state, toast_manager,
+            );
+        }
+
+        AppMessage::DeleteRemoteBranch(remote, branch) => {
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::delete_remote_branch_async(cmd_dir, remote.clone(), branch.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Delete '{}/{}'", remote, branch),
+                format!("Deleting remote branch '{}/{}'...", remote, branch),
+                toast_manager,
             );
         }
 
