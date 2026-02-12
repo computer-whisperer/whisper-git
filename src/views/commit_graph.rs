@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use git2::Oid;
 
@@ -234,8 +233,8 @@ pub struct CommitGraphView {
     pub scrollbar: Scrollbar,
     /// Search bar widget
     pub search_bar: SearchBar,
-    /// Set of commit OIDs that match the current search query
-    search_matches: HashSet<Oid>,
+    /// Ordered list of commit indices that match the current search query
+    search_matches: Vec<usize>,
     /// Pending action to be consumed by the app
     pending_action: Option<GraphAction>,
     /// Guard to prevent rapid-fire LoadMore requests
@@ -274,7 +273,7 @@ impl Default for CommitGraphView {
             scroll_offset: 0.0,
             scrollbar: Scrollbar::new(),
             search_bar: SearchBar::new(),
-            search_matches: HashSet::new(),
+            search_matches: Vec::new(),
             pending_action: None,
             loading_more: false,
             row_y_offsets: Vec::new(),
@@ -523,6 +522,11 @@ impl CommitGraphView {
                     match action {
                         SearchAction::QueryChanged(query) => {
                             self.update_search_matches(&query, commits);
+                            // Auto-navigate to first match on query change
+                            self.navigate_to_current_match(commits, bounds);
+                        }
+                        SearchAction::Navigate => {
+                            self.navigate_to_current_match(commits, bounds);
                         }
                         SearchAction::Closed => {
                             self.search_matches.clear();
@@ -723,24 +727,35 @@ impl CommitGraphView {
         }
 
         let query_lower = query.to_lowercase();
-        for commit in commits {
+        for (idx, commit) in commits.iter().enumerate() {
             if commit.summary.to_lowercase().contains(&query_lower)
                 || commit.author.to_lowercase().contains(&query_lower)
                 || commit.short_id.to_lowercase().contains(&query_lower)
                 || commit.id.to_string().to_lowercase().starts_with(&query_lower)
             {
-                self.search_matches.insert(commit.id);
+                self.search_matches.push(idx);
             }
         }
         self.search_bar.set_match_count(self.search_matches.len());
     }
 
-    /// Check if a commit matches the current search filter
-    fn is_search_match(&self, oid: &Oid) -> bool {
+    /// Navigate to the current search match: select and scroll to it
+    fn navigate_to_current_match(&mut self, commits: &[CommitInfo], bounds: Rect) {
+        let match_idx = self.search_bar.current_match();
+        if let Some(&commit_idx) = self.search_matches.get(match_idx) {
+            if let Some(commit) = commits.get(commit_idx) {
+                self.selected_commit = Some(commit.id);
+                self.scroll_to_selection(commits, bounds);
+            }
+        }
+    }
+
+    /// Check if a commit index is in the search match set
+    fn is_search_match_idx(&self, idx: usize) -> bool {
         if !self.search_bar.is_active() || self.search_bar.query().is_empty() {
             return true; // No filter active, everything matches
         }
-        self.search_matches.contains(oid)
+        self.search_matches.contains(&idx)
     }
 
     fn move_selection(&mut self, delta: i32, commits: &[CommitInfo]) {
@@ -899,7 +914,7 @@ impl CommitGraphView {
 
             // Draw commit node with selection/hover highlights and search match overlay
             self.render_commit_node(
-                commit, layout, x, y,
+                commit, layout, row, x, y,
                 &bounds, scrollbar_width, &mut vertices,
             );
         }
@@ -994,6 +1009,7 @@ impl CommitGraphView {
         &self,
         commit: &CommitInfo,
         layout: &CommitLayout,
+        row: usize,
         x: f32,
         y: f32,
         bounds: &Rect,
@@ -1004,7 +1020,7 @@ impl CommitGraphView {
         let is_selected = self.selected_commit == Some(commit.id);
         let is_hovered = self.hovered_commit == Some(commit.id);
         let is_head = self.head_oid == Some(commit.id);
-        let is_match = self.is_search_match(&commit.id);
+        let is_match = self.is_search_match_idx(row);
 
         // Dim factor for non-matching commits during search
         let dim_alpha = if is_match { 1.0 } else { 0.2 };
@@ -1327,7 +1343,7 @@ impl CommitGraphView {
 
             let is_head = self.head_oid == Some(commit.id);
             let is_selected = self.selected_commit == Some(commit.id);
-            let is_match = self.is_search_match(&commit.id);
+            let is_match = self.is_search_match_idx(row);
             let dim_alpha = if is_match { 1.0 } else { 0.2 };
 
             if commit.is_synthetic {
