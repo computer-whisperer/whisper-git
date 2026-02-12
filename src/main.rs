@@ -2880,6 +2880,9 @@ fn handle_context_menu_action(
                 *pending_confirm_action = Some(AppMessage::StashDrop(index));
             }
         }
+        "fetch_all" => {
+            view_state.pending_messages.push(AppMessage::FetchAll);
+        }
         "add_remote" => {
             remote_dialog.show_add();
         }

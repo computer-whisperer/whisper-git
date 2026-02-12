@@ -76,6 +76,7 @@ pub enum AppMessage {
     RenameRemote(String, String),  // (old_name, new_name)
     SetRemoteUrl(String, String),  // (name, new_url)
     DeleteRemoteBranch(String, String), // (remote, branch)
+    FetchAll,
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -318,6 +319,16 @@ pub fn handle_app_message(
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch",
                 |wd| git::fetch_remote_async(wd, remote),
+                |hb| hb.fetching = true,
+                toast_manager, view_state.header_bar,
+            ) {
+                return false;
+            }
+        }
+        AppMessage::FetchAll => {
+            if !start_remote_op(
+                view_state.fetch_receiver, repo, "Fetch All",
+                |wd| git::fetch_all_async(wd),
                 |hb| hb.fetching = true,
                 toast_manager, view_state.header_bar,
             ) {
