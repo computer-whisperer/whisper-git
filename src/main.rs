@@ -3106,6 +3106,13 @@ fn build_ui_output(
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
 
+        // Opaque header backdrop to prevent graph bleed-through between tab bar and header
+        let header_backdrop_h = layout.header.height + if shortcut_bar_visible { layout.shortcut_bar.height } else { 0.0 };
+        chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(main_bounds.x, main_bounds.y, main_bounds.width, header_backdrop_h),
+            theme::SURFACE_RAISED.to_array(),
+        ));
+
         // Header bar (chrome layer - on top of graph)
         chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header, elapsed));
 
