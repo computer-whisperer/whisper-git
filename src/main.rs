@@ -36,7 +36,7 @@ use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, Vulkan
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
-use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
+use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message, refresh_repo_state as refresh_repo_state_core};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
@@ -854,103 +854,53 @@ impl App {
         let now = Instant::now();
         const TIMEOUT_SECS: u64 = 60;
 
-        // Poll fetch
-        if let Some((ref rx, started, ref remote_name)) = view_state.fetch_receiver {
-            match rx.try_recv() {
-                Ok(result) => {
-                    let remote = remote_name.clone();
-                    view_state.header_bar.fetching = false;
-                    view_state.fetch_receiver = None;
-                    view_state.showed_timeout_toast[0] = false;
-                    if result.success {
-                        self.toast_manager.push(format!("Fetched from {}", remote), ToastSeverity::Success);
+        // Helper: handle the result of polling a fetch/pull/push op.
+        // On success, shows a toast and refreshes repo state.
+        macro_rules! handle_poll {
+            ($op_name:expr, $past_tense:expr, $receiver:expr, $header_flag:expr, $timeout_idx:expr) => {
+                match poll_remote_op(
+                    $receiver,
+                    $header_flag,
+                    &mut view_state.showed_timeout_toast[$timeout_idx],
+                    $op_name,
+                    now,
+                    TIMEOUT_SECS,
+                ) {
+                    AsyncOpPoll::Success(remote) => {
+                        self.toast_manager.push(
+                            format!("{} {}", $past_tense, remote),
+                            ToastSeverity::Success,
+                        );
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
-                    } else {
-                        let (msg, _) = classify_git_error("Fetch", &result.error);
+                    }
+                    AsyncOpPoll::Failed(msg) => {
                         self.toast_manager.push(msg, ToastSeverity::Error);
                     }
-                }
-                Err(TryRecvError::Disconnected) => {
-                    view_state.header_bar.fetching = false;
-                    view_state.fetch_receiver = None;
-                    view_state.showed_timeout_toast[0] = false;
-                    self.toast_manager.push("Fetch failed: background thread terminated", ToastSeverity::Error);
-                }
-                Err(TryRecvError::Empty) => {
-                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[0] {
-                        view_state.showed_timeout_toast[0] = true;
-                        self.toast_manager.push("Fetch still running...", ToastSeverity::Info);
+                    AsyncOpPoll::Disconnected => {
+                        self.toast_manager.push(
+                            format!("{} failed: background thread terminated", $op_name),
+                            ToastSeverity::Error,
+                        );
                     }
+                    AsyncOpPoll::Timeout => {
+                        self.toast_manager.push(
+                            format!("{} still running...", $op_name),
+                            ToastSeverity::Info,
+                        );
+                    }
+                    AsyncOpPoll::Pending => {}
                 }
             }
         }
 
-        // Poll pull
-        if let Some((ref rx, started, ref remote_name)) = view_state.pull_receiver {
-            match rx.try_recv() {
-                Ok(result) => {
-                    let remote = remote_name.clone();
-                    view_state.header_bar.pulling = false;
-                    view_state.pull_receiver = None;
-                    view_state.showed_timeout_toast[1] = false;
-                    if result.success {
-                        self.toast_manager.push(format!("Pulled from {}", remote), ToastSeverity::Success);
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
-                        if rx.is_some() { self.diff_stats_receiver = rx; }
-                    } else {
-                        let (msg, _) = classify_git_error("Pull", &result.error);
-                        self.toast_manager.push(msg, ToastSeverity::Error);
-                    }
-                }
-                Err(TryRecvError::Disconnected) => {
-                    view_state.header_bar.pulling = false;
-                    view_state.pull_receiver = None;
-                    view_state.showed_timeout_toast[1] = false;
-                    self.toast_manager.push("Pull failed: background thread terminated", ToastSeverity::Error);
-                }
-                Err(TryRecvError::Empty) => {
-                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[1] {
-                        view_state.showed_timeout_toast[1] = true;
-                        self.toast_manager.push("Pull still running...", ToastSeverity::Info);
-                    }
-                }
-            }
-        }
-
-        // Poll push (also does full refresh to update ahead/behind and branch state)
-        if let Some((ref rx, started, ref remote_name)) = view_state.push_receiver {
-            match rx.try_recv() {
-                Ok(result) => {
-                    let remote = remote_name.clone();
-                    view_state.header_bar.pushing = false;
-                    view_state.push_receiver = None;
-                    view_state.showed_timeout_toast[2] = false;
-                    if result.success {
-                        self.toast_manager.push(format!("Pushed to {}", remote), ToastSeverity::Success);
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
-                        if rx.is_some() { self.diff_stats_receiver = rx; }
-                    } else {
-                        let (msg, _) = classify_git_error("Push", &result.error);
-                        self.toast_manager.push(msg, ToastSeverity::Error);
-                    }
-                }
-                Err(TryRecvError::Disconnected) => {
-                    view_state.header_bar.pushing = false;
-                    view_state.push_receiver = None;
-                    view_state.showed_timeout_toast[2] = false;
-                    self.toast_manager.push("Push failed: background thread terminated", ToastSeverity::Error);
-                }
-                Err(TryRecvError::Empty) => {
-                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[2] {
-                        view_state.showed_timeout_toast[2] = true;
-                        self.toast_manager.push("Push still running...", ToastSeverity::Info);
-                    }
-                }
-            }
-        }
+        handle_poll!("Fetch", "Fetched from", &mut view_state.fetch_receiver, &mut view_state.header_bar.fetching, 0);
+        handle_poll!("Pull", "Pulled from", &mut view_state.pull_receiver, &mut view_state.header_bar.pulling, 1);
+        handle_poll!("Push", "Pushed to", &mut view_state.push_receiver, &mut view_state.header_bar.pushing, 2);
 
         // Poll generic async ops (submodule/worktree operations)
+        // This has unique post-success behavior (squash merge toast, worktree/stash refresh)
+        // so it's handled separately rather than through the common helper.
         if let Some((ref rx, ref label, started)) = view_state.generic_op_receiver {
             let label = label.clone();
             match rx.try_recv() {
@@ -976,7 +926,7 @@ impl App {
                             view_state.branch_sidebar.stashes = repo.stash_list();
                         }
                     } else {
-                        let (msg, _) = classify_git_error(&label, &result.error);
+                        let (msg, _) = git::classify_git_error(&label, &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
                     }
                 }
@@ -1541,6 +1491,66 @@ impl App {
     }
 }
 
+/// Result of polling an async remote operation receiver.
+enum AsyncOpPoll {
+    /// Operation completed successfully; contains the remote/op name for the toast.
+    Success(String),
+    /// Operation failed; contains the classified error message.
+    Failed(String),
+    /// Background thread disconnected unexpectedly.
+    Disconnected,
+    /// Timeout threshold reached — caller should show a "still running" toast.
+    Timeout,
+    /// Still running, nothing to report yet.
+    Pending,
+}
+
+/// Poll a remote operation receiver (fetch/pull/push) and return what happened.
+/// On completion or disconnect, clears the receiver, header flag, and timeout flag.
+/// On timeout, sets the timeout flag.
+fn poll_remote_op(
+    receiver: &mut Option<(Receiver<RemoteOpResult>, Instant, String)>,
+    header_flag: &mut bool,
+    timeout_flag: &mut bool,
+    op_name: &str,
+    now: Instant,
+    timeout_secs: u64,
+) -> AsyncOpPoll {
+    use std::sync::mpsc::TryRecvError;
+
+    let Some((ref rx, started, ref remote_name)) = *receiver else {
+        return AsyncOpPoll::Pending;
+    };
+    match rx.try_recv() {
+        Ok(result) => {
+            let remote = remote_name.clone();
+            *header_flag = false;
+            *receiver = None;
+            *timeout_flag = false;
+            if result.success {
+                AsyncOpPoll::Success(remote)
+            } else {
+                let (msg, _) = git::classify_git_error(op_name, &result.error);
+                AsyncOpPoll::Failed(msg)
+            }
+        }
+        Err(TryRecvError::Disconnected) => {
+            *header_flag = false;
+            *receiver = None;
+            *timeout_flag = false;
+            AsyncOpPoll::Disconnected
+        }
+        Err(TryRecvError::Empty) => {
+            if now.duration_since(started).as_secs() >= timeout_secs && !*timeout_flag {
+                *timeout_flag = true;
+                AsyncOpPoll::Timeout
+            } else {
+                AsyncOpPoll::Pending
+            }
+        }
+    }
+}
+
 /// Refresh commits, branch tips, tags, and header info from the repo.
 /// Call this after any operation that changes branches, commits, or remote state.
 /// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
@@ -1548,69 +1558,32 @@ impl App {
 fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let Some(ref repo) = repo_tab.repo else { return None };
 
-    // Preserve existing diff stats so they don't flicker away during refresh
-    let prev_stats: HashMap<Oid, (usize, usize)> = repo_tab.commits.iter()
-        .filter(|c| c.insertions > 0 || c.deletions > 0)
-        .map(|c| (c.id, (c.insertions, c.deletions)))
-        .collect();
+    // Delegate core refresh logic to the shared implementation in messages.rs
+    let current = {
+        let mut msg_view = MessageViewState {
+            commit_graph_view: &mut view_state.commit_graph_view,
+            staging_well: &mut view_state.staging_well,
+            diff_view: &mut view_state.diff_view,
+            commit_detail_view: &mut view_state.commit_detail_view,
+            branch_sidebar: &mut view_state.branch_sidebar,
+            header_bar: &mut view_state.header_bar,
+            last_diff_commit: &mut view_state.last_diff_commit,
+            fetch_receiver: &mut view_state.fetch_receiver,
+            pull_receiver: &mut view_state.pull_receiver,
+            push_receiver: &mut view_state.push_receiver,
+            generic_op_receiver: &mut view_state.generic_op_receiver,
+            right_panel_mode: &mut view_state.right_panel_mode,
+            worktrees: &mut view_state.worktrees,
+            submodule_focus: &mut view_state.submodule_focus,
+        };
+        refresh_repo_state_core(repo, &mut repo_tab.commits, &mut msg_view, toast_manager)
+    };
 
-    match repo.commit_graph(MAX_COMMITS) {
-        Ok(commits) => {
-            repo_tab.commits = commits;
-        }
-        Err(e) => {
-            toast_manager.push(
-                format!("Failed to load commits: {}", e),
-                ToastSeverity::Error,
-            );
-            repo_tab.commits = Vec::new();
-        }
-    }
+    // main.rs-specific extras beyond the shared core:
 
-    // Restore cached diff stats until async task provides fresh values
-    for commit in &mut repo_tab.commits {
-        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
-            commit.insertions = ins;
-            commit.deletions = del;
-        }
-    }
-    let head_oid = repo.head_oid().ok();
-    view_state.commit_graph_view.head_oid = head_oid;
+    // Set the current branch on the staging well
+    view_state.staging_well.current_branch = current;
 
-    let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
-        Vec::new()
-    });
-    let tags = repo.tags().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load tags: {}", e), ToastSeverity::Error);
-        Vec::new()
-    });
-    let current = repo.current_branch().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to get current branch: {}", e), ToastSeverity::Error);
-        String::new()
-    });
-
-    let worktrees = repo.worktrees().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
-        Vec::new()
-    });
-
-    // Insert synthetic "uncommitted changes" entries sorted by time
-    {
-        let synthetics = git::create_synthetic_entries(repo, &worktrees, &repo_tab.commits);
-        if !synthetics.is_empty() {
-            git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
-        }
-    }
-
-    view_state.commit_graph_view.update_layout(&repo_tab.commits);
-    view_state.commit_graph_view.branch_tips = branch_tips.clone();
-    view_state.commit_graph_view.tags = tags.clone();
-    view_state.commit_graph_view.worktrees = worktrees.clone();
-    let remote_names = repo.remote_names();
-    view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone(), &remote_names);
-    view_state.staging_well.set_worktrees(&worktrees);
-    view_state.staging_well.current_branch = current.clone();
     // Sync active_worktree_path with staging well's selection so status loads from the right repo
     if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
         if wt_ctx.is_current {
@@ -1626,42 +1599,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         }
     }
     // Prune cached worktree repos for paths that no longer exist
-    let valid_paths: std::collections::HashSet<PathBuf> = worktrees.iter()
+    let valid_paths: std::collections::HashSet<PathBuf> = view_state.worktrees.iter()
         .map(|wt| PathBuf::from(&wt.path))
         .collect();
     view_state.worktree_repo_cache.retain(|path, _| valid_paths.contains(path));
-    view_state.worktrees = worktrees;
-
-    let submodules = repo.submodules().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
-        Vec::new()
-    });
-    view_state.staging_well.set_submodules(submodules);
-
-    view_state.branch_sidebar.stashes = repo.stash_list();
-
-    // Compute ahead/behind for all local branches (sidebar indicators)
-    let ab_cache = repo.all_branches_ahead_behind();
-    view_state.branch_sidebar.update_ahead_behind(ab_cache);
-
-    // When inside a submodule, populate sibling submodules for lateral navigation
-    if let Some(ref focus) = view_state.submodule_focus {
-        if let Some(parent) = focus.parent_stack.last() {
-            view_state.staging_well.set_sibling_submodules(parent.parent_submodules.clone());
-        }
-    } else {
-        // At top level, clear siblings
-        view_state.staging_well.sibling_submodules.clear();
-    }
-
-    // Set the repo path in the header (workdir or git dir for bare repos)
-    let repo_path_str = repo.workdir()
-        .or_else(|| Some(repo.git_dir()))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // Strip trailing slash for cleaner display
-    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
-    view_state.header_bar.set_repo_path(&repo_path_str);
 
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
@@ -2675,39 +2616,6 @@ fn render_preview_header(
         color.to_array(),
     ));
     body_rect
-}
-
-/// Classify a git error message and return a more helpful description.
-/// Returns `(friendly_message, is_rejected_push)`.
-fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
-    let lower = stderr.to_lowercase();
-    let is_rejected = lower.contains("rejected") || lower.contains("non-fast-forward");
-
-    let friendly = if lower.contains("terminal prompts disabled") || lower.contains("could not read username") {
-        format!("{} failed: Authentication required. Configure SSH keys or a credential helper.", op)
-    } else if lower.contains("permission denied") {
-        format!("{} failed: Permission denied. Check your SSH key or access token.", op)
-    } else if lower.contains("could not read password") {
-        format!("{} failed: Password required. Set up a credential helper (git config credential.helper cache).", op)
-    } else if lower.contains("host key verification failed") {
-        format!("{} failed: SSH host key not trusted. Run ssh-keyscan to add the host.", op)
-    } else if lower.contains("repository not found") || lower.contains("404") {
-        format!("{} failed: Repository not found. Check the remote URL.", op)
-    } else if lower.contains("connection refused") || lower.contains("could not resolve") {
-        format!("{} failed: Cannot connect to remote. Check your network and remote URL.", op)
-    } else if is_rejected {
-        format!("{} rejected: Remote has new commits. Pull first, or use Force Push.", op)
-    } else {
-        // Show up to 3 lines of the error for context
-        let error_summary: String = stderr.lines().take(3).collect::<Vec<_>>().join("\n");
-        if error_summary.is_empty() {
-            format!("{} failed: unknown error", op)
-        } else {
-            format!("{} failed: {}", op, error_summary)
-        }
-    };
-
-    (friendly, is_rejected)
 }
 
 /// Handle a context menu action by dispatching to the appropriate AppMessage

@@ -1997,3 +1997,37 @@ pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<Remote
     });
     rx
 }
+
+/// Classify a git CLI stderr message into a user-friendly error string.
+/// Returns `(friendly_message, is_rejected)` where `is_rejected` indicates
+/// the remote rejected the push (e.g. non-fast-forward).
+pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
+    let lower = stderr.to_lowercase();
+    let is_rejected = lower.contains("rejected") || lower.contains("non-fast-forward");
+
+    let friendly = if lower.contains("terminal prompts disabled") || lower.contains("could not read username") {
+        format!("{} failed: Authentication required. Configure SSH keys or a credential helper.", op)
+    } else if lower.contains("permission denied") {
+        format!("{} failed: Permission denied. Check your SSH key or access token.", op)
+    } else if lower.contains("could not read password") {
+        format!("{} failed: Password required. Set up a credential helper (git config credential.helper cache).", op)
+    } else if lower.contains("host key verification failed") {
+        format!("{} failed: SSH host key not trusted. Run ssh-keyscan to add the host.", op)
+    } else if lower.contains("repository not found") || lower.contains("404") {
+        format!("{} failed: Repository not found. Check the remote URL.", op)
+    } else if lower.contains("connection refused") || lower.contains("could not resolve") {
+        format!("{} failed: Cannot connect to remote. Check your network and remote URL.", op)
+    } else if is_rejected {
+        format!("{} rejected: Remote has new commits. Pull first, or use Force Push.", op)
+    } else {
+        // Show up to 3 lines of the error for context
+        let error_summary: String = stderr.lines().take(3).collect::<Vec<_>>().join("\n");
+        if error_summary.is_empty() {
+            format!("{} failed: unknown error", op)
+        } else {
+            format!("{} failed: {}", op, error_summary)
+        }
+    };
+
+    (friendly, is_rejected)
+}

@@ -1075,12 +1075,13 @@ pub struct MessageViewState<'a> {
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
 /// Call this after any operation that changes branches, commits, or remote state.
-fn refresh_repo_state(
+/// Returns the current branch name so callers can use it for additional updates.
+pub fn refresh_repo_state(
     repo: &GitRepo,
     commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
-) {
+) -> String {
     // Preserve existing diff stats so they don't flicker away during refresh
     let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
         .filter(|c| c.insertions > 0 || c.deletions > 0)
@@ -1169,4 +1170,6 @@ fn refresh_repo_state(
         .unwrap_or_default();
     let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
     view_state.header_bar.set_repo_path(&repo_path_str);
+
+    current
 }
