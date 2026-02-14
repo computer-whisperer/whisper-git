@@ -8,6 +8,14 @@ use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, crea
 use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::{Color, Rect, TextRenderer};
 
+// File status colors (matching git status indicators)
+const STATUS_MODIFIED: Color = Color::rgba(0.400, 0.733, 0.416, 1.0);   // #66BB6A green
+const STATUS_ADDED: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);      // #42A5F5 blue
+const STATUS_DELETED: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);    // #EF5350 red
+const STATUS_RENAMED: Color = Color::rgba(0.149, 0.776, 0.855, 1.0);    // #26C6DA cyan
+const STATUS_TYPE_CHANGE: Color = Color::rgba(1.000, 0.718, 0.302, 1.0); // #FFB74D amber
+const STATUS_CONFLICTED: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350 red
+
 /// A file entry in the list
 #[derive(Clone, Debug)]
 pub struct FileEntry {
@@ -235,7 +243,7 @@ impl Widget for FileList {
         self.scrollbar.set_content(self.files.len(), visible, self.scroll_offset);
 
         // Scrollbar on right edge
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
@@ -474,21 +482,13 @@ impl Widget for FileList {
                 let mut sx = bounds.x + 10.0;
                 let small_scale = 0.85;
 
-                // Color constants matching file_list status colors
-                let green = Color::rgba(0.400, 0.733, 0.416, 1.0);    // M green
-                let blue = Color::rgba(0.259, 0.647, 0.961, 1.0);     // A blue
-                let red = Color::rgba(0.937, 0.325, 0.314, 1.0);      // D red
-                let cyan = Color::rgba(0.149, 0.776, 0.855, 1.0);     // R cyan
-                let amber = Color::rgba(1.000, 0.718, 0.302, 1.0);    // T amber
-                let conflict_red = Color::rgba(0.937, 0.325, 0.314, 1.0); // C red
-
                 let mut parts: Vec<(&str, usize, Color)> = Vec::new();
-                if conflicted > 0 { parts.push(("conflicted", conflicted, conflict_red)); }
-                if modified > 0 { parts.push(("modified", modified, green)); }
-                if added > 0 { parts.push(("added", added, blue)); }
-                if deleted > 0 { parts.push(("deleted", deleted, red)); }
-                if renamed > 0 { parts.push(("renamed", renamed, cyan)); }
-                if type_change > 0 { parts.push(("typechange", type_change, amber)); }
+                if conflicted > 0 { parts.push(("conflicted", conflicted, STATUS_CONFLICTED)); }
+                if modified > 0 { parts.push(("modified", modified, STATUS_MODIFIED)); }
+                if added > 0 { parts.push(("added", added, STATUS_ADDED)); }
+                if deleted > 0 { parts.push(("deleted", deleted, STATUS_DELETED)); }
+                if renamed > 0 { parts.push(("renamed", renamed, STATUS_RENAMED)); }
+                if type_change > 0 { parts.push(("typechange", type_change, STATUS_TYPE_CHANGE)); }
 
                 for (i, (label, count, color)) in parts.iter().enumerate() {
                     let count_str = format!("{}", count);
@@ -569,12 +569,12 @@ impl Widget for FileList {
 
             // Status indicator - colored letter
             let (status_color, status_letter) = match file.status {
-                FileStatusKind::New =>        (Color::rgba(0.259, 0.647, 0.961, 1.0), "A"), // #42A5F5 blue
-                FileStatusKind::Modified =>   (Color::rgba(0.400, 0.733, 0.416, 1.0), "M"), // #66BB6A green
-                FileStatusKind::Deleted =>    (Color::rgba(0.937, 0.325, 0.314, 1.0), "D"), // #EF5350 red
-                FileStatusKind::Renamed =>    (Color::rgba(0.149, 0.776, 0.855, 1.0), "R"), // #26C6DA cyan
-                FileStatusKind::TypeChange => (Color::rgba(1.000, 0.718, 0.302, 1.0), "T"), // #FFB74D amber
-                FileStatusKind::Conflicted => (Color::rgba(0.937, 0.325, 0.314, 1.0), "C"), // red conflict
+                FileStatusKind::New =>        (STATUS_ADDED, "A"),
+                FileStatusKind::Modified =>   (STATUS_MODIFIED, "M"),
+                FileStatusKind::Deleted =>    (STATUS_DELETED, "D"),
+                FileStatusKind::Renamed =>    (STATUS_RENAMED, "R"),
+                FileStatusKind::TypeChange => (STATUS_TYPE_CHANGE, "T"),
+                FileStatusKind::Conflicted => (STATUS_CONFLICTED, "C"),
             };
 
             output.text_vertices.extend(text_renderer.layout_text(
@@ -694,7 +694,7 @@ impl Widget for FileList {
         }
 
         // Render scrollbar on right edge
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let (_content_area, scrollbar_bounds) = bounds.take_right(scrollbar_width);
         // Offset scrollbar below the header
         let scrollbar_area = Rect::new(

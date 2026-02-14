@@ -2586,7 +2586,7 @@ fn determine_cursor(
 
     // Search bar when active (overlays the graph area)
     if view_state.commit_graph_view.search_bar.is_active() && layout.graph.contains(x, y) {
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let search_bar_height = 30.0;
         let search_bounds = Rect::new(
             layout.graph.x + 40.0,

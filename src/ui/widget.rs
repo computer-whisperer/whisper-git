@@ -354,6 +354,9 @@ pub fn create_dialog_backdrop(
 pub mod theme {
     use crate::ui::Color;
 
+    // Layout constants
+    pub const SCROLLBAR_WIDTH: f32 = 8.0;
+
     // Dark blue-gray palette
     pub const BACKGROUND: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);      // #1a1e24 - dark blue-gray
     pub const SURFACE: Color = Color::rgba(0.133, 0.149, 0.173, 1.0);         // #222630 - panels

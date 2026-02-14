@@ -328,7 +328,7 @@ impl BranchSidebar {
     /// Update hover state based on mouse position
     pub fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
         // Update scrollbar hover
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
         let move_event = crate::input::InputEvent::MouseMove { x, y };
         self.scrollbar.handle_event(&move_event, scrollbar_bounds);
@@ -645,7 +645,7 @@ impl BranchSidebar {
         Rect::new(
             bounds.x + padding,
             bounds.y + padding,
-            bounds.width - padding * 2.0 - 8.0, // 8.0 for scrollbar
+            bounds.width - padding * 2.0 - theme::SCROLLBAR_WIDTH, // scrollbar
             filter_h - 4.0, // leave a small gap below
         )
     }
@@ -786,7 +786,7 @@ impl BranchSidebar {
         }
 
         // Scrollbar on right edge
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
 
         // Route to scrollbar first
@@ -1598,7 +1598,7 @@ impl BranchSidebar {
         );
 
         // Update and render scrollbar
-        let scrollbar_width = 8.0;
+        let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let total_items = self.visible_items.len();
         let visible_items = (bounds.height / line_height).max(1.0) as usize;
         let scroll_offset_items = if line_height > 0.0 {
