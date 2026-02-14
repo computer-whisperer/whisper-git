@@ -552,10 +552,20 @@ impl GitRepo {
 
         let mut staged = Vec::new();
         let mut unstaged = Vec::new();
+        let mut conflicted = Vec::new();
 
         for entry in statuses.iter() {
             let path = entry.path().unwrap_or("").to_string();
             let status = entry.status();
+
+            // Check for conflicted files first (merge/rebase conflicts)
+            if status.contains(Status::CONFLICTED) {
+                conflicted.push(FileStatus {
+                    path,
+                    status: FileStatusKind::Conflicted,
+                });
+                continue;
+            }
 
             // Check for staged changes
             if status.intersects(
@@ -586,7 +596,7 @@ impl GitRepo {
             }
         }
 
-        Ok(WorkingDirStatus { staged, unstaged })
+        Ok(WorkingDirStatus { staged, unstaged, conflicted })
     }
 
     /// Stage a file
@@ -1086,11 +1096,16 @@ pub struct DiffLine {
 pub struct WorkingDirStatus {
     pub staged: Vec<FileStatus>,
     pub unstaged: Vec<FileStatus>,
+    pub conflicted: Vec<FileStatus>,
 }
 
 impl WorkingDirStatus {
     pub fn total_files(&self) -> usize {
-        self.staged.len() + self.unstaged.len()
+        self.staged.len() + self.unstaged.len() + self.conflicted.len()
+    }
+
+    pub fn has_conflicts(&self) -> bool {
+        !self.conflicted.is_empty()
     }
 }
 
@@ -1109,6 +1124,7 @@ pub enum FileStatusKind {
     Deleted,
     Renamed,
     TypeChange,
+    Conflicted,
 }
 
 impl FileStatusKind {
@@ -1228,6 +1244,15 @@ impl FullCommitInfo {
 }
 
 impl GitRepo {
+    /// Check if the working directory has any uncommitted changes (staged or unstaged).
+    /// Returns the total number of changed files, or 0 for bare repos.
+    pub fn uncommitted_change_count(&self) -> usize {
+        if self.repo.is_bare() {
+            return 0;
+        }
+        self.status().map(|s| s.total_files()).unwrap_or(0)
+    }
+
     /// Get a suitable directory for running git CLI commands.
     /// Returns the workdir if available, otherwise falls back to the git dir.
     /// This allows push/fetch/pull to work on bare repos.
@@ -1861,6 +1886,18 @@ define_async_git_op! {
     /// Spawn a background thread to merge a branch into the current branch
     merge_branch_async(branch_name: String) =>
         ["merge", branch_name], "merge";
+
+    /// Spawn a background thread to merge with --no-ff (always create merge commit)
+    merge_noff_async(branch_name: String, message: String) =>
+        ["merge", "--no-ff", "-m", message, branch_name], "merge --no-ff";
+
+    /// Spawn a background thread to merge with --ff-only (fail if not fast-forwardable)
+    merge_ffonly_async(branch_name: String) =>
+        ["merge", "--ff-only", branch_name], "merge --ff-only";
+
+    /// Spawn a background thread to merge with --squash (stage changes, don't auto-commit)
+    merge_squash_async(branch_name: String) =>
+        ["merge", "--squash", branch_name], "merge --squash";
 
     /// Spawn a background thread to rebase the current branch onto another branch
     rebase_branch_async(branch_name: String) =>

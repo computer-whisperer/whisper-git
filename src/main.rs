@@ -35,7 +35,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
@@ -327,6 +327,7 @@ struct App {
     confirm_dialog: ConfirmDialog,
     branch_name_dialog: BranchNameDialog,
     remote_dialog: RemoteDialog,
+    merge_dialog: MergeDialog,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
@@ -434,6 +435,7 @@ impl App {
             confirm_dialog: ConfirmDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
             remote_dialog: RemoteDialog::new(),
+            merge_dialog: MergeDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
@@ -609,10 +611,17 @@ impl App {
             let Some(ref repo) = repo_tab.repo else { return };
 
             // Active worktree status for staging well
-            let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
-            if let Ok(status) = staging_repo.status() {
+            // Compute status and repo_state before mutable borrow of staging_well
+            let (wt_status, wt_repo_state) = {
+                let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
+                (staging_repo.status().ok(), staging_repo.repo_state())
+            };
+            if let Some(status) = wt_status {
                 view_state.staging_well.update_status(&status);
             }
+
+            // Pass repo state to staging well (for conflict banner)
+            view_state.staging_well.repo_state_label = crate::git::repo_state_label(wt_repo_state);
 
             // Main worktree status for graph + header (always from main repo)
             if let Ok(status) = repo.status() {
@@ -921,6 +930,13 @@ impl App {
                     view_state.showed_timeout_toast[3] = false;
                     if result.success {
                         self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
+                        // Squash merge doesn't auto-commit: show info toast
+                        if label.starts_with("Squash merge") {
+                            self.toast_manager.push(
+                                "Squash merge staged. Review and commit when ready.".to_string(),
+                                ToastSeverity::Info,
+                            );
+                        }
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                         // Also refresh worktrees/stashes
@@ -1097,6 +1113,31 @@ impl App {
             return true;
         }
 
+        // Merge dialog takes modal priority
+        if self.merge_dialog.is_visible() {
+            self.merge_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.merge_dialog.take_action() {
+                match action {
+                    MergeDialogAction::Confirm(branch, strategy, message) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            let msg = match strategy {
+                                MergeStrategy::Default => AppMessage::MergeBranch(branch),
+                                MergeStrategy::NoFastForward => {
+                                    let commit_msg = message.unwrap_or_else(|| format!("Merge branch '{}'", branch));
+                                    AppMessage::MergeNoFf(branch, commit_msg)
+                                }
+                                MergeStrategy::FastForwardOnly => AppMessage::MergeFfOnly(branch),
+                                MergeStrategy::Squash => AppMessage::MergeSquash(branch),
+                            };
+                            view_state.pending_messages.push(msg);
+                        }
+                    }
+                    MergeDialogAction::Cancel => {}
+                }
+            }
+            return true;
+        }
+
         // Settings dialog takes priority (modal)
         if self.settings_dialog.is_visible() {
             self.settings_dialog.handle_event(input_event, screen_bounds);
@@ -1154,6 +1195,7 @@ impl App {
                                 &mut self.confirm_dialog,
                                 &mut self.branch_name_dialog,
                                 &mut self.remote_dialog,
+                                &mut self.merge_dialog,
                                 repo_tab.repo.as_ref(),
                                 &mut self.pending_confirm_action,
                             );
@@ -2601,6 +2643,7 @@ fn handle_context_menu_action(
     confirm_dialog: &mut ConfirmDialog,
     branch_name_dialog: &mut BranchNameDialog,
     remote_dialog: &mut RemoteDialog,
+    merge_dialog: &mut MergeDialog,
     repo: Option<&crate::git::GitRepo>,
     pending_confirm_action: &mut Option<AppMessage>,
 ) {
@@ -2793,14 +2836,42 @@ fn handle_context_menu_action(
         }
         "merge" => {
             if !param.is_empty() {
-                confirm_dialog.show("Merge Branch", &format!("Merge '{}' into current branch?", param));
-                *pending_confirm_action = Some(AppMessage::MergeBranch(param.to_string()));
+                if let Some(r) = repo {
+                    // Pre-flight: check if an operation is already in progress
+                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                        toast_manager.push(
+                            format!("Cannot merge: {}. Abort or complete it first.", label),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                        let uncommitted = r.uncommitted_change_count();
+                        merge_dialog.show(param, &current, uncommitted);
+                    }
+                }
             }
         }
         "rebase" => {
             if !param.is_empty() {
-                confirm_dialog.show("Rebase Branch", &format!("Rebase current branch onto '{}'?", param));
-                *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                if let Some(r) = repo {
+                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                        toast_manager.push(
+                            format!("Cannot rebase: {}. Abort or complete it first.", label),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        let uncommitted = r.uncommitted_change_count();
+                        if uncommitted > 0 {
+                            toast_manager.push(
+                                format!("Warning: {} uncommitted change{}. Stash or commit them before rebasing.",
+                                    uncommitted, if uncommitted == 1 { "" } else { "s" }),
+                                ToastSeverity::Info,
+                            );
+                        }
+                        confirm_dialog.show("Rebase Branch", &format!("Rebase current branch onto '{}'?", param));
+                        *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                    }
+                }
             }
         }
         "cherry_pick" => {
@@ -2920,14 +2991,42 @@ fn handle_context_menu_action(
         }
         "merge_remote" => {
             if !param.is_empty() {
-                confirm_dialog.show("Merge Remote Branch", &format!("Merge '{}' into current branch?", param));
-                *pending_confirm_action = Some(AppMessage::MergeBranch(param.to_string()));
+                if let Some(r) = repo {
+                    // Pre-flight: check if an operation is already in progress
+                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                        toast_manager.push(
+                            format!("Cannot merge: {}. Abort or complete it first.", label),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                        let uncommitted = r.uncommitted_change_count();
+                        merge_dialog.show(param, &current, uncommitted);
+                    }
+                }
             }
         }
         "rebase_remote" => {
             if !param.is_empty() {
-                confirm_dialog.show("Rebase onto Remote Branch", &format!("Rebase current branch onto '{}'?", param));
-                *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                if let Some(r) = repo {
+                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                        toast_manager.push(
+                            format!("Cannot rebase: {}. Abort or complete it first.", label),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        let uncommitted = r.uncommitted_change_count();
+                        if uncommitted > 0 {
+                            toast_manager.push(
+                                format!("Warning: {} uncommitted change{}. Stash or commit them before rebasing.",
+                                    uncommitted, if uncommitted == 1 { "" } else { "s" }),
+                                ToastSeverity::Info,
+                            );
+                        }
+                        confirm_dialog.show("Rebase onto Remote Branch", &format!("Rebase current branch onto '{}'?", param));
+                        *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                    }
+                }
             }
         }
         "delete_remote_branch" => {
@@ -3052,6 +3151,7 @@ fn build_ui_output(
     confirm_dialog: &ConfirmDialog,
     branch_name_dialog: &BranchNameDialog,
     remote_dialog: &RemoteDialog,
+    merge_dialog: &MergeDialog,
     text_renderer: &TextRenderer,
     bold_text_renderer: &TextRenderer,
     scale_factor: f64,
@@ -3232,6 +3332,11 @@ fn build_ui_output(
         overlay_output.extend(remote_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Merge dialog (overlay layer - on top of everything)
+    if merge_dialog.is_visible() {
+        overlay_output.extend(merge_dialog.layout(text_renderer, screen_bounds));
+    }
+
     (graph_output, chrome_output, overlay_output)
 }
 
@@ -3332,7 +3437,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3468,7 +3573,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3586,7 +3691,7 @@ fn capture_screenshot_offscreen(
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
