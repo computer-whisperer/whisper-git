@@ -30,7 +30,7 @@ use winit::{
 use git2::Oid;
 
 use crate::config::Config;
-use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo};
+use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo, WorktreeInfo};
 use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
@@ -116,6 +116,8 @@ struct SavedParentState {
     sidebar_scroll_offset: f32,
     submodule_name: String,
     parent_submodules: Vec<SubmoduleInfo>,
+    active_worktree_path: Option<PathBuf>,
+    worktrees: Vec<WorktreeInfo>,
 }
 
 /// Focus state when viewing a submodule (supports nesting via stack)
@@ -663,6 +665,8 @@ impl App {
                     }
                 }
             }
+            // Mark status dirty after submodule navigation to refresh staging well
+            self.status_dirty = true;
         }
 
         if normal_messages.is_empty() {
@@ -1676,14 +1680,19 @@ fn enter_submodule(
         sidebar_scroll_offset: view_state.branch_sidebar.scroll_offset,
         submodule_name: name.to_string(),
         parent_submodules,
+        active_worktree_path: view_state.active_worktree_path.clone(),
+        worktrees: std::mem::take(&mut view_state.worktrees),
     };
 
-    // Clear diff/detail views
+    // Clear diff/detail views and worktree state
     view_state.diff_view.clear();
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
     view_state.worktree_repo_cache.clear();
     view_state.active_worktree_path = None;
+
+    // Clear staging well immediately to avoid showing stale parent files
+    view_state.staging_well.clear_status();
 
     // Swap in submodule data
     let sub_commits = sub_repo.commit_graph(MAX_COMMITS).unwrap_or_default();
@@ -1737,7 +1746,6 @@ fn exit_submodule(
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
     view_state.worktree_repo_cache.clear();
-    view_state.active_worktree_path = None;
 
     // Restore parent data
     let scroll_offset = saved.graph_scroll_offset;
@@ -1748,6 +1756,8 @@ fn exit_submodule(
     repo_tab.repo = Some(saved.repo);
     repo_tab.commits = saved.commits;
     repo_tab.name = saved.repo_name;
+    view_state.active_worktree_path = saved.active_worktree_path;
+    view_state.worktrees = saved.worktrees;
 
     // Re-init views with parent data
     let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
