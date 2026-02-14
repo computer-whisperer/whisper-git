@@ -245,6 +245,11 @@ impl TabViewState {
             StagingAction::OpenSubmodule(name) => {
                 self.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
+            StagingAction::SwitchToSibling(name) => {
+                // Exit current submodule, then enter the sibling
+                self.pending_messages.push(AppMessage::ExitSubmodule);
+                self.pending_messages.push(AppMessage::EnterSubmodule(name));
+            }
         }
     }
 
@@ -741,6 +746,7 @@ impl App {
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktrees,
+                submodule_focus: &mut view_state.submodule_focus,
             };
             let staging_repo = view_state.active_worktree_path.as_ref()
                 .and_then(|p| view_state.worktree_repo_cache.get(p))
@@ -1614,12 +1620,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     let ab_cache = repo.all_branches_ahead_behind();
     view_state.branch_sidebar.update_ahead_behind(ab_cache);
 
-    // When inside a submodule, override staging well with parent's siblings
-    // so users can navigate between sibling submodules
+    // When inside a submodule, populate sibling submodules for lateral navigation
     if let Some(ref focus) = view_state.submodule_focus {
         if let Some(parent) = focus.parent_stack.last() {
-            view_state.staging_well.set_submodules(parent.parent_submodules.clone());
+            view_state.staging_well.set_sibling_submodules(parent.parent_submodules.clone());
         }
+    } else {
+        // At top level, clear siblings
+        view_state.staging_well.sibling_submodules.clear();
     }
 
     let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {

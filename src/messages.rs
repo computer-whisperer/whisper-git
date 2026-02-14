@@ -1047,6 +1047,7 @@ pub struct MessageViewState<'a> {
     pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
     pub right_panel_mode: &'a mut RightPanelMode,
     pub worktrees: &'a mut Vec<WorktreeInfo>,
+    pub submodule_focus: &'a mut Option<crate::SubmoduleFocus>,
 }
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
@@ -1120,6 +1121,16 @@ fn refresh_repo_state(
         Vec::new()
     });
     view_state.staging_well.set_submodules(submodules);
+
+    // When inside a submodule, populate sibling submodules for lateral navigation
+    if let Some(focus) = view_state.submodule_focus.as_ref() {
+        if let Some(parent) = focus.parent_stack.last() {
+            view_state.staging_well.set_sibling_submodules(parent.parent_submodules.clone());
+        }
+    } else {
+        // At top level, clear siblings
+        view_state.staging_well.sibling_submodules.clear();
+    }
 
     view_state.branch_sidebar.stashes = repo.stash_list();
 
