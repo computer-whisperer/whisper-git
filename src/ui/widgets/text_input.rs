@@ -1,5 +1,6 @@
 //! Single-line text input widget
 
+use std::cell::RefCell;
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
 use crate::ui::{Rect, TextRenderer};
@@ -83,6 +84,10 @@ pub struct TextInput {
     cursor_visible: bool,
     /// Last time the cursor blink state changed
     last_blink: std::time::Instant,
+    /// Scale factor for rendering
+    scale: f32,
+    /// Cached character boundary positions for click-to-cursor
+    char_boundaries: RefCell<Vec<f32>>,
 }
 
 impl TextInput {
@@ -98,6 +103,8 @@ impl TextInput {
             inserted_from_key: false,
             cursor_visible: true,
             last_blink: std::time::Instant::now(),
+            scale: 1.0,
+            char_boundaries: RefCell::new(Vec::new()),
         }
     }
 
@@ -204,11 +211,29 @@ impl Widget for TextInput {
             } => {
                 if bounds.contains(*x, *y) {
                     self.state.focused = true;
-                    // Calculate cursor position from click
-                    let text_x = bounds.x + 8.0;
-                    let char_width = 10.0; // Rough estimate
+                    // Calculate cursor position from click using cached character boundaries
+                    let padding = 12.0 * self.scale;
+                    let text_x = bounds.x + padding;
                     let click_offset = (*x - text_x).max(0.0);
-                    self.cursor = ((click_offset / char_width) as usize).min(self.text.len());
+
+                    // Find nearest character boundary
+                    let boundaries = self.char_boundaries.borrow();
+                    if boundaries.is_empty() {
+                        self.cursor = 0;
+                    } else {
+                        let mut best_idx = 0;
+                        let mut best_dist = (click_offset - 0.0).abs();
+
+                        for (idx, &boundary) in boundaries.iter().enumerate() {
+                            let dist = (click_offset - boundary).abs();
+                            if dist < best_dist {
+                                best_dist = dist;
+                                best_idx = idx;
+                            }
+                        }
+                        self.cursor = best_idx;
+                    }
+
                     self.selection_start = None;
                     return EventResponse::Consumed;
                 }
@@ -409,6 +434,18 @@ impl Widget for TextInput {
         let mut output = WidgetOutput::new();
         let padding = 12.0;
         let corner_radius = (bounds.height * 0.15).min(5.0);
+
+        // Cache character boundary positions for click-to-cursor
+        {
+            let mut boundaries = self.char_boundaries.borrow_mut();
+            boundaries.clear();
+            boundaries.push(0.0); // Start position
+            for (i, _) in self.text.char_indices() {
+                let char_text = &self.text[..i + 1];
+                let x_offset = text_renderer.measure_text(char_text);
+                boundaries.push(x_offset);
+            }
+        }
 
         // Background - slightly raised when focused
         let bg_color = if self.state.focused {

@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -209,14 +211,19 @@ impl CommitInfo {
     /// to no earlier than the parent commit's timestamp.
     pub fn synthetic_for_worktree(wt: &WorktreeInfo, parent_time: i64) -> Option<Self> {
         let head = wt.head_oid?;
-        // Build a deterministic sentinel Oid from the worktree name bytes (padded/hashed)
+        // Build a deterministic sentinel Oid from the worktree name using a proper hash
+        let mut hasher = DefaultHasher::new();
+        wt.name.hash(&mut hasher);
+        let hash = hasher.finish(); // u64
+
         let mut bytes = [0u8; 20];
-        // Prefix with 0xFF to avoid collisions with real commit hashes
-        bytes[0] = 0xFF;
-        bytes[1] = 0xFE;
-        for (i, b) in wt.name.bytes().enumerate() {
-            bytes[2 + (i % 18)] ^= b;
+        bytes[0] = 0xFF; // sentinel prefix
+        bytes[1] = 0xFE; // sentinel prefix
+        // Spread the 8 hash bytes across bytes 2..10
+        for (i, b) in hash.to_le_bytes().iter().enumerate() {
+            bytes[2 + i] = *b;
         }
+        // bytes 10..20 remain zero
         let sentinel = Oid::from_bytes(&bytes).ok()?;
 
         let mtime = newest_mtime_in_dir(&wt.path).unwrap_or(parent_time);
