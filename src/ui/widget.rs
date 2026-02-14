@@ -372,7 +372,6 @@ pub mod theme {
     pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);    // #42A5F5 (Blue)
 
     // Branch colors - vibrant but balanced
-    pub const BRANCH_FEATURE: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);  // #4CAF50 (Green)
     pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);  // #FF9800 (Orange)
     pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0);   // #9e9e9e (Gray)
 

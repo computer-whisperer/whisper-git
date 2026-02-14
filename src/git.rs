@@ -506,38 +506,6 @@ impl GitRepo {
         result
     }
 
-    /// Get ahead/behind count relative to upstream
-    pub fn ahead_behind(&self) -> Result<(usize, usize)> {
-        let head = match self.repo.head() {
-            Ok(h) => h,
-            Err(_) => return Ok((0, 0)), // Bare repo with stale HEAD
-        };
-        if !head.is_branch() {
-            return Ok((0, 0));
-        }
-
-        let branch_name = head.shorthand().unwrap_or("HEAD");
-        let local_branch = self.repo.find_branch(branch_name, git2::BranchType::Local)
-            .context("Failed to find local branch")?;
-
-        let upstream = match local_branch.upstream() {
-            Ok(u) => u,
-            Err(_) => return Ok((0, 0)), // No upstream configured
-        };
-
-        let local_oid = head.target().context("HEAD has no target")?;
-        let upstream_oid = upstream
-            .get()
-            .target()
-            .context("Upstream has no target")?;
-
-        let (ahead, behind) = self.repo
-            .graph_ahead_behind(local_oid, upstream_oid)
-            .context("Failed to compute ahead/behind")?;
-
-        Ok((ahead, behind))
-    }
-
     /// Get working directory status
     pub fn status(&self) -> Result<WorkingDirStatus> {
         if self.repo.is_bare() {
@@ -681,10 +649,9 @@ impl GitRepo {
             let path = sm.path().to_string_lossy().to_string();
 
             let head_oid = sm.head_id();
-            let workdir_oid = sm.workdir_id();
 
             // Try to open the submodule to get more info
-            let (branch, is_dirty, ahead) = if let Ok(sub_repo) = sm.open() {
+            let (branch, is_dirty) = if let Ok(sub_repo) = sm.open() {
                 let branch = sub_repo
                     .head()
                     .ok()
@@ -696,16 +663,9 @@ impl GitRepo {
                     .map(|s| !s.is_empty())
                     .unwrap_or(false);
 
-                let (ahead, _behind) = match (workdir_oid, head_oid) {
-                    (Some(w), Some(h)) if w != h => {
-                        sub_repo.graph_ahead_behind(w, h).unwrap_or((0, 0))
-                    }
-                    _ => (0, 0),
-                };
-
-                (branch, is_dirty, ahead)
+                (branch, is_dirty)
             } else {
-                ("unknown".to_string(), false, 0)
+                ("unknown".to_string(), false)
             };
 
             infos.push(SubmoduleInfo {
@@ -714,8 +674,6 @@ impl GitRepo {
                 branch,
                 is_dirty,
                 head_oid,
-                workdir_oid,
-                ahead,
             });
         }
 
@@ -1113,10 +1071,6 @@ impl WorkingDirStatus {
     pub fn total_files(&self) -> usize {
         self.staged.len() + self.unstaged.len() + self.conflicted.len()
     }
-
-    pub fn has_conflicts(&self) -> bool {
-        !self.conflicted.is_empty()
-    }
 }
 
 /// Status of a single file
@@ -1176,15 +1130,12 @@ pub struct SubmoduleInfo {
     pub branch: String,
     pub is_dirty: bool,
     pub head_oid: Option<Oid>,     // what parent's HEAD pins (sm.head_id())
-    pub workdir_oid: Option<Oid>,  // what's actually checked out (sm.workdir_id())
-    pub ahead: usize,              // commits workdir is ahead of pinned
 }
 
 /// Per-commit submodule entry: what a commit tree pins for each submodule.
 #[derive(Clone, Debug)]
 pub struct CommitSubmoduleEntry {
     pub name: String,
-    pub path: String,
     pub pinned_oid: Oid,
     pub changed: bool,
     pub parent_oid: Option<Oid>,
@@ -1557,7 +1508,6 @@ impl GitRepo {
 
             entries.push(CommitSubmoduleEntry {
                 name,
-                path: path.clone(),
                 pinned_oid: *pinned_oid,
                 changed,
                 parent_oid,
