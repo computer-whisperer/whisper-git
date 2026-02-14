@@ -1,3 +1,8 @@
+//! Gravatar avatar rendering with identicon fallback.
+//!
+//! Downloads Gravatar images via HTTP (MD5 email hash), caches to ~/.cache/whisper-git/avatars/,
+//! and packs into a dedicated 512x512 GPU atlas texture (8x8 grid of 64x64 tiles, 64 slots total).
+
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};

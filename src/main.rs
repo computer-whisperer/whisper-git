@@ -1,3 +1,8 @@
+//! Main application entry point and event loop.
+//!
+//! Owns the App struct, winit event loop, Vulkan draw pipeline, and three-layer rendering architecture
+//! (base → chrome → overlay). Handles async git operations via mpsc channels and thread spawning.
+
 mod config;
 mod git;
 mod input;

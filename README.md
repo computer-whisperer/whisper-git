@@ -5,8 +5,9 @@ A GPU-accelerated Git client built in Rust with Vulkan. Designed for power users
 ## Features
 
 ### Rendering Engine
-- **GPU-accelerated via Vulkan** using vulkano 0.35 -- no egui, no immediate-mode GUI frameworks
-- **Custom text rendering** with a font atlas built from Roboto Regular (proportional) via ab_glyph
+- **GPU-accelerated via Vulkan** using vulkano 0.35 with custom retained-mode widget system
+- **SDF text rendering** with font atlas built from Roboto Regular/Bold via fontdue + custom EDT (Euclidean Distance Transform) pipeline
+- **4x MSAA antialiasing** for smooth edges on text and shapes
 - **Spline rendering** for commit graph connections using CPU-tessellated Bezier curves
 - **Avatar rendering** with a dedicated GPU atlas for Gravatar images
 - **Three-layer render pipeline**: graph layer → chrome layer → overlay layer, each with splines → avatars → text passes
@@ -214,10 +215,12 @@ cargo build --release
 | vulkano-shaders | 0.35 | GLSL shader compilation |
 | winit | 0.30 | Window creation and event loop |
 | git2 | 0.20 | Git operations (libgit2 bindings) |
-| ab_glyph | 0.2 | Font rasterization for atlas |
+| fontdue | 0.9 | Font rasterization for SDF atlas |
 | image | 0.25 | PNG/JPEG encoding for screenshots and avatars |
 | ureq | 2 | HTTP client for Gravatar downloads |
 | md5 | 0.7 | MD5 hashing for Gravatar email lookup |
+| notify | 8 | Filesystem watching for automatic refresh |
+| rfd | 0.15 | Native file picker dialogs |
 | bytemuck | 1.21 | Safe transmute for vertex data |
 | anyhow | 1.0 | Error handling |
 | half | 2.4 | f16 conversion for AMD swapchain formats |

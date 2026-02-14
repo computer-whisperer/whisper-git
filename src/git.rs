@@ -1,3 +1,8 @@
+//! Git operations via libgit2 (git2 crate).
+//!
+//! Provides GitRepo wrapper for repository access, async CLI operations via std::thread,
+//! and synthetic commit entries for visualizing dirty worktrees in the commit graph.
+
 use anyhow::{Context, Result};
 use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
 use std::collections::HashMap;
