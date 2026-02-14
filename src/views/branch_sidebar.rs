@@ -545,6 +545,7 @@ impl BranchSidebar {
                     MenuItem::new("Rename...", "rename"),
                     MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
                     MenuItem::new("Push", "push"),
+                    MenuItem::new("Push to...", "push_to"),
                     MenuItem::new("Pull", "pull"),
                     MenuItem::new("Pull (Rebase)", "pull_rebase"),
                     MenuItem::new("Force Push", "force_push"),
