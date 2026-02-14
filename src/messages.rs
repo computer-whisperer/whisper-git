@@ -1111,7 +1111,8 @@ fn refresh_repo_state(
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
-    view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone());
+    let remote_names = repo.remote_names();
+    view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone(), &remote_names);
     view_state.staging_well.set_worktrees(&worktrees);
     *view_state.worktrees = worktrees;
 
