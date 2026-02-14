@@ -33,6 +33,8 @@ pub enum AppMessage {
     Fetch(Option<String>),
     Pull(Option<String>),
     PullRebase(Option<String>),
+    ShowPullDialog,
+    PullBranchFrom { remote: String, branch: String, rebase: bool },
     Push(Option<String>),
     PushForce(Option<String>),
     ShowPushDialog,
@@ -367,6 +369,27 @@ pub fn handle_app_message(
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
                 |wd| git::pull_rebase_async(wd, remote_for_closure, branch),
+                |hb| hb.pulling = true,
+                toast_manager, view_state.header_bar,
+            ) {
+                return false;
+            }
+        }
+        AppMessage::ShowPullDialog => {
+            // Handled in main.rs before message processing
+        }
+        AppMessage::PullBranchFrom { remote, branch, rebase } => {
+            let remote_for_closure = remote.clone();
+            let branch_for_closure = branch.clone();
+            if !start_remote_op(
+                view_state.pull_receiver, repo, "Pull", remote,
+                |wd| {
+                    if rebase {
+                        git::pull_rebase_async(wd, remote_for_closure, branch_for_closure)
+                    } else {
+                        git::pull_remote_async(wd, remote_for_closure, branch_for_closure)
+                    }
+                },
                 |hb| hb.pulling = true,
                 toast_manager, view_state.header_bar,
             ) {

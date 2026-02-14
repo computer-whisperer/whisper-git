@@ -542,41 +542,24 @@ impl BranchSidebar {
             SidebarItem::LocalBranch(name) => {
                 let mut items = vec![
                     MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
-                    MenuItem::new("Rename...", "rename"),
-                    MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
-                    MenuItem::new("Push", "push"),
-                    MenuItem::new("Push to...", "push_to"),
+                    MenuItem::separator(),
                     MenuItem::new("Pull", "pull"),
                     MenuItem::new("Pull (Rebase)", "pull_rebase"),
+                    MenuItem::new("Push", "push"),
+                    MenuItem::separator(),
+                    MenuItem::new("Pull from...", "pull_from_dialog"),
+                    MenuItem::new("Push to...", "push_to"),
                     MenuItem::new("Force Push", "force_push"),
+                    MenuItem::separator(),
+                    MenuItem::new("Merge into Current", "merge"),
+                    MenuItem::new("Rebase Current onto", "rebase"),
+                    MenuItem::separator(),
+                    MenuItem::new("Rename...", "rename"),
+                    MenuItem::new("Create Worktree", "create_worktree"),
+                    MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
                 ];
-                // Add per-remote push/pull items for each configured remote
-                let mut remote_names: Vec<&String> = self.remote_branches.keys().collect();
-                remote_names.sort();
-                for remote in &remote_names {
-                    items.push(MenuItem::new(
-                        format!("Pull from {}", remote),
-                        format!("pull_from_remote:{}", remote),
-                    ));
-                    items.push(MenuItem::new(
-                        format!("Pull (Rebase) from {}", remote),
-                        format!("pull_rebase_from_remote:{}", remote),
-                    ));
-                    items.push(MenuItem::new(
-                        format!("Push to {}", remote),
-                        format!("push_to_remote:{}", remote),
-                    ));
-                }
-                items.push(MenuItem::separator());
-                items.push(MenuItem::new("Merge into Current", "merge"));
-                items.push(MenuItem::new("Rebase Current onto", "rebase"));
-                items.push(MenuItem::new("Create Worktree", "create_worktree"));
                 for item in &mut items {
-                    if !item.is_separator
-                        && !item.action_id.starts_with("push_to_remote:")
-                        && !item.action_id.starts_with("pull_from_remote:")
-                        && !item.action_id.starts_with("pull_rebase_from_remote:")
-                    {
+                    if !item.is_separator {
                         item.action_id = format!("{}:{}", item.action_id, name);
                     }
                 }
