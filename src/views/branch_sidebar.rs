@@ -264,6 +264,7 @@ impl BranchSidebar {
         branch_tips: &[BranchTip],
         tags: &[TagInfo],
         current_branch: String,
+        all_remote_names: &[String],
     ) {
         self.current_branch = current_branch;
 
@@ -287,6 +288,11 @@ impl BranchSidebar {
                     self.upstream_map.insert(tip.name.clone(), upstream.clone());
                 }
             }
+        }
+
+        // Ensure all configured remotes appear even if they have 0 tracking branches
+        for remote_name in all_remote_names {
+            self.remote_branches.entry(remote_name.clone()).or_insert_with(Vec::new);
         }
 
         // Sort for consistent display
@@ -1255,7 +1261,7 @@ impl BranchSidebar {
         let mut y = y;
         let mut item_idx = item_idx;
 
-        let remote_count: usize = filtered_remotes.iter().map(|(_, v)| v.len()).sum();
+        let remote_count: usize = filtered_remotes.len();  // count of remotes, not branches
         y = self.layout_section_header(
             params.text_renderer, bold_renderer, output, &params.inner, y,
             "REMOTE", remote_count, self.remote_collapsed,
@@ -1296,31 +1302,47 @@ impl BranchSidebar {
 
                 // Branches under this remote (skip if collapsed)
                 if !remote_is_collapsed {
-                    for branch in branches {
+                    if branches.is_empty() {
+                        // Show hint for remotes with no tracking branches
                         let visible = y >= params.content_top && y < params.bounds.bottom();
                         if visible {
-                            let branch_color = self.layout_item_highlight(
-                                output, &params.inner, y, params.line_height, item_idx,
-                                theme::BRANCH_REMOTE.to_array(), theme::TEXT_BRIGHT.to_array(),
-                            );
-                            // Remote branch icon
+                            let hint = "Fetch to see branches";
                             output.text_vertices.extend(params.text_renderer.layout_text(
-                                "\u{25CB}", // ○
+                                hint,
                                 params.inner.x + params.indent * 2.0,
                                 y + 2.0,
                                 theme::TEXT_MUTED.to_array(),
                             ));
-                            let icon_width = params.text_renderer.measure_text("\u{25CB}") + 4.0;
-                            let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent * 2.0 - icon_width);
-                            output.text_vertices.extend(params.text_renderer.layout_text(
-                                &display_name,
-                                params.inner.x + params.indent * 2.0 + icon_width,
-                                y + 2.0,
-                                branch_color,
-                            ));
                         }
                         y += params.line_height;
-                        item_idx += 1;
+                        // No item_idx increment - this is not a selectable item
+                    } else {
+                        for branch in branches {
+                            let visible = y >= params.content_top && y < params.bounds.bottom();
+                            if visible {
+                                let branch_color = self.layout_item_highlight(
+                                    output, &params.inner, y, params.line_height, item_idx,
+                                    theme::BRANCH_REMOTE.to_array(), theme::TEXT_BRIGHT.to_array(),
+                                );
+                                // Remote branch icon
+                                output.text_vertices.extend(params.text_renderer.layout_text(
+                                    "\u{25CB}", // ○
+                                    params.inner.x + params.indent * 2.0,
+                                    y + 2.0,
+                                    theme::TEXT_MUTED.to_array(),
+                                ));
+                                let icon_width = params.text_renderer.measure_text("\u{25CB}") + 4.0;
+                                let display_name = truncate_to_width(branch, params.text_renderer, params.inner.width - params.indent * 2.0 - icon_width);
+                                output.text_vertices.extend(params.text_renderer.layout_text(
+                                    &display_name,
+                                    params.inner.x + params.indent * 2.0 + icon_width,
+                                    y + 2.0,
+                                    branch_color,
+                                ));
+                            }
+                            y += params.line_height;
+                            item_idx += 1;
+                        }
                     }
                 }
             }
@@ -1492,7 +1514,11 @@ impl BranchSidebar {
                 for (remote_name, branches) in &data.remotes {
                     total_h += line_height; // remote name sub-header
                     if !self.collapsed_remotes.contains(remote_name) {
-                        total_h += branches.len() as f32 * line_height;
+                        if branches.is_empty() {
+                            total_h += line_height; // hint line for empty remote
+                        } else {
+                            total_h += branches.len() as f32 * line_height;
+                        }
                     }
                 }
             }

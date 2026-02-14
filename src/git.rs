@@ -814,6 +814,16 @@ impl GitRepo {
         Ok(tips)
     }
 
+    /// Returns the list of configured remote names (from git config, not refs)
+    pub fn remote_names(&self) -> Vec<String> {
+        match self.repo.remotes() {
+            Ok(remotes) => remotes.iter()
+                .filter_map(|r| r.map(|s| s.to_string()))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Get tags
     pub fn tags(&self) -> Result<Vec<TagInfo>> {
         let mut tags = Vec::new();
