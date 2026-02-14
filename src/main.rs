@@ -35,7 +35,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, PushDialog, PushDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
@@ -327,6 +327,7 @@ struct App {
     confirm_dialog: ConfirmDialog,
     branch_name_dialog: BranchNameDialog,
     remote_dialog: RemoteDialog,
+    push_dialog: PushDialog,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     state: Option<RenderState>,
@@ -434,6 +435,7 @@ impl App {
             confirm_dialog: ConfirmDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
             remote_dialog: RemoteDialog::new(),
+            push_dialog: PushDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             state: None,
@@ -640,8 +642,22 @@ impl App {
         }
 
         // Partition: submodule navigation vs normal messages
-        let (nav_messages, normal_messages): (Vec<_>, Vec<_>) = messages.into_iter().partition(|msg| {
+        let (nav_messages, mut normal_messages): (Vec<_>, Vec<_>) = messages.into_iter().partition(|msg| {
             matches!(msg, AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_))
+        });
+
+        // Handle ShowPushDialog separately (needs to access self.push_dialog)
+        normal_messages.retain(|msg| {
+            if matches!(msg, AppMessage::ShowPushDialog) {
+                if let Some(ref repo) = repo_tab.repo {
+                    let current_branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                    let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                    self.push_dialog.show(&current_branch, &default_remote);
+                }
+                false
+            } else {
+                true
+            }
         });
 
         // Handle submodule navigation first (needs text_renderer from self.state)
@@ -1092,6 +1108,27 @@ impl App {
                         }
                     }
                     RemoteDialogAction::Cancel => {}
+                }
+            }
+            return true;
+        }
+
+        // Push dialog takes modal priority
+        if self.push_dialog.is_visible() {
+            self.push_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.push_dialog.take_action() {
+                match action {
+                    PushDialogAction::Confirm { local_branch, remote, remote_branch, force } => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(AppMessage::PushBranchTo {
+                                local_branch,
+                                remote,
+                                remote_branch,
+                                force,
+                            });
+                        }
+                    }
+                    PushDialogAction::Cancel => {}
                 }
             }
             return true;
@@ -2669,6 +2706,9 @@ fn handle_context_menu_action(
         "push" => {
             view_state.pending_messages.push(AppMessage::Push(None));
         }
+        "push_to" => {
+            view_state.pending_messages.push(AppMessage::ShowPushDialog);
+        }
         "pull" => {
             view_state.pending_messages.push(AppMessage::Pull(None));
         }
@@ -3052,6 +3092,7 @@ fn build_ui_output(
     confirm_dialog: &ConfirmDialog,
     branch_name_dialog: &BranchNameDialog,
     remote_dialog: &RemoteDialog,
+    push_dialog: &PushDialog,
     text_renderer: &TextRenderer,
     bold_text_renderer: &TextRenderer,
     scale_factor: f64,
@@ -3232,6 +3273,11 @@ fn build_ui_output(
         overlay_output.extend(remote_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Push dialog (overlay layer - on top of everything)
+    if push_dialog.is_visible() {
+        overlay_output.extend(push_dialog.layout(text_renderer, screen_bounds));
+    }
+
     (graph_output, chrome_output, overlay_output)
 }
 
@@ -3332,7 +3378,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3468,7 +3514,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3586,7 +3632,7 @@ fn capture_screenshot_offscreen(
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,

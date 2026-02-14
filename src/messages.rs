@@ -35,6 +35,8 @@ pub enum AppMessage {
     PullRebase(Option<String>),
     Push(Option<String>),
     PushForce(Option<String>),
+    ShowPushDialog,
+    PushBranchTo { local_branch: String, remote: String, remote_branch: String, force: bool },
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
     ViewDiff(String, bool), // (path, staged)
@@ -398,6 +400,40 @@ pub fn handle_app_message(
                 return false;
             }
             toast_manager.push("Force pushing...", ToastSeverity::Info);
+        }
+        AppMessage::ShowPushDialog => {
+            // Handled in main.rs
+        }
+        AppMessage::PushBranchTo { local_branch, remote, remote_branch, force } => {
+            let refspec = format!("{}:{}", local_branch, remote_branch);
+            let remote_for_closure = remote.clone();
+            let refspec_for_closure = refspec.clone();
+            let toast_msg = if force {
+                format!("Force pushing {} to {}/{}...", local_branch, remote, remote_branch)
+            } else {
+                format!("Pushing {} to {}/{}...", local_branch, remote, remote_branch)
+            };
+            if force {
+                if !start_remote_op(
+                    view_state.push_receiver, repo, "Push", remote,
+                    |wd| git::push_force_refspec_async(wd, remote_for_closure, refspec_for_closure),
+                    |hb| hb.pushing = true,
+                    toast_manager, view_state.header_bar,
+                ) {
+                    return false;
+                }
+                toast_manager.push(toast_msg, ToastSeverity::Info);
+            } else {
+                if !start_remote_op(
+                    view_state.push_receiver, repo, "Push", remote,
+                    |wd| git::push_refspec_async(wd, remote_for_closure, refspec_for_closure),
+                    |hb| hb.pushing = true,
+                    toast_manager, view_state.header_bar,
+                ) {
+                    return false;
+                }
+                toast_manager.push(toast_msg, ToastSeverity::Info);
+            }
         }
         AppMessage::SelectedCommit(oid) => {
             let full_info = repo.full_commit_info(oid);

@@ -1830,6 +1830,14 @@ define_async_git_op! {
     push_force_async(remote: String, branch: String) =>
         ["push", "--force-with-lease", remote, branch], "push";
 
+    /// Spawn a background thread to run `git push` with a refspec (local:remote format)
+    push_refspec_async(remote: String, refspec: String) =>
+        ["push", remote, refspec], "push";
+
+    /// Spawn a background thread to run `git push --force-with-lease` with a refspec
+    push_force_refspec_async(remote: String, refspec: String) =>
+        ["push", "--force-with-lease", remote, refspec], "push";
+
     /// Spawn a background thread to run `git pull`
     pull_remote_async(remote: String, branch: String) =>
         ["pull", remote, branch], "pull";
