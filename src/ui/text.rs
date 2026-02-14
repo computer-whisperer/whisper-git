@@ -1,3 +1,8 @@
+//! SDF text rendering via fontdue and custom EDT algorithm.
+//!
+//! Rasterizes glyphs with fontdue, applies Euclidean Distance Transform to generate SDF atlas (R8_UNORM),
+//! and renders via vertex-based layout with smoothstep + fwidth shader for crisp text at any scale.
+
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use fontdue::Font;

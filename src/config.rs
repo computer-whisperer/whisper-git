@@ -1,3 +1,7 @@
+//! User settings persistence to ~/.config/whisper-git/settings.json.
+//!
+//! Manages application settings (avatars, scroll speed, row scale, etc.) via serde_json serialization.
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

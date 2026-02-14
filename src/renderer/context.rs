@@ -1,3 +1,7 @@
+//! Vulkan device, queue, and allocator setup.
+//!
+//! VulkanContext owns the fundamental Vulkan objects created once at startup.
+
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use vulkano::{

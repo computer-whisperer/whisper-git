@@ -1,3 +1,8 @@
+//! AppMessage enum for decoupled event handling.
+//!
+//! Defines the message protocol between UI interactions and git operations. Uses MessageViewState
+//! borrow pattern to access only needed tab state fields. Message dispatch routes to git operations.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;

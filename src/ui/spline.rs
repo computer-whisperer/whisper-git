@@ -1,3 +1,8 @@
+//! SplineRenderer for filled shapes and bezier curves.
+//!
+//! CPU-tessellates lines, cubic bezier curves, rectangles, rounded rects, circles, and arcs into
+//! vertex buffers. Used for commit graph lines, backgrounds, borders, and all filled/outlined shapes.
+
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;

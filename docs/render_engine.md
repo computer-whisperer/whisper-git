@@ -88,7 +88,7 @@ pub struct SurfaceManager {
 
 ### TextRenderer (`ui/text.rs`)
 
-Font atlas-based text rendering using ab_glyph for glyph rasterization:
+SDF (Signed Distance Field) text rendering using fontdue for glyph rasterization and custom EDT (Euclidean Distance Transform) for SDF generation:
 
 ```rust
 pub struct TextRenderer {
@@ -103,18 +103,23 @@ pub struct TextRenderer {
 **How it works:**
 
 1. **Font Atlas Creation** (startup):
-   - Loads DejaVu Sans Mono from system fonts
-   - Rasterizes ASCII characters (32-126) to a texture atlas
+   - Loads Roboto Regular or Roboto Bold (proportional fonts) from system fonts (`/usr/share/fonts/TTF/`)
+   - Rasterizes ASCII characters (32-126) using fontdue with 2x oversampling
+   - Applies custom EDT algorithm to convert coverage to SDF
    - Stores glyph metrics (advance, bearing, UV coordinates)
+   - Atlas format is R8_UNORM (single-channel grayscale)
    - Atlas is built at the maximum monitor scale factor for crisp text at all DPIs
+   - Two TextRenderer instances are used: one for regular, one for bold
 
 2. **Text Layout** (`layout_text`):
    - Converts string + position to `Vec<TextVertex>`
    - Each character becomes a textured quad (6 vertices, 2 triangles)
 
 3. **Rendering** (`draw`):
-   - Binds font atlas texture
+   - Binds SDF font atlas texture
    - Sets viewport via push constants
+   - Fragment shader uses smoothstep + fwidth for crisp SDF rendering
+   - 4x MSAA antialiasing for smooth edges
    - Draws all text quads in one draw call
 
 **Vertex Format:**
