@@ -179,6 +179,12 @@ impl StagingWell {
         self.unstaged_list.set_files(unstaged);
     }
 
+    /// Clear staging status (used when switching repos/submodules)
+    pub fn clear_status(&mut self) {
+        self.staged_list.set_files(Vec::new());
+        self.unstaged_list.set_files(Vec::new());
+    }
+
     /// Set the submodule list for the current repo/worktree.
     pub fn set_submodules(&mut self, subs: Vec<SubmoduleInfo>) {
         self.submodules = subs;
