@@ -1534,9 +1534,6 @@ impl App {
                 self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
             }
-            SidebarAction::RenameBranch(old_name) => {
-                self.branch_name_dialog.show_for_rename(&old_name);
-            }
         }
     }
 }

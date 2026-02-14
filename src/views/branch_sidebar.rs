@@ -19,7 +19,6 @@ pub enum SidebarAction {
     ApplyStash(usize),
     DropStash(usize),
     DeleteTag(String),
-    RenameBranch(String), // old_name — new name comes from dialog
 }
 
 /// Represents a single navigable item in the flattened sidebar list
