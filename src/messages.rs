@@ -1127,15 +1127,11 @@ fn refresh_repo_state(
     let ab_cache = repo.all_branches_ahead_behind();
     view_state.branch_sidebar.update_ahead_behind(ab_cache);
 
-    let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
-        (0, 0)
-    });
-    view_state.header_bar.set_repo_info(
-        view_state.header_bar.repo_name.clone(),
-        current,
-        ahead,
-        behind,
-    );
-    view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
+    // Set the repo path in the header (workdir or git dir for bare repos)
+    let repo_path_str = repo.workdir()
+        .or_else(|| Some(repo.git_dir()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
+    view_state.header_bar.set_repo_path(&repo_path_str);
 }
