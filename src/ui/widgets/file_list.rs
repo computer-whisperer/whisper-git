@@ -146,12 +146,13 @@ impl FileList {
     }
 
     /// Count files by status kind
-    fn status_counts(&self) -> (usize, usize, usize, usize, usize) {
+    fn status_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
         let mut modified = 0;
         let mut added = 0;
         let mut deleted = 0;
         let mut renamed = 0;
         let mut type_change = 0;
+        let mut conflicted = 0;
         for f in &self.files {
             match f.status {
                 FileStatusKind::Modified => modified += 1,
@@ -159,9 +160,10 @@ impl FileList {
                 FileStatusKind::Deleted => deleted += 1,
                 FileStatusKind::Renamed => renamed += 1,
                 FileStatusKind::TypeChange => type_change += 1,
+                FileStatusKind::Conflicted => conflicted += 1,
             }
         }
-        (modified, added, deleted, renamed, type_change)
+        (modified, added, deleted, renamed, type_change, conflicted)
     }
 
     /// Consistent line/entry height used across all methods
@@ -467,7 +469,7 @@ impl Widget for FileList {
 
             // File change summary line below title row (when files exist)
             if !self.files.is_empty() {
-                let (modified, added, deleted, renamed, type_change) = self.status_counts();
+                let (modified, added, deleted, renamed, type_change, conflicted) = self.status_counts();
                 let summary_y = bounds.y + title_row_h + 1.0;
                 let mut sx = bounds.x + 10.0;
                 let small_scale = 0.85;
@@ -478,8 +480,10 @@ impl Widget for FileList {
                 let red = Color::rgba(0.937, 0.325, 0.314, 1.0);      // D red
                 let cyan = Color::rgba(0.149, 0.776, 0.855, 1.0);     // R cyan
                 let amber = Color::rgba(1.000, 0.718, 0.302, 1.0);    // T amber
+                let conflict_red = Color::rgba(0.937, 0.325, 0.314, 1.0); // C red
 
                 let mut parts: Vec<(&str, usize, Color)> = Vec::new();
+                if conflicted > 0 { parts.push(("conflicted", conflicted, conflict_red)); }
                 if modified > 0 { parts.push(("modified", modified, green)); }
                 if added > 0 { parts.push(("added", added, blue)); }
                 if deleted > 0 { parts.push(("deleted", deleted, red)); }
@@ -570,6 +574,7 @@ impl Widget for FileList {
                 FileStatusKind::Deleted =>    (Color::rgba(0.937, 0.325, 0.314, 1.0), "D"), // #EF5350 red
                 FileStatusKind::Renamed =>    (Color::rgba(0.149, 0.776, 0.855, 1.0), "R"), // #26C6DA cyan
                 FileStatusKind::TypeChange => (Color::rgba(1.000, 0.718, 0.302, 1.0), "T"), // #FFB74D amber
+                FileStatusKind::Conflicted => (Color::rgba(0.937, 0.325, 0.314, 1.0), "C"), // red conflict
             };
 
             output.text_vertices.extend(text_renderer.layout_text(

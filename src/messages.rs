@@ -54,6 +54,9 @@ pub enum AppMessage {
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
     MergeBranch(String),
+    MergeNoFf(String, String),       // (branch, commit_message)
+    MergeFfOnly(String),
+    MergeSquash(String),
     RebaseBranch(String),
     CreateBranch(String, Oid),  // (name, at_commit)
     CreateTag(String, Oid),     // (name, at_commit)
@@ -761,6 +764,39 @@ pub fn handle_app_message(
                 rx,
                 format!("Merge '{}'", name),
                 format!("Merging '{}'...", name),
+                toast_manager,
+            );
+        }
+        AppMessage::MergeNoFf(name, message) => {
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::merge_noff_async(cmd_dir, name.clone(), message);
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Merge --no-ff '{}'", name),
+                format!("Merging '{}' (no-ff)...", name),
+                toast_manager,
+            );
+        }
+        AppMessage::MergeFfOnly(name) => {
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::merge_ffonly_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Merge --ff-only '{}'", name),
+                format!("Merging '{}' (ff-only)...", name),
+                toast_manager,
+            );
+        }
+        AppMessage::MergeSquash(name) => {
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::merge_squash_async(cmd_dir, name.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Squash merge '{}'", name),
+                format!("Squash merging '{}'...", name),
                 toast_manager,
             );
         }

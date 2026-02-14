@@ -80,6 +80,8 @@ pub struct StagingWell {
     pub staged_list: FileList,
     /// Unstaged files list
     pub unstaged_list: FileList,
+    /// Conflicted files list (shown during merge/rebase conflicts)
+    pub conflicted_list: FileList,
     /// Stage all button
     stage_all_btn: Button,
     /// Unstage all button
@@ -112,6 +114,8 @@ pub struct StagingWell {
     submodule_bounds: Vec<(Rect, String)>,
     /// Current branch name (for single-worktree header display)
     pub current_branch: String,
+    /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
+    pub repo_state_label: Option<&'static str>,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -142,6 +146,7 @@ impl StagingWell {
             body_area: TextArea::new(),
             staged_list: { let mut fl = FileList::new("Staged", true); fl.hide_header = true; fl },
             unstaged_list: { let mut fl = FileList::new("Unstaged", false); fl.hide_header = true; fl },
+            conflicted_list: { let mut fl = FileList::new("Conflicted", false); fl.hide_header = true; fl },
             stage_all_btn: Button::new("Stage All"),
             unstage_all_btn: Button::new("Unstage All"),
             commit_btn: Button::new("Commit").primary(),
@@ -158,6 +163,7 @@ impl StagingWell {
             submodules: Vec::new(),
             submodule_bounds: Vec::new(),
             current_branch: String::new(),
+            repo_state_label: None,
         }
     }
 
@@ -166,6 +172,7 @@ impl StagingWell {
         self.scale = scale;
         self.staged_list.set_scale(scale);
         self.unstaged_list.set_scale(scale);
+        self.conflicted_list.set_scale(scale);
     }
 
     /// Update from working directory status
@@ -174,9 +181,11 @@ impl StagingWell {
 
         let staged: Vec<FileEntry> = status.staged.iter().map(FileEntry::from).collect();
         let unstaged: Vec<FileEntry> = status.unstaged.iter().map(FileEntry::from).collect();
+        let conflicted: Vec<FileEntry> = status.conflicted.iter().map(FileEntry::from).collect();
 
         self.staged_list.set_files(staged);
         self.unstaged_list.set_files(unstaged);
+        self.conflicted_list.set_files(conflicted);
     }
 
     /// Clear staging status (used when switching repos/submodules)
@@ -460,6 +469,7 @@ impl StagingWell {
         // Clear stale file lists immediately and request a fresh status refresh
         self.staged_list.set_files(Vec::new());
         self.unstaged_list.set_files(Vec::new());
+        self.conflicted_list.set_files(Vec::new());
         self.status_refresh_needed = true;
     }
 
@@ -1051,6 +1061,63 @@ impl StagingWell {
         ));
 
         let regions = self.compute_regions_full(bounds);
+
+        // =============================================================
+        // 0. CONFLICT RESOLUTION BANNER (when merge/rebase in progress)
+        // =============================================================
+
+        let conflict_count = self.conflicted_list.files.len();
+        let has_conflicts = conflict_count > 0;
+        let conflict_banner_h = if has_conflicts || self.repo_state_label.is_some() { 52.0 * s } else { 0.0 };
+
+        if has_conflicts || self.repo_state_label.is_some() {
+            let banner_rect = Rect::new(bounds.x, bounds.y, bounds.width, conflict_banner_h);
+
+            // Amber-tinted background
+            output.spline_vertices.extend(create_rect_vertices(
+                &banner_rect,
+                [0.35, 0.25, 0.10, 0.4],
+            ));
+
+            // Banner text
+            let banner_text = if has_conflicts {
+                format!("Resolve {} conflict{}, then stage and commit to complete the operation",
+                    conflict_count, if conflict_count == 1 { "" } else { "s" })
+            } else if let Some(label) = self.repo_state_label {
+                format!("{} - stage resolved files and commit", label)
+            } else {
+                String::new()
+            };
+
+            let amber_color = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
+            output.text_vertices.extend(text_renderer.layout_text(
+                &banner_text,
+                bounds.x + 8.0 * s,
+                bounds.y + 6.0 * s,
+                amber_color,
+            ));
+
+            // Show conflicted file count
+            if has_conflicts {
+                let conflict_label = format!("Conflicted Files ({})", conflict_count);
+                output.text_vertices.extend(text_renderer.layout_text(
+                    &conflict_label,
+                    bounds.x + 8.0 * s,
+                    bounds.y + 24.0 * s,
+                    [0.937, 0.325, 0.314, 1.0], // red
+                ));
+
+                // Render conflicted file list inline (compact, just paths)
+                let list_y = bounds.y + 38.0 * s;
+                let conflict_bounds = Rect::new(
+                    bounds.x,
+                    list_y,
+                    bounds.width,
+                    conflict_banner_h - (list_y - bounds.y),
+                );
+                output.extend(self.conflicted_list.layout(text_renderer, conflict_bounds));
+            }
+        }
 
         // =============================================================
         // 1. UNSTAGED SECTION (top)
