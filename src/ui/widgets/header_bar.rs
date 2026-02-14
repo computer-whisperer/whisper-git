@@ -1,4 +1,4 @@
-//! Header bar widget - repository name, branch, action buttons
+//! Header bar widget - repo path, breadcrumbs, action buttons
 
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
@@ -23,16 +23,12 @@ pub enum HeaderAction {
     AbortOperation,
 }
 
-/// Header bar widget displaying repo info and action buttons
+/// Header bar widget displaying repo path, breadcrumbs, and action buttons.
+/// The header is a location indicator — it shows WHERE you are, not WHAT you're working on.
+/// Branch/remote state belongs in the staging well.
 pub struct HeaderBar {
-    /// Repository name
-    pub repo_name: String,
-    /// Current branch name
-    pub branch_name: String,
-    /// Commits ahead of remote
-    pub ahead: usize,
-    /// Commits behind remote
-    pub behind: usize,
+    /// Full filesystem path to the current repo/worktree, abbreviated with ~ for home dir
+    pub repo_path: String,
     /// Whether a fetch operation is in progress
     pub fetching: bool,
     /// Whether a pull operation is in progress
@@ -51,7 +47,7 @@ pub struct HeaderBar {
     help_button: Button,
     settings_button: Button,
     /// Breadcrumb segments: empty = normal mode, non-empty = submodule drill-down
-    /// First segment is the root repo name, last is the current submodule
+    /// First segment is the repo path, subsequent segments are submodule names
     pub breadcrumb_segments: Vec<String>,
     /// Which breadcrumb segment is hovered (for click highlighting)
     breadcrumb_hovered: Option<usize>,
@@ -68,19 +64,14 @@ pub struct HeaderBar {
     /// Whether shift was held during the last pull button click (for pull --rebase)
     pull_shift_held: bool,
     /// Label for a generic async operation in progress (e.g. "Merging...", "Rebasing...")
-    /// When set, renders a spinning indicator in the header next to the branch pill.
+    /// When set, renders a spinning indicator in the header next to the repo path.
     pub generic_op_label: Option<String>,
-    /// Tracking remote name (e.g. "origin"). Shown next to branch pill when non-empty.
-    pub remote_name: String,
 }
 
 impl HeaderBar {
     pub fn new() -> Self {
         Self {
-            repo_name: String::new(),
-            branch_name: String::new(),
-            ahead: 0,
-            behind: 0,
+            repo_path: String::new(),
             fetching: false,
             pulling: false,
             pushing: false,
@@ -101,16 +92,17 @@ impl HeaderBar {
             abort_button_bounds: None,
             pull_shift_held: false,
             generic_op_label: None,
-            remote_name: String::new(),
         }
     }
 
-    /// Update repository information
-    pub fn set_repo_info(&mut self, repo_name: String, branch_name: String, ahead: usize, behind: usize) {
-        self.repo_name = repo_name;
-        self.branch_name = branch_name;
-        self.ahead = ahead;
-        self.behind = behind;
+    /// Set the repo path displayed in the header. Abbreviates the home directory with ~.
+    pub fn set_repo_path(&mut self, path: &str) {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() && path.starts_with(&home) {
+            self.repo_path = format!("~{}", &path[home.len()..]);
+        } else {
+            self.repo_path = path.to_string();
+        }
     }
 
     /// Check if an action was triggered and clear it
@@ -126,36 +118,25 @@ impl HeaderBar {
         let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
         let dots: String = ".".repeat(dot_count);
 
-        // Remote name suffix for button labels (e.g. " origin")
-        let remote_suffix = if self.remote_name.is_empty() {
-            String::new()
-        } else {
-            format!(" {}", self.remote_name)
-        };
-
-        // Fetch button label (no prefix — Roboto lacks a refresh/circular arrow glyph)
+        // Fetch button label
         self.fetch_button.label = if self.fetching {
-            format!("Fetching{}{}", remote_suffix, dots)
+            format!("Fetching{}", dots)
         } else {
-            format!("Fetch{}", remote_suffix)
+            "Fetch".to_string()
         };
 
-        // Pull button label with behind badge (↓ down arrow)
+        // Pull button label (↓ down arrow)
         self.pull_button.label = if self.pulling {
-            format!("\u{2193} Pulling{}{}", remote_suffix, dots)
-        } else if self.behind > 0 {
-            format!("\u{2193} Pull{} (-{})", remote_suffix, self.behind)
+            format!("\u{2193} Pulling{}", dots)
         } else {
-            format!("\u{2193} Pull{}", remote_suffix)
+            "\u{2193} Pull".to_string()
         };
 
-        // Push button label with ahead badge (↑ up arrow)
+        // Push button label (↑ up arrow)
         self.push_button.label = if self.pushing {
-            format!("\u{2191} Pushing{}{}", remote_suffix, dots)
-        } else if self.ahead > 0 {
-            format!("\u{2191} Push{} (+{})", remote_suffix, self.ahead)
+            format!("\u{2191} Pushing{}", dots)
         } else {
-            format!("\u{2191} Push{}", remote_suffix)
+            "\u{2191} Push".to_string()
         };
 
         // Fetch/Pull/Push buttons: slightly raised above the header's SURFACE_RAISED background
@@ -227,8 +208,8 @@ impl HeaderBar {
     }
 
     /// Pre-compute abort button bounds (call from the pre-draw phase with text_renderer access).
-    /// `bold_renderer` is used for measuring repo name and branch name (rendered bold in layout).
-    pub fn update_abort_bounds(&mut self, bold_renderer: &TextRenderer, bounds: Rect) {
+    /// `text_renderer` is used for measuring the repo path text.
+    pub fn update_abort_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
         if self.operation_state_label.is_none() {
             self.abort_button_bounds = None;
             return;
@@ -238,30 +219,22 @@ impl HeaderBar {
         let button_y = bounds.y + 4.0 * scale;
         let abort_w = 80.0 * scale;
 
-        // Compute branch pill end position
-        let branch_pill_x = if self.breadcrumb_segments.is_empty() {
-            if self.repo_name == self.branch_name {
-                bounds.x + 16.0
-            } else {
-                let repo_x = bounds.x + 16.0;
-                let repo_w = bold_renderer.measure_text(&self.repo_name);
-                let sep_x = repo_x + repo_w + 12.0;
-                sep_x + 12.0
-            }
+        // Compute end position of the repo path / breadcrumb text
+        let after_path_x = if self.breadcrumb_segments.is_empty() {
+            // Normal mode: just repo_path text
+            let path_w = text_renderer.measure_text(&self.repo_path);
+            bounds.x + 16.0 + path_w
         } else if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
-            last_bound.right() + 8.0 + 28.0 * scale + 8.0 + 12.0
+            // Breadcrumb mode: after close button
+            last_bound.right() + 8.0 + 28.0 * scale + 8.0
         } else {
             bounds.x + 16.0
         };
 
-        let branch_text_w = bold_renderer.measure_text(&self.branch_name);
-        let pill_pad_h = 10.0;
-        let pill_w = branch_text_w + pill_pad_h * 2.0;
-
-        // Place operation label + abort button after branch pill
+        // Place operation label + abort button after the path/breadcrumbs
         let label_text = self.operation_state_label.unwrap_or("");
-        let label_w = bold_renderer.measure_text(label_text);
-        let abort_x = branch_pill_x + pill_w + 12.0 + label_w + 8.0;
+        let label_w = text_renderer.measure_text(label_text);
+        let abort_x = after_path_x + 12.0 + label_w + 8.0;
 
         self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
     }
@@ -318,7 +291,7 @@ impl Default for HeaderBar {
 }
 
 impl HeaderBar {
-    /// Layout with bold text support. Renders branch name and button labels in bold.
+    /// Layout with bold text support. Renders repo path and button labels in bold.
     /// `elapsed` is seconds since app start, used for spinning arc and pulsing animations.
     pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect, elapsed: f32) -> WidgetOutput {
         let mut output = WidgetOutput::new();
@@ -333,33 +306,19 @@ impl HeaderBar {
         let line_height = text_renderer.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
-        // Determine where the branch pill starts (depends on breadcrumb vs normal mode)
-        let branch_pill_x;
+        // Track where the next element starts after the path/breadcrumb area
+        let after_path_x;
 
         if self.breadcrumb_segments.is_empty() {
-            // Normal mode: repo name in bold + separator
-            // Skip repo name when it matches the branch (avoids "main | main" redundancy)
-            if self.repo_name == self.branch_name {
-                branch_pill_x = bounds.x + 16.0;
-            } else {
-                let repo_x = bounds.x + 16.0;
-                output.bold_text_vertices.extend(bold_renderer.layout_text(
-                    &self.repo_name,
-                    repo_x,
-                    text_y,
-                    theme::TEXT.to_array(),
-                ));
-
-                let sep_x = repo_x + bold_renderer.measure_text(&self.repo_name) + 12.0;
-                let sep_height = line_height * 0.8;
-                let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-                output.spline_vertices.extend(create_rect_vertices(
-                    &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                    theme::BORDER.to_array(),
-                ));
-
-                branch_pill_x = sep_x + 12.0;
-            }
+            // Normal mode: repo path in regular text
+            let path_x = bounds.x + 16.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &self.repo_path,
+                path_x,
+                text_y,
+                theme::TEXT.to_array(),
+            ));
+            after_path_x = path_x + text_renderer.measure_text(&self.repo_path);
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
             let mut x = bounds.x + 16.0;
@@ -413,86 +372,12 @@ impl HeaderBar {
             let close_bounds = self.close_button_bounds(bounds, scale);
             output.extend(self.close_button.layout(text_renderer, close_bounds));
 
-            // Separator before branch pill
-            let sep_x = close_bounds.right() + 8.0;
-            let sep_height = line_height * 0.8;
-            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-            output.spline_vertices.extend(create_rect_vertices(
-                &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                theme::BORDER.to_array(),
-            ));
-
-            branch_pill_x = sep_x + 12.0;
-        }
-
-        // Branch name inside a tinted pill - bold text
-        let branch_text_w = bold_renderer.measure_text(&self.branch_name);
-        let pill_pad_h = 10.0;
-        let pill_pad_v = 3.0;
-        let pill_h = line_height + pill_pad_v * 2.0;
-        let pill_w = branch_text_w + pill_pad_h * 2.0;
-        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
-        let pill_rect = Rect::new(branch_pill_x, pill_y, pill_w, pill_h);
-        let pill_radius = pill_h / 2.0;
-
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &pill_rect,
-            theme::ACCENT.with_alpha(0.15).to_array(),
-            pill_radius,
-        ));
-
-        let branch_text_x = branch_pill_x + pill_pad_h;
-        let branch_text_y = pill_y + pill_pad_v;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
-            &self.branch_name,
-            branch_text_x,
-            branch_text_y,
-            theme::ACCENT.to_array(),
-        ));
-
-        // Ahead/behind indicators next to the branch pill
-        let mut after_pill_x = branch_pill_x + pill_w;
-        if self.ahead > 0 || self.behind > 0 {
-            after_pill_x += 8.0;
-            if self.ahead > 0 {
-                let ahead_text = format!("\u{2191}{}", self.ahead);
-                output.bold_text_vertices.extend(bold_renderer.layout_text(
-                    &ahead_text,
-                    after_pill_x,
-                    text_y,
-                    theme::STATUS_CLEAN.to_array(),
-                ));
-                after_pill_x += bold_renderer.measure_text(&ahead_text) + 4.0;
-            }
-            if self.behind > 0 {
-                let behind_text = format!("\u{2193}{}", self.behind);
-                output.bold_text_vertices.extend(bold_renderer.layout_text(
-                    &behind_text,
-                    after_pill_x,
-                    text_y,
-                    theme::STATUS_BEHIND.to_array(),
-                ));
-                after_pill_x += bold_renderer.measure_text(&behind_text);
-            }
-            after_pill_x += 4.0;
-        }
-
-        // Remote name indicator (e.g. "origin") in muted text after branch pill
-        if !self.remote_name.is_empty() {
-            let remote_label = format!("{}", self.remote_name);
-            let remote_x = after_pill_x + 8.0;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &remote_label,
-                remote_x,
-                text_y,
-                theme::TEXT_MUTED.to_array(),
-            ));
-            after_pill_x = remote_x + text_renderer.measure_text(&remote_label);
+            after_path_x = close_bounds.right() + 8.0;
         }
 
         // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
         if let Some(label) = self.operation_state_label {
-            let label_x = after_pill_x + 12.0;
+            let label_x = after_path_x + 12.0;
             let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
             output.bold_text_vertices.extend(bold_renderer.layout_text(
                 label, label_x, text_y, label_color,
@@ -507,7 +392,7 @@ impl HeaderBar {
         // Only show when no operation_state_label is already displayed
         if self.operation_state_label.is_none() {
             if let Some(ref op_label) = self.generic_op_label {
-                let indicator_x = after_pill_x + 12.0;
+                let indicator_x = after_path_x + 12.0;
                 let spinner_radius = 5.0 * scale;
                 let spinner_thickness = 1.5 * scale;
                 let spinner_cx = indicator_x + spinner_radius;
@@ -756,33 +641,19 @@ impl Widget for HeaderBar {
         let line_height = text_renderer.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
-        // Determine where the branch pill starts (depends on breadcrumb vs normal mode)
-        let branch_pill_x;
+        // Track where the next element starts after the path/breadcrumb area
+        let after_path_x;
 
         if self.breadcrumb_segments.is_empty() {
-            // Normal mode: repo name + separator
-            // Skip repo name when it matches the branch (avoids "main | main" redundancy)
-            if self.repo_name == self.branch_name {
-                branch_pill_x = bounds.x + 16.0;
-            } else {
-                let repo_x = bounds.x + 16.0;
-                output.text_vertices.extend(text_renderer.layout_text(
-                    &self.repo_name,
-                    repo_x,
-                    text_y,
-                    theme::TEXT.to_array(),
-                ));
-
-                let sep_x = repo_x + text_renderer.measure_text(&self.repo_name) + 12.0;
-                let sep_height = line_height * 0.8;
-                let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-                output.spline_vertices.extend(create_rect_vertices(
-                    &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                    theme::BORDER.to_array(),
-                ));
-
-                branch_pill_x = sep_x + 12.0;
-            }
+            // Normal mode: repo path in regular text
+            let path_x = bounds.x + 16.0;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &self.repo_path,
+                path_x,
+                text_y,
+                theme::TEXT.to_array(),
+            ));
+            after_path_x = path_x + text_renderer.measure_text(&self.repo_path);
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
             let scale = (bounds.height / 32.0).max(1.0);
@@ -790,9 +661,6 @@ impl Widget for HeaderBar {
             let separator = " > ";
             let sep_w = text_renderer.measure_text(separator);
 
-            // We need to write segment bounds into a mutable ref via interior mutability workaround
-            // Since layout takes &self, we'll store bounds via the segment_bounds Vec
-            // which was pre-computed. For rendering we just draw based on current positions.
             let last_idx = self.breadcrumb_segments.len() - 1;
 
             for (i, segment) in self.breadcrumb_segments.iter().enumerate() {
@@ -808,10 +676,7 @@ impl Widget for HeaderBar {
                 };
 
                 output.text_vertices.extend(text_renderer.layout_text(
-                    segment,
-                    x,
-                    text_y,
-                    color,
+                    segment, x, text_y, color,
                 ));
 
                 // Underline hovered non-last segments for clickability affordance
@@ -827,10 +692,7 @@ impl Widget for HeaderBar {
 
                 if !is_last {
                     output.text_vertices.extend(text_renderer.layout_text(
-                        separator,
-                        x,
-                        text_y,
-                        theme::TEXT_MUTED.to_array(),
+                        separator, x, text_y, theme::TEXT_MUTED.to_array(),
                     ));
                     x += sep_w;
                 }
@@ -840,67 +702,15 @@ impl Widget for HeaderBar {
             let close_bounds = self.close_button_bounds(bounds, scale);
             output.extend(self.close_button.layout(text_renderer, close_bounds));
 
-            // Separator before branch pill
-            let sep_x = close_bounds.right() + 8.0;
-            let sep_height = line_height * 0.8;
-            let sep_y = bounds.y + (bounds.height - sep_height) / 2.0;
-            output.spline_vertices.extend(create_rect_vertices(
-                &Rect::new(sep_x, sep_y, 1.0, sep_height),
-                theme::BORDER.to_array(),
-            ));
-
-            branch_pill_x = sep_x + 12.0;
-        }
-
-        // Branch name inside a tinted pill
-        let branch_text_w = text_renderer.measure_text(&self.branch_name);
-        let pill_pad_h = 10.0;
-        let pill_pad_v = 3.0;
-        let pill_h = line_height + pill_pad_v * 2.0;
-        let pill_w = branch_text_w + pill_pad_h * 2.0;
-        let pill_y = bounds.y + (bounds.height - pill_h) / 2.0;
-        let pill_rect = Rect::new(branch_pill_x, pill_y, pill_w, pill_h);
-        let pill_radius = pill_h / 2.0;
-
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &pill_rect,
-            theme::ACCENT.with_alpha(0.15).to_array(),
-            pill_radius,
-        ));
-
-        let branch_text_x = branch_pill_x + pill_pad_h;
-        let branch_text_y = pill_y + pill_pad_v;
-        output.text_vertices.extend(text_renderer.layout_text(
-            &self.branch_name,
-            branch_text_x,
-            branch_text_y,
-            theme::ACCENT.to_array(),
-        ));
-
-        // Remote name indicator (e.g. "origin") in muted text after branch pill
-        let mut after_pill_x = branch_pill_x + pill_w;
-        if !self.remote_name.is_empty() {
-            let remote_label = format!("{}", self.remote_name);
-            let remote_x = after_pill_x + 8.0;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &remote_label,
-                remote_x,
-                text_y,
-                theme::TEXT_MUTED.to_array(),
-            ));
-            after_pill_x = remote_x + text_renderer.measure_text(&remote_label);
+            after_path_x = close_bounds.right() + 8.0;
         }
 
         // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
         if let Some(label) = self.operation_state_label {
-            // Amber warning text after the branch pill
-            let label_x = after_pill_x + 12.0;
+            let label_x = after_path_x + 12.0;
             let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
             output.text_vertices.extend(text_renderer.layout_text(
-                label,
-                label_x,
-                text_y,
-                label_color,
+                label, label_x, text_y, label_color,
             ));
 
             // Abort button (pre-computed bounds)

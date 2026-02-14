@@ -639,12 +639,6 @@ impl App {
                 view_state.commit_graph_view.working_dir_status = Some(status.clone());
                 view_state.header_bar.has_staged = !status.staged.is_empty();
             }
-
-            // Ahead/behind always from main repo
-            if let Ok((ahead, behind)) = repo.ahead_behind() {
-                view_state.header_bar.ahead = ahead;
-                view_state.header_bar.behind = behind;
-            }
         }
     }
 
@@ -1660,17 +1654,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         view_state.staging_well.sibling_submodules.clear();
     }
 
-    let (ahead, behind) = repo.ahead_behind().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to compute ahead/behind: {}", e), ToastSeverity::Error);
-        (0, 0)
-    });
-    view_state.header_bar.set_repo_info(
-        view_state.header_bar.repo_name.clone(),
-        current,
-        ahead,
-        behind,
-    );
-    view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
+    // Set the repo path in the header (workdir or git dir for bare repos)
+    let repo_path_str = repo.workdir()
+        .or_else(|| Some(repo.git_dir()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // Strip trailing slash for cleaner display
+    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
+    view_state.header_bar.set_repo_path(&repo_path_str);
 
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
@@ -1695,14 +1686,13 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     view_state.staging_well.set_scale(scale);
 
     if let Some(ref repo) = repo_tab.repo {
-        // Set initial repo name in header (refresh_repo_state preserves the existing name)
-        let repo_name = repo.repo_name();
-        view_state.header_bar.set_repo_info(
-            repo_name,
-            repo.current_branch().unwrap_or_else(|_| "unknown".to_string()),
-            0, 0,
-        );
-        view_state.header_bar.remote_name = repo.default_remote().unwrap_or_default();
+        // Set initial repo path in header (refresh_repo_state will update it too)
+        let repo_path_str = repo.workdir()
+            .or_else(|| Some(repo.git_dir()))
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
+        view_state.header_bar.set_repo_path(&repo_path_str);
     }
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
@@ -3481,9 +3471,26 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
         // Sync breadcrumb data from submodule focus state
         if let Some(ref focus) = view_state.submodule_focus {
-            let mut segs: Vec<String> = focus.parent_stack.iter()
-                .map(|s| s.repo_name.clone())
-                .collect();
+            let home = std::env::var("HOME").unwrap_or_default();
+            let mut segs: Vec<String> = Vec::new();
+            for (i, s) in focus.parent_stack.iter().enumerate() {
+                if i == 0 {
+                    // First segment: show abbreviated repo path for the root repo
+                    let root_path = s.repo.workdir()
+                        .or_else(|| Some(s.repo.git_dir()))
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| s.repo_name.clone());
+                    let root_path = root_path.trim_end_matches('/').to_string();
+                    if !home.is_empty() && root_path.starts_with(&home) {
+                        segs.push(format!("~{}", &root_path[home.len()..]));
+                    } else {
+                        segs.push(root_path);
+                    }
+                } else {
+                    // Intermediate segments: submodule names
+                    segs.push(s.submodule_name.clone());
+                }
+            }
             segs.push(focus.current_name.clone());
             view_state.header_bar.breadcrumb_segments = segs;
         } else {
@@ -3503,7 +3510,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
             app.shortcut_bar_visible,
         );
         view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
-        view_state.header_bar.update_abort_bounds(&state.bold_text_renderer, approx_layout.header);
+        view_state.header_bar.update_abort_bounds(&state.text_renderer, approx_layout.header);
     }
 
     // Update toast manager
