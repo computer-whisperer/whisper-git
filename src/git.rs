@@ -1902,10 +1902,20 @@ define_async_git_op! {
     merge_squash_async(branch_name: String) =>
         ["merge", "--squash", branch_name], "merge --squash";
 
-    /// Spawn a background thread to rebase the current branch onto another branch
-    rebase_branch_async(branch_name: String) =>
-        ["rebase", branch_name], "rebase";
+}
 
+/// Spawn a background thread to rebase with options (--autostash, --rebase-merges)
+pub fn rebase_with_options_async(
+    workdir: PathBuf, branch: String, autostash: bool, rebase_merges: bool,
+) -> Receiver<RemoteOpResult> {
+    let mut args: Vec<String> = vec!["rebase".into()];
+    if autostash { args.push("--autostash".into()); }
+    if rebase_merges { args.push("--rebase-merges".into()); }
+    args.push(branch);
+    run_git_async(args, workdir, "rebase")
+}
+
+define_async_git_op! {
     /// Spawn a background thread to stash all changes
     stash_push_async() =>
         ["stash", "push"], "stash push";

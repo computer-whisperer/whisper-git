@@ -700,6 +700,44 @@ impl CommitGraphView {
                     items.push(MenuItem::new("Checkout", "checkout"));
                 }
 
+                // Merge/rebase for non-HEAD local branches at this commit
+                let head_branch = self.branch_tips.iter()
+                    .find(|t| t.is_head)
+                    .map(|t| t.name.as_str())
+                    .unwrap_or("HEAD");
+                let mergeable_branches: Vec<&str> = self.branch_tips.iter()
+                    .filter(|t| t.oid == commit.id && !t.is_remote && !t.is_head)
+                    .map(|t| t.name.as_str())
+                    .collect();
+                for name in &mergeable_branches {
+                    items.push(MenuItem::new(
+                        &format!("Merge '{}' into '{}'", name, head_branch),
+                        &format!("merge:{}", name),
+                    ));
+                }
+                for name in &mergeable_branches {
+                    items.push(MenuItem::new(
+                        &format!("Rebase '{}' onto '{}'", head_branch, name),
+                        &format!("rebase:{}", name),
+                    ));
+                }
+
+                // Remote branches at this commit
+                let remote_branches: Vec<String> = self.branch_tips.iter()
+                    .filter(|t| t.oid == commit.id && t.is_remote)
+                    .map(|t| t.name.clone())
+                    .collect();
+                for name in &remote_branches {
+                    items.push(MenuItem::new(
+                        &format!("Merge '{}' into '{}'", name, head_branch),
+                        &format!("merge:{}", name),
+                    ));
+                    items.push(MenuItem::new(
+                        &format!("Rebase '{}' onto '{}'", head_branch, name),
+                        &format!("rebase:{}", name),
+                    ));
+                }
+
                 items.push(MenuItem::separator());
                 items.push(MenuItem::new("Cherry-pick", "cherry_pick"));
                 items.push(MenuItem::new("Revert Commit", "revert_commit"));

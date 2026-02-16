@@ -41,7 +41,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode, compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
@@ -344,6 +344,7 @@ struct App {
     branch_name_dialog: BranchNameDialog,
     remote_dialog: RemoteDialog,
     merge_dialog: MergeDialog,
+    rebase_dialog: RebaseDialog,
     pull_dialog: PullDialog,
     push_dialog: PushDialog,
     pending_confirm_action: Option<AppMessage>,
@@ -454,6 +455,7 @@ impl App {
             branch_name_dialog: BranchNameDialog::new(),
             remote_dialog: RemoteDialog::new(),
             merge_dialog: MergeDialog::new(),
+            rebase_dialog: RebaseDialog::new(),
             pull_dialog: PullDialog::new(),
             push_dialog: PushDialog::new(),
             pending_confirm_action: None,
@@ -1264,6 +1266,24 @@ impl App {
             return true;
         }
 
+        // Rebase dialog takes modal priority
+        if self.rebase_dialog.is_visible() {
+            self.rebase_dialog.handle_event(input_event, screen_bounds);
+            if let Some(action) = self.rebase_dialog.take_action() {
+                match action {
+                    RebaseDialogAction::Confirm(branch, opts) => {
+                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            view_state.pending_messages.push(
+                                AppMessage::RebaseBranchWithOptions(branch, opts.autostash, opts.rebase_merges)
+                            );
+                        }
+                    }
+                    RebaseDialogAction::Cancel => {}
+                }
+            }
+            return true;
+        }
+
         // Settings dialog takes priority (modal)
         if self.settings_dialog.is_visible() {
             self.settings_dialog.handle_event(input_event, screen_bounds);
@@ -1322,6 +1342,7 @@ impl App {
                                 &mut self.branch_name_dialog,
                                 &mut self.remote_dialog,
                                 &mut self.merge_dialog,
+                                &mut self.rebase_dialog,
                                 repo_tab.repo.as_ref(),
                                 &mut self.pending_confirm_action,
                             );
@@ -2746,6 +2767,7 @@ fn handle_context_menu_action(
     branch_name_dialog: &mut BranchNameDialog,
     remote_dialog: &mut RemoteDialog,
     merge_dialog: &mut MergeDialog,
+    rebase_dialog: &mut RebaseDialog,
     repo: Option<&crate::git::GitRepo>,
     pending_confirm_action: &mut Option<AppMessage>,
 ) {
@@ -2953,16 +2975,9 @@ fn handle_context_menu_action(
                             ToastSeverity::Error,
                         );
                     } else {
+                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        if uncommitted > 0 {
-                            toast_manager.push(
-                                format!("Warning: {} uncommitted change{}. Stash or commit them before rebasing.",
-                                    uncommitted, if uncommitted == 1 { "" } else { "s" }),
-                                ToastSeverity::Info,
-                            );
-                        }
-                        confirm_dialog.show("Rebase Branch", &format!("Rebase current branch onto '{}'?", param));
-                        *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                        rebase_dialog.show(param, &current, uncommitted);
                     }
                 }
             }
@@ -3108,16 +3123,9 @@ fn handle_context_menu_action(
                             ToastSeverity::Error,
                         );
                     } else {
+                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        if uncommitted > 0 {
-                            toast_manager.push(
-                                format!("Warning: {} uncommitted change{}. Stash or commit them before rebasing.",
-                                    uncommitted, if uncommitted == 1 { "" } else { "s" }),
-                                ToastSeverity::Info,
-                            );
-                        }
-                        confirm_dialog.show("Rebase onto Remote Branch", &format!("Rebase current branch onto '{}'?", param));
-                        *pending_confirm_action = Some(AppMessage::RebaseBranch(param.to_string()));
+                        rebase_dialog.show(param, &current, uncommitted);
                     }
                 }
             }
@@ -3245,6 +3253,7 @@ fn build_ui_output(
     branch_name_dialog: &BranchNameDialog,
     remote_dialog: &RemoteDialog,
     merge_dialog: &MergeDialog,
+    rebase_dialog: &RebaseDialog,
     pull_dialog: &PullDialog,
     push_dialog: &PushDialog,
     text_renderer: &TextRenderer,
@@ -3441,6 +3450,11 @@ fn build_ui_output(
         overlay_output.extend(merge_dialog.layout(text_renderer, screen_bounds));
     }
 
+    // Rebase dialog (overlay layer - on top of everything)
+    if rebase_dialog.is_visible() {
+        overlay_output.extend(rebase_dialog.layout(text_renderer, screen_bounds));
+    }
+
     (graph_output, chrome_output, overlay_output)
 }
 
@@ -3558,7 +3572,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3694,7 +3708,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3812,7 +3826,7 @@ fn capture_screenshot_offscreen(
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,

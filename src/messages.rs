@@ -64,7 +64,7 @@ pub enum AppMessage {
     MergeNoFf(String, String),       // (branch, commit_message)
     MergeFfOnly(String),
     MergeSquash(String),
-    RebaseBranch(String),
+    RebaseBranchWithOptions(String, bool, bool), // (branch, autostash, rebase_merges)
     CreateBranch(String, Oid),  // (name, at_commit)
     CreateTag(String, Oid),     // (name, at_commit)
     DeleteTag(String),
@@ -829,9 +829,9 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::RebaseBranch(name) => {
+        AppMessage::RebaseBranchWithOptions(name, autostash, rebase_merges) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::rebase_branch_async(cmd_dir, name.clone());
+            let rx = git::rebase_with_options_async(cmd_dir, name.clone(), autostash, rebase_merges);
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,

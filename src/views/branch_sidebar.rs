@@ -561,8 +561,8 @@ impl BranchSidebar {
                     MenuItem::new("Push to...", "push_to"),
                     MenuItem::new("Force Push", "force_push"),
                     MenuItem::separator(),
-                    MenuItem::new("Merge into Current", "merge"),
-                    MenuItem::new("Rebase Current onto", "rebase"),
+                    MenuItem::new(format!("Merge into '{}'", self.current_branch), "merge"),
+                    MenuItem::new(format!("Rebase '{}' onto", self.current_branch), "rebase"),
                     MenuItem::separator(),
                     MenuItem::new("Rename...", "rename"),
                     MenuItem::new("Create Worktree", "create_worktree"),
@@ -595,8 +595,8 @@ impl BranchSidebar {
                 let full = format!("{}/{}", remote, branch);
                 let mut items = vec![
                     MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
-                    MenuItem::new("Merge into Current", "merge_remote"),
-                    MenuItem::new("Rebase Current onto", "rebase_remote"),
+                    MenuItem::new(format!("Merge into '{}'", self.current_branch), "merge_remote"),
+                    MenuItem::new(format!("Rebase '{}' onto", self.current_branch), "rebase_remote"),
                     MenuItem::separator(),
                     MenuItem::new("Delete Remote Branch", "delete_remote_branch"),
                 ];
