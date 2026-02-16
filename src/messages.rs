@@ -681,15 +681,20 @@ pub fn handle_app_message(
             }
         }
         AppMessage::LoadMoreCommits => {
-            // Count only real commits (exclude synthetics) for the load-more request
-            let real_count = commits.iter().filter(|c| !c.is_synthetic).count();
+            // Count only graph commits (exclude synthetics + orphans) for the load-more request
+            let real_count = commits.iter().filter(|c| !c.is_synthetic && !c.is_orphaned).count();
             let new_count = real_count + 50;
             // Preserve existing diff stats so they don't flicker away
             let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
                 .filter(|c| c.insertions > 0 || c.deletions > 0)
                 .map(|c| (c.id, (c.insertions, c.deletions)))
                 .collect();
-            match repo.commit_graph(new_count) {
+            let graph_result = if ctx.show_orphaned_commits {
+                repo.commit_graph_with_orphans(new_count)
+            } else {
+                repo.commit_graph(new_count)
+            };
+            match graph_result {
                 Ok(new_commits) => {
                     *commits = new_commits;
                     // Restore cached diff stats until async task provides fresh values
