@@ -1003,9 +1003,9 @@ impl App {
                 if rx.is_some() { self.diff_stats_receiver = rx; }
                 // Update watcher paths for new/removed worktrees
                 if let Some(ref repo) = repo_tab.repo {
-                    let git_dir = repo.git_dir().to_path_buf();
+                    let common_dir = repo.common_dir().to_path_buf();
                     if let Some(ref mut w) = view_state.watcher {
-                        w.update_worktree_watches(&view_state.worktrees, &git_dir);
+                        w.update_worktree_watches(&view_state.worktrees, &common_dir);
                     }
                 }
             }
@@ -1874,8 +1874,9 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
     let Some(ref repo) = repo_tab.repo else { return };
     let Some(workdir) = repo.workdir() else { return };
     let git_dir = repo.git_dir();
+    let common_dir = repo.common_dir();
 
-    match RepoWatcher::new(workdir, git_dir, &view_state.worktrees) {
+    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktrees) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);

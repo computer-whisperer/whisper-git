@@ -35,6 +35,8 @@ pub struct CommitDetailView {
     pending_action: Option<CommitDetailAction>,
     /// Cached line height
     line_height: f32,
+    /// Cached metadata section height (computed during layout)
+    meta_height: f32,
 }
 
 impl CommitDetailView {
@@ -49,6 +51,7 @@ impl CommitDetailView {
             file_content_height: 0.0,
             pending_action: None,
             line_height: 18.0,
+            meta_height: 0.0,
         }
     }
 
@@ -82,13 +85,9 @@ impl CommitDetailView {
         self.pending_action.take()
     }
 
-    /// Compute the metadata and file list regions
-    fn compute_regions(&self, bounds: Rect) -> (Rect, Rect) {
-        // Metadata gets top portion (about 120px or 30% whichever is smaller)
-        let meta_height = (bounds.height * 0.30).min(120.0);
-        let meta_rect = Rect::new(bounds.x, bounds.y, bounds.width, meta_height);
-        let file_rect = Rect::new(bounds.x, bounds.y + meta_height, bounds.width, bounds.height - meta_height);
-        (meta_rect, file_rect)
+    /// Compute the file list region from cached metadata height
+    fn file_rect(&self, bounds: Rect) -> Rect {
+        Rect::new(bounds.x, bounds.y + self.meta_height, bounds.width, bounds.height - self.meta_height)
     }
 
     /// Emit action for the currently selected file
@@ -118,7 +117,7 @@ impl CommitDetailView {
             }
         }
 
-        let (_meta_rect, file_rect) = self.compute_regions(bounds);
+        let file_rect = self.file_rect(bounds);
 
         match event {
             InputEvent::Scroll { delta_y, x, y, .. } => {
@@ -184,6 +183,26 @@ impl CommitDetailView {
         EventResponse::Ignored
     }
 
+    /// Count the number of display lines needed for the commit message,
+    /// including word wrapping for lines that exceed the available width.
+    fn count_message_lines(&self, message: &str, text_renderer: &TextRenderer, max_width: f32) -> usize {
+        let mut count = 0;
+        for line in message.lines() {
+            if line.is_empty() {
+                count += 1;
+                continue;
+            }
+            let line_w = text_renderer.measure_text(line);
+            if line_w <= max_width {
+                count += 1;
+            } else {
+                // Word wrap: count how many visual lines this produces
+                count += wrap_line(line, text_renderer, max_width).len();
+            }
+        }
+        count
+    }
+
     /// Layout and render the commit detail panel
     pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
@@ -199,27 +218,48 @@ impl CommitDetailView {
             theme::SURFACE.to_array(),
         ));
 
-        let (meta_rect, file_rect) = self.compute_regions(bounds);
         let padding = 8.0;
         let line_height = self.line_height;
         let char_width = text_renderer.char_width();
+        let inner_width = bounds.width - padding * 2.0;
+
+        // --- Compute metadata height dynamically ---
+        // Count lines: SHA + Author + optional Parents + gap + message lines
+        let mut meta_lines: f32 = 2.0; // SHA + Author
+        if !info.parent_short_ids.is_empty() {
+            meta_lines += 1.0; // Parents
+        }
+        let gap = 4.0;
+        let msg_line_count = self.count_message_lines(&info.full_message, text_renderer, inner_width);
+        // Cap message display at 30 lines to leave room for the file list
+        let max_msg_lines = 30usize;
+        let display_msg_lines = msg_line_count.min(max_msg_lines);
+
+        let needed_meta = padding + meta_lines * line_height + gap + display_msg_lines as f32 * line_height + padding;
+        // Clamp: at least 3 lines worth (for minimal header), at most 60% of bounds
+        let min_meta = padding * 2.0 + 3.0 * line_height;
+        let max_meta = bounds.height * 0.60;
+        self.meta_height = needed_meta.clamp(min_meta, max_meta);
+
+        let file_rect = self.file_rect(bounds);
 
         // --- Metadata Section ---
-        let meta_inner = meta_rect.inset(padding);
-        let mut y = meta_inner.y;
+        let meta_inner_x = bounds.x + padding;
+        let meta_inner_right = bounds.x + bounds.width - padding;
+        let mut y = bounds.y + padding;
 
         // SHA line
         let sha_label = format!("SHA: {}", info.short_id);
         output.text_vertices.extend(text_renderer.layout_text(
             &sha_label,
-            meta_inner.x,
+            meta_inner_x,
             y,
             theme::TEXT_MUTED.to_array(),
         ));
         // Full SHA on the right (truncated if needed)
         let full_sha = info.id.to_string();
         let sha_width = text_renderer.measure_text(&full_sha);
-        let sha_x = (meta_inner.right() - sha_width).max(meta_inner.x + text_renderer.measure_text(&sha_label) + 16.0);
+        let sha_x = (meta_inner_right - sha_width).max(meta_inner_x + text_renderer.measure_text(&sha_label) + 16.0);
         output.text_vertices.extend(text_renderer.layout_text(
             &full_sha,
             sha_x,
@@ -230,9 +270,10 @@ impl CommitDetailView {
 
         // Author line
         let author_line = format!("Author: {} <{}>", info.author_name, info.author_email);
+        let author_display = truncate_to_width(&author_line, text_renderer, inner_width * 0.70);
         output.text_vertices.extend(text_renderer.layout_text(
-            &author_line,
-            meta_inner.x,
+            &author_display,
+            meta_inner_x,
             y,
             theme::TEXT.to_array(),
         ));
@@ -241,7 +282,7 @@ impl CommitDetailView {
         let time_width = text_renderer.measure_text(&time_str);
         output.text_vertices.extend(text_renderer.layout_text(
             &time_str,
-            meta_inner.right() - time_width,
+            meta_inner_right - time_width,
             y,
             theme::TEXT_MUTED.to_array(),
         ));
@@ -252,29 +293,80 @@ impl CommitDetailView {
             let parents_str = format!("Parents: {}", info.parent_short_ids.join(", "));
             output.text_vertices.extend(text_renderer.layout_text(
                 &parents_str,
-                meta_inner.x,
+                meta_inner_x,
                 y,
                 theme::TEXT_MUTED.to_array(),
             ));
             y += line_height;
         }
 
-        // Summary / commit message
-        y += 4.0; // small gap
+        // --- Commit message (full, word-wrapped) ---
+        y += gap;
+        let meta_bottom = bounds.y + self.meta_height - padding;
         let message = &info.full_message;
-        for msg_line in message.lines().take(4) {
-            if y + line_height > meta_rect.bottom() {
+        let mut lines_rendered = 0usize;
+
+        for raw_line in message.lines() {
+            if y + line_height > meta_bottom || lines_rendered >= max_msg_lines {
                 break;
             }
-            // Truncate long lines
-            let display = truncate_to_width(msg_line, text_renderer, meta_inner.width);
+
+            if raw_line.is_empty() {
+                // Blank line in message
+                y += line_height;
+                lines_rendered += 1;
+                continue;
+            }
+
+            let line_w = text_renderer.measure_text(raw_line);
+            if line_w <= inner_width {
+                // Fits on one line
+                // First line (subject) gets bright color, rest gets normal
+                let color = if lines_rendered == 0 {
+                    theme::TEXT_BRIGHT.to_array()
+                } else {
+                    theme::TEXT.to_array()
+                };
+                output.text_vertices.extend(text_renderer.layout_text(
+                    raw_line,
+                    meta_inner_x,
+                    y,
+                    color,
+                ));
+                y += line_height;
+                lines_rendered += 1;
+            } else {
+                // Word wrap
+                let wrapped = wrap_line(raw_line, text_renderer, inner_width);
+                for wrap_segment in &wrapped {
+                    if y + line_height > meta_bottom || lines_rendered >= max_msg_lines {
+                        break;
+                    }
+                    let color = if lines_rendered == 0 {
+                        theme::TEXT_BRIGHT.to_array()
+                    } else {
+                        theme::TEXT.to_array()
+                    };
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        wrap_segment,
+                        meta_inner_x,
+                        y,
+                        color,
+                    ));
+                    y += line_height;
+                    lines_rendered += 1;
+                }
+            }
+        }
+
+        // Truncation indicator
+        if msg_line_count > max_msg_lines && y + line_height <= meta_bottom {
             output.text_vertices.extend(text_renderer.layout_text(
-                &display,
-                meta_inner.x,
+                "...",
+                meta_inner_x,
                 y,
-                theme::TEXT_BRIGHT.to_array(),
+                theme::TEXT_MUTED.to_array(),
             ));
-            y += line_height;
         }
 
         // --- Divider between metadata and file list ---
@@ -468,6 +560,51 @@ impl Default for CommitDetailView {
     }
 }
 
+/// Word-wrap a single line into segments that fit within max_width.
+/// Splits on word boundaries (spaces) when possible, falls back to character breaking.
+fn wrap_line(line: &str, text_renderer: &TextRenderer, max_width: f32) -> Vec<String> {
+    if max_width <= 0.0 {
+        return vec![line.to_string()];
+    }
+
+    let mut result = Vec::new();
+    let words: Vec<&str> = line.split(' ').collect();
+    let mut current = String::new();
+
+    for word in &words {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{} {}", current, word)
+        };
+
+        if text_renderer.measure_text(&candidate) <= max_width {
+            current = candidate;
+        } else if current.is_empty() {
+            // Single word too long — truncate it
+            let truncated = truncate_to_width(word, text_renderer, max_width);
+            result.push(truncated);
+            // Skip remainder of this word (it's lost, but this is edge case)
+        } else {
+            result.push(current);
+            current = word.to_string();
+            // Check if the new word alone is too wide
+            if text_renderer.measure_text(&current) > max_width {
+                let truncated = truncate_to_width(word, text_renderer, max_width);
+                result.push(truncated);
+                current = String::new();
+            }
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
 /// Truncate a file path to fit within max_width
 fn truncate_path(path: &str, text_renderer: &TextRenderer, max_width: f32) -> String {
     if max_width <= 0.0 {
@@ -507,4 +644,3 @@ fn truncate_path(path: &str, text_renderer: &TextRenderer, max_width: f32) -> St
     }
     ellipsis.to_string()
 }
-

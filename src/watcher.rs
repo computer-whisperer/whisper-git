@@ -52,7 +52,11 @@ pub struct RepoWatcher {
 }
 
 impl RepoWatcher {
-    /// Create a new watcher for the given workdir and git dir.
+    /// Create a new watcher for the given workdir, git dir, and common dir.
+    ///
+    /// `git_dir` is the worktree-specific git dir (from `repo.path()`).
+    /// `common_dir` is the shared git dir (from `repo.commondir()`) where refs,
+    /// objects, and packed-refs live. For non-worktree repos these are the same.
     ///
     /// `worktrees` provides the initial list of worktree metadata dirs to watch.
     /// Returns the watcher handle and a receiver that yields `FsChangeKind` after
@@ -60,6 +64,7 @@ impl RepoWatcher {
     pub fn new(
         workdir: &Path,
         git_dir: &Path,
+        common_dir: &Path,
         worktrees: &[WorktreeInfo],
     ) -> notify::Result<(Self, Receiver<FsChangeKind>)> {
         let (debounce_tx, debounce_rx) = mpsc::channel::<FsChangeKind>();
@@ -68,14 +73,17 @@ impl RepoWatcher {
         // Spawn tiered debounce thread
         spawn_debounce_thread(raw_rx, debounce_tx);
 
-        // Build the event classifier with cloned paths for the closure
+        // Build the event classifier with cloned paths for the closure.
+        // Classify against both git_dir and common_dir so events from either
+        // are recognised as git metadata changes.
         let git_dir_owned = git_dir.to_path_buf();
+        let common_dir_owned = common_dir.to_path_buf();
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 if let Ok(event) = res {
-                    if let Some(kind) = classify_event(&event, &git_dir_owned) {
+                    if let Some(kind) = classify_event(&event, &git_dir_owned, &common_dir_owned) {
                         let _ = watcher_tx.send(kind);
                     }
                 }
@@ -86,13 +94,25 @@ impl RepoWatcher {
         // Watch the working directory recursively for file edits
         watcher.watch(workdir, RecursiveMode::Recursive)?;
 
-        // Watch git metadata paths for branch/commit changes
-        let refs_dir = git_dir.join("refs");
+        // Watch worktree-specific git dir (HEAD, index for this worktree)
         let _ = watcher.watch(git_dir, RecursiveMode::NonRecursive);
-        let _ = watcher.watch(&refs_dir, RecursiveMode::Recursive);
+
+        // Watch shared common dir for refs, packed-refs, config
+        // (For non-worktree repos common_dir == git_dir, so this is a no-op duplicate)
+        let _ = watcher.watch(common_dir, RecursiveMode::NonRecursive);
+        let common_refs = common_dir.join("refs");
+        if common_refs.is_dir() {
+            let _ = watcher.watch(&common_refs, RecursiveMode::Recursive);
+        }
+
+        // Also watch git_dir/refs if it exists and differs from common_dir/refs
+        let git_refs = git_dir.join("refs");
+        if git_refs != common_refs && git_refs.is_dir() {
+            let _ = watcher.watch(&git_refs, RecursiveMode::Recursive);
+        }
 
         // Watch worktrees directory for structural changes (add/remove worktree)
-        let worktrees_dir = git_dir.join("worktrees");
+        let worktrees_dir = common_dir.join("worktrees");
         if worktrees_dir.is_dir() {
             let _ = watcher.watch(&worktrees_dir, RecursiveMode::Recursive);
         }
@@ -101,7 +121,7 @@ impl RepoWatcher {
         let mut watched_worktree_dirs = HashSet::new();
         let mut watched_worktree_workdirs = HashSet::new();
         for wt in worktrees {
-            let wt_meta_dir = git_dir.join("worktrees").join(&wt.name);
+            let wt_meta_dir = common_dir.join("worktrees").join(&wt.name);
             if wt_meta_dir.is_dir() {
                 let _ = watcher.watch(&wt_meta_dir, RecursiveMode::NonRecursive);
                 watched_worktree_dirs.insert(wt_meta_dir);
@@ -136,11 +156,12 @@ impl RepoWatcher {
     }
 
     /// Diff current watch set against worktree list, adding/removing watches as needed.
-    pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], git_dir: &Path) {
+    /// `common_dir` is the shared git dir (where worktrees/ metadata lives).
+    pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], common_dir: &Path) {
         // --- Git metadata dirs ---
         let desired: HashSet<PathBuf> = worktrees
             .iter()
-            .map(|wt| git_dir.join("worktrees").join(&wt.name))
+            .map(|wt| common_dir.join("worktrees").join(&wt.name))
             .filter(|p| p.is_dir())
             .collect();
 
@@ -172,7 +193,8 @@ impl RepoWatcher {
 }
 
 /// Classifies a filesystem event into a change kind, or None if irrelevant.
-fn classify_event(event: &Event, git_dir: &Path) -> Option<FsChangeKind> {
+/// Checks against both git_dir (worktree-specific) and common_dir (shared).
+fn classify_event(event: &Event, git_dir: &Path, common_dir: &Path) -> Option<FsChangeKind> {
     // Only care about data-changing events
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
@@ -182,54 +204,26 @@ fn classify_event(event: &Event, git_dir: &Path) -> Option<FsChangeKind> {
     let mut result: Option<FsChangeKind> = None;
 
     for path in &event.paths {
-        if path.starts_with(git_dir) {
-            if let Ok(relative) = path.strip_prefix(git_dir) {
-                let rel_str = relative.to_string_lossy();
-
-                // Worktree structure changes (new/removed worktree dirs)
-                if rel_str.starts_with("worktrees") {
-                    // Depth check: worktrees/<name> is depth 2, deeper is metadata
-                    let depth = relative.components().count();
-                    if depth <= 2 {
-                        // New/removed worktree directory
-                        result = Some(match result {
-                            Some(k) => k.max(FsChangeKind::WorktreeStructure),
-                            None => FsChangeKind::WorktreeStructure,
-                        });
-                    } else {
-                        // Metadata inside a worktree dir (HEAD, index, etc.)
-                        result = Some(match result {
-                            Some(k) => k.max(FsChangeKind::GitMetadata),
-                            None => FsChangeKind::GitMetadata,
-                        });
-                    }
-                    continue;
-                }
-
-                // Git metadata files
-                if rel_str == "HEAD"
-                    || rel_str == "index"
-                    || rel_str.starts_with("refs")
-                    || rel_str == "MERGE_HEAD"
-                    || rel_str == "REBASE_HEAD"
-                    || rel_str == "CHERRY_PICK_HEAD"
-                    || rel_str == "packed-refs"
-                    || rel_str == "FETCH_HEAD"
-                    || rel_str == "ORIG_HEAD"
-                    || rel_str == "config"
-                {
-                    result = Some(match result {
-                        Some(k) => k.max(FsChangeKind::GitMetadata),
-                        None => FsChangeKind::GitMetadata,
-                    });
-                    continue;
-                }
-
-                // Skip everything else inside .git (objects, logs, etc.)
+        // Try to classify against common_dir first (has refs, packed-refs, worktrees),
+        // then git_dir (has worktree-specific HEAD, index).
+        // For non-worktree repos these are the same path.
+        if let Some(kind) = classify_git_path(path, common_dir) {
+            result = Some(match result {
+                Some(k) => k.max(kind),
+                None => kind,
+            });
+            continue;
+        }
+        if common_dir != git_dir {
+            if let Some(kind) = classify_git_path(path, git_dir) {
+                result = Some(match result {
+                    Some(k) => k.max(kind),
+                    None => kind,
+                });
                 continue;
             }
         }
-        // Paths outside .git are working tree changes
+        // Paths outside both git dirs are working tree changes
         result = Some(match result {
             Some(k) => k.max(FsChangeKind::WorkingTree),
             None => FsChangeKind::WorkingTree,
@@ -237,6 +231,44 @@ fn classify_event(event: &Event, git_dir: &Path) -> Option<FsChangeKind> {
     }
 
     result
+}
+
+/// Classify a single path relative to a git directory.
+/// Returns Some(kind) if the path is inside the git dir, None otherwise.
+fn classify_git_path(path: &Path, git_dir: &Path) -> Option<FsChangeKind> {
+    if !path.starts_with(git_dir) {
+        return None;
+    }
+    let relative = path.strip_prefix(git_dir).ok()?;
+    let rel_str = relative.to_string_lossy();
+
+    // Worktree structure changes (new/removed worktree dirs)
+    if rel_str.starts_with("worktrees") {
+        let depth = relative.components().count();
+        return if depth <= 2 {
+            Some(FsChangeKind::WorktreeStructure)
+        } else {
+            Some(FsChangeKind::GitMetadata)
+        };
+    }
+
+    // Git metadata files
+    if rel_str == "HEAD"
+        || rel_str == "index"
+        || rel_str.starts_with("refs")
+        || rel_str == "MERGE_HEAD"
+        || rel_str == "REBASE_HEAD"
+        || rel_str == "CHERRY_PICK_HEAD"
+        || rel_str == "packed-refs"
+        || rel_str == "FETCH_HEAD"
+        || rel_str == "ORIG_HEAD"
+        || rel_str == "config"
+    {
+        return Some(FsChangeKind::GitMetadata);
+    }
+
+    // Inside git dir but not a tracked metadata file (objects, logs, etc.) — skip
+    None
 }
 
 /// Spawns a background thread with tiered debounce:

@@ -333,6 +333,13 @@ pub fn handle_app_message(
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
+            // Warn if remote has no fetch refspec (fetch would silently do nothing)
+            if repo.remote_missing_fetch_refspec(&remote) {
+                toast_manager.push(
+                    format!("Remote '{}' has no fetch refspec configured — fetch may not work. Add `fetch = +refs/heads/*:refs/remotes/{}/*` to git config.", remote, remote),
+                    ToastSeverity::Error,
+                );
+            }
             let remote_for_closure = remote.clone();
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch", remote,

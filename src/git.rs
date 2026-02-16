@@ -363,6 +363,13 @@ impl GitRepo {
         self.repo.path()
     }
 
+    /// Get the shared common directory (where refs, objects, packed-refs live).
+    /// For normal repos this equals git_dir(). For worktrees this is the parent
+    /// repo's git dir (e.g. `.bare/` instead of `.bare/worktrees/<name>/`).
+    pub fn common_dir(&self) -> &Path {
+        self.repo.commondir()
+    }
+
     /// Compute aggregate diff stats for the working tree (staged + unstaged).
     /// Returns (insertions, deletions).
     pub fn working_tree_diff_stats(&self) -> (usize, usize) {
@@ -1891,6 +1898,14 @@ impl GitRepo {
         self.repo.find_remote(name)
             .ok()
             .and_then(|r| r.url().map(|u| u.to_string()))
+    }
+
+    /// Check whether a remote is missing its fetch refspec.
+    pub fn remote_missing_fetch_refspec(&self, name: &str) -> bool {
+        self.repo.find_remote(name)
+            .ok()
+            .map(|r| r.fetch_refspecs().map(|s| s.len() == 0).unwrap_or(false))
+            .unwrap_or(false)
     }
 
     /// Add a new remote with the given name and URL.
