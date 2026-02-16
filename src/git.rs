@@ -393,6 +393,7 @@ impl GitRepo {
     /// Spawn a background thread to compute diff stats for a list of commit OIDs.
     /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
     pub fn compute_diff_stats_async(&self, oids: Vec<Oid>) -> Receiver<Vec<(Oid, usize, usize)>> {
+        crate::crash_log::breadcrumb(format!("diff_stats_async: {} commits", oids.len()));
         let repo_path = self.repo.path().to_path_buf();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -1766,6 +1767,7 @@ impl GitRepo {
 
 /// Spawn a background thread to run a git CLI command and send the result over a channel.
 fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver<RemoteOpResult> {
+    crate::crash_log::breadcrumb(format!("git_async: {op_name} args={args:?}"));
     let op_name = op_name.to_string();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -1784,6 +1786,7 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver
                 error: format!("Failed to run git {}: {}", op_name, e),
             },
         };
+        crate::crash_log::breadcrumb(format!("git_async done: {op_name} success={}", op_result.success));
         let _ = tx.send(op_result);
     });
     rx

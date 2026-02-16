@@ -4,6 +4,7 @@
 //! (base → chrome → overlay). Handles async git operations via mpsc channels and thread spawning.
 
 mod config;
+mod crash_log;
 mod git;
 mod input;
 mod messages;
@@ -305,6 +306,9 @@ impl TabViewState {
 // ============================================================================
 
 fn main() -> Result<()> {
+    crash_log::init();
+    crash_log::install_panic_hook();
+
     let cli_args = parse_args();
 
     let event_loop = EventLoop::new().context("Failed to create event loop")?;
@@ -500,6 +504,7 @@ impl App {
             .context("Failed to create surface")?;
 
         let ctx = VulkanContext::with_surface(instance, &surface)?;
+        crash_log::set_vulkan_device(&ctx.device.physical_device().properties().device_name);
 
         // Create render pass with MSAA 4x
         let image_format = ctx.device.physical_device()
@@ -619,6 +624,17 @@ impl App {
         // Initial status refresh for active tab
         self.refresh_status();
 
+        // Crash log housekeeping
+        crash_log::prune_crash_logs(10);
+        if let Some(path) = crash_log::has_crash_since_last_exit() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            self.toast_manager.push(
+                format!("Whisper-Git crashed last session. Log: {}", name),
+                ToastSeverity::Info,
+            );
+        }
+        crash_log::breadcrumb("init_state complete".to_string());
+
         Ok(())
     }
 
@@ -657,6 +673,7 @@ impl App {
         if messages.is_empty() {
             return;
         }
+        crash_log::breadcrumb(format!("process_messages: {} pending", messages.len()));
 
         // Partition: submodule navigation vs normal messages
         let (nav_messages, mut normal_messages): (Vec<_>, Vec<_>) = messages.into_iter().partition(|msg| {
@@ -1933,7 +1950,10 @@ impl ApplicationHandler for App {
         let Some(state) = &mut self.state else { return };
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                crash_log::mark_clean_exit();
+                event_loop.exit();
+            }
 
             WindowEvent::Resized(_) => {
                 state.surface.needs_recreate = true;
@@ -2002,6 +2022,7 @@ impl ApplicationHandler for App {
                 }
 
                 if let Err(e) = draw_frame(self) {
+                    crash_log::breadcrumb(format!("draw_frame error: {e:?}"));
                     eprintln!("Draw error: {e:?}");
                 }
 

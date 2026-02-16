@@ -219,6 +219,7 @@ pub fn handle_app_message(
     toast_manager: &mut ToastManager,
     ctx: &MessageContext,
 ) -> bool {
+    crate::crash_log::breadcrumb(format!("msg: {msg:?}"));
     match msg {
         AppMessage::StageFile(path) => {
             if let Err(e) = staging_repo.stage_file(&path) {
