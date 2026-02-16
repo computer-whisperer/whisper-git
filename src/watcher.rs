@@ -45,8 +45,10 @@ impl FsChangeKind {
 /// sending a debounced `FsChangeKind` signal when something relevant changes.
 pub struct RepoWatcher {
     watcher: RecommendedWatcher,
-    /// Paths we're actively watching (for diffing when worktrees change).
+    /// Git metadata dirs we're actively watching (for diffing when worktrees change).
     watched_worktree_dirs: HashSet<PathBuf>,
+    /// Worktree working directories we're actively watching.
+    watched_worktree_workdirs: HashSet<PathBuf>,
 }
 
 impl RepoWatcher {
@@ -95,13 +97,20 @@ impl RepoWatcher {
             let _ = watcher.watch(&worktrees_dir, RecursiveMode::Recursive);
         }
 
-        // Watch each existing worktree's git metadata dir
+        // Watch each existing worktree's git metadata dir + working directory
         let mut watched_worktree_dirs = HashSet::new();
+        let mut watched_worktree_workdirs = HashSet::new();
         for wt in worktrees {
             let wt_meta_dir = git_dir.join("worktrees").join(&wt.name);
             if wt_meta_dir.is_dir() {
                 let _ = watcher.watch(&wt_meta_dir, RecursiveMode::NonRecursive);
                 watched_worktree_dirs.insert(wt_meta_dir);
+            }
+            // Also watch the worktree's working directory for file edits
+            let wt_work_dir = PathBuf::from(&wt.path);
+            if wt_work_dir != workdir && wt_work_dir.is_dir() {
+                let _ = watcher.watch(&wt_work_dir, RecursiveMode::Recursive);
+                watched_worktree_workdirs.insert(wt_work_dir);
             }
         }
 
@@ -109,6 +118,7 @@ impl RepoWatcher {
             RepoWatcher {
                 watcher,
                 watched_worktree_dirs,
+                watched_worktree_workdirs,
             },
             debounce_rx,
         ))
@@ -127,31 +137,36 @@ impl RepoWatcher {
 
     /// Diff current watch set against worktree list, adding/removing watches as needed.
     pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], git_dir: &Path) {
+        // --- Git metadata dirs ---
         let desired: HashSet<PathBuf> = worktrees
             .iter()
             .map(|wt| git_dir.join("worktrees").join(&wt.name))
             .filter(|p| p.is_dir())
             .collect();
 
-        // Remove watches for worktrees that no longer exist
-        let to_remove: Vec<PathBuf> = self
-            .watched_worktree_dirs
-            .difference(&desired)
-            .cloned()
-            .collect();
-        for path in &to_remove {
-            self.unwatch_path(path);
-            self.watched_worktree_dirs.remove(path);
+        for path in self.watched_worktree_dirs.difference(&desired).cloned().collect::<Vec<_>>() {
+            self.unwatch_path(&path);
+            self.watched_worktree_dirs.remove(&path);
+        }
+        for path in desired.difference(&self.watched_worktree_dirs).cloned().collect::<Vec<_>>() {
+            self.watch_path(&path, false);
+            self.watched_worktree_dirs.insert(path);
         }
 
-        // Add watches for new worktrees
-        let to_add: Vec<PathBuf> = desired
-            .difference(&self.watched_worktree_dirs)
-            .cloned()
+        // --- Worktree working directories ---
+        let desired_workdirs: HashSet<PathBuf> = worktrees
+            .iter()
+            .map(|wt| PathBuf::from(&wt.path))
+            .filter(|p| p.is_dir())
             .collect();
-        for path in &to_add {
-            self.watch_path(path, false);
-            self.watched_worktree_dirs.insert(path.clone());
+
+        for path in self.watched_worktree_workdirs.difference(&desired_workdirs).cloned().collect::<Vec<_>>() {
+            self.unwatch_path(&path);
+            self.watched_worktree_workdirs.remove(&path);
+        }
+        for path in desired_workdirs.difference(&self.watched_worktree_workdirs).cloned().collect::<Vec<_>>() {
+            self.watch_path(&path, true); // recursive for working dirs
+            self.watched_worktree_workdirs.insert(path);
         }
     }
 }

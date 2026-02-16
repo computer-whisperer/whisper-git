@@ -222,7 +222,7 @@ mod vs {
     }
 }
 
-/// Fragment shader for avatar rendering - samples RGBA texture directly
+/// Fragment shader for avatar rendering - samples RGBA texture, clips to circle
 mod fs {
     vulkano_shaders::shader! {
         ty: "fragment",
@@ -238,7 +238,11 @@ mod fs {
 
             void main() {
                 vec4 texel = texture(avatar_atlas, v_tex_coord);
-                f_color = texel * v_color;
+                // v_color.xy carries local UV (0..1) across this avatar quad
+                vec2 local = v_color.xy - 0.5;
+                float dist = length(local);
+                float circle = 1.0 - smoothstep(0.45, 0.50, dist);
+                f_color = vec4(texel.rgb, texel.a * circle);
             }
         ",
     }
@@ -549,6 +553,7 @@ impl AvatarRenderer {
 }
 
 /// Create a textured quad (two triangles) for an avatar at the given position.
+/// color.xy carries local UV (0→1) for circle clipping in the fragment shader.
 pub fn avatar_quad(
     x: f32,
     y: f32,
@@ -558,14 +563,18 @@ pub fn avatar_quad(
     let [u0, v0, u1, v1] = tex_coords;
     let x1 = x + size;
     let y1 = y + size;
-    let color = [1.0, 1.0, 1.0, 1.0]; // No tinting
+    // color.xy = local UV for circle clipping, color.zw = unused (1.0)
+    let tl = [0.0, 0.0, 1.0, 1.0];
+    let tr = [1.0, 0.0, 1.0, 1.0];
+    let bl = [0.0, 1.0, 1.0, 1.0];
+    let br = [1.0, 1.0, 1.0, 1.0];
 
     [
-        TextVertex { position: [x, y], tex_coord: [u0, v0], color },
-        TextVertex { position: [x1, y], tex_coord: [u1, v0], color },
-        TextVertex { position: [x, y1], tex_coord: [u0, v1], color },
-        TextVertex { position: [x1, y], tex_coord: [u1, v0], color },
-        TextVertex { position: [x1, y1], tex_coord: [u1, v1], color },
-        TextVertex { position: [x, y1], tex_coord: [u0, v1], color },
+        TextVertex { position: [x, y], tex_coord: [u0, v0], color: tl },
+        TextVertex { position: [x1, y], tex_coord: [u1, v0], color: tr },
+        TextVertex { position: [x, y1], tex_coord: [u0, v1], color: bl },
+        TextVertex { position: [x1, y], tex_coord: [u1, v0], color: tr },
+        TextVertex { position: [x1, y1], tex_coord: [u1, v1], color: br },
+        TextVertex { position: [x, y1], tex_coord: [u0, v1], color: bl },
     ]
 }

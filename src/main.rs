@@ -663,6 +663,39 @@ impl App {
                 view_state.commit_graph_view.working_dir_status = Some(status.clone());
                 view_state.header_bar.has_staged = !status.staged.is_empty();
             }
+
+            // Refresh dirty flags for all worktrees
+            let mut dirty_changed = false;
+            for wt in &mut view_state.worktrees {
+                if let Ok(wt_repo) = git2::Repository::open(&wt.path) {
+                    let (dirty, count) = wt_repo.statuses(None)
+                        .map(|statuses| {
+                            let c = statuses.iter()
+                                .filter(|e| !e.status().intersects(git2::Status::IGNORED))
+                                .count();
+                            (c > 0, c)
+                        })
+                        .unwrap_or((false, 0));
+                    if wt.is_dirty != dirty || wt.dirty_file_count != count {
+                        dirty_changed = true;
+                    }
+                    wt.is_dirty = dirty;
+                    wt.dirty_file_count = count;
+                }
+            }
+            // Sync dirty flags to commit graph view + staging well
+            if dirty_changed {
+                view_state.commit_graph_view.worktrees = view_state.worktrees.clone();
+                view_state.staging_well.set_worktrees(&view_state.worktrees);
+                // Regenerate synthetic entries to add/remove "uncommitted changes" rows
+                let synthetics = git::create_synthetic_entries(repo, &view_state.worktrees, &repo_tab.commits);
+                // Remove old synthetics, insert new ones
+                repo_tab.commits.retain(|c| !c.is_synthetic);
+                if !synthetics.is_empty() {
+                    git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
+                }
+                view_state.commit_graph_view.update_layout(&repo_tab.commits);
+            }
         }
     }
 
@@ -735,16 +768,63 @@ impl App {
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view)
         };
 
-        // 4. Compare and report
+        // 4. Compare and write report to file
         let deltas = compute_reload_deltas(&before, &after);
-        if deltas.is_empty() {
-            self.toast_manager.push("Reload: no deltas", ToastSeverity::Success);
-        } else {
-            self.toast_manager.push(
-                format!("Reload: {} delta{} found", deltas.len(), if deltas.len() == 1 { "" } else { "s" }),
-                ToastSeverity::Info,
-            );
-            self.toast_manager.push(deltas.join("\n"), ToastSeverity::Info);
+        let report_dir = std::env::var("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(".config").join("whisper-git").join("reload-reports"))
+            .ok();
+        if let Some(ref dir) = report_dir {
+            let _ = std::fs::create_dir_all(dir);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let path = dir.join(format!("reload-{}.txt", now));
+            let mut report = String::new();
+            report.push_str(&format!("Reload report — unix {}\n", now));
+            if let Some((repo_tab, _)) = self.tabs.get(self.active_tab) {
+                report.push_str(&format!("Repo: {}\n", repo_tab.name));
+            }
+            report.push_str(&format!("Deltas: {}\n\n", deltas.len()));
+            if deltas.is_empty() {
+                report.push_str("No deltas detected.\n");
+            } else {
+                for delta in &deltas {
+                    report.push_str(delta);
+                    report.push('\n');
+                }
+            }
+            report.push_str(&format!("\n--- Before snapshot ---\n"));
+            report.push_str(&format!("Commits: {} (non-synthetic)\n", before.commit_oids.len()));
+            report.push_str(&format!("HEAD: {:?}\n", before.head_oid));
+            report.push_str(&format!("Branch: {}\n", before.current_branch));
+            report.push_str(&format!("Branch tips: {}\n", before.branch_tips.len()));
+            report.push_str(&format!("Tags: {}\n", before.tags.len()));
+            report.push_str(&format!("Staged/Unstaged/Conflicted: {}/{}/{}\n", before.staged_count, before.unstaged_count, before.conflicted_count));
+            report.push_str(&format!("\n--- After snapshot ---\n"));
+            report.push_str(&format!("Commits: {} (non-synthetic)\n", after.commit_oids.len()));
+            report.push_str(&format!("HEAD: {:?}\n", after.head_oid));
+            report.push_str(&format!("Branch: {}\n", after.current_branch));
+            report.push_str(&format!("Branch tips: {}\n", after.branch_tips.len()));
+            report.push_str(&format!("Tags: {}\n", after.tags.len()));
+            report.push_str(&format!("Staged/Unstaged/Conflicted: {}/{}/{}\n", after.staged_count, after.unstaged_count, after.conflicted_count));
+
+            match std::fs::write(&path, &report) {
+                Ok(()) => {
+                    let summary = if deltas.is_empty() {
+                        "Reload: no deltas".to_string()
+                    } else {
+                        format!("Reload: {} delta{}", deltas.len(), if deltas.len() == 1 { "" } else { "s" })
+                    };
+                    self.toast_manager.push(
+                        format!("{} — {}", summary, path.display()),
+                        if deltas.is_empty() { ToastSeverity::Success } else { ToastSeverity::Info },
+                    );
+                }
+                Err(e) => {
+                    self.toast_manager.push(format!("Failed to write reload report: {}", e), ToastSeverity::Error);
+                }
+            }
         }
 
         self.status_dirty = true;
