@@ -21,6 +21,8 @@ pub enum HeaderAction {
     BreadcrumbClose,
     /// Abort an in-progress git operation (merge, rebase, etc.)
     AbortOperation,
+    /// Diagnostic reload: re-read all repo data and report deltas
+    Reload,
 }
 
 /// Header bar widget displaying repo path, breadcrumbs, and action buttons.
@@ -66,6 +68,8 @@ pub struct HeaderBar {
     /// Label for a generic async operation in progress (e.g. "Merging...", "Rebasing...")
     /// When set, renders a spinning indicator in the header next to the repo path.
     pub generic_op_label: Option<String>,
+    /// Diagnostic reload button (ghost style)
+    reload_button: Button,
 }
 
 impl HeaderBar {
@@ -92,6 +96,7 @@ impl HeaderBar {
             abort_button_bounds: None,
             pull_shift_held: false,
             generic_op_label: None,
+            reload_button: Button::new("Reload").ghost(),
         }
     }
 
@@ -242,7 +247,8 @@ impl HeaderBar {
     /// Returns true if any interactive element in the header is currently hovered
     /// (buttons, breadcrumb links, close button, abort button).
     pub fn is_any_interactive_hovered(&self) -> bool {
-        self.fetch_button.is_hovered()
+        self.reload_button.is_hovered()
+            || self.fetch_button.is_hovered()
             || self.pull_button.is_hovered()
             || self.push_button.is_hovered()
             || self.commit_button.is_hovered()
@@ -254,7 +260,7 @@ impl HeaderBar {
     }
 
     /// Compute button bounds within the header (scale-aware)
-    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
+    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
         let scale = (bounds.height / 32.0).max(1.0);
         let button_height = bounds.height - 8.0 * scale;
@@ -267,13 +273,15 @@ impl HeaderBar {
         let settings_x = bounds.right() - icon_button_width - gap;
         let help_x = settings_x - icon_button_width - gap;
 
-        // Action buttons: [Fetch] [Pull] [Push] [Commit] before help/settings
+        // Action buttons: [Reload] [Fetch] [Pull] [Push] [Commit] before help/settings
         let commit_x = help_x - button_width - gap * 2.0;
         let push_x = commit_x - button_width - gap;
         let pull_x = push_x - button_width - gap;
         let fetch_x = pull_x - button_width - gap;
+        let reload_x = fetch_x - button_width - gap;
 
         (
+            Rect::new(reload_x, button_y, button_width, button_height),
             Rect::new(fetch_x, button_y, button_width, button_height),
             Rect::new(pull_x, button_y, button_width, button_height),
             Rect::new(push_x, button_y, button_width, button_height),
@@ -420,8 +428,11 @@ impl HeaderBar {
         }
 
         // Button bounds
-        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
+
+        // Reload button (ghost style)
+        output.extend(self.reload_button.layout_with_bold(text_renderer, bold_renderer, reload_bounds));
 
         // Async operation button rendering with pulsing background and spinning arc
         let async_buttons: [(&Button, Rect, bool); 3] = [
@@ -508,7 +519,7 @@ impl HeaderBar {
 
 impl Widget for HeaderBar {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
-        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
         // Handle breadcrumb close button and segment clicks
@@ -544,6 +555,13 @@ impl Widget for HeaderBar {
         }
 
         // Handle button events
+        if self.reload_button.handle_event(event, reload_bounds).is_consumed() {
+            if self.reload_button.was_clicked() {
+                self.pending_action = Some(HeaderAction::Reload);
+            }
+            return EventResponse::Consumed;
+        }
+
         if self.fetch_button.handle_event(event, fetch_bounds).is_consumed() {
             if self.fetch_button.was_clicked() {
                 self.pending_action = Some(HeaderAction::Fetch);
@@ -601,7 +619,8 @@ impl Widget for HeaderBar {
     }
 
     fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
-        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) = self.button_bounds(bounds);
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) = self.button_bounds(bounds);
+        self.reload_button.update_hover(x, y, reload_bounds);
         self.fetch_button.update_hover(x, y, fetch_bounds);
         self.pull_button.update_hover(x, y, pull_bounds);
         self.push_button.update_hover(x, y, push_bounds);
@@ -720,10 +739,11 @@ impl Widget for HeaderBar {
         }
 
         // Button bounds
-        let (fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, commit_bounds, help_bounds, settings_bounds) =
             self.button_bounds(bounds);
 
         // Render stored buttons (preserves hover/press state from handle_event)
+        output.extend(self.reload_button.layout(text_renderer, reload_bounds));
         output.extend(self.fetch_button.layout(text_renderer, fetch_bounds));
         output.extend(self.pull_button.layout(text_renderer, pull_bounds));
         output.extend(self.push_button.layout(text_renderer, push_bounds));

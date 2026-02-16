@@ -309,6 +309,11 @@ impl BranchSidebar {
         self.ahead_behind_cache = data;
     }
 
+    /// Read-only access to the ahead/behind cache (for diagnostic snapshots)
+    pub fn ahead_behind_cache(&self) -> HashMap<String, (usize, usize)> {
+        self.ahead_behind_cache.clone()
+    }
+
     /// Take the pending action (consume it)
     pub fn take_action(&mut self) -> Option<SidebarAction> {
         self.pending_action.take()

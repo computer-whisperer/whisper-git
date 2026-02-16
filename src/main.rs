@@ -42,7 +42,7 @@ use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, Vulkan
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
-use crate::messages::{AppMessage, MessageContext, MessageViewState, RightPanelMode, handle_app_message, refresh_repo_state as refresh_repo_state_core};
+use crate::messages::{AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode, compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
@@ -661,6 +661,90 @@ impl App {
                 view_state.header_bar.has_staged = !status.staged.is_empty();
             }
         }
+    }
+
+    /// Diagnostic reload: capture current UI state, do a full re-read, and report deltas.
+    fn do_diagnostic_reload(&mut self) {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        if repo_tab.repo.is_none() {
+            self.toast_manager.push("No repo open", ToastSeverity::Error);
+            return;
+        }
+
+        // 1. Capture "before" snapshot from current UI state
+        let before = {
+            let msg_view = MessageViewState {
+                commit_graph_view: &mut view_state.commit_graph_view,
+                staging_well: &mut view_state.staging_well,
+                diff_view: &mut view_state.diff_view,
+                commit_detail_view: &mut view_state.commit_detail_view,
+                branch_sidebar: &mut view_state.branch_sidebar,
+                header_bar: &mut view_state.header_bar,
+                last_diff_commit: &mut view_state.last_diff_commit,
+                fetch_receiver: &mut view_state.fetch_receiver,
+                pull_receiver: &mut view_state.pull_receiver,
+                push_receiver: &mut view_state.push_receiver,
+                generic_op_receiver: &mut view_state.generic_op_receiver,
+                right_panel_mode: &mut view_state.right_panel_mode,
+                worktrees: &mut view_state.worktrees,
+                submodule_focus: &mut view_state.submodule_focus,
+            };
+            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view)
+        };
+
+        // 2. Full reload (same as refresh_repo_state + refresh_status)
+        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+        // Also refresh file status (staged/unstaged/conflicted)
+        {
+            let repo = repo_tab.repo.as_ref().unwrap();
+            let (wt_status, wt_repo_state) = {
+                let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
+                (staging_repo.status().ok(), staging_repo.repo_state())
+            };
+            if let Some(status) = wt_status {
+                view_state.staging_well.update_status(&status);
+            }
+            view_state.staging_well.repo_state_label = crate::git::repo_state_label(wt_repo_state);
+            if let Ok(status) = repo.status() {
+                view_state.commit_graph_view.working_dir_status = Some(status.clone());
+                view_state.header_bar.has_staged = !status.staged.is_empty();
+            }
+        }
+
+        // 3. Capture "after" snapshot
+        let after = {
+            let msg_view = MessageViewState {
+                commit_graph_view: &mut view_state.commit_graph_view,
+                staging_well: &mut view_state.staging_well,
+                diff_view: &mut view_state.diff_view,
+                commit_detail_view: &mut view_state.commit_detail_view,
+                branch_sidebar: &mut view_state.branch_sidebar,
+                header_bar: &mut view_state.header_bar,
+                last_diff_commit: &mut view_state.last_diff_commit,
+                fetch_receiver: &mut view_state.fetch_receiver,
+                pull_receiver: &mut view_state.pull_receiver,
+                push_receiver: &mut view_state.push_receiver,
+                generic_op_receiver: &mut view_state.generic_op_receiver,
+                right_panel_mode: &mut view_state.right_panel_mode,
+                worktrees: &mut view_state.worktrees,
+                submodule_focus: &mut view_state.submodule_focus,
+            };
+            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view)
+        };
+
+        // 4. Compare and report
+        let deltas = compute_reload_deltas(&before, &after);
+        if deltas.is_empty() {
+            self.toast_manager.push("Reload: no deltas", ToastSeverity::Success);
+        } else {
+            self.toast_manager.push(
+                format!("Reload: {} delta{} found", deltas.len(), if deltas.len() == 1 { "" } else { "s" }),
+                ToastSeverity::Info,
+            );
+            self.toast_manager.push(deltas.join("\n"), ToastSeverity::Info);
+        }
+
+        self.status_dirty = true;
     }
 
     fn process_messages(&mut self) {
@@ -1407,6 +1491,11 @@ impl App {
                     return true;
                 }
             }
+        }
+        // F5: diagnostic reload
+        if *key == Key::F5 && !modifiers.any() {
+            self.do_diagnostic_reload();
+            return true;
         }
         // Ctrl+1..9: switch worktree context in staging well
         if modifiers.only_ctrl() {
@@ -2164,6 +2253,7 @@ impl App {
         }
 
         // Route to header bar
+        let mut do_reload = false;
         let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
         if view_state.header_bar.handle_event(input_event, layout.header).is_consumed() {
             if let Some(action) = view_state.header_bar.take_action() {
@@ -2204,7 +2294,13 @@ impl App {
                     HeaderAction::AbortOperation => {
                         view_state.pending_messages.push(AppMessage::AbortOperation);
                     }
+                    HeaderAction::Reload => {
+                        do_reload = true;
+                    }
                 }
+            }
+            if do_reload {
+                self.do_diagnostic_reload();
             }
             return;
         }
