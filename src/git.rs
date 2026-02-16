@@ -300,9 +300,22 @@ pub struct GitRepo {
 }
 
 impl GitRepo {
+    /// Check if this repo is effectively bare — either truly bare (core.bare=true)
+    /// or a bare-style repo with worktrees where core.bare=false but the computed
+    /// workdir has no `.git` entry pointing back to the repo.
+    pub fn is_effectively_bare(&self) -> bool {
+        if self.repo.is_bare() {
+            return true;
+        }
+        match self.repo.workdir() {
+            None => true,
+            Some(workdir) => !workdir.join(".git").exists(),
+        }
+    }
+
     /// Return an error if this is a bare repository (no working directory).
     fn ensure_not_bare(&self) -> Result<()> {
-        if self.repo.is_bare() {
+        if self.is_effectively_bare() {
             anyhow::bail!("Cannot perform this operation on a bare repository");
         }
         Ok(())
@@ -326,9 +339,13 @@ impl GitRepo {
         Ok(())
     }
 
-    /// Get the repository's working directory
+    /// Get the repository's working directory, or None if effectively bare.
     pub fn workdir(&self) -> Option<&Path> {
-        self.repo.workdir()
+        if self.is_effectively_bare() {
+            None
+        } else {
+            self.repo.workdir()
+        }
     }
 
     /// Get the repository's git directory (.git or .bare)
@@ -339,6 +356,9 @@ impl GitRepo {
     /// Compute aggregate diff stats for the working tree (staged + unstaged).
     /// Returns (insertions, deletions).
     pub fn working_tree_diff_stats(&self) -> (usize, usize) {
+        if self.is_effectively_bare() {
+            return (0, 0);
+        }
         let mut ins = 0usize;
         let mut del = 0usize;
         // Staged: HEAD-to-index
@@ -427,7 +447,7 @@ impl GitRepo {
 
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {
-        if let Some(workdir) = self.repo.workdir() {
+        if let Some(workdir) = self.workdir() {
             return workdir
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -521,7 +541,7 @@ impl GitRepo {
 
     /// Get working directory status
     pub fn status(&self) -> Result<WorkingDirStatus> {
-        if self.repo.is_bare() {
+        if self.is_effectively_bare() {
             return Ok(WorkingDirStatus::default());
         }
         let mut opts = StatusOptions::new();
@@ -631,7 +651,7 @@ impl GitRepo {
     pub fn submodules(&self) -> Result<Vec<SubmoduleInfo>> {
         // For bare repos, load submodules from the first worktree that has a .gitmodules
         let wt_repo_holder;
-        let repo_ref = if self.repo.workdir().is_none() {
+        let repo_ref = if self.workdir().is_none() {
             let wt_names = match self.repo.worktrees() {
                 Ok(names) => names,
                 Err(_) => return Ok(Vec::new()),
@@ -698,7 +718,7 @@ impl GitRepo {
         let worktrees = self.repo.worktrees().context("Failed to get worktrees")?;
 
         // Get the current working directory for comparison
-        let current_workdir = self.repo.workdir().map(|p| p.to_path_buf());
+        let current_workdir = self.workdir().map(|p| p.to_path_buf());
 
         let mut infos = Vec::new();
         for name in worktrees.iter() {
@@ -1221,7 +1241,7 @@ impl GitRepo {
     /// Check if the working directory has any uncommitted changes (staged or unstaged).
     /// Returns the total number of changed files, or 0 for bare repos.
     pub fn uncommitted_change_count(&self) -> usize {
-        if self.repo.is_bare() {
+        if self.is_effectively_bare() {
             return 0;
         }
         self.status().map(|s| s.total_files()).unwrap_or(0)
@@ -1231,7 +1251,7 @@ impl GitRepo {
     /// Returns the workdir if available, otherwise falls back to the git dir.
     /// This allows push/fetch/pull to work on bare repos.
     pub fn git_command_dir(&self) -> PathBuf {
-        self.repo.workdir()
+        self.workdir()
             .unwrap_or_else(|| self.repo.path())
             .to_path_buf()
     }
@@ -1391,7 +1411,7 @@ impl GitRepo {
 
     /// List all stash entries using git CLI (avoids &mut self requirement of libgit2)
     pub fn stash_list(&self) -> Vec<StashEntry> {
-        let workdir = match self.repo.workdir().or_else(|| Some(self.repo.path())) {
+        let workdir = match self.workdir().or_else(|| Some(self.repo.path())) {
             Some(p) => p,
             None => return Vec::new(),
         };
@@ -1635,7 +1655,7 @@ impl GitRepo {
             .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
 
         let patch = Self::build_hunk_patch(file_path, file_path, hunk);
-        let workdir = self.repo.workdir()
+        let workdir = self.workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
 
         let mut args = vec!["apply", "--cached"];
@@ -1676,7 +1696,7 @@ impl GitRepo {
             .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
 
         let patch = Self::build_hunk_patch(file_path, file_path, hunk);
-        let workdir = self.repo.workdir()
+        let workdir = self.workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
 
         let output = std::process::Command::new("git")
