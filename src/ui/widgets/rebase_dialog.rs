@@ -2,8 +2,8 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_outline_vertices, create_rect_vertices, theme, Widget,
-    WidgetOutput,
+    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_outline_vertices,
+    create_rounded_rect_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -179,7 +179,7 @@ impl Widget for RebaseDialog {
 
         // Checkbox click detection
         if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
-            let checkbox_start_y = dialog.y + 60.0 * scale;
+            let checkbox_start_y = dialog.y + 64.0 * scale;
             let items = Self::checkbox_items();
             for (i, (field_idx, _label)) in items.iter().enumerate() {
                 let item_y = checkbox_start_y + i as f32 * checkbox_line_h;
@@ -234,6 +234,12 @@ impl Widget for RebaseDialog {
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        self.layout_with_bold(text_renderer, text_renderer, bounds)
+    }
+}
+
+impl RebaseDialog {
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -252,16 +258,23 @@ impl Widget for RebaseDialog {
         // Title (bold)
         let title = format!("Rebase onto '{}'", self.target_branch);
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(text_renderer.layout_text(
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
             &title,
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
         ));
 
+        // Title separator
+        let sep_y = dialog.y + 36.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
         // Subtitle (muted)
         let subtitle = format!("Rebasing: {}", self.current_branch);
-        let subtitle_y = dialog.y + 40.0 * scale;
+        let subtitle_y = dialog.y + 44.0 * scale;
         output.text_vertices.extend(text_renderer.layout_text(
             &subtitle,
             dialog.x + padding,
@@ -270,7 +283,7 @@ impl Widget for RebaseDialog {
         ));
 
         // Checkboxes
-        let checkbox_start_y = dialog.y + 60.0 * scale;
+        let checkbox_start_y = dialog.y + 64.0 * scale;
         let checkbox_size = 14.0 * scale;
         let items = Self::checkbox_items();
 
@@ -281,8 +294,9 @@ impl Widget for RebaseDialog {
             let cb_x = dialog.x + padding;
             let cb_y = item_y + (checkbox_line_h - checkbox_size) / 2.0;
 
-            // Draw checkbox outline
+            // Draw checkbox outline (rounded)
             let cb_rect = Rect::new(cb_x, cb_y, checkbox_size, checkbox_size);
+            let cb_r = 3.0 * scale;
             let border_color = if checked {
                 theme::ACCENT.to_array()
             } else {
@@ -290,9 +304,9 @@ impl Widget for RebaseDialog {
             };
             output
                 .spline_vertices
-                .extend(create_rect_outline_vertices(&cb_rect, border_color, 1.0 * scale));
+                .extend(create_rounded_rect_outline_vertices(&cb_rect, border_color, cb_r, 1.0 * scale));
 
-            // Draw filled inner rect when checked
+            // Draw filled inner rect when checked (rounded)
             if checked {
                 let check_padding = 3.0 * scale;
                 let check_rect = Rect::new(
@@ -303,7 +317,7 @@ impl Widget for RebaseDialog {
                 );
                 output
                     .spline_vertices
-                    .extend(create_rect_vertices(&check_rect, theme::ACCENT.to_array()));
+                    .extend(create_rounded_rect_vertices(&check_rect, theme::ACCENT.to_array(), cb_r - 1.0));
             }
 
             // Label text
@@ -341,6 +355,13 @@ impl Widget for RebaseDialog {
         let button_gap = 8.0 * scale;
         let cancel_x = dialog.right() - padding - button_w;
         let rebase_x = cancel_x - button_w - button_gap;
+
+        // Button separator
+        let btn_sep_y = button_y - 8.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
 
         let rebase_bounds = Rect::new(rebase_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);

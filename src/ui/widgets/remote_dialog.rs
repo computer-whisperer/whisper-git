@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, theme, Widget, WidgetOutput,
+    create_dialog_backdrop, create_rect_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -174,7 +174,7 @@ impl Widget for RemoteDialog {
         let label_h = 18.0 * scale;
 
         // First input field bounds
-        let first_label_y = dialog.y + 40.0 * scale;
+        let first_label_y = dialog.y + 44.0 * scale;
         let first_input_y = first_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
         let first_input_bounds = Rect::new(
@@ -290,6 +290,12 @@ impl Widget for RemoteDialog {
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        self.layout_with_bold(text_renderer, text_renderer, bounds)
+    }
+}
+
+impl RemoteDialog {
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -305,17 +311,24 @@ impl Widget for RemoteDialog {
         // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
-        // Title
+        // Title (bold)
         let title_y = dialog.y + padding;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
             &self.title,
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
         ));
 
+        // Title separator
+        let sep_y = dialog.y + 36.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
         // First label + input
-        let first_label_y = dialog.y + 40.0 * scale;
+        let first_label_y = dialog.y + 44.0 * scale;
         let first_label = match &self.mode {
             RemoteDialogMode::Add => "Name",
             RemoteDialogMode::EditUrl(_) => "URL",
@@ -364,6 +377,13 @@ impl Widget for RemoteDialog {
         let button_gap = 8.0 * scale;
         let cancel_x = dialog.right() - padding - button_w;
         let confirm_x = cancel_x - button_w - button_gap;
+
+        // Button separator
+        let btn_sep_y = button_y - 8.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
 
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);

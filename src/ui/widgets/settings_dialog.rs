@@ -24,6 +24,7 @@ pub struct SettingsDialog {
     pub row_scale: f32,    // 1.0 = normal, 1.5 = large
     pub abbreviate_worktree_names: bool,
     pub time_spacing_strength: f32, // 0.3 = low, 1.0 = normal, 2.0 = high
+    pub show_orphaned_commits: bool,
 }
 
 impl SettingsDialog {
@@ -37,6 +38,7 @@ impl SettingsDialog {
             row_scale: 1.0,
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
+            show_orphaned_commits: true,
         }
     }
 
@@ -59,7 +61,7 @@ impl SettingsDialog {
     /// Compute dialog bounds centered in screen
     fn dialog_bounds(&self, screen: Rect, scale: f32) -> Rect {
         let dialog_w = (450.0 * scale).min(screen.width * 0.8);
-        let dialog_h = (500.0 * scale).min(screen.height * 0.7);
+        let dialog_h = (545.0 * scale).min(screen.height * 0.7);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
@@ -120,6 +122,7 @@ impl Widget for SettingsDialog {
         let row3_y = row2_y + line_h + row_gap;
         let row4_y = row3_y + line_h + row_gap;
         let row5_y = row4_y + line_h + row_gap;
+        let row6_y = row5_y + line_h + row_gap;
 
         // Toggle bounds
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
@@ -127,6 +130,7 @@ impl Widget for SettingsDialog {
         let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
         let (wt_short, wt_full) = self.toggle_bounds(&dialog, row4_y, line_h, scale);
         let (ts_low, ts_normal, ts_high) = self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
+        let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
 
         // Close button bounds
         let button_y = dialog.bottom() - padding - line_h;
@@ -194,6 +198,15 @@ impl Widget for SettingsDialog {
                 self.time_spacing_strength = 2.0;
                 return EventResponse::Consumed;
             }
+            // Show orphans toggles
+            if oc_on.contains(*x, *y) {
+                self.show_orphaned_commits = true;
+                return EventResponse::Consumed;
+            }
+            if oc_off.contains(*x, *y) {
+                self.show_orphaned_commits = false;
+                return EventResponse::Consumed;
+            }
         }
 
         // Route to close button
@@ -219,6 +232,12 @@ impl Widget for SettingsDialog {
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        self.layout_with_bold(text_renderer, text_renderer, bounds)
+    }
+}
+
+impl SettingsDialog {
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -236,13 +255,20 @@ impl Widget for SettingsDialog {
         // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
-        // Title
+        // Title (bold)
         let title_y = dialog.y + padding;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
             "Settings",
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
+        ));
+
+        // Title separator
+        let sep_y = dialog.y + 36.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
         // --- Setting rows ---
@@ -251,6 +277,7 @@ impl Widget for SettingsDialog {
         let row3_y = row2_y + line_h + row_gap;
         let row4_y = row3_y + line_h + row_gap;
         let row5_y = row4_y + line_h + row_gap;
+        let row6_y = row5_y + line_h + row_gap;
 
         // Row 1: Show Avatars
         let label_y = row1_y + (line_h - line_height) / 2.0;
@@ -346,10 +373,38 @@ impl Widget for SettingsDialog {
         self.render_toggle_option(&mut output, text_renderer, &ts_normal, "Normal", self.time_spacing_strength >= 0.5 && self.time_spacing_strength < 1.5);
         self.render_toggle_option(&mut output, text_renderer, &ts_high, "High", self.time_spacing_strength >= 1.5);
 
+        // Separator
+        let sep5_y = row5_y + line_h + 5.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep5_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // Row 6: Show Orphans
+        let label_y6 = row6_y + (line_h - line_height) / 2.0;
+        output.text_vertices.extend(text_renderer.layout_text(
+            "Show Orphans",
+            dialog.x + padding,
+            label_y6,
+            theme::TEXT.to_array(),
+        ));
+
+        let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
+        self.render_toggle_option(&mut output, text_renderer, &oc_on, "ON", self.show_orphaned_commits);
+        self.render_toggle_option(&mut output, text_renderer, &oc_off, "OFF", !self.show_orphaned_commits);
+
         // Close button at bottom
         let button_y = dialog.bottom() - padding - line_h;
         let button_w = 80.0 * scale;
         let close_x = dialog.right() - padding - button_w;
+
+        // Button separator
+        let btn_sep_y = button_y - 8.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
         let close_bounds = Rect::new(close_x, button_y, button_w, line_h);
         output.extend(self.close_button.layout(text_renderer, close_bounds));
 

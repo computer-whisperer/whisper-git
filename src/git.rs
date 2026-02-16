@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -175,6 +175,10 @@ pub struct CommitInfo {
     pub is_synthetic: bool,
     /// For synthetic entries: the worktree name this entry represents
     pub synthetic_wt_name: Option<String>,
+    /// True for orphaned commits discovered via reflogs (unreachable from any branch tip)
+    pub is_orphaned: bool,
+    /// Reflog source label for orphaned commits, e.g. "HEAD@{3}: rebase (finish)"
+    pub orphan_source: Option<String>,
 }
 
 impl CommitInfo {
@@ -202,6 +206,8 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: false,
             synthetic_wt_name: None,
+            is_orphaned: false,
+            orphan_source: None,
         }
     }
 
@@ -254,6 +260,8 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: true,
             synthetic_wt_name: Some(wt.name.clone()),
+            is_orphaned: false,
+            orphan_source: None,
         })
     }
 
@@ -290,6 +298,8 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: true,
             synthetic_wt_name: None, // single-worktree, no specific name
+            is_orphaned: false,
+            orphan_source: None,
         }
     }
 }
@@ -406,6 +416,139 @@ impl GitRepo {
                 Some(CommitInfo::from_commit(&commit))
             })
             .collect();
+
+        Ok(commits)
+    }
+
+    /// Discover orphaned commits via reflogs that aren't reachable from any branch tip.
+    /// Returns commits marked with `is_orphaned = true` and a reflog source label.
+    pub fn orphaned_commits_from_reflogs(
+        &self,
+        known_oids: &HashSet<Oid>,
+        max_orphans: usize,
+    ) -> Vec<CommitInfo> {
+        let zero = Oid::zero();
+        // Collect (oid, source_label) from reflogs
+        let mut candidates: Vec<(Oid, String)> = Vec::new();
+        let mut seen: HashSet<Oid> = HashSet::new();
+
+        // Reflog names to walk: HEAD + all local branches
+        let mut refnames: Vec<String> = vec!["HEAD".to_string()];
+        if let Ok(branches) = self.repo.branches(Some(git2::BranchType::Local)) {
+            for branch in branches.flatten() {
+                if let Ok(Some(name)) = branch.0.name() {
+                    refnames.push(format!("refs/heads/{}", name));
+                }
+            }
+        }
+
+        // Collect all ref tip OIDs (branches + tags) for reachability checks.
+        // A reflog entry that is an ancestor of any ref is NOT orphaned — it's just
+        // older than the loaded commit window.
+        let mut tip_oids: Vec<Oid> = Vec::new();
+        if let Ok(branches) = self.repo.branches(None) {
+            for branch in branches.flatten() {
+                if let Ok(reference) = branch.0.get().resolve()
+                    && let Some(oid) = reference.target()
+                {
+                    tip_oids.push(oid);
+                }
+            }
+        }
+        // Include tag targets (peeled to commit)
+        let _ = self.repo.tag_foreach(|oid, _| {
+            if let Ok(obj) = self.repo.find_object(oid, None) {
+                if let Ok(commit) = obj.peel_to_commit() {
+                    tip_oids.push(commit.id());
+                }
+            }
+            true
+        });
+
+        for refname in &refnames {
+            let Ok(reflog) = self.repo.reflog(refname) else { continue };
+            for i in 0..reflog.len() {
+                let Some(entry) = reflog.get(i) else { continue };
+                let msg = entry.message().unwrap_or("").to_string();
+                for oid in [entry.id_new(), entry.id_old()] {
+                    if oid == zero || known_oids.contains(&oid) || !seen.insert(oid) {
+                        continue;
+                    }
+                    let label = format!("{}@{{{}}}: {}", refname, i, msg);
+                    candidates.push((oid, label));
+                }
+            }
+        }
+
+        // Filter out candidates reachable from any branch tip (not truly orphaned,
+        // just beyond the loaded commit window)
+        candidates.retain(|(oid, _)| {
+            // If the commit doesn't exist anymore, keep it — the CommitInfo step
+            // below will skip it via find_commit().
+            let Ok(_) = self.repo.find_commit(*oid) else { return true };
+            // If ANY tip is a descendant of this commit, it's reachable
+            !tip_oids.iter().any(|tip| {
+                self.repo.graph_descendant_of(*tip, *oid).unwrap_or(false)
+            })
+        });
+
+        // Validate each candidate still exists (not GC'd) and build CommitInfo
+        let mut orphans: Vec<CommitInfo> = Vec::new();
+        let mut orphan_oids: HashSet<Oid> = HashSet::new();
+
+        for (oid, label) in &candidates {
+            let Ok(commit) = self.repo.find_commit(*oid) else { continue };
+            let mut info = CommitInfo::from_commit(&commit);
+            info.is_orphaned = true;
+            info.orphan_source = Some(label.clone());
+            orphan_oids.insert(*oid);
+            orphans.push(info);
+        }
+
+        // Chain walk: for each discovered orphan, walk parents up to depth 10
+        let mut parent_queue: Vec<(Oid, u8, String)> = orphans.iter()
+            .flat_map(|o| o.parent_ids.iter().map(move |&pid| (pid, 1u8, o.short_id.clone())))
+            .collect();
+
+        while let Some((pid, depth, source_sha)) = parent_queue.pop() {
+            if depth > 10 || known_oids.contains(&pid) || orphan_oids.contains(&pid) || pid == zero {
+                continue;
+            }
+            let Ok(commit) = self.repo.find_commit(pid) else { continue };
+            // Skip if reachable from any branch tip (connects back to main graph)
+            if tip_oids.iter().any(|tip| self.repo.graph_descendant_of(*tip, pid).unwrap_or(false)) {
+                continue;
+            }
+            let mut info = CommitInfo::from_commit(&commit);
+            info.is_orphaned = true;
+            info.orphan_source = Some(format!("parent of {}", source_sha));
+            orphan_oids.insert(pid);
+            // Queue this commit's parents for further walking
+            for &grandparent in &info.parent_ids {
+                parent_queue.push((grandparent, depth + 1, info.short_id.clone()));
+            }
+            orphans.push(info);
+        }
+
+        // Sort by time descending and cap
+        orphans.sort_by(|a, b| b.time.cmp(&a.time));
+        orphans.truncate(max_orphans);
+        orphans
+    }
+
+    /// Get commits for graph including orphaned commits from reflogs.
+    pub fn commit_graph_with_orphans(&self, max_commits: usize) -> Result<Vec<CommitInfo>> {
+        let mut commits = self.commit_graph(max_commits)?;
+
+        let known_oids: HashSet<Oid> = commits.iter().map(|c| c.id).collect();
+        let orphans = self.orphaned_commits_from_reflogs(&known_oids, 100);
+
+        if !orphans.is_empty() {
+            commits.extend(orphans);
+            // Re-sort by time descending (matching commit_graph's TOPOLOGICAL|TIME order)
+            // Stable sort preserves topological order among non-orphans with same timestamp
+            commits.sort_by(|a, b| b.time.cmp(&a.time));
+        }
 
         Ok(commits)
     }

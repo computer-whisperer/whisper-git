@@ -390,6 +390,9 @@ pub mod theme {
     // Zebra striping for graph rows
     pub const GRAPH_ROW_ALT: Color = Color::rgba(0.145, 0.165, 0.204, 1.0);   // #252a34 - increased zebra stripe contrast (~5-6% luminance diff)
 
+    // Orphaned commit colors (purple)
+    pub const ORPHAN: Color = Color::rgba(0.671, 0.278, 0.737, 1.0);       // #AB47BC purple
+
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[
         Color::rgba(0.231, 0.510, 0.965, 1.0), // Blue - primary branch

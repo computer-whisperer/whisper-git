@@ -441,6 +441,7 @@ impl App {
         settings_dialog.row_scale = config.row_scale;
         settings_dialog.abbreviate_worktree_names = config.abbreviate_worktree_names;
         settings_dialog.time_spacing_strength = config.time_spacing_strength;
+        settings_dialog.show_orphaned_commits = config.show_orphaned_commits;
         let shortcut_bar_visible = config.shortcut_bar_visible;
 
         Ok(Self {
@@ -604,7 +605,7 @@ impl App {
             view_state.commit_graph_view.row_scale = row_scale;
             view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
             view_state.commit_graph_view.time_spacing_strength = time_strength;
-            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager);
+            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager, self.config.show_orphaned_commits);
             if rx.is_some() { self.diff_stats_receiver = rx; }
         }
 
@@ -695,7 +696,7 @@ impl App {
         };
 
         // 2. Full reload (same as refresh_repo_state + refresh_status)
-        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
         // Also refresh file status (staged/unstaged/conflicted)
         {
             let repo = repo_tab.repo.as_ref().unwrap();
@@ -792,15 +793,16 @@ impl App {
             if let Some(ref state) = self.state {
                 let scale = state.scale_factor as f32;
                 for msg in nav_messages {
+                    let show_orphans = self.config.show_orphaned_commits;
                     match msg {
                         AppMessage::EnterSubmodule(name) => {
-                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
+                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
                         }
                         AppMessage::ExitSubmodule => {
-                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
+                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
                         }
                         AppMessage::ExitToDepth(depth) => {
-                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager);
+                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
                         }
                         _ => unreachable!(),
                     }
@@ -833,7 +835,7 @@ impl App {
             Rect::new(0.0, 0.0, 1920.0, 1080.0)
         };
 
-        let ctx = MessageContext { graph_bounds };
+        let ctx = MessageContext { graph_bounds, show_orphaned_commits: self.config.show_orphaned_commits };
 
         let Some(ref repo) = repo_tab.repo else {
             return;
@@ -912,12 +914,12 @@ impl App {
             }
             Some(FsChangeKind::GitMetadata) => {
                 self.status_dirty = true;
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
             }
             Some(FsChangeKind::WorktreeStructure) => {
                 self.status_dirty = true;
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
                 // Update watcher paths for new/removed worktrees
                 if let Some(ref repo) = repo_tab.repo {
@@ -979,7 +981,7 @@ impl App {
                             format!("{} {}", $past_tense, remote),
                             ToastSeverity::Success,
                         );
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     }
                     AsyncOpPoll::Failed(msg) => {
@@ -1024,7 +1026,7 @@ impl App {
                                 ToastSeverity::Info,
                             );
                         }
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                         // Also refresh worktrees/stashes
                         if let Some(ref repo) = repo_tab.repo {
@@ -1076,7 +1078,7 @@ impl App {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
                     view_state.commit_graph_view.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
                     view_state.commit_graph_view.time_spacing_strength = self.settings_dialog.time_spacing_strength;
-                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager);
+                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager, self.config.show_orphaned_commits);
                     if rx.is_some() { self.diff_stats_receiver = rx; }
                 }
 
@@ -1293,6 +1295,7 @@ impl App {
                         let row_scale = self.settings_dialog.row_scale;
                         let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
                         let time_strength = self.settings_dialog.time_spacing_strength;
+                        let orphans_changed = self.config.show_orphaned_commits != self.settings_dialog.show_orphaned_commits;
                         if let Some(ref state) = self.state {
                             for (repo_tab, view_state) in &mut self.tabs {
                                 view_state.commit_graph_view.row_scale = row_scale;
@@ -1307,8 +1310,15 @@ impl App {
                         self.config.row_scale = self.settings_dialog.row_scale;
                         self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
                         self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
+                        self.config.show_orphaned_commits = self.settings_dialog.show_orphaned_commits;
                         if let Err(e) = self.config.save() {
                             self.toast_manager.push(e, ToastSeverity::Error);
+                        }
+                        // Reload commits if orphan visibility changed
+                        if orphans_changed {
+                            if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                self.diff_stats_receiver = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                            }
                         }
                     }
                 }
@@ -1684,7 +1694,7 @@ fn poll_remote_op(
 /// Call this after any operation that changes branches, commits, or remote state.
 /// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
 /// async diff stats computation that should be stored in `App::diff_stats_receiver`.
-fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let Some(ref repo) = repo_tab.repo else { return None };
 
     // Delegate core refresh logic to the shared implementation in messages.rs
@@ -1705,7 +1715,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             worktrees: &mut view_state.worktrees,
             submodule_focus: &mut view_state.submodule_focus,
         };
-        refresh_repo_state_core(repo, &mut repo_tab.commits, &mut msg_view, toast_manager)
+        refresh_repo_state_core(repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits)
     };
 
     // main.rs-specific extras beyond the shared core:
@@ -1749,7 +1759,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -1767,7 +1777,7 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
     // (refresh_repo_state handles all of these — no need to call them separately)
-    let rx = refresh_repo_state(repo_tab, view_state, toast_manager);
+    let rx = refresh_repo_state(repo_tab, view_state, toast_manager, show_orphaned_commits);
 
     // Start filesystem watcher for auto-refresh
     start_watcher(repo_tab, view_state, toast_manager);
@@ -1808,6 +1818,7 @@ fn enter_submodule(
     text_renderer: &TextRenderer,
     scale: f32,
     toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
 ) -> bool {
     if repo_tab.repo.is_none() { return false; }
 
@@ -1892,7 +1903,7 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits);
 
     true
 }
@@ -1905,6 +1916,7 @@ fn exit_submodule(
     text_renderer: &TextRenderer,
     scale: f32,
     toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
 ) -> bool {
     // Pop saved state from the focus stack (release borrow before init_tab_view)
     let saved = {
@@ -1937,7 +1949,7 @@ fn exit_submodule(
     view_state.worktrees = saved.worktrees;
 
     // Re-init views with parent data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits);
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
@@ -1971,6 +1983,7 @@ fn exit_to_depth(
     text_renderer: &TextRenderer,
     scale: f32,
     toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
 ) {
     let current_depth = view_state.submodule_focus.as_ref()
         .map(|f| f.parent_stack.len())
@@ -1980,7 +1993,7 @@ fn exit_to_depth(
     }
     let pops = current_depth - depth;
     for _ in 0..pops {
-        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager) {
+        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits) {
             break;
         }
     }
@@ -3413,46 +3426,46 @@ fn build_ui_output(
 
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        overlay_output.extend(repo_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(repo_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Settings dialog (overlay layer - on top of everything)
     if settings_dialog.is_visible() {
-        overlay_output.extend(settings_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(settings_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
-        overlay_output.extend(confirm_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(confirm_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Branch name dialog (overlay layer - on top of everything)
     if branch_name_dialog.is_visible() {
-        overlay_output.extend(branch_name_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(branch_name_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Remote dialog (overlay layer - on top of everything)
     if remote_dialog.is_visible() {
-        overlay_output.extend(remote_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(remote_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
-    // Push dialog (overlay layer - on top of everything)
+    // Pull dialog (overlay layer - on top of everything)
     if pull_dialog.is_visible() {
-        overlay_output.extend(pull_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(pull_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     if push_dialog.is_visible() {
-        overlay_output.extend(push_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(push_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Merge dialog (overlay layer - on top of everything)
     if merge_dialog.is_visible() {
-        overlay_output.extend(merge_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(merge_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     // Rebase dialog (overlay layer - on top of everything)
     if rebase_dialog.is_visible() {
-        overlay_output.extend(rebase_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(rebase_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
     }
 
     (graph_output, chrome_output, overlay_output)
@@ -3960,8 +3973,26 @@ fn apply_screenshot_state(app: &mut App) {
                 }
             }
         }
+        "confirm-dialog" => {
+            app.confirm_dialog.show("Delete Branch", "Delete branch 'feature'? This cannot be undone.");
+        }
+        "merge-dialog" => {
+            app.merge_dialog.show("feature", "main", 2);
+        }
+        "rebase-dialog" => {
+            app.rebase_dialog.show("main", "feature", 1);
+        }
+        "pull-dialog" => {
+            app.pull_dialog.show("main", "origin");
+        }
+        "push-dialog" => {
+            app.push_dialog.show("main", "origin");
+        }
+        "settings-dialog" => {
+            app.settings_dialog.show();
+        }
         other => {
-            eprintln!("Unknown screenshot state: '{}'. Valid states: open-dialog, search, context-menu, commit-detail", other);
+            eprintln!("Unknown screenshot state: '{}'. Valid states: open-dialog, search, context-menu, commit-detail, confirm-dialog, merge-dialog, rebase-dialog, pull-dialog, push-dialog, settings-dialog", other);
         }
     }
 }

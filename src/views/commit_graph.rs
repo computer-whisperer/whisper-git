@@ -99,7 +99,11 @@ impl GraphLayout {
         for commit in commits.iter() {
             // Step 1: Find lane for this commit (may already be reserved)
             let lane = self.find_or_assign_lane(commit);
-            let color = LANE_COLORS[lane % LANE_COLORS.len()];
+            let color = if commit.is_orphaned {
+                theme::ORPHAN
+            } else {
+                LANE_COLORS[lane % LANE_COLORS.len()]
+            };
 
             self.layouts.insert(commit.id, CommitLayout { lane, color });
 
@@ -1146,6 +1150,16 @@ impl CommitGraphView {
                 self.node_radius - ring_thickness,
                 theme::STATUS_DIRTY.with_alpha(0.25 * dim_alpha).to_array(),
             ));
+        } else if commit.is_orphaned {
+            // Orphaned commit: hollow diamond in purple
+            let orphan_color = theme::ORPHAN.with_alpha(dim_alpha);
+            vertices.extend(Self::create_diamond_vertices(
+                x, y, self.node_radius, orphan_color.to_array(),
+            ));
+            // Inner diamond cutout for hollow effect
+            vertices.extend(Self::create_diamond_vertices(
+                x, y, self.node_radius * 0.5, theme::BACKGROUND.with_alpha(dim_alpha).to_array(),
+            ));
         } else {
             let node_color = layout.color.with_alpha(dim_alpha);
             if is_merge {
@@ -1282,6 +1296,30 @@ impl CommitGraphView {
         }
 
         vertices
+    }
+
+    /// Create vertices for a diamond shape (rotated square) — used for orphaned commit nodes
+    fn create_diamond_vertices(
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: [f32; 4],
+    ) -> Vec<SplineVertex> {
+        let top = [cx, cy - radius];
+        let right = [cx + radius, cy];
+        let bottom = [cx, cy + radius];
+        let left = [cx - radius, cy];
+
+        vec![
+            // Triangle 1: top → right → bottom
+            SplineVertex { position: top, color },
+            SplineVertex { position: right, color },
+            SplineVertex { position: bottom, color },
+            // Triangle 2: top → bottom → left
+            SplineVertex { position: top, color },
+            SplineVertex { position: bottom, color },
+            SplineVertex { position: left, color },
+        ]
     }
 
     /// Generate text vertices for commit info, and spline vertices for label pill backgrounds.
@@ -1499,6 +1537,14 @@ impl CommitGraphView {
                 // === HEAD indicator (after branch/tag/worktree pills) ===
                 if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
                     current_x = Self::render_head_pill(
+                        text_renderer, &pill_params, y,
+                        current_x, &mut vertices, &mut pill_vertices,
+                    );
+                }
+
+                // === ORPHAN pill for orphaned commits ===
+                if commit.is_orphaned {
+                    current_x = Self::render_orphan_pill(
                         text_renderer, &pill_params, y,
                         current_x, &mut vertices, &mut pill_vertices,
                     );
@@ -1760,6 +1806,46 @@ impl CommitGraphView {
         current_x
     }
 
+    /// Render ORPHAN pill for orphaned commits. Returns updated current_x.
+    fn render_orphan_pill(
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        mut current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> f32 {
+        let label = "ORPHAN";
+        let label_width = text_renderer.measure_text(label);
+        if current_x + label_width + p.pill_pad_h * 2.0 < p.time_col_left - p.col_gap {
+            let pill_rect = Rect::new(
+                current_x,
+                y - p.pill_pad_v,
+                label_width + p.pill_pad_h * 2.0,
+                p.line_height + p.pill_pad_v * 2.0,
+            );
+            pill_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                theme::ORPHAN.with_alpha(0.22).to_array(),
+                p.pill_radius,
+            ));
+            pill_vertices.extend(create_rounded_rect_outline_vertices(
+                &pill_rect,
+                theme::ORPHAN.with_alpha(0.45).to_array(),
+                p.pill_radius,
+                p.pill_border_thickness,
+            ));
+            vertices.extend(text_renderer.layout_text(
+                label,
+                current_x + p.pill_pad_h,
+                y,
+                theme::ORPHAN.to_array(),
+            ));
+            current_x += label_width + p.pill_pad_h * 2.0 + p.char_width;
+        }
+        current_x
+    }
+
     /// Render author avatar or identicon fallback. Returns updated current_x.
     #[allow(clippy::too_many_arguments)]
     fn render_author_avatar(
@@ -1889,6 +1975,8 @@ impl CommitGraphView {
         let char_width = text_renderer.char_width();
         let summary_color = if is_selected {
             theme::TEXT_BRIGHT
+        } else if commit.is_orphaned {
+            theme::TEXT_MUTED.with_alpha(dim_alpha)
         } else if is_head {
             theme::TEXT_BRIGHT.with_alpha(dim_alpha)
         } else {

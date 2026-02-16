@@ -2,7 +2,8 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, theme, Widget, WidgetOutput,
+    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_outline_vertices,
+    create_rounded_rect_vertices, theme, Widget, WidgetOutput,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -120,7 +121,7 @@ impl Widget for PullDialog {
         let label_h = 18.0 * scale;
 
         // Remote input bounds
-        let remote_label_y = dialog.y + 40.0 * scale;
+        let remote_label_y = dialog.y + 44.0 * scale;
         let remote_input_y = remote_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
         let remote_input_bounds = Rect::new(
@@ -231,6 +232,12 @@ impl Widget for PullDialog {
     }
 
     fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        self.layout_with_bold(text_renderer, text_renderer, bounds)
+    }
+}
+
+impl PullDialog {
+    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -246,17 +253,24 @@ impl Widget for PullDialog {
         // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
-        // Title
+        // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(text_renderer.layout_text(
+        output.bold_text_vertices.extend(bold_renderer.layout_text(
             "Pull Branch",
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
         ));
 
+        // Title separator
+        let sep_y = dialog.y + 36.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
         // Remote label + input
-        let remote_label_y = dialog.y + 40.0 * scale;
+        let remote_label_y = dialog.y + 44.0 * scale;
         output.text_vertices.extend(text_renderer.layout_text(
             "Remote:",
             dialog.x + padding,
@@ -295,18 +309,23 @@ impl Widget for PullDialog {
         let checkbox_size = 16.0 * scale;
         let checkbox_x = dialog.x + padding;
 
-        // Draw checkbox box
-        use crate::ui::widget::create_rect_outline_vertices;
+        // Draw checkbox box (rounded)
         let checkbox_rect = Rect::new(checkbox_x, checkbox_y, checkbox_size, checkbox_size);
-        output.spline_vertices.extend(create_rect_outline_vertices(
+        let cb_r = 3.0 * scale;
+        let border_color = if self.rebase {
+            theme::ACCENT.to_array()
+        } else {
+            theme::BORDER.to_array()
+        };
+        output.spline_vertices.extend(create_rounded_rect_outline_vertices(
             &checkbox_rect,
-            theme::BORDER.to_array(),
+            border_color,
+            cb_r,
             1.0 * scale,
         ));
 
-        // Draw checkmark if checked
+        // Draw checkmark if checked (rounded)
         if self.rebase {
-            use crate::ui::widget::create_rect_vertices;
             let check_padding = 3.0 * scale;
             let check_rect = Rect::new(
                 checkbox_x + check_padding,
@@ -314,9 +333,10 @@ impl Widget for PullDialog {
                 checkbox_size - check_padding * 2.0,
                 checkbox_size - check_padding * 2.0,
             );
-            output.spline_vertices.extend(create_rect_vertices(
+            output.spline_vertices.extend(create_rounded_rect_vertices(
                 &check_rect,
                 theme::ACCENT.to_array(),
+                cb_r - 1.0,
             ));
         }
 
@@ -335,6 +355,13 @@ impl Widget for PullDialog {
         let button_gap = 8.0 * scale;
         let cancel_x = dialog.right() - padding - button_w;
         let confirm_x = cancel_x - button_w - button_gap;
+
+        // Button separator
+        let btn_sep_y = button_y - 8.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
 
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);

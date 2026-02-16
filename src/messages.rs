@@ -117,6 +117,8 @@ pub struct MessageContext {
     /// Graph bounds for scroll-to-selection (JumpToWorktreeBranch).
     /// Compute this from the current layout before calling the handler.
     pub graph_bounds: Rect,
+    /// Whether to include orphaned commits when refreshing the commit graph.
+    pub show_orphaned_commits: bool,
 }
 
 /// Check commit preconditions common to both Commit and AmendCommit:
@@ -155,10 +157,11 @@ fn handle_repo_mutation(
     commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
 ) {
     match result {
         Ok(()) => {
-            refresh_repo_state(repo, commits, view_state, toast_manager);
+            refresh_repo_state(repo, commits, view_state, toast_manager, show_orphaned_commits);
             toast_manager.push(success_msg, ToastSeverity::Success);
         }
         Err(e) => {
@@ -311,7 +314,7 @@ pub fn handle_app_message(
             }
             match staging_repo.commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                    refresh_repo_state(repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
                     view_state.staging_well.clear_and_focus();
                     toast_manager.push(
                         format!("Commit {}", &oid.to_string()[..7]),
@@ -540,7 +543,7 @@ pub fn handle_app_message(
                 repo.checkout_branch(&name),
                 format!("Switched to {}", name),
                 "Checkout failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
         AppMessage::CheckoutRemoteBranch(remote, branch) => {
@@ -548,13 +551,13 @@ pub fn handle_app_message(
                 repo.checkout_remote_branch(&remote, &branch),
                 format!("Switched to {}/{}", remote, branch),
                 "Checkout failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteBranch(name) => {
             match repo.delete_branch(&name) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                    refresh_repo_state(repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
                     toast_manager.push(
                         format!("Deleted branch {}", name),
                         ToastSeverity::Success,
@@ -573,7 +576,7 @@ pub fn handle_app_message(
         AppMessage::RenameBranch(old_name, new_name) => {
             match repo.rename_branch(&old_name, &new_name, false) {
                 Ok(()) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                    refresh_repo_state(repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
                     toast_manager.push(
                         format!("Renamed branch '{}' to '{}'", old_name, new_name),
                         ToastSeverity::Success,
@@ -845,7 +848,7 @@ pub fn handle_app_message(
                 repo.create_branch_at(&name, oid),
                 format!("Created branch '{}'", name),
                 "Create branch failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
         AppMessage::CreateTag(name, oid) => {
@@ -853,7 +856,7 @@ pub fn handle_app_message(
                 repo.create_tag(&name, oid),
                 format!("Created tag '{}'", name),
                 "Create tag failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteTag(name) => {
@@ -861,7 +864,7 @@ pub fn handle_app_message(
                 repo.delete_tag(&name),
                 format!("Deleted tag '{}'", name),
                 "Delete tag failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
         AppMessage::StashPush => {
@@ -937,7 +940,7 @@ pub fn handle_app_message(
             }
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(repo, commits, view_state, toast_manager);
+                    refresh_repo_state(repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
                     view_state.staging_well.exit_amend_mode();
                     toast_manager.push(
                         format!("Amended {}", &oid.to_string()[..7]),
@@ -986,7 +989,7 @@ pub fn handle_app_message(
                 repo.reset_to_commit(oid, mode),
                 format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
                 "Reset failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -995,7 +998,7 @@ pub fn handle_app_message(
                 repo.cleanup_state(),
                 "Operation aborted".to_string(),
                 "Abort failed",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -1004,7 +1007,7 @@ pub fn handle_app_message(
                 repo.add_remote(&name, &url),
                 format!("Added remote '{}'", name),
                 "Failed to add remote",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -1013,7 +1016,7 @@ pub fn handle_app_message(
                 repo.delete_remote(&name),
                 format!("Deleted remote '{}'", name),
                 "Failed to delete remote",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -1022,7 +1025,7 @@ pub fn handle_app_message(
                 repo.rename_remote(&old_name, &new_name),
                 format!("Renamed remote '{}' to '{}'", old_name, new_name),
                 "Failed to rename remote",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -1031,7 +1034,7 @@ pub fn handle_app_message(
                 repo.set_remote_url(&name, &url),
                 format!("Updated URL for '{}'", name),
                 "Failed to update remote URL",
-                repo, commits, view_state, toast_manager,
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
         }
 
@@ -1302,6 +1305,7 @@ pub fn refresh_repo_state(
     commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
 ) -> String {
     // Preserve existing diff stats so they don't flicker away during refresh
     let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
@@ -1309,7 +1313,12 @@ pub fn refresh_repo_state(
         .map(|c| (c.id, (c.insertions, c.deletions)))
         .collect();
 
-    match repo.commit_graph(MAX_COMMITS) {
+    let graph_result = if show_orphaned_commits {
+        repo.commit_graph_with_orphans(MAX_COMMITS)
+    } else {
+        repo.commit_graph(MAX_COMMITS)
+    };
+    match graph_result {
         Ok(c) => *commits = c,
         Err(e) => {
             toast_manager.push(

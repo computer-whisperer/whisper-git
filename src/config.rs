@@ -18,6 +18,8 @@ pub struct Config {
     pub abbreviate_worktree_names: bool,
     #[serde(default = "default_one")]
     pub time_spacing_strength: f32,
+    #[serde(default = "default_true")]
+    pub show_orphaned_commits: bool,
 }
 
 fn default_true() -> bool { true }
@@ -36,6 +38,7 @@ impl Default for Config {
             recent_repos: Vec::new(),
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
+            show_orphaned_commits: true,
         }
     }
 }
