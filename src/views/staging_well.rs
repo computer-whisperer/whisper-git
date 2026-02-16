@@ -403,11 +403,11 @@ impl StagingWell {
     // ---- Worktree context switching ----
 
     /// Build worktree contexts from the repo's worktree list.
-    /// Only creates contexts when there are 2+ worktrees (including the main one).
+    /// Always populates contexts (even for 1 worktree) so name-based lookups work.
+    /// The pill selector UI is only shown when there are 2+ worktrees.
     /// Preserves existing drafts by matching on path.
     pub fn set_worktrees(&mut self, worktrees: &[WorktreeInfo]) {
-        // Only show selector when there are linked worktrees (2+)
-        if worktrees.len() < 2 {
+        if worktrees.is_empty() {
             self.worktree_contexts.clear();
             self.active_worktree_idx = 0;
             return;
