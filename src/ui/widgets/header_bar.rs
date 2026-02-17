@@ -70,8 +70,6 @@ pub struct HeaderBar {
     pub generic_op_label: Option<String>,
     /// Diagnostic reload button (ghost style)
     reload_button: Button,
-    /// Current branch name (from the active worktree context) for button labels
-    pub current_branch: Option<String>,
 }
 
 impl HeaderBar {
@@ -99,7 +97,6 @@ impl HeaderBar {
             pull_shift_held: false,
             generic_op_label: None,
             reload_button: Button::new("Reload").ghost(),
-            current_branch: None,
         }
     }
 
@@ -121,7 +118,7 @@ impl HeaderBar {
     /// Sync button labels and styles to current header state.
     /// Call this before layout so the stored buttons render the correct text.
     /// `elapsed` is seconds since app start, used for animated dot cycling.
-    pub fn update_button_state(&mut self, elapsed: f32) {
+    pub fn update_button_state(&mut self, elapsed: f32, current_branch: Option<&str>) {
         // Animated dots: cycles 1..3 dots every ~1.2s
         let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
         let dots: String = ".".repeat(dot_count);
@@ -136,7 +133,7 @@ impl HeaderBar {
         // Pull button label (↓ down arrow) — shows branch name for clarity
         self.pull_button.label = if self.pulling {
             format!("\u{2193} Pulling{}", dots)
-        } else if let Some(ref branch) = self.current_branch {
+        } else if let Some(branch) = current_branch {
             format!("\u{2193} Pull {}", branch)
         } else {
             "\u{2193} Pull".to_string()
@@ -145,7 +142,7 @@ impl HeaderBar {
         // Push button label (↑ up arrow) — shows branch name for clarity
         self.push_button.label = if self.pushing {
             format!("\u{2191} Pushing{}", dots)
-        } else if let Some(ref branch) = self.current_branch {
+        } else if let Some(branch) = current_branch {
             format!("\u{2191} Push {}", branch)
         } else {
             "\u{2191} Push".to_string()

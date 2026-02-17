@@ -61,8 +61,6 @@ pub struct BranchSidebar {
     pub remote_branches: HashMap<String, Vec<String>>,
     /// Tag names
     pub tags: Vec<String>,
-    /// Current branch name (for highlighting)
-    pub current_branch: String,
     /// Stash entries
     pub stashes: Vec<StashEntry>,
     /// Whether the LOCAL section is collapsed
@@ -149,7 +147,6 @@ impl BranchSidebar {
             local_branches: Vec::new(),
             remote_branches: HashMap::new(),
             tags: Vec::new(),
-            current_branch: String::new(),
             stashes: Vec::new(),
             ahead_behind_cache: HashMap::new(),
             upstream_map: HashMap::new(),
@@ -275,13 +272,10 @@ impl BranchSidebar {
         &mut self,
         branch_tips: &[BranchTip],
         tags: &[TagInfo],
-        current_branch: String,
         all_remote_names: &[String],
         worktrees: &[WorktreeInfo],
         is_bare: bool,
     ) {
-        self.current_branch = current_branch;
-
         // Separate local and remote branches
         self.local_branches.clear();
         self.remote_branches.clear();
@@ -329,13 +323,6 @@ impl BranchSidebar {
             }
             self.worktree_paths.insert(wt.name.clone(), wt.path.clone());
         }
-    }
-
-    /// The branch that merge/rebase operations would target.
-    /// Since current_branch comes from the staging repo (the active worktree),
-    /// this is always correct for both normal and bare repos.
-    pub fn effective_branch(&self) -> &str {
-        &self.current_branch
     }
 
     /// Update the ahead/behind cache for local branches
@@ -581,7 +568,7 @@ impl BranchSidebar {
 
     /// Get context menu items for the branch at (x, y), if any.
     /// Returns (items, sidebar_action_context) describing what was right-clicked.
-    pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect) -> Option<Vec<MenuItem>> {
+    pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect, current_branch: &str) -> Option<Vec<MenuItem>> {
         if !bounds.contains(x, y) {
             return None;
         }
@@ -630,7 +617,7 @@ impl BranchSidebar {
                 items.push(MenuItem::new("Force Push", "force_push"));
 
                 // Merge/rebase only when there's an effective branch to merge into
-                let effective = self.effective_branch();
+                let effective = current_branch;
                 if !effective.is_empty() && effective != name {
                     items.push(MenuItem::separator());
                     items.push(MenuItem::new(
@@ -677,7 +664,7 @@ impl BranchSidebar {
                 ];
 
                 // Merge/rebase only when there's an effective branch to merge into
-                let effective = self.effective_branch();
+                let effective = current_branch;
                 if !effective.is_empty() {
                     items.push(MenuItem::new(
                         format!("Merge into '{}'", effective), "merge_remote"
@@ -1156,6 +1143,7 @@ impl BranchSidebar {
         filtered_local: &[String],
         y: f32,
         item_idx: usize,
+        current_branch: &str,
     ) -> (f32, usize) {
         let mut y = y;
         let mut item_idx = item_idx;
@@ -1171,7 +1159,7 @@ impl BranchSidebar {
             for branch in filtered_local {
                 let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
-                    let is_current = *branch == self.current_branch;
+                    let is_current = *branch == current_branch;
                     let in_other_worktree = !is_current
                         && self.branch_worktree_map.contains_key(branch);
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
@@ -1649,7 +1637,7 @@ impl BranchSidebar {
 
     /// Layout the sidebar and produce rendering output.
     /// `bold_renderer` is used for section headers (LOCAL, REMOTE, etc.).
-    pub fn layout(&mut self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout(&mut self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect, current_branch: &str) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         self.last_bounds = Some(bounds);
 
@@ -1693,7 +1681,7 @@ impl BranchSidebar {
         let mut item_idx: usize = 0;
 
         if show_local {
-            (y, item_idx) = self.layout_local_section(&params, bold_renderer, &mut output, &data.local, y, item_idx);
+            (y, item_idx) = self.layout_local_section(&params, bold_renderer, &mut output, &data.local, y, item_idx, current_branch);
             y += section_gap;
         }
 

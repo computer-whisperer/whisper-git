@@ -118,8 +118,6 @@ pub struct StagingWell {
     pub sibling_submodules: Vec<SubmoduleInfo>,
     /// Hit-test bounds for sibling submodule rows: (rect, submodule_name)
     sibling_bounds: Vec<(Rect, String)>,
-    /// Current branch name (for single-worktree header display)
-    pub current_branch: String,
     /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
     pub repo_state_label: Option<&'static str>,
 }
@@ -172,7 +170,6 @@ impl StagingWell {
             submodule_bounds: Vec::new(),
             sibling_submodules: Vec::new(),
             sibling_bounds: Vec::new(),
-            current_branch: String::new(),
             repo_state_label: None,
         }
     }
@@ -505,10 +502,10 @@ impl StagingWell {
 
     /// Height of the pill bar in pixels.
     /// Shows branch name header even for single-worktree repos.
-    pub fn pill_bar_height(&self) -> f32 {
+    pub fn pill_bar_height(&self, current_branch: &str) -> f32 {
         let s = self.scale;
         if self.worktree_contexts.is_empty() {
-            if self.current_branch.is_empty() {
+            if current_branch.is_empty() {
                 0.0
             } else {
                 32.0 * s
@@ -531,13 +528,13 @@ impl StagingWell {
     /// Layout the worktree pill bar at the top of the right panel.
     /// Renders wrapping rows of pills (one per worktree), active one highlighted.
     /// Single-worktree: renders just the branch name as muted text.
-    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect, current_branch: &str) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let s = self.scale;
         self.pill_bar_rects.clear();
 
         if self.worktree_contexts.is_empty() {
-            if !self.current_branch.is_empty() {
+            if !current_branch.is_empty() {
                 // Single-worktree repo: show branch name as a bold header
                 let bar_rect = Rect::new(bounds.x, bounds.y, bounds.width, bounds.height);
                 output.spline_vertices.extend(create_rect_vertices(
@@ -546,7 +543,7 @@ impl StagingWell {
                 ));
                 let text_y = bounds.y + (bounds.height - text_renderer.line_height()) / 2.0;
                 output.text_vertices.extend(text_renderer.layout_text(
-                    &self.current_branch,
+                    current_branch,
                     bounds.x + 10.0 * s,
                     text_y,
                     theme::TEXT_BRIGHT.to_array(),

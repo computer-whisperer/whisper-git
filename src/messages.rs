@@ -1159,13 +1159,15 @@ impl RepoStateSnapshot {
     pub fn from_ui(
         commits: &[CommitInfo],
         view_state: &MessageViewState<'_>,
+        current_branch: &str,
+        head_oid: Option<Oid>,
     ) -> Self {
         let commit_oids: Vec<Oid> = commits.iter()
             .filter(|c| !c.is_synthetic)
             .map(|c| c.id)
             .collect();
 
-        let head_oid = view_state.commit_graph_view.head_oid;
+        let head_oid = head_oid;
 
         let branch_tips: Vec<(String, Oid, bool)> = view_state.commit_graph_view.branch_tips
             .iter()
@@ -1198,7 +1200,7 @@ impl RepoStateSnapshot {
             .map(|s| (s.name.clone(), s.is_dirty))
             .collect();
 
-        let current_branch = view_state.staging_well.current_branch.clone();
+        let current_branch = current_branch.to_string();
 
         Self {
             commit_oids,
@@ -1361,7 +1363,7 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
 /// For normal repos these are the same. For bare repos with worktrees,
 /// `staging_repo` is the active worktree repo.
 ///
-/// Returns the current branch name so callers can use it for additional updates.
+/// Returns the (current_branch, staging_head_oid) so callers can store them centrally.
 pub fn refresh_repo_state(
     repo: &GitRepo,
     staging_repo: &GitRepo,
@@ -1369,7 +1371,7 @@ pub fn refresh_repo_state(
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
-) -> String {
+) -> (String, Option<Oid>) {
     // Preserve existing diff stats so they don't flicker away during refresh
     let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
         .filter(|c| c.insertions > 0 || c.deletions > 0)
@@ -1403,7 +1405,6 @@ pub fn refresh_repo_state(
     // HEAD and current branch come from the working context (staging_repo),
     // not the ref repo. For bare repos, repo.head_oid() is meaningless.
     let staging_head_oid = staging_repo.head_oid().ok();
-    view_state.commit_graph_view.head_oid = staging_head_oid;
 
     let mut branch_tips = repo.branch_tips().unwrap_or_else(|e| {
         toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
@@ -1444,7 +1445,7 @@ pub fn refresh_repo_state(
     let is_bare = repo.is_effectively_bare();
 
     view_state.branch_sidebar.set_branch_data(
-        &branch_tips, &tags, current.clone(), &remote_names,
+        &branch_tips, &tags, &remote_names,
         &worktrees, is_bare,
     );
     view_state.staging_well.set_worktrees(&worktrees);
@@ -1480,8 +1481,5 @@ pub fn refresh_repo_state(
     let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
     view_state.header_bar.set_repo_path(&repo_path_str);
 
-    // Set current branch on header for Pull/Push button labels
-    view_state.header_bar.current_branch = if current.is_empty() { None } else { Some(current.clone()) };
-
-    current
+    (current, staging_head_oid)
 }

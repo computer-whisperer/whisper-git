@@ -173,12 +173,37 @@ struct TabViewState {
     /// Filesystem watcher for auto-refresh on external changes
     watcher: Option<RepoWatcher>,
     watcher_rx: Option<Receiver<FsChangeKind>>,
+    /// Current branch name — derived from the active worktree's staging repo.
+    /// Single source of truth; views read this instead of keeping their own copies.
+    current_branch: String,
+    /// HEAD commit OID — derived from the active worktree's staging repo.
+    /// Single source of truth for the graph HEAD glow and Key::G jump.
+    head_oid: Option<Oid>,
 }
 
 impl TabViewState {
+    /// Returns `Some(&str)` when current_branch is non-empty, `None` otherwise.
+    fn current_branch_opt(&self) -> Option<&str> {
+        if self.current_branch.is_empty() { None } else { Some(&self.current_branch) }
+    }
+
+    /// Re-derive current_branch and head_oid from the active worktree's repo,
+    /// and update branch_tips[].is_head accordingly.
+    fn sync_worktree_derived_state(&mut self, repo: &GitRepo) {
+        let staging_repo: &GitRepo = self.active_worktree_path.as_ref()
+            .and_then(|p| self.worktree_repo_cache.get(p))
+            .unwrap_or(repo);
+        self.current_branch = staging_repo.current_branch().unwrap_or_default();
+        self.head_oid = staging_repo.head_oid().ok();
+        for tip in &mut self.commit_graph_view.branch_tips {
+            tip.is_head = !tip.is_remote && tip.name == self.current_branch;
+        }
+    }
+
     /// Switch the staging well to a different worktree by index.
     /// Dismisses any commit inspect activity and enters staging mode.
-    fn switch_to_worktree(&mut self, index: usize) {
+    /// `repo` is the root/ref repo needed for `sync_worktree_derived_state`.
+    fn switch_to_worktree(&mut self, index: usize, repo: &GitRepo) {
         self.staging_well.switch_worktree(index);
         self.right_panel_mode = RightPanelMode::Staging;
         self.diff_view.clear();
@@ -191,13 +216,14 @@ impl TabViewState {
             } else {
                 let path = wt_ctx.path.clone();
                 if !self.worktree_repo_cache.contains_key(&path) {
-                    if let Ok(repo) = GitRepo::open(&path) {
-                        self.worktree_repo_cache.insert(path.clone(), repo);
+                    if let Ok(wt_repo) = GitRepo::open(&path) {
+                        self.worktree_repo_cache.insert(path.clone(), wt_repo);
                     }
                 }
                 self.active_worktree_path = Some(path);
             }
         }
+        self.sync_worktree_derived_state(repo);
     }
 
     /// Get a reference to the active worktree repo, if any.
@@ -207,14 +233,14 @@ impl TabViewState {
     }
 
     /// Switch to a named worktree (looks up index by name).
-    fn switch_to_worktree_by_name(&mut self, name: &str) {
+    fn switch_to_worktree_by_name(&mut self, name: &str, repo: &GitRepo) {
         if let Some(idx) = self.staging_well.worktree_index_by_name(name) {
-            self.switch_to_worktree(idx);
+            self.switch_to_worktree(idx, repo);
         }
     }
 
     /// Handle a staging action by dispatching to the appropriate pending message.
-    fn handle_staging_action(&mut self, action: StagingAction) {
+    fn handle_staging_action(&mut self, action: StagingAction, repo: &GitRepo) {
         match action {
             StagingAction::StageFile(path) => {
                 self.pending_messages.push(AppMessage::StageFile(path));
@@ -243,7 +269,7 @@ impl TabViewState {
                 self.pending_messages.push(AppMessage::ViewDiff(path, staged));
             }
             StagingAction::SwitchWorktree(index) => {
-                self.switch_to_worktree(index);
+                self.switch_to_worktree(index, repo);
             }
             StagingAction::PreviewDiff(path, staged) => {
                 self.pending_messages.push(AppMessage::ViewDiff(path, staged));
@@ -260,13 +286,13 @@ impl TabViewState {
     }
 
     /// Handle a graph action by dispatching to the appropriate pending message.
-    fn handle_graph_action(&mut self, action: GraphAction) {
+    fn handle_graph_action(&mut self, action: GraphAction, repo: &GitRepo) {
         match action {
             GraphAction::LoadMore => {
                 self.pending_messages.push(AppMessage::LoadMoreCommits);
             }
             GraphAction::SwitchWorktree(name) => {
-                self.switch_to_worktree_by_name(&name);
+                self.switch_to_worktree_by_name(&name, repo);
             }
         }
     }
@@ -297,6 +323,8 @@ impl TabViewState {
             submodule_focus: None,
             watcher: None,
             watcher_rx: None,
+            current_branch: String::new(),
+            head_oid: None,
         }
     }
 }
@@ -725,7 +753,7 @@ impl App {
                 worktrees: &mut view_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
             };
-            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view)
+            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
         };
 
         // 2. Full reload (same as refresh_repo_state + refresh_status)
@@ -765,7 +793,7 @@ impl App {
                 worktrees: &mut view_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
             };
-            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view)
+            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
         };
 
         // 4. Compare and write report to file
@@ -1468,7 +1496,7 @@ impl App {
                         DividerDrag::StagingPreview => {
                             // Compute pill bar height to get content rect
                             if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
-                                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                                 let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
                                 if content_rect.height > 0.0 {
                                     let ratio = (*y - content_rect.y) / content_rect.height;
@@ -1524,7 +1552,7 @@ impl App {
                 if layout.right_panel.contains(*x, *y) {
                     if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
                         if view_state.right_panel_mode == RightPanelMode::Staging {
-                            let pill_bar_h = view_state.staging_well.pill_bar_height();
+                            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                             let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
                             let split_y = content_rect.y + content_rect.height * self.staging_preview_ratio;
                             if (*y - split_y).abs() < hit_tolerance {
@@ -1621,12 +1649,14 @@ impl App {
                 _ => None,
             };
             if let Some(idx) = wt_index {
-                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                    if view_state.staging_well.has_worktree_selector()
-                        && idx < view_state.staging_well.worktree_count()
-                    {
-                        view_state.switch_to_worktree(idx);
-                        return true;
+                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    if let Some(ref repo) = repo_tab.repo {
+                        if view_state.staging_well.has_worktree_selector()
+                            && idx < view_state.staging_well.worktree_count()
+                        {
+                            view_state.switch_to_worktree(idx, repo);
+                            return true;
+                        }
                     }
                 }
             }
@@ -1641,8 +1671,7 @@ impl App {
         // Ctrl+Shift+L: Pull
         if *key == Key::L && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.header_bar.current_branch.clone()
-                    .unwrap_or_else(|| "HEAD".to_string());
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                 view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
                 return true;
             }
@@ -1650,8 +1679,7 @@ impl App {
         // Ctrl+Shift+P: Push
         if *key == Key::P && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.header_bar.current_branch.clone()
-                    .unwrap_or_else(|| "HEAD".to_string());
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                 view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
                 return true;
             }
@@ -1659,8 +1687,7 @@ impl App {
         // Ctrl+Shift+R: Pull --rebase
         if *key == Key::R && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.header_bar.current_branch.clone()
-                    .unwrap_or_else(|| "HEAD".to_string());
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                 view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
                 return true;
             }
@@ -1686,7 +1713,7 @@ impl App {
 
     /// Handle a sidebar action by dispatching to the appropriate pending message or dialog.
     fn handle_sidebar_action(&mut self, action: SidebarAction) {
-        let Some((_repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
 
         match action {
             SidebarAction::Checkout(name) => {
@@ -1711,7 +1738,9 @@ impl App {
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
             }
             SidebarAction::SwitchWorktree(wt_name) => {
-                view_state.switch_to_worktree_by_name(&wt_name);
+                if let Some(ref repo) = repo_tab.repo {
+                    view_state.switch_to_worktree_by_name(&wt_name, repo);
+                }
             }
         }
     }
@@ -1795,7 +1824,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     let staging_repo_state = staging_repo.repo_state();
 
     // Delegate core refresh logic to the shared implementation in messages.rs
-    let current = {
+    let (current, staging_head) = {
         let mut msg_view = MessageViewState {
             commit_graph_view: &mut view_state.commit_graph_view,
             staging_well: &mut view_state.staging_well,
@@ -1817,8 +1846,9 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     // main.rs-specific extras beyond the shared core:
 
-    // Set the current branch on the staging well
-    view_state.staging_well.current_branch = current;
+    // Store derived worktree state centrally
+    view_state.current_branch = current;
+    view_state.head_oid = staging_head;
 
     // Sync active_worktree_path with staging well's selection so status loads from the right repo
     if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
@@ -1870,6 +1900,23 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
             .unwrap_or_default();
         let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
         view_state.header_bar.set_repo_path(&repo_path_str);
+    }
+
+    // For bare repos, set active_worktree_path to the first worktree BEFORE refresh
+    // so that current_branch is derived from the worktree repo, not the bare repo's stale HEAD.
+    if let Some(ref repo) = repo_tab.repo {
+        if repo.is_effectively_bare() && view_state.active_worktree_path.is_none() {
+            let worktrees = repo.worktrees().unwrap_or_default();
+            if let Some(wt) = worktrees.first() {
+                let path = PathBuf::from(&wt.path);
+                if !view_state.worktree_repo_cache.contains_key(&path) {
+                    if let Ok(wt_repo) = GitRepo::open(&path) {
+                        view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
+                    }
+                }
+                view_state.active_worktree_path = Some(path);
+            }
+        }
     }
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
@@ -2395,18 +2442,15 @@ impl App {
                         view_state.pending_messages.push(AppMessage::Fetch(None));
                     }
                     HeaderAction::Pull => {
-                        let branch = view_state.header_bar.current_branch.clone()
-                            .unwrap_or_else(|| "HEAD".to_string());
+                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                         view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
                     }
                     HeaderAction::PullRebase => {
-                        let branch = view_state.header_bar.current_branch.clone()
-                            .unwrap_or_else(|| "HEAD".to_string());
+                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                         view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
                     }
                     HeaderAction::Push => {
-                        let branch = view_state.header_bar.current_branch.clone()
-                            .unwrap_or_else(|| "HEAD".to_string());
+                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
                         view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
                     }
                     HeaderAction::Commit => {
@@ -2445,7 +2489,7 @@ impl App {
 
         // Route events to right panel content (commit detail + diff view)
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
             let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
             // Route to commit detail view when in browse mode
@@ -2527,13 +2571,13 @@ impl App {
                     return;
                 }
             } else if layout.sidebar.contains(*x, *y) {
-                if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar) {
+                if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar, &view_state.current_branch) {
                     view_state.context_menu.show(items, *x, *y);
                     return;
                 }
             } else if layout.right_panel.contains(*x, *y) {
                 // Check pill bar first
-                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                 let (pill_rect, _) = layout.right_panel.take_top(pill_bar_h);
                 if pill_rect.contains(*x, *y) {
                     if let Some(items) = view_state.staging_well.pill_context_menu_at(*x, *y) {
@@ -2574,12 +2618,14 @@ impl App {
 
         // Handle worktree pill bar clicks (before content routing)
         if let InputEvent::MouseDown { .. } = input_event {
-            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
             let (pill_rect, _content_rect) = layout.right_panel.take_top(pill_bar_h);
             if view_state.staging_well.handle_pill_event(input_event, pill_rect).is_consumed() {
                 if let Some(action) = view_state.staging_well.take_action() {
                     if let StagingAction::SwitchWorktree(index) = action {
-                        view_state.switch_to_worktree(index);
+                        if let Some(ref repo) = repo_tab.repo {
+                            view_state.switch_to_worktree(index, repo);
+                        }
                     }
                 }
                 return;
@@ -2590,14 +2636,14 @@ impl App {
         if let InputEvent::Scroll { x, y, .. } = input_event {
             if layout.graph.contains(*x, *y) {
                 let prev_selected = view_state.commit_graph_view.selected_commit;
-                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
+                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph, view_state.head_oid);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
                         && view_state.last_diff_commit != Some(oid) {
                             if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
                                 // Synthetic row: switch to that worktree if named
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    view_state.switch_to_worktree_by_name(&wt_name);
+                                    if let Some(ref repo) = repo_tab.repo { view_state.switch_to_worktree_by_name(&wt_name, repo); }
                                 } else {
                                     // Single-worktree: enter staging mode directly
                                     view_state.right_panel_mode = RightPanelMode::Staging;
@@ -2610,19 +2656,19 @@ impl App {
                             }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
-                    view_state.handle_graph_action(action);
+                    if let Some(ref repo) = repo_tab.repo { view_state.handle_graph_action(action, repo); }
                 }
                 if response.is_consumed() {
                     return;
                 }
             } else if layout.right_panel.contains(*x, *y)
                 && view_state.right_panel_mode == RightPanelMode::Staging {
-                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
                 let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 let response = view_state.staging_well.handle_event(input_event, staging_rect);
                 if let Some(action) = view_state.staging_well.take_action() {
-                    view_state.handle_staging_action(action);
+                    if let Some(ref repo) = repo_tab.repo { view_state.handle_staging_action(action, repo); }
                 }
                 if response.is_consumed() {
                     return;
@@ -2638,13 +2684,13 @@ impl App {
         match view_state.focused_panel {
             FocusedPanel::Graph => {
                 let prev_selected = view_state.commit_graph_view.selected_commit;
-                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph);
+                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph, view_state.head_oid);
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
                         && view_state.last_diff_commit != Some(oid) {
                             if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    view_state.switch_to_worktree_by_name(&wt_name);
+                                    if let Some(ref repo) = repo_tab.repo { view_state.switch_to_worktree_by_name(&wt_name, repo); }
                                 } else {
                                     // Single-worktree: enter staging mode directly
                                     view_state.right_panel_mode = RightPanelMode::Staging;
@@ -2657,7 +2703,7 @@ impl App {
                             }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
-                    view_state.handle_graph_action(action);
+                    if let Some(ref repo) = repo_tab.repo { view_state.handle_graph_action(action, repo); }
                 }
                 if response.is_consumed() {
                     return;
@@ -2665,13 +2711,13 @@ impl App {
             }
             FocusedPanel::RightPanel => {
                 if view_state.right_panel_mode == RightPanelMode::Staging {
-                    let pill_bar_h = view_state.staging_well.pill_bar_height();
+                    let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                     let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
                     let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                     let response = view_state.staging_well.handle_event(input_event, staging_rect);
 
                     if let Some(action) = view_state.staging_well.take_action() {
-                        view_state.handle_staging_action(action);
+                        if let Some(ref repo) = repo_tab.repo { view_state.handle_staging_action(action, repo); }
                     }
                     if response.is_consumed() {
                         return;
@@ -2704,7 +2750,7 @@ impl App {
             view_state.header_bar.update_hover(*x, *y, layout.header);
             view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
             {
-                let pill_bar_h = view_state.staging_well.pill_bar_height();
+                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
                 let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 view_state.staging_well.update_hover(*x, *y, staging_rect);
@@ -2758,7 +2804,7 @@ fn determine_cursor(
         if layout.right_panel.contains(x, y)
             && view_state.right_panel_mode == RightPanelMode::Staging
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
             let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
             let split_y = content_rect.y + content_rect.height * staging_preview_ratio;
             if (y - split_y).abs() < divider_hit {
@@ -2771,7 +2817,7 @@ fn determine_cursor(
 
     // Staging area text inputs (subject line, body area) - only in staging mode
     if layout.right_panel.contains(x, y) && view_state.right_panel_mode == RightPanelMode::Staging {
-        let pill_bar_h = view_state.staging_well.pill_bar_height(); // scale already in pill_bar_height
+        let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch); // scale already in pill_bar_height
         let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
         let (staging_rect, _diff_rect) = content_rect.split_vertical(staging_preview_ratio);
         let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(staging_rect);
@@ -2952,7 +2998,7 @@ fn handle_context_menu_action(
         }
         "push" => {
             let branch = if param.is_empty() {
-                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
             } else {
                 param.to_string()
             };
@@ -2963,7 +3009,7 @@ fn handle_context_menu_action(
         }
         "pull" => {
             let branch = if param.is_empty() {
-                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
             } else {
                 param.to_string()
             };
@@ -2971,7 +3017,7 @@ fn handle_context_menu_action(
         }
         "pull_rebase" => {
             let branch = if param.is_empty() {
-                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
             } else {
                 param.to_string()
             };
@@ -2982,7 +3028,7 @@ fn handle_context_menu_action(
         }
         "force_push" => {
             let branch = if param.is_empty() {
-                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
             } else {
                 param.to_string()
             };
@@ -3066,7 +3112,7 @@ fn handle_context_menu_action(
         }
         "switch_worktree" => {
             if !param.is_empty() {
-                view_state.switch_to_worktree_by_name(param);
+                if let Some(repo) = repo { view_state.switch_to_worktree_by_name(param, repo); }
             }
         }
         "jump_to_worktree" => {
@@ -3126,7 +3172,7 @@ fn handle_context_menu_action(
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.active_worktree_path.clone();
-                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {} into '{}'?", short, branch));
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
             }
@@ -3135,7 +3181,7 @@ fn handle_context_menu_action(
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.active_worktree_path.clone();
-                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Revert Commit", &format!("Create a revert of {} on '{}'?", short, branch));
                 *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
             }
@@ -3144,7 +3190,7 @@ fn handle_context_menu_action(
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.active_worktree_path.clone();
-                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Soft)", &format!("Reset '{}' to {}? Changes will be kept staged.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft, target_dir));
             }
@@ -3153,7 +3199,7 @@ fn handle_context_menu_action(
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.active_worktree_path.clone();
-                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Mixed)", &format!("Reset '{}' to {}? Changes will be kept unstaged.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed, target_dir));
             }
@@ -3162,7 +3208,7 @@ fn handle_context_menu_action(
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.active_worktree_path.clone();
-                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard, target_dir));
             }
@@ -3469,17 +3515,17 @@ fn build_ui_output(
         .map(|(_, vs)| vs.right_panel_mode == RightPanelMode::Staging)
         .unwrap_or(false);
     let pill_bar_h = tabs.get(active_tab)
-        .map(|(_, vs)| vs.staging_well.pill_bar_height())
+        .map(|(_, vs)| vs.staging_well.pill_bar_height(&vs.current_branch))
         .unwrap_or(0.0);
     add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused, mouse_pos, staging_mode, staging_preview_ratio, pill_bar_h);
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
         // Commit graph (graph layer - renders first)
-        let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph);
+        let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph, view_state.head_oid);
         let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
             text_renderer, &repo_tab.commits, layout.graph,
-            avatar_cache, avatar_renderer,
+            avatar_cache, avatar_renderer, view_state.head_oid,
         );
         graph_output.spline_vertices.extend(spline_vertices);
         graph_output.spline_vertices.extend(pill_vertices);
@@ -3502,16 +3548,16 @@ fn build_ui_output(
         }
 
         // Branch sidebar (chrome layer)
-        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, bold_text_renderer, layout.sidebar));
+        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, bold_text_renderer, layout.sidebar, &view_state.current_branch));
 
         // Right panel (chrome layer) - worktree pills + mode-dependent content
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height();
+            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
             let (pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
             // Worktree pill bar (visible when there are worktree contexts)
             if pill_bar_h > 0.0 {
-                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect));
+                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect, &view_state.current_branch));
             }
 
             match view_state.right_panel_mode {
@@ -3671,7 +3717,8 @@ fn draw_frame(app: &mut App) -> Result<()> {
                 let dots: String = ".".repeat(dot_count);
                 format!("{}{}", label, dots)
             });
-        view_state.header_bar.update_button_state(elapsed);
+        let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
+        view_state.header_bar.update_button_state(elapsed, branch_opt.as_deref());
         view_state.staging_well.update_button_state();
         view_state.staging_well.update_cursors(now);
         view_state.commit_graph_view.search_bar.update_cursor(now);

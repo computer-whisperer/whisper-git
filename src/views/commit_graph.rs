@@ -221,8 +221,6 @@ pub struct CommitGraphView {
     pub hovered_commit: Option<Oid>,
     /// Working directory status
     pub working_dir_status: Option<WorkingDirStatus>,
-    /// HEAD commit OID
-    pub head_oid: Option<Oid>,
     /// Branch tips for labels
     pub branch_tips: Vec<BranchTip>,
     /// Tags
@@ -270,7 +268,6 @@ impl Default for CommitGraphView {
             selected_commit: None,
             hovered_commit: None,
             working_dir_status: None,
-            head_oid: None,
             branch_tips: Vec::new(),
             tags: Vec::new(),
             worktrees: Vec::new(),
@@ -494,6 +491,7 @@ impl CommitGraphView {
         event: &InputEvent,
         commits: &[CommitInfo],
         bounds: Rect,
+        head_oid: Option<Oid>,
     ) -> EventResponse {
         let header_offset = self.header_offset();
         let scrollbar_width = self.scrollbar_width();
@@ -580,7 +578,7 @@ impl CommitGraphView {
                 }
                 Key::G => {
                     // Go to HEAD
-                    if let Some(head) = self.head_oid {
+                    if let Some(head) = head_oid {
                         self.selected_commit = Some(head);
                         self.scroll_to_selection(commits, bounds);
                     }
@@ -848,6 +846,7 @@ impl CommitGraphView {
         text_renderer: &TextRenderer,
         commits: &[CommitInfo],
         bounds: Rect,
+        head_oid: Option<Oid>,
     ) -> Vec<SplineVertex> {
         let mut vertices = Vec::new();
         let header_offset = self.header_offset();
@@ -971,7 +970,7 @@ impl CommitGraphView {
             // Draw commit node with selection/hover highlights and search match overlay
             self.render_commit_node(
                 commit, layout, row, x, y,
-                &bounds, scrollbar_width, &mut vertices,
+                &bounds, scrollbar_width, &mut vertices, head_oid,
             );
         }
 
@@ -1071,11 +1070,12 @@ impl CommitGraphView {
         bounds: &Rect,
         scrollbar_width: f32,
         vertices: &mut Vec<SplineVertex>,
+        head_oid: Option<Oid>,
     ) {
         let is_merge = commit.parent_ids.len() > 1;
         let is_selected = self.selected_commit == Some(commit.id);
         let is_hovered = self.hovered_commit == Some(commit.id);
-        let is_head = self.head_oid == Some(commit.id);
+        let is_head = head_oid == Some(commit.id);
         let is_match = self.is_search_match_idx(row);
 
         // Dim factor for non-matching commits during search
@@ -1343,6 +1343,7 @@ impl CommitGraphView {
         bounds: Rect,
         avatar_cache: &mut AvatarCache,
         avatar_renderer: &AvatarRenderer,
+        head_oid: Option<Oid>,
     ) -> (Vec<TextVertex>, Vec<SplineVertex>, Vec<TextVertex>) {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
@@ -1431,7 +1432,7 @@ impl CommitGraphView {
                 continue;
             }
 
-            let is_head = self.head_oid == Some(commit.id);
+            let is_head = head_oid == Some(commit.id);
             let is_selected = self.selected_commit == Some(commit.id);
             let is_match = self.is_search_match_idx(row);
             let dim_alpha = if is_match { 1.0 } else { 0.2 };
