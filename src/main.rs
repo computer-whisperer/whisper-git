@@ -3535,19 +3535,32 @@ fn build_ui_output(
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
 
-        // Offer tooltips for truncated commit subjects (uses current frame's data)
+        // Offer tooltips for truncated commit subjects (uses current frame's data).
+        // Suppress when any dialog or context menu is open.
+        let any_modal_open = repo_dialog.is_visible()
+            || settings_dialog.is_visible()
+            || confirm_dialog.is_visible()
+            || branch_name_dialog.is_visible()
+            || remote_dialog.is_visible()
+            || merge_dialog.is_visible()
+            || rebase_dialog.is_visible()
+            || pull_dialog.is_visible()
+            || push_dialog.is_visible()
+            || view_state.context_menu.is_visible();
         tooltip.begin_frame();
-        let (mx, my) = mouse_pos;
-        if layout.graph.contains(mx, my) {
-            for (text_bounds, full_text) in &view_state.commit_graph_view.truncated_subjects {
-                if text_bounds.contains(mx, my) {
-                    tooltip.offer(*text_bounds, full_text, mx, my);
-                    break;
+        if !any_modal_open {
+            let (mx, my) = mouse_pos;
+            if layout.graph.contains(mx, my) {
+                for (text_bounds, full_text) in &view_state.commit_graph_view.truncated_subjects {
+                    if text_bounds.contains(mx, my) {
+                        tooltip.offer(*text_bounds, full_text, mx, my);
+                        break;
+                    }
                 }
             }
+            // Header bar truncated buttons
+            view_state.header_bar.report_tooltip(tooltip, mx, my, layout.header);
         }
-        // Header bar truncated buttons
-        view_state.header_bar.report_tooltip(tooltip, mx, my, layout.header);
         tooltip.end_frame();
 
         // Opaque header backdrop to prevent graph bleed-through between tab bar and header
