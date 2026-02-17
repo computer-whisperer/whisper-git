@@ -14,6 +14,7 @@ use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::widgets::search_bar::{SearchBar, SearchAction};
 use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
 use crate::ui::text_util::truncate_to_width;
+use crate::ui::widgets::Tooltip;
 
 use crate::ui::widget::theme::LANE_COLORS;
 use crate::views::staging_well::compute_display_names;
@@ -253,6 +254,9 @@ pub struct CommitGraphView {
     pub time_spacing_strength: f32,
     /// Cached adaptive graph width based on visible rows (updated each frame)
     adaptive_graph_width: f32,
+    /// Truncated subject text zones for tooltip display (rebuilt each layout_text call).
+    /// Each entry: (text_bounds_rect, full_summary_string)
+    truncated_subjects: Vec<(Rect, String)>,
 }
 
 impl Default for CommitGraphView {
@@ -283,6 +287,7 @@ impl Default for CommitGraphView {
             adaptive_graph_width: 0.0,
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
+            truncated_subjects: Vec::new(),
         }
     }
 }
@@ -1349,6 +1354,7 @@ impl CommitGraphView {
         let mut pill_vertices = Vec::new();
         let mut avatar_vertices = Vec::new();
         self.pill_click_targets.clear();
+        self.truncated_subjects.clear();
         let header_offset = self.header_offset();
         let line_height = text_renderer.line_height();
         let scrollbar_width = self.scrollbar_width();
@@ -1486,6 +1492,13 @@ impl CommitGraphView {
                 // Summary text (amber)
                 let available = stats_col_left - col_gap - current_x;
                 let summary = truncate_to_width(&commit.summary, text_renderer, available);
+                if summary.len() != commit.summary.len() {
+                    let text_w = text_renderer.measure_text(&summary);
+                    self.truncated_subjects.push((
+                        Rect::new(current_x, y, text_w, line_height),
+                        commit.summary.clone(),
+                    ));
+                }
                 vertices.extend(text_renderer.layout_text(
                     &summary,
                     current_x,
@@ -1575,10 +1588,18 @@ impl CommitGraphView {
                 );
 
                 // === Subject line (primary content, bright text, in remaining space) ===
-                Self::render_subject_and_body(
+                let subject_right = stats_col_left - col_gap;
+                let was_truncated = Self::render_subject_and_body(
                     text_renderer, commit, y, dim_alpha, is_head, is_selected,
-                    current_x, stats_col_left - col_gap, &mut vertices,
+                    current_x, subject_right, &mut vertices,
                 );
+                if was_truncated {
+                    let text_w = subject_right - current_x;
+                    self.truncated_subjects.push((
+                        Rect::new(current_x, y, text_w, line_height),
+                        commit.summary.clone(),
+                    ));
+                }
             }
         }
 
@@ -1923,6 +1944,20 @@ impl CommitGraphView {
         current_x + identicon_advance
     }
 
+    /// Report tooltip zones for truncated commit subjects.
+    /// Call during the mouse-move hover pass.
+    pub fn report_tooltip(&self, tooltip: &mut Tooltip, x: f32, y: f32, bounds: Rect) {
+        if !bounds.contains(x, y) {
+            return;
+        }
+        for (text_bounds, full_text) in &self.truncated_subjects {
+            if text_bounds.contains(x, y) {
+                tooltip.offer(*text_bounds, full_text, x, y);
+                return;
+            }
+        }
+    }
+
     /// Render diff stats (+N / -M) right-aligned in the stats column
     fn render_diff_stats(
         text_renderer: &TextRenderer,
@@ -1969,7 +2004,8 @@ impl CommitGraphView {
         ));
     }
 
-    /// Render commit subject line and optional body excerpt
+    /// Render commit subject line and optional body excerpt.
+    /// Returns `true` if the subject was truncated (for tooltip tracking).
     #[allow(clippy::too_many_arguments)]
     fn render_subject_and_body(
         text_renderer: &TextRenderer,
@@ -1981,7 +2017,7 @@ impl CommitGraphView {
         current_x: f32,
         subject_right: f32,
         vertices: &mut Vec<TextVertex>,
-    ) {
+    ) -> bool {
         let available_width = subject_right - current_x;
         let char_width = text_renderer.char_width();
         let summary_color = if is_selected {
@@ -2027,6 +2063,7 @@ impl CommitGraphView {
                     ));
                 }
             }
+            false
         } else {
             // Subject too long -- truncate it
             let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
@@ -2036,6 +2073,7 @@ impl CommitGraphView {
                 y,
                 summary_color.to_array(),
             ));
+            true
         }
     }
 }

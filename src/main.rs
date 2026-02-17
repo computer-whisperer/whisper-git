@@ -2762,6 +2762,7 @@ impl App {
 
             // Report tooltip zones for truncated elements
             view_state.header_bar.report_tooltip(&mut self.tooltip, *x, *y, layout.header);
+            view_state.commit_graph_view.report_tooltip(&mut self.tooltip, *x, *y, layout.graph);
 
             self.tooltip.end_frame();
 
