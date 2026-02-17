@@ -1780,6 +1780,13 @@ fn poll_remote_op(
 fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let Some(ref repo) = repo_tab.repo else { return None };
 
+    // staging_repo is the working context — for normal repos it's the same as
+    // repo, for bare repos it's the active worktree's repo.
+    // Resolve through the cache directly to avoid borrow conflicts with msg_view.
+    let staging_repo: &GitRepo = view_state.active_worktree_path.as_ref()
+        .and_then(|p| view_state.worktree_repo_cache.get(p))
+        .unwrap_or(repo);
+
     // Delegate core refresh logic to the shared implementation in messages.rs
     let current = {
         let mut msg_view = MessageViewState {
@@ -1798,7 +1805,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             worktrees: &mut view_state.worktrees,
             submodule_focus: &mut view_state.submodule_focus,
         };
-        refresh_repo_state_core(repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits)
+        refresh_repo_state_core(repo, staging_repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits)
     };
 
     // main.rs-specific extras beyond the shared core:

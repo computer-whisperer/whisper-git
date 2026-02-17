@@ -103,10 +103,6 @@ pub struct BranchSidebar {
     upstream_map: HashMap<String, String>,
     /// Map from branch name to worktree name (branches checked out in worktrees)
     branch_worktree_map: HashMap<String, String>,
-    /// Name of the currently active worktree (if in bare repo with worktrees)
-    active_worktree_name: Option<String>,
-    /// Branch checked out in the active worktree
-    active_worktree_branch: Option<String>,
     /// Whether the repo is effectively bare
     is_bare_repo: bool,
     /// Number of worktrees (for context menu logic)
@@ -174,8 +170,6 @@ impl BranchSidebar {
             scrollbar: Scrollbar::new(),
             last_bounds: None,
             branch_worktree_map: HashMap::new(),
-            active_worktree_name: None,
-            active_worktree_branch: None,
             is_bare_repo: false,
             worktree_count: 0,
             worktree_paths: HashMap::new(),
@@ -284,7 +278,6 @@ impl BranchSidebar {
         current_branch: String,
         all_remote_names: &[String],
         worktrees: &[WorktreeInfo],
-        active_worktree_name: Option<&str>,
         is_bare: bool,
     ) {
         self.current_branch = current_branch;
@@ -336,18 +329,13 @@ impl BranchSidebar {
             }
             self.worktree_paths.insert(wt.name.clone(), wt.path.clone());
         }
-        self.active_worktree_name = active_worktree_name.map(|s| s.to_string());
-        self.active_worktree_branch = active_worktree_name
-            .and_then(|name| worktrees.iter().find(|wt| wt.name == name))
-            .map(|wt| wt.branch.clone())
-            .filter(|b| !b.is_empty());
     }
 
-    /// The branch that merge/rebase operations would target — the active
-    /// worktree's branch if set, otherwise the repo's current_branch.
+    /// The branch that merge/rebase operations would target.
+    /// Since current_branch comes from the staging repo (the active worktree),
+    /// this is always correct for both normal and bare repos.
     pub fn effective_branch(&self) -> &str {
-        self.active_worktree_branch.as_deref()
-            .unwrap_or(&self.current_branch)
+        &self.current_branch
     }
 
     /// Update the ahead/behind cache for local branches
@@ -1183,8 +1171,7 @@ impl BranchSidebar {
             for branch in filtered_local {
                 let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
-                    let is_current = *branch == self.current_branch
-                        || self.active_worktree_branch.as_deref() == Some(branch.as_str());
+                    let is_current = *branch == self.current_branch;
                     let in_other_worktree = !is_current
                         && self.branch_worktree_map.contains_key(branch);
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
