@@ -3,7 +3,9 @@
 use crate::input::{InputEvent, EventResponse};
 use crate::ui::{Rect, TextRenderer};
 use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_arc_vertices, theme};
+use crate::ui::text_util::truncate_to_width;
 use crate::ui::widgets::Button;
+use crate::ui::widgets::Tooltip;
 
 /// Actions that can be triggered from the header bar
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +72,10 @@ pub struct HeaderBar {
     pub generic_op_label: Option<String>,
     /// Diagnostic reload button (ghost style)
     reload_button: Button,
+    /// Pre-computed width needed for pull button label (including padding)
+    pull_label_width: f32,
+    /// Pre-computed width needed for push button label (including padding)
+    push_label_width: f32,
 }
 
 impl HeaderBar {
@@ -97,6 +103,8 @@ impl HeaderBar {
             pull_shift_held: false,
             generic_op_label: None,
             reload_button: Button::new("Reload").ghost(),
+            pull_label_width: 0.0,
+            push_label_width: 0.0,
         }
     }
 
@@ -118,7 +126,7 @@ impl HeaderBar {
     /// Sync button labels and styles to current header state.
     /// Call this before layout so the stored buttons render the correct text.
     /// `elapsed` is seconds since app start, used for animated dot cycling.
-    pub fn update_button_state(&mut self, elapsed: f32, current_branch: Option<&str>) {
+    pub fn update_button_state(&mut self, elapsed: f32, current_branch: Option<&str>, bold_renderer: &TextRenderer) {
         // Animated dots: cycles 1..3 dots every ~1.2s
         let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
         let dots: String = ".".repeat(dot_count);
@@ -147,6 +155,11 @@ impl HeaderBar {
         } else {
             "\u{2191} Push".to_string()
         };
+
+        // Compute label widths for dynamic button sizing.
+        // measure_text returns physical pixels; store in physical pixels for button_bounds().
+        self.pull_label_width = bold_renderer.measure_text(&self.pull_button.label);
+        self.push_label_width = bold_renderer.measure_text(&self.push_button.label);
 
         // Fetch/Pull/Push buttons: slightly raised above the header's SURFACE_RAISED background
         // so they're visually distinct and look clickable (header bg is also SURFACE_RAISED).
@@ -263,36 +276,60 @@ impl HeaderBar {
             || self.breadcrumb_hovered.is_some()
     }
 
-    /// Compute button bounds within the header (scale-aware)
+    /// Compute button bounds within the header (scale-aware).
+    /// Pull/Push buttons use dynamic widths based on label measurements,
+    /// capped at 20% of header width.
     fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
         let scale = (bounds.height / 32.0).max(1.0);
         let button_height = bounds.height - 8.0 * scale;
         let button_y = bounds.y + 4.0 * scale;
-        let button_width = 130.0 * scale;
+        let fixed_width = 130.0 * scale;
         let icon_button_width = 32.0 * scale;
         let gap = 8.0 * scale;
+
+        // Dynamic widths for Pull/Push: at least fixed_width, at most 20% of header.
+        // pull_label_width/push_label_width are already in physical pixels from measure_text().
+        // Add horizontal padding (12px each side, scaled).
+        let h_pad = 24.0 * scale;
+        let max_variable_width = bounds.width * 0.20;
+        let pull_width = (self.pull_label_width + h_pad).max(fixed_width).min(max_variable_width);
+        let push_width = (self.push_label_width + h_pad).max(fixed_width).min(max_variable_width);
 
         // Right-aligned buttons: [?][=] at far right
         let settings_x = bounds.right() - icon_button_width - gap;
         let help_x = settings_x - icon_button_width - gap;
 
         // Action buttons: [Reload] [Fetch] [Pull] [Push] [Commit] before help/settings
-        let commit_x = help_x - button_width - gap * 2.0;
-        let push_x = commit_x - button_width - gap;
-        let pull_x = push_x - button_width - gap;
-        let fetch_x = pull_x - button_width - gap;
-        let reload_x = fetch_x - button_width - gap;
+        let commit_x = help_x - fixed_width - gap * 2.0;
+        let push_x = commit_x - push_width - gap;
+        let pull_x = push_x - pull_width - gap;
+        let fetch_x = pull_x - fixed_width - gap;
+        let reload_x = fetch_x - fixed_width - gap;
 
         (
-            Rect::new(reload_x, button_y, button_width, button_height),
-            Rect::new(fetch_x, button_y, button_width, button_height),
-            Rect::new(pull_x, button_y, button_width, button_height),
-            Rect::new(push_x, button_y, button_width, button_height),
-            Rect::new(commit_x, button_y, button_width, button_height),
+            Rect::new(reload_x, button_y, fixed_width, button_height),
+            Rect::new(fetch_x, button_y, fixed_width, button_height),
+            Rect::new(pull_x, button_y, pull_width, button_height),
+            Rect::new(push_x, button_y, push_width, button_height),
+            Rect::new(commit_x, button_y, fixed_width, button_height),
             Rect::new(help_x, button_y, icon_button_width, button_height),
             Rect::new(settings_x, button_y, icon_button_width, button_height),
         )
+    }
+
+    /// Report tooltip zones for truncated Pull/Push button labels.
+    /// Call during the mouse-move hover pass.
+    pub fn report_tooltip(&self, tooltip: &mut Tooltip, x: f32, y: f32, bounds: Rect) {
+        let (_, _, pull_bounds, push_bounds, _, _, _) = self.button_bounds(bounds);
+        // Show tooltip when label text is wider than button's available text area (width minus padding)
+        let h_pad = 24.0; // 12px each side (logical, but bounds are physical)
+        if pull_bounds.contains(x, y) && self.pull_label_width > pull_bounds.width - h_pad {
+            tooltip.offer(pull_bounds, &self.pull_button.label, x, y);
+        }
+        if push_bounds.contains(x, y) && self.push_label_width > push_bounds.width - h_pad {
+            tooltip.offer(push_bounds, &self.push_button.label, x, y);
+        }
     }
 }
 
@@ -480,15 +517,15 @@ impl HeaderBar {
                 ));
 
                 // Render button text (shifted right to make room for spinner)
-                let display_text = &button.label;
-                let text_width = bold_renderer.measure_text(display_text);
                 let text_area_x = spinner_cx + spinner_radius + 4.0 * scale;
-                let text_area_w = btn_bounds.right() - text_area_x;
+                let text_area_w = btn_bounds.right() - text_area_x - 4.0 * scale;
+                let display_text = truncate_to_width(&button.label, bold_renderer, text_area_w);
+                let text_width = bold_renderer.measure_text(&display_text);
                 let text_x = text_area_x + (text_area_w - text_width) / 2.0;
                 let btn_text_y = btn_bounds.y + (btn_bounds.height - line_height) / 2.0;
 
                 output.bold_text_vertices.extend(bold_renderer.layout_text(
-                    display_text,
+                    &display_text,
                     text_x,
                     btn_text_y,
                     theme::TEXT_BRIGHT.to_array(),

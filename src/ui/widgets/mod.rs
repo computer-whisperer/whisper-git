@@ -20,6 +20,7 @@ mod tab_bar;
 mod text_area;
 mod text_input;
 mod toast;
+mod tooltip;
 
 pub use branch_name_dialog::{BranchNameDialog, BranchNameDialogAction};
 pub use button::Button;
@@ -39,3 +40,4 @@ pub use tab_bar::{TabBar, TabAction};
 pub use text_area::TextArea;
 pub use text_input::TextInput;
 pub use toast::{ToastManager, ToastSeverity};
+pub use tooltip::Tooltip;

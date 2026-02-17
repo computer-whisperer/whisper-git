@@ -2,6 +2,7 @@
 
 use crate::input::{InputEvent, EventResponse, MouseButton};
 use crate::ui::{Color, Rect, TextRenderer};
+use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{Widget, WidgetState, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
 
 /// A clickable button with text
@@ -114,11 +115,21 @@ impl Button {
             ));
         }
 
-        // Draw label text in bold
+        // Draw label text in bold, truncating with "..." if needed
         let line_height = text_renderer.line_height();
+        let h_padding = 12.0;
+        let max_text_width = bounds.width - h_padding * 2.0;
 
         let text_width = bold_renderer.measure_text(&self.label);
-        let text_x = bounds.x + (bounds.width - text_width) / 2.0;
+        let (display_label, display_width) = if text_width > max_text_width && max_text_width > 0.0 {
+            let truncated = truncate_to_width(&self.label, bold_renderer, max_text_width);
+            let w = bold_renderer.measure_text(&truncated);
+            (truncated, w)
+        } else {
+            (self.label.clone(), text_width)
+        };
+
+        let text_x = bounds.x + (bounds.width - display_width) / 2.0;
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
         let text_color = if self.state.hovered || self.state.pressed {
@@ -128,7 +139,7 @@ impl Button {
         };
 
         output.bold_text_vertices.extend(bold_renderer.layout_text(
-            &self.label,
+            &display_label,
             text_x,
             text_y,
             text_color.to_array(),

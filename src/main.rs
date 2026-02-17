@@ -41,7 +41,7 @@ use crate::input::{InputEvent, InputState, Key};
 use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
 use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity};
+use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity, Tooltip};
 use crate::messages::{AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode, compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core};
 use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
 use crate::watcher::{FsChangeKind, RepoWatcher};
@@ -377,6 +377,7 @@ struct App {
     push_dialog: PushDialog,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
+    tooltip: Tooltip,
     state: Option<RenderState>,
     /// Which divider is currently being dragged, if any
     divider_drag: Option<DividerDrag>,
@@ -489,6 +490,7 @@ impl App {
             push_dialog: PushDialog::new(),
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
+            tooltip: Tooltip::new(),
             state: None,
             divider_drag: None,
             sidebar_ratio: 0.14,
@@ -2747,6 +2749,8 @@ impl App {
 
         // Update hover states
         if let InputEvent::MouseMove { x, y, .. } = input_event {
+            self.tooltip.begin_frame();
+
             view_state.header_bar.update_hover(*x, *y, layout.header);
             view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
             {
@@ -2755,6 +2759,11 @@ impl App {
                 let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 view_state.staging_well.update_hover(*x, *y, staging_rect);
             }
+
+            // Report tooltip zones for truncated elements
+            view_state.header_bar.report_tooltip(&mut self.tooltip, *x, *y, layout.header);
+
+            self.tooltip.end_frame();
 
             if let Some(ref render_state) = self.state {
                 if tab_count > 1 {
@@ -3469,6 +3478,7 @@ fn build_ui_output(
     active_tab: usize,
     tab_bar: &TabBar,
     toast_manager: &mut ToastManager,
+    tooltip: &Tooltip,
     repo_dialog: &RepoDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
@@ -3633,6 +3643,9 @@ fn build_ui_output(
     // Toast notifications (overlay layer - on top of context menus)
     overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds, scale));
 
+    // Tooltip (overlay layer - on top of toasts, below dialogs)
+    overlay_output.extend(tooltip.layout(text_renderer, screen_bounds, scale));
+
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
         overlay_output.extend(repo_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
@@ -3718,7 +3731,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
                 format!("{}{}", label, dots)
             });
         let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
-        view_state.header_bar.update_button_state(elapsed, branch_opt.as_deref());
+        view_state.header_bar.update_button_state(elapsed, branch_opt.as_deref(), &state.bold_text_renderer);
         view_state.staging_well.update_button_state();
         view_state.staging_well.update_cursors(now);
         view_state.commit_graph_view.search_bar.update_cursor(now);
@@ -3777,8 +3790,9 @@ fn draw_frame(app: &mut App) -> Result<()> {
         view_state.header_bar.update_abort_bounds(&state.text_renderer, approx_layout.header);
     }
 
-    // Update toast manager
+    // Update toast manager and tooltip
     app.toast_manager.update(Instant::now());
+    app.tooltip.update();
 
     // Poll avatar downloads and pack newly loaded ones into the atlas
     let newly_loaded = state.avatar_cache.poll_downloads();
@@ -3795,7 +3809,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3931,7 +3945,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -4049,7 +4063,7 @@ fn capture_screenshot_offscreen(
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,

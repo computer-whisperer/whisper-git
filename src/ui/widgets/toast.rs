@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::input::InputEvent;
 use crate::ui::{Rect, TextRenderer};
+use crate::ui::text_util::wrap_text;
 use crate::ui::widget::{WidgetOutput, create_rounded_rect_vertices, create_rounded_rect_outline_vertices};
 
 /// Severity determines the color scheme
@@ -73,47 +74,6 @@ impl Toast {
     fn text_color(&self, opacity: f32) -> [f32; 4] {
         [0.878, 0.878, 0.878, opacity]
     }
-}
-
-/// Word-wrap a message into lines that fit within max_width.
-/// Returns a Vec of line strings.
-fn wrap_text(message: &str, max_width: f32, text_renderer: &TextRenderer) -> Vec<String> {
-    let mut lines = Vec::new();
-    let words: Vec<&str> = message.split_whitespace().collect();
-    if words.is_empty() {
-        lines.push(String::new());
-        return lines;
-    }
-
-    let space_width = text_renderer.measure_text(" ");
-    let mut current_line = String::new();
-    let mut current_width = 0.0_f32;
-
-    for word in &words {
-        let word_width = text_renderer.measure_text(word);
-
-        if current_line.is_empty() {
-            // First word on the line - always accept it even if it overflows
-            current_line.push_str(word);
-            current_width = word_width;
-        } else if current_width + space_width + word_width <= max_width {
-            // Fits on current line
-            current_line.push(' ');
-            current_line.push_str(word);
-            current_width += space_width + word_width;
-        } else {
-            // Doesn't fit - start new line
-            lines.push(current_line);
-            current_line = word.to_string();
-            current_width = word_width;
-        }
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    lines
 }
 
 /// Manages a stack of toast notifications
