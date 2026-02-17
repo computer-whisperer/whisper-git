@@ -36,13 +36,13 @@ pub enum AppMessage {
     UnstageAll,
     Commit(String),
     Fetch(Option<String>),
-    Pull(Option<String>),
-    PullRebase(Option<String>),
-    ShowPullDialog,
+    Pull { remote: Option<String>, branch: String },
+    PullRebase { remote: Option<String>, branch: String },
+    ShowPullDialog(String),  // (branch) — caller specifies which branch
     PullBranchFrom { remote: String, branch: String, rebase: bool },
-    Push(Option<String>),
-    PushForce(Option<String>),
-    ShowPushDialog,
+    Push { remote: Option<String>, branch: String },
+    PushForce { remote: Option<String>, branch: String },
+    ShowPushDialog(String),  // (branch) — caller specifies which branch
     PushBranchTo { local_branch: String, remote: String, remote_branch: String, force: bool },
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
@@ -60,11 +60,11 @@ pub enum AppMessage {
     UpdateSubmodule(String),
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
-    MergeBranch(String),
-    MergeNoFf(String, String),       // (branch, commit_message)
-    MergeFfOnly(String),
-    MergeSquash(String),
-    RebaseBranchWithOptions(String, bool, bool), // (branch, autostash, rebase_merges)
+    MergeBranch(String, Option<PathBuf>),           // (branch, target_worktree_dir)
+    MergeNoFf(String, String, Option<PathBuf>),    // (branch, commit_message, target_worktree_dir)
+    MergeFfOnly(String, Option<PathBuf>),
+    MergeSquash(String, Option<PathBuf>),
+    RebaseBranchWithOptions(String, bool, bool, Option<PathBuf>), // (branch, autostash, rebase_merges, target_worktree_dir)
     CreateBranch(String, Oid),  // (name, at_commit)
     CreateTag(String, Oid),     // (name, at_commit)
     DeleteTag(String),
@@ -73,11 +73,11 @@ pub enum AppMessage {
     StashApply(usize),
     StashDrop(usize),
     StashPopIndex(usize),
-    CherryPick(Oid),
+    CherryPick(Oid, Option<PathBuf>),
     AmendCommit(String),
     ToggleAmend,
-    RevertCommit(Oid),
-    ResetToCommit(Oid, git2::ResetType),
+    RevertCommit(Oid, Option<PathBuf>),
+    ResetToCommit(Oid, git2::ResetType, Option<PathBuf>),
     EnterSubmodule(String),
     ExitSubmodule,
     ExitToDepth(usize),
@@ -209,6 +209,19 @@ fn start_remote_op(
     *receiver = Some((rx, std::time::Instant::now(), remote_name));
     set_header_flag(header_bar);
     true
+}
+
+/// Resolve a target working directory for an operation. If an explicit target
+/// worktree path is given, open a repo at that path and return its command dir.
+/// Otherwise fall back to staging_repo's command dir. This decouples operations
+/// from the "currently viewed worktree" UI state.
+fn resolve_cmd_dir(target_dir: &Option<PathBuf>, staging_repo: &GitRepo) -> PathBuf {
+    if let Some(dir) = target_dir {
+        if let Ok(target_repo) = GitRepo::open(dir) {
+            return target_repo.git_command_dir();
+        }
+    }
+    staging_repo.git_command_dir()
 }
 
 /// Dispatch a single `AppMessage`.
@@ -364,11 +377,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::Pull(remote_name) => {
+        AppMessage::Pull { remote: remote_name, branch } => {
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
-            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             let remote_for_closure = remote.clone();
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
@@ -379,11 +391,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::PullRebase(remote_name) => {
+        AppMessage::PullRebase { remote: remote_name, branch } => {
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
-            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             let remote_for_closure = remote.clone();
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
@@ -394,7 +405,7 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::ShowPullDialog => {
+        AppMessage::ShowPullDialog(_) => {
             // Handled in main.rs before message processing
         }
         AppMessage::PullBranchFrom { remote, branch, rebase } => {
@@ -415,11 +426,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::Push(remote_name) => {
+        AppMessage::Push { remote: remote_name, branch } => {
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
-            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             let remote_for_closure = remote.clone();
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push", remote,
@@ -430,11 +440,10 @@ pub fn handle_app_message(
                 return false;
             }
         }
-        AppMessage::PushForce(remote_name) => {
+        AppMessage::PushForce { remote: remote_name, branch } => {
             let remote = remote_name.unwrap_or_else(|| {
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
-            let branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
             let remote_for_closure = remote.clone();
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push", remote,
@@ -446,7 +455,7 @@ pub fn handle_app_message(
             }
             toast_manager.push("Force pushing...", ToastSeverity::Info);
         }
-        AppMessage::ShowPushDialog => {
+        AppMessage::ShowPushDialog(_) => {
             // Handled in main.rs
         }
         AppMessage::PushBranchTo { local_branch, remote, remote_branch, force } => {
@@ -803,8 +812,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::MergeBranch(name) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::MergeBranch(name, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let rx = git::merge_branch_async(cmd_dir, name.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -814,8 +823,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::MergeNoFf(name, message) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::MergeNoFf(name, message, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let rx = git::merge_noff_async(cmd_dir, name.clone(), message);
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -825,8 +834,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::MergeFfOnly(name) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::MergeFfOnly(name, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let rx = git::merge_ffonly_async(cmd_dir, name.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -836,8 +845,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::MergeSquash(name) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::MergeSquash(name, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let rx = git::merge_squash_async(cmd_dir, name.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -847,8 +856,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::RebaseBranchWithOptions(name, autostash, rebase_merges) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::RebaseBranchWithOptions(name, autostash, rebase_merges, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let rx = git::rebase_with_options_async(cmd_dir, name.clone(), autostash, rebase_merges);
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -937,8 +946,8 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::CherryPick(oid) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::CherryPick(oid, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let sha = oid.to_string();
             let rx = git::cherry_pick_async(cmd_dir, sha.clone());
             queue_async_op(
@@ -982,8 +991,8 @@ pub fn handle_app_message(
                 );
             }
         }
-        AppMessage::RevertCommit(oid) => {
-            let cmd_dir = staging_repo.git_command_dir();
+        AppMessage::RevertCommit(oid, target_dir) => {
+            let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let sha = oid.to_string();
             let rx = git::revert_commit_async(cmd_dir, sha.clone());
             queue_async_op(
@@ -994,14 +1003,18 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::ResetToCommit(oid, mode) => {
+        AppMessage::ResetToCommit(oid, mode, target_dir) => {
             let mode_name = match mode {
                 git2::ResetType::Soft => "soft",
                 git2::ResetType::Mixed => "mixed",
                 git2::ResetType::Hard => "hard",
             };
+            // Reset the target worktree (or staging_repo if no explicit target)
+            let target_repo = target_dir.as_ref()
+                .and_then(|d| GitRepo::open(d).ok());
+            let reset_repo = target_repo.as_ref().unwrap_or(staging_repo);
             handle_repo_mutation(
-                repo.reset_to_commit(oid, mode),
+                reset_repo.reset_to_commit(oid, mode),
                 format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
                 "Reset failed",
                 repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
@@ -1010,7 +1023,7 @@ pub fn handle_app_message(
 
         AppMessage::AbortOperation => {
             handle_repo_mutation(
-                repo.cleanup_state(),
+                staging_repo.cleanup_state(),
                 "Operation aborted".to_string(),
                 "Abort failed",
                 repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
@@ -1054,7 +1067,7 @@ pub fn handle_app_message(
         }
 
         AppMessage::DeleteRemoteBranch(remote, branch) => {
-            let cmd_dir = staging_repo.git_command_dir();
+            let cmd_dir = repo.git_command_dir();
             let rx = git::delete_remote_branch_async(cmd_dir, remote.clone(), branch.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -1466,6 +1479,9 @@ pub fn refresh_repo_state(
         .unwrap_or_default();
     let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
     view_state.header_bar.set_repo_path(&repo_path_str);
+
+    // Set current branch on header for Pull/Push button labels
+    view_state.header_bar.current_branch = if current.is_empty() { None } else { Some(current.clone()) };
 
     current
 }

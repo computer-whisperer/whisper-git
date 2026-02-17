@@ -23,8 +23,8 @@ pub enum MergeStrategy {
 /// Actions from the merge dialog
 #[derive(Clone, Debug)]
 pub enum MergeDialogAction {
-    /// Confirm merge with (branch, strategy, optional commit message)
-    Confirm(String, MergeStrategy, Option<String>),
+    /// Confirm merge with (branch, strategy, optional commit message, target worktree dir)
+    Confirm(String, MergeStrategy, Option<String>, Option<std::path::PathBuf>),
     /// User cancelled
     Cancel,
 }
@@ -50,6 +50,8 @@ pub struct MergeDialog {
     warning: Option<String>,
     /// Number of uncommitted changes (for warning display)
     uncommitted_count: usize,
+    /// Target worktree directory for the merge operation (None = staging_repo default)
+    target_dir: Option<std::path::PathBuf>,
 }
 
 impl MergeDialog {
@@ -65,12 +67,19 @@ impl MergeDialog {
             pending_action: None,
             warning: None,
             uncommitted_count: 0,
+            target_dir: None,
         }
     }
 
     /// Show the dialog for merging a branch.
     /// `uncommitted` is the number of uncommitted changes (for warning display).
+    /// `target_dir` is the worktree directory where the merge will run (None = staging_repo).
     pub fn show(&mut self, branch_name: &str, current_branch: &str, uncommitted: usize) {
+        self.show_with_target(branch_name, current_branch, uncommitted, None);
+    }
+
+    /// Show the dialog with an explicit target worktree directory.
+    pub fn show_with_target(&mut self, branch_name: &str, current_branch: &str, uncommitted: usize, target_dir: Option<std::path::PathBuf>) {
         self.visible = true;
         self.branch_name = branch_name.to_string();
         self.current_branch = current_branch.to_string();
@@ -85,6 +94,7 @@ impl MergeDialog {
 
         self.merge_button = Button::new("Merge").primary();
         self.pending_action = None;
+        self.target_dir = target_dir;
 
         // Set warning if there are uncommitted changes
         if uncommitted > 0 {
@@ -131,6 +141,7 @@ impl MergeDialog {
             self.branch_name.clone(),
             self.strategy,
             message,
+            self.target_dir.clone(),
         ));
         self.hide();
     }

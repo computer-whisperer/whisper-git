@@ -70,6 +70,8 @@ pub struct HeaderBar {
     pub generic_op_label: Option<String>,
     /// Diagnostic reload button (ghost style)
     reload_button: Button,
+    /// Current branch name (from the active worktree context) for button labels
+    pub current_branch: Option<String>,
 }
 
 impl HeaderBar {
@@ -97,6 +99,7 @@ impl HeaderBar {
             pull_shift_held: false,
             generic_op_label: None,
             reload_button: Button::new("Reload").ghost(),
+            current_branch: None,
         }
     }
 
@@ -130,16 +133,20 @@ impl HeaderBar {
             "Fetch".to_string()
         };
 
-        // Pull button label (↓ down arrow)
+        // Pull button label (↓ down arrow) — shows branch name for clarity
         self.pull_button.label = if self.pulling {
             format!("\u{2193} Pulling{}", dots)
+        } else if let Some(ref branch) = self.current_branch {
+            format!("\u{2193} Pull {}", branch)
         } else {
             "\u{2193} Pull".to_string()
         };
 
-        // Push button label (↑ up arrow)
+        // Push button label (↑ up arrow) — shows branch name for clarity
         self.push_button.label = if self.pushing {
             format!("\u{2191} Pushing{}", dots)
+        } else if let Some(ref branch) = self.current_branch {
+            format!("\u{2191} Push {}", branch)
         } else {
             "\u{2191} Push".to_string()
         };

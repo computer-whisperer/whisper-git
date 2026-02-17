@@ -743,15 +743,25 @@ impl CommitGraphView {
                 }
 
                 items.push(MenuItem::separator());
-                items.push(MenuItem::new("Cherry-pick", "cherry_pick"));
-                items.push(MenuItem::new("Revert Commit", "revert_commit"));
+                items.push(MenuItem::new(
+                    &format!("Cherry-pick into '{}'", head_branch), "cherry_pick"
+                ));
+                items.push(MenuItem::new(
+                    &format!("Revert on '{}'", head_branch), "revert_commit"
+                ));
                 items.push(MenuItem::new("Create Branch Here", "create_branch"));
                 items.push(MenuItem::new("Create Worktree Here", "create_worktree"));
                 items.push(MenuItem::new("Create Tag Here", "create_tag"));
                 items.push(MenuItem::separator());
-                items.push(MenuItem::new("Reset Soft to Here", "reset_soft"));
-                items.push(MenuItem::new("Reset Mixed to Here", "reset_mixed"));
-                items.push(MenuItem::new("Reset Hard to Here", "reset_hard"));
+                items.push(MenuItem::new(
+                    &format!("Reset '{}' Soft to Here", head_branch), "reset_soft"
+                ));
+                items.push(MenuItem::new(
+                    &format!("Reset '{}' Mixed to Here", head_branch), "reset_mixed"
+                ));
+                items.push(MenuItem::new(
+                    &format!("Reset '{}' Hard to Here", head_branch), "reset_hard"
+                ));
 
                 return Some((items, commit.id));
             }

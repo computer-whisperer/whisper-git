@@ -849,18 +849,16 @@ impl App {
 
         // Handle ShowPullDialog and ShowPushDialog separately (need to access dialogs)
         normal_messages.retain(|msg| {
-            if matches!(msg, AppMessage::ShowPullDialog) {
+            if let AppMessage::ShowPullDialog(branch) = msg {
                 if let Some(ref repo) = repo_tab.repo {
-                    let current_branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                    self.pull_dialog.show(&current_branch, &default_remote);
+                    self.pull_dialog.show(branch, &default_remote);
                 }
                 false
-            } else if matches!(msg, AppMessage::ShowPushDialog) {
+            } else if let AppMessage::ShowPushDialog(branch) = msg {
                 if let Some(ref repo) = repo_tab.repo {
-                    let current_branch = repo.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                    self.push_dialog.show(&current_branch, &default_remote);
+                    self.push_dialog.show(branch, &default_remote);
                 }
                 false
             } else {
@@ -1328,16 +1326,16 @@ impl App {
             self.merge_dialog.handle_event(input_event, screen_bounds);
             if let Some(action) = self.merge_dialog.take_action() {
                 match action {
-                    MergeDialogAction::Confirm(branch, strategy, message) => {
+                    MergeDialogAction::Confirm(branch, strategy, message, target_dir) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             let msg = match strategy {
-                                MergeStrategy::Default => AppMessage::MergeBranch(branch),
+                                MergeStrategy::Default => AppMessage::MergeBranch(branch, target_dir),
                                 MergeStrategy::NoFastForward => {
                                     let commit_msg = message.unwrap_or_else(|| format!("Merge branch '{}'", branch));
-                                    AppMessage::MergeNoFf(branch, commit_msg)
+                                    AppMessage::MergeNoFf(branch, commit_msg, target_dir)
                                 }
-                                MergeStrategy::FastForwardOnly => AppMessage::MergeFfOnly(branch),
-                                MergeStrategy::Squash => AppMessage::MergeSquash(branch),
+                                MergeStrategy::FastForwardOnly => AppMessage::MergeFfOnly(branch, target_dir),
+                                MergeStrategy::Squash => AppMessage::MergeSquash(branch, target_dir),
                             };
                             view_state.pending_messages.push(msg);
                         }
@@ -1353,10 +1351,10 @@ impl App {
             self.rebase_dialog.handle_event(input_event, screen_bounds);
             if let Some(action) = self.rebase_dialog.take_action() {
                 match action {
-                    RebaseDialogAction::Confirm(branch, opts) => {
+                    RebaseDialogAction::Confirm(branch, opts, target_dir) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             view_state.pending_messages.push(
-                                AppMessage::RebaseBranchWithOptions(branch, opts.autostash, opts.rebase_merges)
+                                AppMessage::RebaseBranchWithOptions(branch, opts.autostash, opts.rebase_merges, target_dir)
                             );
                         }
                     }
@@ -1643,21 +1641,27 @@ impl App {
         // Ctrl+Shift+L: Pull
         if *key == Key::L && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Pull(None));
+                let branch = view_state.header_bar.current_branch.clone()
+                    .unwrap_or_else(|| "HEAD".to_string());
+                view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
                 return true;
             }
         }
         // Ctrl+Shift+P: Push
         if *key == Key::P && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Push(None));
+                let branch = view_state.header_bar.current_branch.clone()
+                    .unwrap_or_else(|| "HEAD".to_string());
+                view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
                 return true;
             }
         }
         // Ctrl+Shift+R: Pull --rebase
         if *key == Key::R && modifiers.ctrl_shift() {
             if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::PullRebase(None));
+                let branch = view_state.header_bar.current_branch.clone()
+                    .unwrap_or_else(|| "HEAD".to_string());
+                view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
                 return true;
             }
         }
@@ -1787,6 +1791,9 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         .and_then(|p| view_state.worktree_repo_cache.get(p))
         .unwrap_or(repo);
 
+    // Capture staging_repo state early to avoid borrow conflicts with cache mutations below.
+    let staging_repo_state = staging_repo.repo_state();
+
     // Delegate core refresh logic to the shared implementation in messages.rs
     let current = {
         let mut msg_view = MessageViewState {
@@ -1834,7 +1841,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.worktree_repo_cache.retain(|path, _| valid_paths.contains(path));
 
     // Update operation state (merge/rebase/cherry-pick in progress)
-    view_state.header_bar.operation_state_label = git::repo_state_label(repo.repo_state());
+    view_state.header_bar.operation_state_label = git::repo_state_label(staging_repo_state);
 
     // Spawn async diff stats computation (skip synthetic entries — no real git object)
     let real_oids: Vec<Oid> = repo_tab.commits.iter()
@@ -2388,13 +2395,19 @@ impl App {
                         view_state.pending_messages.push(AppMessage::Fetch(None));
                     }
                     HeaderAction::Pull => {
-                        view_state.pending_messages.push(AppMessage::Pull(None));
+                        let branch = view_state.header_bar.current_branch.clone()
+                            .unwrap_or_else(|| "HEAD".to_string());
+                        view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
                     }
                     HeaderAction::PullRebase => {
-                        view_state.pending_messages.push(AppMessage::PullRebase(None));
+                        let branch = view_state.header_bar.current_branch.clone()
+                            .unwrap_or_else(|| "HEAD".to_string());
+                        view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
                     }
                     HeaderAction::Push => {
-                        view_state.pending_messages.push(AppMessage::Push(None));
+                        let branch = view_state.header_bar.current_branch.clone()
+                            .unwrap_or_else(|| "HEAD".to_string());
+                        view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
                     }
                     HeaderAction::Commit => {
                         view_state.focused_panel = FocusedPanel::RightPanel;
@@ -2938,23 +2951,43 @@ fn handle_context_menu_action(
             }
         }
         "push" => {
-            view_state.pending_messages.push(AppMessage::Push(None));
+            let branch = if param.is_empty() {
+                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+            } else {
+                param.to_string()
+            };
+            view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
         }
         "push_to" => {
-            view_state.pending_messages.push(AppMessage::ShowPushDialog);
+            view_state.pending_messages.push(AppMessage::ShowPushDialog(param.to_string()));
         }
         "pull" => {
-            view_state.pending_messages.push(AppMessage::Pull(None));
+            let branch = if param.is_empty() {
+                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+            } else {
+                param.to_string()
+            };
+            view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
         }
         "pull_rebase" => {
-            view_state.pending_messages.push(AppMessage::PullRebase(None));
+            let branch = if param.is_empty() {
+                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+            } else {
+                param.to_string()
+            };
+            view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
         }
         "pull_from_dialog" => {
-            view_state.pending_messages.push(AppMessage::ShowPullDialog);
+            view_state.pending_messages.push(AppMessage::ShowPullDialog(param.to_string()));
         }
         "force_push" => {
-            confirm_dialog.show("Force Push", "Force push with --force-with-lease? This may overwrite remote commits.");
-            *pending_confirm_action = Some(AppMessage::PushForce(None));
+            let branch = if param.is_empty() {
+                view_state.header_bar.current_branch.clone().unwrap_or_else(|| "HEAD".to_string())
+            } else {
+                param.to_string()
+            };
+            confirm_dialog.show("Force Push", &format!("Force push '{}' with --force-with-lease? This may overwrite remote commits.", branch));
+            *pending_confirm_action = Some(AppMessage::PushForce { remote: None, branch });
         }
         "fetch_remote" => {
             if !param.is_empty() {
@@ -3055,10 +3088,9 @@ fn handle_context_menu_action(
         }
         "merge" => {
             if !param.is_empty() {
-                // Use worktree repo for pre-flight checks when available
                 let effective_repo = view_state.active_worktree_repo().or(repo);
+                let target_dir = view_state.active_worktree_path.clone();
                 if let Some(r) = effective_repo {
-                    // Pre-flight: check if an operation is already in progress
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
                             format!("Cannot merge: {}. Abort or complete it first.", label),
@@ -3067,7 +3099,7 @@ fn handle_context_menu_action(
                     } else {
                         let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        merge_dialog.show(param, &current, uncommitted);
+                        merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
                     }
                 }
             }
@@ -3075,6 +3107,7 @@ fn handle_context_menu_action(
         "rebase" => {
             if !param.is_empty() {
                 let effective_repo = view_state.active_worktree_repo().or(repo);
+                let target_dir = view_state.active_worktree_path.clone();
                 if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
@@ -3084,7 +3117,7 @@ fn handle_context_menu_action(
                     } else {
                         let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        rebase_dialog.show(param, &current, uncommitted);
+                        rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
                     }
                 }
             }
@@ -3092,36 +3125,46 @@ fn handle_context_menu_action(
         "cherry_pick" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {}?", short));
-                *pending_confirm_action = Some(AppMessage::CherryPick(oid));
+                let target_dir = view_state.active_worktree_path.clone();
+                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {} into '{}'?", short, branch));
+                *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
             }
         }
         "revert_commit" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                confirm_dialog.show("Revert Commit", &format!("Create a new commit that reverts {}?", short));
-                *pending_confirm_action = Some(AppMessage::RevertCommit(oid));
+                let target_dir = view_state.active_worktree_path.clone();
+                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                confirm_dialog.show("Revert Commit", &format!("Create a revert of {} on '{}'?", short, branch));
+                *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
             }
         }
         "reset_soft" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                confirm_dialog.show("Reset (Soft)", &format!("Reset to {}? Changes will be kept staged.", short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft));
+                let target_dir = view_state.active_worktree_path.clone();
+                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                confirm_dialog.show("Reset (Soft)", &format!("Reset '{}' to {}? Changes will be kept staged.", branch, short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft, target_dir));
             }
         }
         "reset_mixed" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                confirm_dialog.show("Reset (Mixed)", &format!("Reset to {}? Changes will be kept unstaged.", short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed));
+                let target_dir = view_state.active_worktree_path.clone();
+                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                confirm_dialog.show("Reset (Mixed)", &format!("Reset '{}' to {}? Changes will be kept unstaged.", branch, short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed, target_dir));
             }
         }
         "reset_hard" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                confirm_dialog.show("Reset (Hard)", &format!("Reset to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard));
+                let target_dir = view_state.active_worktree_path.clone();
+                let branch = view_state.header_bar.current_branch.as_deref().unwrap_or("HEAD");
+                confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard, target_dir));
             }
         }
         "create_branch" => {
@@ -3207,6 +3250,7 @@ fn handle_context_menu_action(
         "merge_remote" => {
             if !param.is_empty() {
                 let effective_repo = view_state.active_worktree_repo().or(repo);
+                let target_dir = view_state.active_worktree_path.clone();
                 if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
@@ -3216,7 +3260,7 @@ fn handle_context_menu_action(
                     } else {
                         let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        merge_dialog.show(param, &current, uncommitted);
+                        merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
                     }
                 }
             }
@@ -3224,6 +3268,7 @@ fn handle_context_menu_action(
         "rebase_remote" => {
             if !param.is_empty() {
                 let effective_repo = view_state.active_worktree_repo().or(repo);
+                let target_dir = view_state.active_worktree_path.clone();
                 if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
@@ -3233,7 +3278,7 @@ fn handle_context_menu_action(
                     } else {
                         let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                         let uncommitted = r.uncommitted_change_count();
-                        rebase_dialog.show(param, &current, uncommitted);
+                        rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
                     }
                 }
             }
