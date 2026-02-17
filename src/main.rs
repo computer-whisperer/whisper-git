@@ -1706,6 +1706,9 @@ impl App {
                 self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
             }
+            SidebarAction::SwitchWorktree(wt_name) => {
+                view_state.switch_to_worktree_by_name(&wt_name);
+            }
         }
     }
 }
@@ -3045,7 +3048,9 @@ fn handle_context_menu_action(
         }
         "merge" => {
             if !param.is_empty() {
-                if let Some(r) = repo {
+                // Use worktree repo for pre-flight checks when available
+                let effective_repo = view_state.active_worktree_repo().or(repo);
+                if let Some(r) = effective_repo {
                     // Pre-flight: check if an operation is already in progress
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
@@ -3062,7 +3067,8 @@ fn handle_context_menu_action(
         }
         "rebase" => {
             if !param.is_empty() {
-                if let Some(r) = repo {
+                let effective_repo = view_state.active_worktree_repo().or(repo);
+                if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
                             format!("Cannot rebase: {}. Abort or complete it first.", label),
@@ -3193,8 +3199,8 @@ fn handle_context_menu_action(
         }
         "merge_remote" => {
             if !param.is_empty() {
-                if let Some(r) = repo {
-                    // Pre-flight: check if an operation is already in progress
+                let effective_repo = view_state.active_worktree_repo().or(repo);
+                if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
                             format!("Cannot merge: {}. Abort or complete it first.", label),
@@ -3210,7 +3216,8 @@ fn handle_context_menu_action(
         }
         "rebase_remote" => {
             if !param.is_empty() {
-                if let Some(r) = repo {
+                let effective_repo = view_state.active_worktree_repo().or(repo);
+                if let Some(r) = effective_repo {
                     if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
                         toast_manager.push(
                             format!("Cannot rebase: {}. Abort or complete it first.", label),
@@ -3230,6 +3237,29 @@ fn handle_context_menu_action(
                     confirm_dialog.show("Delete Remote Branch", &format!("Delete branch '{}' from remote '{}'? This cannot be undone.", branch, remote));
                     *pending_confirm_action = Some(AppMessage::DeleteRemoteBranch(remote.to_string(), branch.to_string()));
                 }
+            }
+        }
+        "checkout_in_wt" => {
+            // Format: "checkout_in_wt:branch|wt_name" — from context menu
+            if !param.is_empty() {
+                if let Some((branch, wt_name)) = param.split_once('|') {
+                    if let Some(wt) = view_state.worktrees.iter().find(|w| w.name == wt_name) {
+                        view_state.pending_messages.push(AppMessage::CheckoutBranchInWorktree(
+                            branch.to_string(),
+                            PathBuf::from(&wt.path),
+                        ));
+                    } else {
+                        toast_manager.push(
+                            format!("Worktree '{}' not found", wt_name),
+                            ToastSeverity::Error,
+                        );
+                    }
+                }
+            }
+        }
+        "set_head" => {
+            if !param.is_empty() {
+                view_state.pending_messages.push(AppMessage::SetHead(param.to_string()));
             }
         }
         _ => {

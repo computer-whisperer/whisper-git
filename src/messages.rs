@@ -89,6 +89,8 @@ pub enum AppMessage {
     SetRemoteUrl(String, String),  // (name, new_url)
     DeleteRemoteBranch(String, String), // (remote, branch)
     FetchAll,
+    CheckoutBranchInWorktree(String, PathBuf), // (branch, worktree_path)
+    SetHead(String),                           // bare-repo HEAD pointer update
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -547,7 +549,7 @@ pub fn handle_app_message(
         }
         AppMessage::CheckoutBranch(name) => {
             handle_repo_mutation(
-                repo.checkout_branch(&name),
+                staging_repo.checkout_branch(&name),
                 format!("Switched to {}", name),
                 "Checkout failed",
                 repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
@@ -555,7 +557,7 @@ pub fn handle_app_message(
         }
         AppMessage::CheckoutRemoteBranch(remote, branch) => {
             handle_repo_mutation(
-                repo.checkout_remote_branch(&remote, &branch),
+                staging_repo.checkout_remote_branch(&remote, &branch),
                 format!("Switched to {}/{}", remote, branch),
                 "Checkout failed",
                 repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
@@ -1062,6 +1064,34 @@ pub fn handle_app_message(
             );
         }
 
+        AppMessage::CheckoutBranchInWorktree(name, wt_path) => {
+            match GitRepo::open(&wt_path) {
+                Ok(wt_repo) => {
+                    handle_repo_mutation(
+                        wt_repo.checkout_branch(&name),
+                        format!("Switched to {} in {}", name, wt_path.display()),
+                        "Checkout failed",
+                        repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                    );
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to open worktree at {}: {}", wt_path.display(), e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+
+        AppMessage::SetHead(name) => {
+            handle_repo_mutation(
+                repo.set_head_to(&name),
+                format!("HEAD now points to {}", name),
+                "Set HEAD failed",
+                repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+            );
+        }
+
         // Submodule navigation messages are handled in main.rs process_messages,
         // not here. If they leak through, just ignore them.
         AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_) => {
@@ -1379,7 +1409,18 @@ pub fn refresh_repo_state(
     view_state.commit_graph_view.tags = tags.clone();
     view_state.commit_graph_view.worktrees = worktrees.clone();
     let remote_names = repo.remote_names();
-    view_state.branch_sidebar.set_branch_data(&branch_tips, &tags, current.clone(), &remote_names);
+    let is_bare = repo.is_effectively_bare();
+
+    // Determine active worktree name from the staging_well's selection
+    let active_wt_name: Option<String> = view_state.staging_well.active_worktree_context()
+        .and_then(|ctx| {
+            if ctx.is_current { None } else { Some(ctx.name.clone()) }
+        });
+
+    view_state.branch_sidebar.set_branch_data(
+        &branch_tips, &tags, current.clone(), &remote_names,
+        &worktrees, active_wt_name.as_deref(), is_bare,
+    );
     view_state.staging_well.set_worktrees(&worktrees);
     *view_state.worktrees = worktrees;
 

@@ -1497,6 +1497,19 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Move HEAD to point at the given branch without checking out any files.
+    /// Useful for bare repos (no working directory) where you just want to update
+    /// which branch HEAD references.
+    pub fn set_head_to(&self, branch_name: &str) -> Result<()> {
+        let refname = format!("refs/heads/{}", branch_name);
+        // Verify the branch exists
+        self.repo.find_branch(branch_name, git2::BranchType::Local)
+            .with_context(|| format!("Branch '{}' not found", branch_name))?;
+        self.repo.set_head(&refname)
+            .with_context(|| format!("Failed to set HEAD to '{}'", branch_name))?;
+        Ok(())
+    }
+
     /// Delete a local branch (refuses to delete the current branch or one checked out in a worktree)
     pub fn delete_branch(&self, name: &str) -> Result<()> {
         // Check if this branch is the current branch (handle bare-repo failures gracefully)

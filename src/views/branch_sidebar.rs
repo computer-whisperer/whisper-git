@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::git::{BranchTip, StashEntry, TagInfo, format_relative_time};
+use crate::git::{BranchTip, StashEntry, TagInfo, WorktreeInfo, format_relative_time};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, WidgetOutput};
 use crate::ui::widgets::context_menu::MenuItem;
@@ -19,6 +19,7 @@ pub enum SidebarAction {
     ApplyStash(usize),
     DropStash(usize),
     DeleteTag(String),
+    SwitchWorktree(String), // worktree name to switch to
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -100,6 +101,18 @@ pub struct BranchSidebar {
     ahead_behind_cache: HashMap<String, (usize, usize)>,
     /// Upstream tracking branch per local branch (e.g. "main" -> "origin/main")
     upstream_map: HashMap<String, String>,
+    /// Map from branch name to worktree name (branches checked out in worktrees)
+    branch_worktree_map: HashMap<String, String>,
+    /// Name of the currently active worktree (if in bare repo with worktrees)
+    active_worktree_name: Option<String>,
+    /// Branch checked out in the active worktree
+    active_worktree_branch: Option<String>,
+    /// Whether the repo is effectively bare
+    is_bare_repo: bool,
+    /// Number of worktrees (for context menu logic)
+    worktree_count: usize,
+    /// Worktree paths indexed by name (for checkout_in_wt action)
+    worktree_paths: HashMap<String, String>,
     /// Filter query text for searching branches/tags/stashes
     filter_query: String,
     /// Cursor position in the filter query
@@ -160,6 +173,12 @@ impl BranchSidebar {
             hovered_index: None,
             scrollbar: Scrollbar::new(),
             last_bounds: None,
+            branch_worktree_map: HashMap::new(),
+            active_worktree_name: None,
+            active_worktree_branch: None,
+            is_bare_repo: false,
+            worktree_count: 0,
+            worktree_paths: HashMap::new(),
             filter_query: String::new(),
             filter_cursor: 0,
             filter_focused: false,
@@ -264,6 +283,9 @@ impl BranchSidebar {
         tags: &[TagInfo],
         current_branch: String,
         all_remote_names: &[String],
+        worktrees: &[WorktreeInfo],
+        active_worktree_name: Option<&str>,
+        is_bare: bool,
     ) {
         self.current_branch = current_branch;
 
@@ -302,6 +324,30 @@ impl BranchSidebar {
 
         self.tags = tags.iter().map(|t| t.name.clone()).collect();
         self.tags.sort();
+
+        // Build worktree awareness data
+        self.branch_worktree_map.clear();
+        self.worktree_paths.clear();
+        self.worktree_count = worktrees.len();
+        self.is_bare_repo = is_bare;
+        for wt in worktrees {
+            if !wt.branch.is_empty() {
+                self.branch_worktree_map.insert(wt.branch.clone(), wt.name.clone());
+            }
+            self.worktree_paths.insert(wt.name.clone(), wt.path.clone());
+        }
+        self.active_worktree_name = active_worktree_name.map(|s| s.to_string());
+        self.active_worktree_branch = active_worktree_name
+            .and_then(|name| worktrees.iter().find(|wt| wt.name == name))
+            .map(|wt| wt.branch.clone())
+            .filter(|b| !b.is_empty());
+    }
+
+    /// The branch that merge/rebase operations would target — the active
+    /// worktree's branch if set, otherwise the repo's current_branch.
+    pub fn effective_branch(&self) -> &str {
+        self.active_worktree_branch.as_deref()
+            .unwrap_or(&self.current_branch)
     }
 
     /// Update the ahead/behind cache for local branches
@@ -506,7 +552,12 @@ impl BranchSidebar {
             && let Some(item) = self.visible_items.get(idx) {
                 match item {
                     SidebarItem::LocalBranch(name) => {
-                        self.pending_action = Some(SidebarAction::Checkout(name.clone()));
+                        // If the branch is checked out in a worktree, switch to that worktree
+                        if let Some(wt_name) = self.branch_worktree_map.get(name) {
+                            self.pending_action = Some(SidebarAction::SwitchWorktree(wt_name.clone()));
+                        } else {
+                            self.pending_action = Some(SidebarAction::Checkout(name.clone()));
+                        }
                     }
                     SidebarItem::RemoteBranch(remote, branch) => {
                         self.pending_action = Some(SidebarAction::CheckoutRemote(remote.clone(), branch.clone()));
@@ -550,26 +601,66 @@ impl BranchSidebar {
         let idx = self.item_index_at_y(y, bounds)?;
         match &self.visible_items[idx] {
             SidebarItem::LocalBranch(name) => {
-                let mut items = vec![
-                    MenuItem::new("Checkout", "checkout").with_shortcut("Enter"),
-                    MenuItem::separator(),
-                    MenuItem::new("Pull", "pull"),
-                    MenuItem::new("Pull (Rebase)", "pull_rebase"),
-                    MenuItem::new("Push", "push"),
-                    MenuItem::separator(),
-                    MenuItem::new("Pull from...", "pull_from_dialog"),
-                    MenuItem::new("Push to...", "push_to"),
-                    MenuItem::new("Force Push", "force_push"),
-                    MenuItem::separator(),
-                    MenuItem::new(format!("Merge into '{}'", self.current_branch), "merge"),
-                    MenuItem::new(format!("Rebase '{}' onto", self.current_branch), "rebase"),
-                    MenuItem::separator(),
-                    MenuItem::new("Rename...", "rename"),
-                    MenuItem::new("Create Worktree", "create_worktree"),
-                    MenuItem::new("Delete Branch", "delete").with_shortcut("d"),
-                ];
+                let mut items = Vec::new();
+
+                // Checkout action depends on worktree model
+                if let Some(wt_name) = self.branch_worktree_map.get(name) {
+                    // Branch is already checked out in a worktree — offer switch
+                    // Pre-format with worktree name (not branch name) since the
+                    // tail loop would incorrectly append branch name
+                    items.push(MenuItem::new(
+                        format!("Switch to '{}'", wt_name),
+                        &format!("switch_worktree:{}", wt_name),
+                    ).with_shortcut("Enter"));
+                } else if !self.is_bare_repo || self.worktree_count > 0 {
+                    if self.worktree_count > 1 {
+                        // Multiple worktrees — offer per-worktree checkout
+                        let mut wt_names: Vec<&String> = self.worktree_paths.keys().collect();
+                        wt_names.sort();
+                        for wt in wt_names {
+                            items.push(MenuItem::new(
+                                format!("Checkout in '{}'", wt),
+                                &format!("checkout_in_wt:{}|{}", name, wt),
+                            ));
+                        }
+                    } else {
+                        // Single worktree or normal repo
+                        items.push(MenuItem::new("Checkout", "checkout").with_shortcut("Enter"));
+                    }
+                } else {
+                    // True bare repo with no worktrees — only HEAD pointer
+                    items.push(MenuItem::new("Set as HEAD", "set_head").with_shortcut("Enter"));
+                }
+
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Pull", "pull"));
+                items.push(MenuItem::new("Pull (Rebase)", "pull_rebase"));
+                items.push(MenuItem::new("Push", "push"));
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Pull from...", "pull_from_dialog"));
+                items.push(MenuItem::new("Push to...", "push_to"));
+                items.push(MenuItem::new("Force Push", "force_push"));
+
+                // Merge/rebase only when there's an effective branch to merge into
+                let effective = self.effective_branch();
+                if !effective.is_empty() && effective != name {
+                    items.push(MenuItem::separator());
+                    items.push(MenuItem::new(
+                        format!("Merge into '{}'", effective), "merge"
+                    ));
+                    items.push(MenuItem::new(
+                        format!("Rebase '{}' onto", effective), "rebase"
+                    ));
+                }
+
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Rename...", "rename"));
+                items.push(MenuItem::new("Create Worktree", "create_worktree"));
+                items.push(MenuItem::new("Delete Branch", "delete").with_shortcut("d"));
+
+                // Tag action_ids with the branch name (skip items already tagged via checkout_in_wt)
                 for item in &mut items {
-                    if !item.is_separator {
+                    if !item.is_separator && !item.action_id.contains(':') {
                         item.action_id = format!("{}:{}", item.action_id, name);
                     }
                 }
@@ -595,11 +686,22 @@ impl BranchSidebar {
                 let full = format!("{}/{}", remote, branch);
                 let mut items = vec![
                     MenuItem::new("Checkout", "checkout_remote").with_shortcut("Enter"),
-                    MenuItem::new(format!("Merge into '{}'", self.current_branch), "merge_remote"),
-                    MenuItem::new(format!("Rebase '{}' onto", self.current_branch), "rebase_remote"),
-                    MenuItem::separator(),
-                    MenuItem::new("Delete Remote Branch", "delete_remote_branch"),
                 ];
+
+                // Merge/rebase only when there's an effective branch to merge into
+                let effective = self.effective_branch();
+                if !effective.is_empty() {
+                    items.push(MenuItem::new(
+                        format!("Merge into '{}'", effective), "merge_remote"
+                    ));
+                    items.push(MenuItem::new(
+                        format!("Rebase '{}' onto", effective), "rebase_remote"
+                    ));
+                }
+
+                items.push(MenuItem::separator());
+                items.push(MenuItem::new("Delete Remote Branch", "delete_remote_branch"));
+
                 for item in &mut items {
                     if !item.is_separator {
                         item.action_id = format!("{}:{}", item.action_id, full);
@@ -1081,7 +1183,10 @@ impl BranchSidebar {
             for branch in filtered_local {
                 let visible = y >= params.content_top && y < params.bounds.bottom();
                 if visible {
-                    let is_current = *branch == self.current_branch;
+                    let is_current = *branch == self.current_branch
+                        || self.active_worktree_branch.as_deref() == Some(branch.as_str());
+                    let in_other_worktree = !is_current
+                        && self.branch_worktree_map.contains_key(branch);
                     let is_focused = self.focused && self.focused_index == Some(item_idx);
                     let is_hovered = self.hovered_index == Some(item_idx);
 
@@ -1126,10 +1231,12 @@ impl BranchSidebar {
                         theme::TEXT.to_array()
                     };
 
-                    // Branch icon prefix
-                    let icon = if is_current { "\u{25CF}" } else { "\u{25CB}" }; // ● / ○
+                    // Branch icon prefix — amber dot for branches in other worktrees
+                    let icon = if is_current { "\u{25CF}" } else if in_other_worktree { "\u{25CF}" } else { "\u{25CB}" }; // ● / ○
                     let icon_color = if is_current {
                         theme::ACCENT.to_array()
+                    } else if in_other_worktree {
+                        [1.0, 0.718, 0.302, 1.0] // amber for worktree-occupied branches
                     } else {
                         theme::TEXT_MUTED.to_array()
                     };
@@ -1163,7 +1270,18 @@ impl BranchSidebar {
                         .map(|label| params.text_renderer.measure_text_scaled(label, upstream_scale) + 6.0)
                         .unwrap_or(0.0);
 
-                    let right_reserved = ab_total_width + upstream_width;
+                    // Compute worktree indicator width for non-active worktree branches
+                    let wt_label_scale = 0.85;
+                    let wt_label = if in_other_worktree {
+                        self.branch_worktree_map.get(branch).map(|wt| format!("[{}]", wt))
+                    } else {
+                        None
+                    };
+                    let wt_label_width = wt_label.as_ref()
+                        .map(|label| params.text_renderer.measure_text_scaled(label, wt_label_scale) + 6.0)
+                        .unwrap_or(0.0);
+
+                    let right_reserved = ab_total_width + upstream_width + wt_label_width;
                     let name_max_width = params.inner.width - params.indent - icon_width - right_reserved;
                     let display_name = truncate_to_width(branch, params.text_renderer, name_max_width);
                     if is_current {
@@ -1224,6 +1342,20 @@ impl BranchSidebar {
                             y + 2.0 + y_offset,
                             theme::TEXT_MUTED.to_array(),
                             upstream_scale,
+                        ));
+                    }
+
+                    // Render worktree indicator for branches in other worktrees
+                    if let Some(wt_text) = &wt_label {
+                        let wt_w = params.text_renderer.measure_text_scaled(wt_text, wt_label_scale);
+                        right_x -= wt_w;
+                        let y_offset = params.line_height * (1.0 - wt_label_scale) * 0.3;
+                        output.text_vertices.extend(params.text_renderer.layout_text_scaled(
+                            wt_text,
+                            right_x,
+                            y + 2.0 + y_offset,
+                            [1.0, 0.718, 0.302, 0.7], // amber, slightly muted
+                            wt_label_scale,
                         ));
                     }
                 }
