@@ -163,6 +163,8 @@ pub struct CommitInfo {
     pub summary: String,
     /// First line of the commit body (after the summary), if any.
     pub body_excerpt: Option<String>,
+    /// Full body text (all lines after summary), for tooltips.
+    pub body_full: Option<String>,
     pub author: String,
     pub author_email: String,
     pub time: i64,
@@ -184,20 +186,30 @@ pub struct CommitInfo {
 impl CommitInfo {
     fn from_commit(commit: &Commit) -> Self {
         // Extract the first non-empty body line after the summary
-        let body_excerpt = commit.message().and_then(|msg| {
-            let mut lines = msg.lines();
-            lines.next(); // skip summary
-            // skip blank separator line(s)
-            lines
-                .map(|l| l.trim())
-                .find(|l| !l.is_empty())
-                .map(|l| l.to_string())
-        });
+        let (body_excerpt, body_full) = match commit.message() {
+            Some(msg) => {
+                let mut lines = msg.lines();
+                lines.next(); // skip summary
+                let body_lines: Vec<&str> = lines.collect();
+                let excerpt = body_lines.iter()
+                    .map(|l| l.trim())
+                    .find(|l| !l.is_empty())
+                    .map(|l| l.to_string());
+                let full = {
+                    let text: String = body_lines.join("\n");
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                };
+                (excerpt, full)
+            }
+            None => (None, None),
+        };
         Self {
             id: commit.id(),
             short_id: commit.id().to_string().get(..7).unwrap_or("").to_string(),
             summary: commit.summary().unwrap_or("").to_string(),
             body_excerpt,
+            body_full,
             author: commit.author().name().unwrap_or("Unknown").to_string(),
             author_email: commit.author().email().unwrap_or("").to_string(),
             time: commit.time().seconds(),
@@ -252,6 +264,7 @@ impl CommitInfo {
             short_id: String::new(),
             summary,
             body_excerpt: None,
+            body_full: None,
             author: String::new(),
             author_email: String::new(),
             time,
@@ -290,6 +303,7 @@ impl CommitInfo {
             short_id: String::new(),
             summary,
             body_excerpt: None,
+            body_full: None,
             author: String::new(),
             author_email: String::new(),
             time,

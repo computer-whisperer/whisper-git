@@ -39,6 +39,8 @@ impl Tooltip {
     const CORNER_RADIUS: f32 = 4.0;
     /// Padding inside tooltip
     const PADDING: f32 = 6.0;
+    /// Maximum number of lines before truncating
+    const MAX_LINES: usize = 16;
 
     pub fn new() -> Self {
         Self {
@@ -94,7 +96,7 @@ impl Tooltip {
     /// Check the delay timer and make the tooltip visible when elapsed.
     pub fn update(&mut self) {
         if let Some(start) = self.hover_start {
-            if start.elapsed().as_millis() >= Self::DELAY_MS {
+            if !self.visible && start.elapsed().as_millis() >= Self::DELAY_MS {
                 self.visible = true;
             }
         }
@@ -112,9 +114,13 @@ impl Tooltip {
         let max_width = Self::MAX_WIDTH * scale;
         let line_height = text_renderer.line_height();
 
-        // Word-wrap the text
+        // Word-wrap the text, capped to avoid giant tooltips
         let max_text_width = max_width - padding * 2.0;
-        let lines = wrap_text(&self.text, max_text_width, text_renderer);
+        let mut lines = wrap_text(&self.text, max_text_width, text_renderer);
+        if lines.len() > Self::MAX_LINES {
+            lines.truncate(Self::MAX_LINES);
+            lines.push("...".to_string());
+        }
         let num_lines = lines.len().max(1);
 
         // Measure actual content width

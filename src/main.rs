@@ -2749,8 +2749,6 @@ impl App {
 
         // Update hover states
         if let InputEvent::MouseMove { x, y, .. } = input_event {
-            self.tooltip.begin_frame();
-
             view_state.header_bar.update_hover(*x, *y, layout.header);
             view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
             {
@@ -2759,12 +2757,6 @@ impl App {
                 let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 view_state.staging_well.update_hover(*x, *y, staging_rect);
             }
-
-            // Report tooltip zones for truncated elements
-            view_state.header_bar.report_tooltip(&mut self.tooltip, *x, *y, layout.header);
-            view_state.commit_graph_view.report_tooltip(&mut self.tooltip, *x, *y, layout.graph);
-
-            self.tooltip.end_frame();
 
             if let Some(ref render_state) = self.state {
                 if tab_count > 1 {
@@ -3479,7 +3471,7 @@ fn build_ui_output(
     active_tab: usize,
     tab_bar: &TabBar,
     toast_manager: &mut ToastManager,
-    tooltip: &Tooltip,
+    tooltip: &mut Tooltip,
     repo_dialog: &RepoDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
@@ -3542,6 +3534,21 @@ fn build_ui_output(
         graph_output.spline_vertices.extend(pill_vertices);
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
+
+        // Offer tooltips for truncated commit subjects (uses current frame's data)
+        tooltip.begin_frame();
+        let (mx, my) = mouse_pos;
+        if layout.graph.contains(mx, my) {
+            for (text_bounds, full_text) in &view_state.commit_graph_view.truncated_subjects {
+                if text_bounds.contains(mx, my) {
+                    tooltip.offer(*text_bounds, full_text, mx, my);
+                    break;
+                }
+            }
+        }
+        // Header bar truncated buttons
+        view_state.header_bar.report_tooltip(tooltip, mx, my, layout.header);
+        tooltip.end_frame();
 
         // Opaque header backdrop to prevent graph bleed-through between tab bar and header
         let header_backdrop_h = layout.header.height + if shortcut_bar_visible { layout.shortcut_bar.height } else { 0.0 };
@@ -3810,7 +3817,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -3946,7 +3953,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,
@@ -4064,7 +4071,7 @@ fn capture_screenshot_offscreen(
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
         &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
+        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
         &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
         &mut state.avatar_cache, &state.avatar_renderer,
         sidebar_ratio, graph_ratio, app.staging_preview_ratio,

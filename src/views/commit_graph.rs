@@ -14,7 +14,6 @@ use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
 use crate::ui::widgets::search_bar::{SearchBar, SearchAction};
 use crate::ui::{Color, Rect, Spline, SplinePoint, SplineVertex, TextRenderer, TextVertex};
 use crate::ui::text_util::truncate_to_width;
-use crate::ui::widgets::Tooltip;
 
 use crate::ui::widget::theme::LANE_COLORS;
 use crate::views::staging_well::compute_display_names;
@@ -256,7 +255,7 @@ pub struct CommitGraphView {
     adaptive_graph_width: f32,
     /// Truncated subject text zones for tooltip display (rebuilt each layout_text call).
     /// Each entry: (text_bounds_rect, full_summary_string)
-    truncated_subjects: Vec<(Rect, String)>,
+    pub(crate) truncated_subjects: Vec<(Rect, String)>,
 }
 
 impl Default for CommitGraphView {
@@ -1493,9 +1492,11 @@ impl CommitGraphView {
                 let available = stats_col_left - col_gap - current_x;
                 let summary = truncate_to_width(&commit.summary, text_renderer, available);
                 if summary.len() != commit.summary.len() {
+                    // Use full row height for hit area (centered on row)
+                    let hit_y = y - (self.row_height - line_height) / 2.0;
                     let text_w = text_renderer.measure_text(&summary);
                     self.truncated_subjects.push((
-                        Rect::new(current_x, y, text_w, line_height),
+                        Rect::new(current_x, hit_y, text_w, self.row_height),
                         commit.summary.clone(),
                     ));
                 }
@@ -1594,10 +1595,20 @@ impl CommitGraphView {
                     current_x, subject_right, &mut vertices,
                 );
                 if was_truncated {
+                    // Use full row height for hit area (centered on row)
+                    let hit_y = y - (self.row_height - line_height) / 2.0;
                     let text_w = subject_right - current_x;
+                    // Include full body in tooltip when available
+                    let full_text = if let Some(body) = &commit.body_full {
+                        format!("{}\n\n{}", commit.summary, body)
+                    } else if let Some(body) = &commit.body_excerpt {
+                        format!("{} \u{2014} {}", commit.summary, body)
+                    } else {
+                        commit.summary.clone()
+                    };
                     self.truncated_subjects.push((
-                        Rect::new(current_x, y, text_w, line_height),
-                        commit.summary.clone(),
+                        Rect::new(current_x, hit_y, text_w, self.row_height),
+                        full_text,
                     ));
                 }
             }
@@ -1944,20 +1955,6 @@ impl CommitGraphView {
         current_x + identicon_advance
     }
 
-    /// Report tooltip zones for truncated commit subjects.
-    /// Call during the mouse-move hover pass.
-    pub fn report_tooltip(&self, tooltip: &mut Tooltip, x: f32, y: f32, bounds: Rect) {
-        if !bounds.contains(x, y) {
-            return;
-        }
-        for (text_bounds, full_text) in &self.truncated_subjects {
-            if text_bounds.contains(x, y) {
-                tooltip.offer(*text_bounds, full_text, x, y);
-                return;
-            }
-        }
-    }
-
     /// Render diff stats (+N / -M) right-aligned in the stats column
     fn render_diff_stats(
         text_renderer: &TextRenderer,
@@ -2041,12 +2038,19 @@ impl CommitGraphView {
                 summary_color.to_array(),
             ));
 
+            let mut body_was_truncated = false;
             if let Some(body) = &commit.body_excerpt {
+                // Body has more lines beyond the excerpt — always truncated
+                let has_more = commit.body_full.as_ref()
+                    .map(|f| f.len() > body.len())
+                    .unwrap_or(false);
+
                 let separator = " \u{2014} "; // " -- "
                 let sep_width = text_renderer.measure_text(separator);
                 let remaining = available_width - summary_full_width - sep_width;
                 if remaining > char_width * 5.0 {
                     let body_text = truncate_to_width(body, text_renderer, remaining);
+                    body_was_truncated = body_text.len() != body.len() || has_more;
                     let body_x = current_x + summary_full_width;
                     let body_color = theme::TEXT_MUTED.with_alpha(0.7 * dim_alpha).to_array();
                     vertices.extend(text_renderer.layout_text(
@@ -2061,9 +2065,12 @@ impl CommitGraphView {
                         y,
                         body_color,
                     ));
+                } else {
+                    // Not enough space to show body at all — counts as truncated
+                    body_was_truncated = true;
                 }
             }
-            false
+            body_was_truncated
         } else {
             // Subject too long -- truncate it
             let summary = truncate_to_width(&commit.summary, text_renderer, available_width);
