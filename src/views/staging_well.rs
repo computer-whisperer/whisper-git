@@ -70,6 +70,8 @@ pub enum StagingAction {
     OpenSubmodule(String),
     /// Switch to a sibling submodule (exit current, then enter sibling)
     SwitchToSibling(String),
+    /// Request AI-generated commit message from staged diff
+    GenerateAiCommitMessage,
 }
 
 /// The staging well view containing commit message and file lists
@@ -120,6 +122,10 @@ pub struct StagingWell {
     sibling_bounds: Vec<(Rect, String)>,
     /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
     pub repo_state_label: Option<&'static str>,
+    /// AI generate commit message button
+    ai_generate_btn: Button,
+    /// Whether AI generation is in progress
+    pub ai_generating: bool,
 }
 
 /// Region layout results for the new top-to-bottom order:
@@ -139,6 +145,7 @@ struct StagingRegions {
     buttons: Rect,
     stage_all_btn: Rect,
     unstage_all_btn: Rect,
+    ai_btn: Rect,
     amend_btn: Rect,
     commit_btn: Rect,
 }
@@ -171,6 +178,8 @@ impl StagingWell {
             sibling_submodules: Vec::new(),
             sibling_bounds: Vec::new(),
             repo_state_label: None,
+            ai_generate_btn: Button::new("AI"),
+            ai_generating: false,
         }
     }
 
@@ -351,8 +360,37 @@ impl StagingWell {
     }
 
     /// Sync button styles based on current state. Call before layout.
-    pub fn update_button_state(&mut self) {
+    pub fn update_button_state(&mut self, elapsed: f32) {
         let staged_count = self.staged_list.files.len();
+
+        // AI generate button styling
+        if self.ai_generating {
+            let dot_count = ((elapsed * 2.0) as usize % 3) + 1;
+            let dots: String = ".".repeat(dot_count);
+            self.ai_generate_btn.label = format!("AI{}", dots);
+            // Pulsing accent background
+            let pulse = (elapsed * 3.0).sin() * 0.5 + 0.5;
+            let bg_alpha = 0.15 + pulse * 0.15;
+            self.ai_generate_btn.background = theme::ACCENT.with_alpha(bg_alpha);
+            self.ai_generate_btn.hover_background = theme::ACCENT.with_alpha(bg_alpha + 0.05);
+            self.ai_generate_btn.pressed_background = theme::ACCENT.with_alpha(bg_alpha);
+            self.ai_generate_btn.text_color = theme::ACCENT;
+            self.ai_generate_btn.border_color = Some(theme::ACCENT.with_alpha(0.5));
+        } else if staged_count == 0 {
+            self.ai_generate_btn.label = "AI".to_string();
+            self.ai_generate_btn.background = theme::SURFACE_RAISED;
+            self.ai_generate_btn.hover_background = theme::SURFACE_RAISED;
+            self.ai_generate_btn.pressed_background = theme::SURFACE_RAISED;
+            self.ai_generate_btn.text_color = theme::TEXT_MUTED.with_alpha(0.5);
+            self.ai_generate_btn.border_color = Some(theme::BORDER.with_alpha(0.5));
+        } else {
+            self.ai_generate_btn.label = "AI".to_string();
+            self.ai_generate_btn.background = theme::SURFACE_RAISED;
+            self.ai_generate_btn.hover_background = theme::SURFACE_HOVER;
+            self.ai_generate_btn.pressed_background = theme::SURFACE;
+            self.ai_generate_btn.text_color = theme::TEXT_MUTED;
+            self.ai_generate_btn.border_color = Some(theme::BORDER);
+        }
 
         // Amend toggle button styling
         if self.amend_mode {
@@ -789,7 +827,14 @@ impl StagingWell {
             }
         }
 
-        // Handle bottom button clicks (Amend, Commit)
+        // Handle bottom button clicks (AI, Amend, Commit)
+        if self.ai_generate_btn.handle_event(event, regions.ai_btn).is_consumed() {
+            if self.ai_generate_btn.was_clicked() && !self.ai_generating {
+                self.pending_action = Some(StagingAction::GenerateAiCommitMessage);
+            }
+            return EventResponse::Consumed;
+        }
+
         if self.amend_btn.handle_event(event, regions.amend_btn).is_consumed() {
             if self.amend_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::ToggleAmend);
@@ -1050,6 +1095,13 @@ impl StagingWell {
             28.0 * s,
         );
 
+        let ai_btn = Rect::new(
+            amend_btn.x - 58.0 * s,
+            buttons.y + 6.0 * s,
+            50.0 * s,
+            28.0 * s,
+        );
+
         StagingRegions {
             unstaged_header,
             unstaged,
@@ -1063,6 +1115,7 @@ impl StagingWell {
             buttons,
             stage_all_btn,
             unstage_all_btn,
+            ai_btn,
             amend_btn,
             commit_btn,
         }
@@ -1347,6 +1400,9 @@ impl StagingWell {
         // =============================================================
         // 4. BUTTON ROW (bottom)
         // =============================================================
+
+        // AI generate button
+        output.extend(self.ai_generate_btn.layout(text_renderer, regions.ai_btn));
 
         // Amend toggle button
         output.extend(self.amend_btn.layout(text_renderer, regions.amend_btn));

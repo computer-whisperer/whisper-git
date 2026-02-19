@@ -3,6 +3,7 @@
 //! Owns the App struct, winit event loop, Vulkan draw pipeline, and three-layer rendering architecture
 //! (base → chrome → overlay). Handles async git operations via mpsc channels and thread spawning.
 
+mod ai;
 mod config;
 mod crash_log;
 mod git;
@@ -282,6 +283,9 @@ impl TabViewState {
                 self.pending_messages.push(AppMessage::ExitSubmodule);
                 self.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
+            StagingAction::GenerateAiCommitMessage => {
+                self.pending_messages.push(AppMessage::AiGenerateCommitMessage);
+            }
         }
     }
 
@@ -399,6 +403,10 @@ struct App {
     diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
     /// Timestamp of app creation, for animation elapsed time
     app_start: Instant,
+    /// Receiver for async AI commit message generation
+    ai_commit_receiver: Option<(Receiver<Result<ai::AiResponse, String>>, Instant)>,
+    /// AI provider resolved from config at startup
+    ai_provider: ai::AiProvider,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -472,6 +480,7 @@ impl App {
         settings_dialog.time_spacing_strength = config.time_spacing_strength;
         settings_dialog.show_orphaned_commits = config.show_orphaned_commits;
         let shortcut_bar_visible = config.shortcut_bar_visible;
+        let ai_provider = ai::AiProvider::from_config(&config.ai_provider);
 
         Ok(Self {
             cli_args,
@@ -502,6 +511,8 @@ impl App {
             last_status_refresh: Instant::now(),
             diff_stats_receiver: None,
             app_start: Instant::now(),
+            ai_commit_receiver: None,
+            ai_provider,
         })
     }
 
@@ -891,6 +902,43 @@ impl App {
                     self.push_dialog.show(branch, &default_remote);
                 }
                 false
+            } else if matches!(msg, AppMessage::AiGenerateCommitMessage) {
+                // Inline AI generation (can't call method due to borrow conflict with repo_tab/view_state)
+                if self.ai_commit_receiver.is_some() {
+                    self.toast_manager.push("AI generation already in progress".to_string(), ToastSeverity::Info);
+                } else if view_state.staging_well.staged_list.files.is_empty() {
+                    self.toast_manager.push("No staged files — stage changes first".to_string(), ToastSeverity::Info);
+                } else if let Some(ref repo) = repo_tab.repo {
+                    let staging_repo = view_state.active_worktree_path.as_ref()
+                        .and_then(|p| view_state.worktree_repo_cache.get(p))
+                        .unwrap_or(repo);
+                    match staging_repo.staged_diff_text(50_000) {
+                        Ok(diff_text) if diff_text.trim().is_empty() => {
+                            self.toast_manager.push("Staged diff is empty".to_string(), ToastSeverity::Info);
+                        }
+                        Ok(diff_text) => {
+                            let branch = view_state.current_branch.clone();
+                            let provider = self.ai_provider.clone();
+                            let provider_name = provider.display_name().to_string();
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            std::thread::spawn(move || {
+                                let request = ai::AiRequest { diff_text, branch };
+                                let result = provider.generate_commit_message(&request);
+                                let _ = tx.send(result);
+                            });
+                            self.ai_commit_receiver = Some((rx, Instant::now()));
+                            view_state.staging_well.ai_generating = true;
+                            self.toast_manager.push(
+                                format!("Generating commit message via {}...", provider_name),
+                                ToastSeverity::Info,
+                            );
+                        }
+                        Err(e) => {
+                            self.toast_manager.push(format!("Failed to read staged diff: {}", e), ToastSeverity::Error);
+                        }
+                    }
+                }
+                false
             } else {
                 true
             }
@@ -1161,6 +1209,50 @@ impl App {
                         view_state.showed_timeout_toast[3] = true;
                         self.toast_manager.push(format!("{} still running...", label), ToastSeverity::Info);
                     }
+                }
+            }
+        }
+    }
+
+    fn poll_ai_commit(&mut self) {
+        let (rx, started) = match self.ai_commit_receiver {
+            Some(ref inner) => inner,
+            None => return,
+        };
+        let started = *started;
+
+        match rx.try_recv() {
+            Ok(Ok(response)) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                    view_state.staging_well.subject_input.set_text(&response.subject);
+                    view_state.staging_well.body_area.set_text(&response.body);
+                }
+                self.toast_manager.push("Commit message generated".to_string(), ToastSeverity::Success);
+            }
+            Ok(Err(err)) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                }
+                self.toast_manager.push(format!("AI generation failed: {}", err), ToastSeverity::Error);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                }
+                self.toast_manager.push("AI generation failed: thread terminated".to_string(), ToastSeverity::Error);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Check for timeout (30s)
+                if started.elapsed().as_secs() >= 30 {
+                    self.ai_commit_receiver = None;
+                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                        view_state.staging_well.ai_generating = false;
+                    }
+                    self.toast_manager.push("AI generation timed out".to_string(), ToastSeverity::Error);
                 }
             }
         }
@@ -2252,6 +2344,8 @@ impl ApplicationHandler for App {
                 self.poll_watcher();
                 // Poll background remote operations
                 self.poll_remote_ops();
+                // Poll AI commit message generation
+                self.poll_ai_commit();
                 // Process any pending messages
                 self.process_messages();
                 // Check if staging well requested an immediate status refresh (e.g., worktree switch)
@@ -3753,7 +3847,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
             });
         let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
         view_state.header_bar.update_button_state(elapsed, branch_opt.as_deref(), &state.bold_text_renderer);
-        view_state.staging_well.update_button_state();
+        view_state.staging_well.update_button_state(elapsed);
         view_state.staging_well.update_cursors(now);
         view_state.commit_graph_view.search_bar.update_cursor(now);
         view_state.branch_sidebar.update_filter_cursor(now);

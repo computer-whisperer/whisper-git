@@ -91,6 +91,7 @@ pub enum AppMessage {
     FetchAll,
     CheckoutBranchInWorktree(String, PathBuf), // (branch, worktree_path)
     SetHead(String),                           // bare-repo HEAD pointer update
+    AiGenerateCommitMessage,
 }
 
 /// Try to set the generic async operation receiver. Returns `true` if the
@@ -1104,6 +1105,11 @@ pub fn handle_app_message(
                 "Set HEAD failed",
                 repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
             );
+        }
+
+        // Handled in main.rs before message dispatch (needs App-level state)
+        AppMessage::AiGenerateCommitMessage => {
+            return false;
         }
 
         // Submodule navigation messages are handled in main.rs process_messages,

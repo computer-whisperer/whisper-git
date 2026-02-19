@@ -413,6 +413,39 @@ impl GitRepo {
         (ins, del)
     }
 
+    /// Produce the staged diff (HEAD→index) as a unified patch string.
+    /// Truncates at `max_bytes` with a marker if the diff is too large.
+    pub fn staged_diff_text(&self, max_bytes: usize) -> Result<String> {
+        let head = self.repo.head().context("Failed to get HEAD")?;
+        let head_tree = head.peel_to_tree().context("Failed to get HEAD tree")?;
+        let diff = self.repo.diff_tree_to_index(
+            Some(&head_tree),
+            Some(&self.repo.index()?),
+            None,
+        ).context("Failed to compute staged diff")?;
+
+        let mut buf = String::new();
+        let mut truncated = false;
+        diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+            if truncated { return true; }
+            let origin = line.origin();
+            if origin == '+' || origin == '-' || origin == ' ' {
+                buf.push(origin);
+            }
+            if let Ok(content) = std::str::from_utf8(line.content()) {
+                buf.push_str(content);
+            }
+            if buf.len() > max_bytes {
+                truncated = true;
+                buf.truncate(max_bytes);
+                buf.push_str("\n... [diff truncated]");
+            }
+            true
+        }).context("Failed to print diff")?;
+
+        Ok(buf)
+    }
+
     /// Get commits for building a graph (includes all branches)
     pub fn commit_graph(&self, max_commits: usize) -> Result<Vec<CommitInfo>> {
         let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;

@@ -20,10 +20,13 @@ pub struct Config {
     pub time_spacing_strength: f32,
     #[serde(default = "default_true")]
     pub show_orphaned_commits: bool,
+    #[serde(default = "default_ai_provider")]
+    pub ai_provider: String,
 }
 
 fn default_true() -> bool { true }
 fn default_one() -> f32 { 1.0 }
+fn default_ai_provider() -> String { "claude-cli".to_string() }
 
 /// Maximum number of recent repos to remember
 const MAX_RECENT_REPOS: usize = 10;
@@ -39,6 +42,7 @@ impl Default for Config {
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
             show_orphaned_commits: true,
+            ai_provider: default_ai_provider(),
         }
     }
 }
