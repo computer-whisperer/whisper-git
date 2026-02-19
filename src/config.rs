@@ -20,6 +20,8 @@ pub struct Config {
     pub time_spacing_strength: f32,
     #[serde(default = "default_true")]
     pub show_orphaned_commits: bool,
+    #[serde(default = "default_true")]
+    pub ratchet_scroll: bool,
     #[serde(default = "default_ai_provider")]
     pub ai_provider: String,
 }
@@ -42,6 +44,7 @@ impl Default for Config {
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
             show_orphaned_commits: true,
+            ratchet_scroll: true,
             ai_provider: default_ai_provider(),
         }
     }

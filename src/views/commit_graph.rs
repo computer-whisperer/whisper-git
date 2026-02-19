@@ -256,6 +256,14 @@ pub struct CommitGraphView {
     /// Truncated subject text zones for tooltip display (rebuilt each layout_text call).
     /// Each entry: (text_bounds_rect, full_summary_string)
     pub(crate) truncated_subjects: Vec<(Rect, String)>,
+    /// Ratchet scroll: index of the topmost visible row
+    pub top_row_index: usize,
+    /// Ratchet scroll: accumulates fractional trackpad deltas until they cross the row threshold
+    scroll_accumulator: f32,
+    /// Whether fast scrolling is enabled (3 rows per tick instead of 1)
+    pub fast_scroll: bool,
+    /// Whether ratchet (snap-to-row) scrolling is enabled vs smooth pixel scrolling
+    pub ratchet_scroll: bool,
 }
 
 impl Default for CommitGraphView {
@@ -287,6 +295,10 @@ impl Default for CommitGraphView {
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
             truncated_subjects: Vec::new(),
+            top_row_index: 0,
+            scroll_accumulator: 0.0,
+            fast_scroll: false,
+            ratchet_scroll: true,
         }
     }
 }
@@ -353,6 +365,46 @@ impl CommitGraphView {
         }
     }
 
+    /// Snap scroll to the given row index, clamping to valid range.
+    /// Derives `scroll_offset` from `row_y_offsets[top_row_index]`.
+    fn snap_scroll_to_row(&mut self, row: usize, commit_count: usize, viewport_height: f32) {
+        let max_row = self.max_top_row(commit_count, viewport_height);
+        self.top_row_index = row.min(max_row);
+        self.scroll_offset = self.row_y_offsets.get(self.top_row_index).copied()
+            .unwrap_or(self.top_row_index as f32 * self.row_height);
+    }
+
+    /// Find the row index nearest to a given pixel offset using binary search.
+    fn row_nearest_to_offset(&self, offset: f32) -> usize {
+        if self.row_y_offsets.is_empty() {
+            return if self.row_height > 0.0 { (offset / self.row_height).round() as usize } else { 0 };
+        }
+        let idx = self.row_y_offsets.partition_point(|&off| off < offset);
+        if idx == 0 {
+            return 0;
+        }
+        if idx >= self.row_y_offsets.len() {
+            return self.row_y_offsets.len() - 1;
+        }
+        // Pick whichever of idx-1 or idx is closer
+        let dist_prev = (self.row_y_offsets[idx - 1] - offset).abs();
+        let dist_next = (self.row_y_offsets[idx] - offset).abs();
+        if dist_prev <= dist_next { idx - 1 } else { idx }
+    }
+
+    /// Highest row index that can be the top row without scrolling past content end.
+    fn max_top_row(&self, commit_count: usize, viewport_height: f32) -> usize {
+        if commit_count == 0 {
+            return 0;
+        }
+        let total_h = self.total_content_height(commit_count);
+        if total_h <= viewport_height {
+            return 0;
+        }
+        let max_offset = total_h - viewport_height + self.row_height * 2.0;
+        self.row_nearest_to_offset(max_offset).min(commit_count - 1)
+    }
+
     /// Check if we're near the bottom and should request more commits
     fn check_load_more(&mut self, commits: &[CommitInfo], bounds: Rect) {
         if self.loading_more {
@@ -370,6 +422,9 @@ impl CommitGraphView {
     pub fn update_layout(&mut self, commits: &[CommitInfo]) {
         self.layout.build(commits);
         self.compute_row_offsets(commits);
+        // Re-sync ratchet scroll state from current pixel offset
+        self.top_row_index = self.row_nearest_to_offset(self.scroll_offset);
+        self.scroll_accumulator = 0.0;
     }
 
     /// Compute accumulated Y offsets for each row based on time deltas between
@@ -546,7 +601,15 @@ impl CommitGraphView {
         if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
                 let max_scroll = (self.total_content_height(commits.len()) - bounds.height + self.row_height * 2.0).max(0.0);
-                self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
+                if self.ratchet_scroll {
+                    let target_offset = ratio * max_scroll;
+                    let nearest = self.row_nearest_to_offset(target_offset);
+                    self.scroll_accumulator = 0.0;
+                    self.snap_scroll_to_row(nearest, commits.len(), bounds.height);
+                } else {
+                    self.scroll_offset = (ratio * max_scroll).clamp(0.0, max_scroll);
+                    self.top_row_index = self.row_nearest_to_offset(self.scroll_offset);
+                }
             }
             self.check_load_more(commits, bounds);
             return EventResponse::Consumed;
@@ -592,7 +655,8 @@ impl CommitGraphView {
                     // Go to first commit
                     if let Some(commit) = commits.first() {
                         self.selected_commit = Some(commit.id);
-                        self.scroll_offset = 0.0;
+                        self.scroll_accumulator = 0.0;
+                        self.snap_scroll_to_row(0, commits.len(), bounds.height);
                     }
                     EventResponse::Consumed
                 }
@@ -657,8 +721,28 @@ impl CommitGraphView {
             }
             InputEvent::Scroll { delta_y, x, y, .. } => {
                 if bounds.contains(*x, *y) {
-                    let max_scroll = (self.total_content_height(commits.len()) - bounds.height + self.row_height * 2.0).max(0.0);
-                    self.scroll_offset = (self.scroll_offset - delta_y * 2.0).max(0.0).min(max_scroll);
+                    if self.ratchet_scroll {
+                        // Ratchet scrolling: accumulate delta in pixels, step one row per
+                        // SCROLL_LINE (20px).  Mouse wheels emit 20px per notch; trackpads
+                        // emit smaller pixel deltas that accumulate until the threshold.
+                        const SCROLL_LINE: f32 = 20.0;
+                        self.scroll_accumulator += delta_y;
+                        let rows_per_step: usize = if self.fast_scroll { 3 } else { 1 };
+                        while self.scroll_accumulator >= SCROLL_LINE {
+                            self.scroll_accumulator -= SCROLL_LINE;
+                            self.top_row_index = self.top_row_index.saturating_sub(rows_per_step);
+                        }
+                        while self.scroll_accumulator <= -SCROLL_LINE {
+                            self.scroll_accumulator += SCROLL_LINE;
+                            self.top_row_index += rows_per_step;
+                        }
+                        self.snap_scroll_to_row(self.top_row_index, commits.len(), bounds.height);
+                    } else {
+                        // Smooth scrolling: pixel-based offset
+                        let max_scroll = (self.total_content_height(commits.len()) - bounds.height + self.row_height * 2.0).max(0.0);
+                        self.scroll_offset = (self.scroll_offset - delta_y * 2.0).clamp(0.0, max_scroll);
+                        self.top_row_index = self.row_nearest_to_offset(self.scroll_offset);
+                    }
                     self.check_load_more(commits, bounds);
                     EventResponse::Consumed
                 } else {
@@ -836,10 +920,22 @@ impl CommitGraphView {
                     .unwrap_or(idx as f32 * self.row_height);
                 let visible_height = bounds.height - self.row_height * 2.0;
 
-                if target_y < self.scroll_offset {
-                    self.scroll_offset = target_y;
-                } else if target_y > self.scroll_offset + visible_height {
-                    self.scroll_offset = target_y - visible_height + self.row_height;
+                self.scroll_accumulator = 0.0;
+                if self.ratchet_scroll {
+                    if target_y < self.scroll_offset {
+                        self.snap_scroll_to_row(idx, commits.len(), bounds.height);
+                    } else if target_y > self.scroll_offset + visible_height {
+                        let desired_offset = target_y - visible_height + self.row_height;
+                        let row = self.row_nearest_to_offset(desired_offset);
+                        self.snap_scroll_to_row(row, commits.len(), bounds.height);
+                    }
+                } else {
+                    if target_y < self.scroll_offset {
+                        self.scroll_offset = target_y;
+                    } else if target_y > self.scroll_offset + visible_height {
+                        self.scroll_offset = target_y - visible_height + self.row_height;
+                    }
+                    self.top_row_index = self.row_nearest_to_offset(self.scroll_offset);
                 }
             }
     }
@@ -856,12 +952,11 @@ impl CommitGraphView {
         let header_offset = self.header_offset();
         let scrollbar_width = self.scrollbar_width();
 
-        // Update scrollbar state using total content height (approximate via equivalent row count)
+        // Update scrollbar state using top_row_index directly
         let total_h = self.total_content_height(commits.len());
         let equivalent_total_rows = (total_h / self.row_height).ceil() as usize;
         let visible_rows = (bounds.height / self.row_height).max(1.0) as usize;
-        let scroll_offset_items = (self.scroll_offset / self.row_height).round() as usize;
-        self.scrollbar.set_content(equivalent_total_rows, visible_rows, scroll_offset_items);
+        self.scrollbar.set_content(equivalent_total_rows, visible_rows, self.top_row_index);
 
         // Compute adaptive graph width based on visible rows
         self.update_adaptive_graph_width(commits, &bounds);

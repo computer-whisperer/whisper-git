@@ -25,6 +25,7 @@ pub struct SettingsDialog {
     pub abbreviate_worktree_names: bool,
     pub time_spacing_strength: f32, // 0.3 = low, 1.0 = normal, 2.0 = high
     pub show_orphaned_commits: bool,
+    pub ratchet_scroll: bool,
 }
 
 impl SettingsDialog {
@@ -39,6 +40,7 @@ impl SettingsDialog {
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
             show_orphaned_commits: true,
+            ratchet_scroll: true,
         }
     }
 
@@ -61,7 +63,7 @@ impl SettingsDialog {
     /// Compute dialog bounds centered in screen
     fn dialog_bounds(&self, screen: Rect, scale: f32) -> Rect {
         let dialog_w = (450.0 * scale).min(screen.width * 0.8);
-        let dialog_h = (545.0 * scale).min(screen.height * 0.7);
+        let dialog_h = (590.0 * scale).min(screen.height * 0.8);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
@@ -123,6 +125,7 @@ impl Widget for SettingsDialog {
         let row4_y = row3_y + line_h + row_gap;
         let row5_y = row4_y + line_h + row_gap;
         let row6_y = row5_y + line_h + row_gap;
+        let row7_y = row6_y + line_h + row_gap;
 
         // Toggle bounds
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
@@ -131,6 +134,7 @@ impl Widget for SettingsDialog {
         let (wt_short, wt_full) = self.toggle_bounds(&dialog, row4_y, line_h, scale);
         let (ts_low, ts_normal, ts_high) = self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
+        let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
 
         // Close button bounds
         let button_y = dialog.bottom() - padding - line_h;
@@ -207,6 +211,15 @@ impl Widget for SettingsDialog {
                 self.show_orphaned_commits = false;
                 return EventResponse::Consumed;
             }
+            // Graph scroll toggles
+            if gs_snap.contains(*x, *y) {
+                self.ratchet_scroll = true;
+                return EventResponse::Consumed;
+            }
+            if gs_smooth.contains(*x, *y) {
+                self.ratchet_scroll = false;
+                return EventResponse::Consumed;
+            }
         }
 
         // Route to close button
@@ -278,6 +291,7 @@ impl SettingsDialog {
         let row4_y = row3_y + line_h + row_gap;
         let row5_y = row4_y + line_h + row_gap;
         let row6_y = row5_y + line_h + row_gap;
+        let row7_y = row6_y + line_h + row_gap;
 
         // Row 1: Show Avatars
         let label_y = row1_y + (line_h - line_height) / 2.0;
@@ -392,6 +406,26 @@ impl SettingsDialog {
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
         self.render_toggle_option(&mut output, text_renderer, &oc_on, "ON", self.show_orphaned_commits);
         self.render_toggle_option(&mut output, text_renderer, &oc_off, "OFF", !self.show_orphaned_commits);
+
+        // Separator
+        let sep6_y = row6_y + line_h + 5.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep6_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.to_array(),
+        ));
+
+        // Row 7: Graph Scroll
+        let label_y7 = row7_y + (line_h - line_height) / 2.0;
+        output.text_vertices.extend(text_renderer.layout_text(
+            "Graph Scroll",
+            dialog.x + padding,
+            label_y7,
+            theme::TEXT.to_array(),
+        ));
+
+        let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
+        self.render_toggle_option(&mut output, text_renderer, &gs_snap, "Snap", self.ratchet_scroll);
+        self.render_toggle_option(&mut output, text_renderer, &gs_smooth, "Smooth", !self.ratchet_scroll);
 
         // Close button at bottom
         let button_y = dialog.bottom() - padding - line_h;

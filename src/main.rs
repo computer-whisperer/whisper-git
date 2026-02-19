@@ -119,6 +119,7 @@ struct SavedParentState {
     commits: Vec<CommitInfo>,
     repo_name: String,
     graph_scroll_offset: f32,
+    graph_top_row_index: usize,
     selected_commit: Option<Oid>,
     sidebar_scroll_offset: f32,
     submodule_name: String,
@@ -482,6 +483,7 @@ impl App {
         settings_dialog.abbreviate_worktree_names = config.abbreviate_worktree_names;
         settings_dialog.time_spacing_strength = config.time_spacing_strength;
         settings_dialog.show_orphaned_commits = config.show_orphaned_commits;
+        settings_dialog.ratchet_scroll = config.ratchet_scroll;
         let shortcut_bar_visible = config.shortcut_bar_visible;
         let ai_provider = ai::AiProvider::from_config(&config.ai_provider);
 
@@ -647,10 +649,13 @@ impl App {
         let row_scale = self.settings_dialog.row_scale;
         let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
         let time_strength = self.settings_dialog.time_spacing_strength;
+        let fast_scroll = self.config.fast_scroll;
         for (repo_tab, view_state) in &mut self.tabs {
             view_state.commit_graph_view.row_scale = row_scale;
             view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
             view_state.commit_graph_view.time_spacing_strength = time_strength;
+            view_state.commit_graph_view.fast_scroll = fast_scroll;
+            view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
             let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager, self.config.show_orphaned_commits);
             if rx.is_some() { self.diff_stats_receiver = rx; }
         }
@@ -1283,6 +1288,8 @@ impl App {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
                     view_state.commit_graph_view.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
                     view_state.commit_graph_view.time_spacing_strength = self.settings_dialog.time_spacing_strength;
+                    view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
+                    view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
                     let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager, self.config.show_orphaned_commits);
                     if rx.is_some() { self.diff_stats_receiver = rx; }
                 }
@@ -1500,12 +1507,16 @@ impl App {
                         let row_scale = self.settings_dialog.row_scale;
                         let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
                         let time_strength = self.settings_dialog.time_spacing_strength;
+                        let fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
+                        let ratchet_scroll = self.settings_dialog.ratchet_scroll;
                         let orphans_changed = self.config.show_orphaned_commits != self.settings_dialog.show_orphaned_commits;
                         if let Some(ref state) = self.state {
                             for (repo_tab, view_state) in &mut self.tabs {
                                 view_state.commit_graph_view.row_scale = row_scale;
                                 view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
                                 view_state.commit_graph_view.time_spacing_strength = time_strength;
+                                view_state.commit_graph_view.fast_scroll = fast_scroll;
+                                view_state.commit_graph_view.ratchet_scroll = ratchet_scroll;
                                 view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                                 view_state.commit_graph_view.compute_row_offsets(&repo_tab.commits);
                             }
@@ -1516,6 +1527,7 @@ impl App {
                         self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
                         self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
                         self.config.show_orphaned_commits = self.settings_dialog.show_orphaned_commits;
+                        self.config.ratchet_scroll = self.settings_dialog.ratchet_scroll;
                         if let Err(e) = self.config.save() {
                             self.toast_manager.push(e, ToastSeverity::Error);
                         }
@@ -2108,6 +2120,7 @@ fn enter_submodule(
         commits: parent_commits,
         repo_name: parent_name,
         graph_scroll_offset: view_state.commit_graph_view.scroll_offset,
+        graph_top_row_index: view_state.commit_graph_view.top_row_index,
         selected_commit: view_state.commit_graph_view.selected_commit,
         sidebar_scroll_offset: view_state.branch_sidebar.scroll_offset,
         submodule_name: name.to_string(),
@@ -2182,6 +2195,7 @@ fn exit_submodule(
 
     // Restore parent data
     let scroll_offset = saved.graph_scroll_offset;
+    let top_row_index = saved.graph_top_row_index;
     let selected = saved.selected_commit;
     let sidebar_scroll = saved.sidebar_scroll_offset;
     let parent_submodules = saved.parent_submodules;
@@ -2197,6 +2211,7 @@ fn exit_submodule(
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
+    view_state.commit_graph_view.top_row_index = top_row_index;
     view_state.commit_graph_view.selected_commit = selected;
     view_state.branch_sidebar.scroll_offset = sidebar_scroll;
 
