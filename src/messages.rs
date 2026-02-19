@@ -91,6 +91,7 @@ pub enum AppMessage {
     FetchAll,
     CheckoutBranchInWorktree(String, PathBuf), // (branch, worktree_path)
     SetHead(String),                           // bare-repo HEAD pointer update
+    StageAllUntracked,
     AiGenerateCommitMessage,
 }
 
@@ -278,6 +279,40 @@ pub fn handle_app_message(
                         } else {
                             toast_manager.push(
                                 format!("Staged {} file{}", total, if total == 1 { "" } else { "s" }),
+                                ToastSeverity::Success,
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    toast_manager.push(
+                        format!("Failed to read file status: {}", e),
+                        ToastSeverity::Error,
+                    );
+                }
+            }
+        }
+        AppMessage::StageAllUntracked => {
+            match staging_repo.status() {
+                Ok(status) => {
+                    let total = status.untracked.len();
+                    if total == 0 {
+                        toast_manager.push("No untracked files".to_string(), ToastSeverity::Info);
+                    } else {
+                        let mut failed = 0;
+                        for file in &status.untracked {
+                            if staging_repo.stage_file(&file.path).is_err() {
+                                failed += 1;
+                            }
+                        }
+                        if failed > 0 {
+                            toast_manager.push(
+                                format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
+                                ToastSeverity::Error,
+                            );
+                        } else {
+                            toast_manager.push(
+                                format!("Tracked {} file{}", total, if total == 1 { "" } else { "s" }),
                                 ToastSeverity::Success,
                             );
                         }
@@ -1155,6 +1190,7 @@ pub struct RepoStateSnapshot {
     pub worktrees: Vec<(String, bool, usize)>,
     pub staged_count: usize,
     pub unstaged_count: usize,
+    pub untracked_count: usize,
     pub conflicted_count: usize,
     pub ahead_behind: HashMap<String, (usize, usize)>,
     pub submodules: Vec<(String, bool)>,
@@ -1197,6 +1233,7 @@ impl RepoStateSnapshot {
 
         let staged_count = view_state.staging_well.staged_list.files.len();
         let unstaged_count = view_state.staging_well.unstaged_list.files.len();
+        let untracked_count = view_state.staging_well.untracked_list.files.len();
         let conflicted_count = view_state.staging_well.conflicted_list.files.len();
 
         let ahead_behind = view_state.branch_sidebar.ahead_behind_cache();
@@ -1218,6 +1255,7 @@ impl RepoStateSnapshot {
             worktrees,
             staged_count,
             unstaged_count,
+            untracked_count,
             conflicted_count,
             ahead_behind,
             submodules,
@@ -1323,6 +1361,9 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
     }
     if before.unstaged_count != after.unstaged_count {
         deltas.push(format!("Unstaged: {} -> {}", before.unstaged_count, after.unstaged_count));
+    }
+    if before.untracked_count != after.untracked_count {
+        deltas.push(format!("Untracked: {} -> {}", before.untracked_count, after.untracked_count));
     }
     if before.conflicted_count != after.conflicted_count {
         deltas.push(format!("Conflicted: {} -> {}", before.conflicted_count, after.conflicted_count));

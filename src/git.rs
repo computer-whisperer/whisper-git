@@ -750,6 +750,7 @@ impl GitRepo {
 
         let mut staged = Vec::new();
         let mut unstaged = Vec::new();
+        let mut untracked = Vec::new();
         let mut conflicted = Vec::new();
 
         for entry in statuses.iter() {
@@ -779,10 +780,15 @@ impl GitRepo {
                 });
             }
 
-            // Check for unstaged changes
-            if status.intersects(
-                Status::WT_NEW
-                    | Status::WT_MODIFIED
+            // Check for working-tree changes
+            if status.contains(Status::WT_NEW) {
+                // Untracked files go to their own section
+                untracked.push(FileStatus {
+                    path,
+                    status: FileStatusKind::New,
+                });
+            } else if status.intersects(
+                Status::WT_MODIFIED
                     | Status::WT_DELETED
                     | Status::WT_RENAMED
                     | Status::WT_TYPECHANGE,
@@ -794,26 +800,59 @@ impl GitRepo {
             }
         }
 
-        Ok(WorkingDirStatus { staged, unstaged, conflicted })
+        Ok(WorkingDirStatus { staged, unstaged, untracked, conflicted })
     }
 
-    /// Stage a file
+    /// Stage a file.
+    ///
+    /// Handles all working-tree states: modified files are added to the index,
+    /// deleted files are removed from the index, and new (untracked) files are
+    /// added normally.
     pub fn stage_file(&self, path: &str) -> Result<()> {
         self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
-        index.add_path(Path::new(path)).context("Failed to stage file")?;
+
+        // Check if the file exists on disk to determine correct index operation
+        let full_path = self.workdir()
+            .map(|wd| wd.join(path));
+        let exists_on_disk = full_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+
+        if exists_on_disk {
+            // File exists: add it (works for new + modified + typechange)
+            index.add_path(Path::new(path)).context("Failed to stage file")?;
+        } else {
+            // File was deleted from disk: remove from index to stage the deletion
+            index.remove_path(Path::new(path)).context("Failed to stage deleted file")?;
+        }
         index.write().context("Failed to write index")?;
         Ok(())
     }
 
-    /// Unstage a file
+    /// Unstage a file.
+    ///
+    /// Handles all index states: for files that exist in HEAD, resets the index
+    /// entry to the HEAD version. For newly added files (INDEX_NEW) that have
+    /// no HEAD version, removes them from the index entirely.
     pub fn unstage_file(&self, path: &str) -> Result<()> {
         self.ensure_not_bare()?;
-        let head = self.repo.head().context("Failed to get HEAD")?;
-        let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
-        self.repo
-            .reset_default(Some(head_commit.as_object()), [Path::new(path)])
-            .context("Failed to unstage file")?;
+
+        // Check file status to determine if this is a newly added file
+        let file_status = self.repo.status_file(Path::new(path))
+            .unwrap_or(Status::empty());
+
+        if file_status.contains(Status::INDEX_NEW) {
+            // Newly added file: no HEAD version exists, so remove from index
+            let mut index = self.repo.index().context("Failed to get index")?;
+            index.remove_path(Path::new(path)).context("Failed to unstage new file")?;
+            index.write().context("Failed to write index")?;
+        } else {
+            // File exists in HEAD: reset index entry to HEAD version
+            let head = self.repo.head().context("Failed to get HEAD")?;
+            let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
+            self.repo
+                .reset_default(Some(head_commit.as_object()), [Path::new(path)])
+                .context("Failed to unstage file")?;
+        }
 
         Ok(())
     }
@@ -1294,12 +1333,14 @@ pub struct DiffLine {
 pub struct WorkingDirStatus {
     pub staged: Vec<FileStatus>,
     pub unstaged: Vec<FileStatus>,
+    /// Untracked (new) files not yet known to git
+    pub untracked: Vec<FileStatus>,
     pub conflicted: Vec<FileStatus>,
 }
 
 impl WorkingDirStatus {
     pub fn total_files(&self) -> usize {
-        self.staged.len() + self.unstaged.len() + self.conflicted.len()
+        self.staged.len() + self.unstaged.len() + self.untracked.len() + self.conflicted.len()
     }
 }
 
@@ -1679,12 +1720,37 @@ impl GitRepo {
     }
 
     /// Discard working directory changes for a file by checking out from HEAD
+    /// Discard unstaged changes to a file, restoring it to the index state.
+    ///
+    /// Handles all working-tree states:
+    /// - Modified/deleted: checkout from index (restores content)
+    /// - New (untracked): delete the file from disk
     pub fn discard_file(&self, path: &str) -> Result<()> {
-        let mut checkout_builder = git2::build::CheckoutBuilder::new();
-        checkout_builder.path(path).force();
-        self.repo.checkout_head(Some(&mut checkout_builder))
-            .with_context(|| format!("Failed to discard changes in {}", path))?;
-        Ok(())
+        // Check file status to determine correct discard action
+        let file_status = self.repo.status_file(Path::new(path))
+            .unwrap_or(Status::empty());
+
+        if file_status.contains(Status::WT_NEW) {
+            // Untracked file: delete from disk
+            if let Some(workdir) = self.workdir() {
+                let full_path = workdir.join(path);
+                if full_path.is_dir() {
+                    std::fs::remove_dir_all(&full_path)
+                        .with_context(|| format!("Failed to remove directory {}", path))?;
+                } else {
+                    std::fs::remove_file(&full_path)
+                        .with_context(|| format!("Failed to remove untracked file {}", path))?;
+                }
+            }
+            Ok(())
+        } else {
+            // Modified, deleted, typechange: restore from index/HEAD
+            let mut checkout_builder = git2::build::CheckoutBuilder::new();
+            checkout_builder.path(path).force();
+            self.repo.checkout_head(Some(&mut checkout_builder))
+                .with_context(|| format!("Failed to discard changes in {}", path))?;
+            Ok(())
+        }
     }
 
     /// Get full commit information for the detail panel

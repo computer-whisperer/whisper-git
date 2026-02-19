@@ -70,6 +70,8 @@ pub enum StagingAction {
     OpenSubmodule(String),
     /// Switch to a sibling submodule (exit current, then enter sibling)
     SwitchToSibling(String),
+    /// Stage all untracked (new) files
+    StageAllUntracked,
     /// Request AI-generated commit message from staged diff
     GenerateAiCommitMessage,
 }
@@ -82,12 +84,16 @@ pub struct StagingWell {
     pub body_area: TextArea,
     /// Staged files list
     pub staged_list: FileList,
-    /// Unstaged files list
+    /// Unstaged files list (tracked files with modifications)
     pub unstaged_list: FileList,
+    /// Untracked files list (new files not yet known to git)
+    pub untracked_list: FileList,
     /// Conflicted files list (shown during merge/rebase conflicts)
     pub conflicted_list: FileList,
-    /// Stage all button
+    /// Stage all button (unstaged tracked changes)
     stage_all_btn: Button,
+    /// Track all button (untracked new files)
+    track_all_btn: Button,
     /// Unstage all button
     unstage_all_btn: Button,
     /// Commit button
@@ -98,7 +104,7 @@ pub struct StagingWell {
     pub amend_mode: bool,
     /// Pending action
     pending_action: Option<StagingAction>,
-    /// Which section has focus (0=unstaged, 1=staged, 2=subject, 3=body)
+    /// Which section has focus (0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body)
     focus_section: usize,
     /// Display scale factor for 4K/HiDPI scaling
     pub scale: f32,
@@ -133,6 +139,8 @@ pub struct StagingWell {
 struct StagingRegions {
     unstaged_header: Rect,
     unstaged: Rect,
+    untracked_header: Rect,
+    untracked: Rect,
     staged_header: Rect,
     staged: Rect,
     /// Area for the submodule section (between staged and commit area, zero-height if none)
@@ -144,6 +152,7 @@ struct StagingRegions {
     body: Rect,
     buttons: Rect,
     stage_all_btn: Rect,
+    track_all_btn: Rect,
     unstage_all_btn: Rect,
     ai_btn: Rect,
     amend_btn: Rect,
@@ -159,8 +168,10 @@ impl StagingWell {
             body_area: TextArea::new(),
             staged_list: { let mut fl = FileList::new("Staged", true); fl.hide_header = true; fl },
             unstaged_list: { let mut fl = FileList::new("Unstaged", false); fl.hide_header = true; fl },
+            untracked_list: { let mut fl = FileList::new("Untracked", false); fl.hide_header = true; fl },
             conflicted_list: { let mut fl = FileList::new("Conflicted", false); fl.hide_header = true; fl },
             stage_all_btn: Button::new("Stage All"),
+            track_all_btn: Button::new("Track All"),
             unstage_all_btn: Button::new("Unstage All"),
             commit_btn: Button::new("Commit").primary(),
             amend_btn: Button::new("Amend"),
@@ -188,6 +199,7 @@ impl StagingWell {
         self.scale = scale;
         self.staged_list.set_scale(scale);
         self.unstaged_list.set_scale(scale);
+        self.untracked_list.set_scale(scale);
         self.conflicted_list.set_scale(scale);
     }
 
@@ -197,10 +209,12 @@ impl StagingWell {
 
         let staged: Vec<FileEntry> = status.staged.iter().map(FileEntry::from).collect();
         let unstaged: Vec<FileEntry> = status.unstaged.iter().map(FileEntry::from).collect();
+        let untracked: Vec<FileEntry> = status.untracked.iter().map(FileEntry::from).collect();
         let conflicted: Vec<FileEntry> = status.conflicted.iter().map(FileEntry::from).collect();
 
         self.staged_list.set_files(staged);
         self.unstaged_list.set_files(unstaged);
+        self.untracked_list.set_files(untracked);
         self.conflicted_list.set_files(conflicted);
     }
 
@@ -208,6 +222,7 @@ impl StagingWell {
     pub fn clear_status(&mut self) {
         self.staged_list.set_files(Vec::new());
         self.unstaged_list.set_files(Vec::new());
+        self.untracked_list.set_files(Vec::new());
     }
 
     /// Set the submodule list for the current repo/worktree.
@@ -223,14 +238,15 @@ impl StagingWell {
     /// Returns true if any button in the staging well is hovered
     pub fn is_any_button_hovered(&self) -> bool {
         self.stage_all_btn.is_hovered()
+            || self.track_all_btn.is_hovered()
             || self.unstage_all_btn.is_hovered()
             || self.commit_btn.is_hovered()
             || self.amend_btn.is_hovered()
     }
 
-    /// Returns true if a file in either list is hovered
+    /// Returns true if a file in any list is hovered
     pub fn is_file_hovered(&self) -> bool {
-        self.staged_list.is_item_hovered() || self.unstaged_list.is_item_hovered()
+        self.staged_list.is_item_hovered() || self.unstaged_list.is_item_hovered() || self.untracked_list.is_item_hovered()
     }
 
     /// Get and clear any pending action
@@ -260,7 +276,7 @@ impl StagingWell {
     /// Call this after a successful commit so the user can immediately type the next one.
     pub fn clear_and_focus(&mut self) {
         self.clear_message();
-        self.focus_section = 2; // subject is now section 2
+        self.focus_section = 3; // subject is section 3 (0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body)
         self.update_focus_state();
     }
 
@@ -279,7 +295,7 @@ impl StagingWell {
         self.amend_mode = true;
         self.subject_input.set_text(subject);
         self.body_area.set_text(body);
-        self.focus_section = 2; // subject is now section 2
+        self.focus_section = 3; // subject is section 3 (0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body)
         self.update_focus_state();
     }
 
@@ -296,11 +312,11 @@ impl StagingWell {
             return None;
         }
 
-        let (unstaged_bounds, staged_bounds, _, _, _) = self.compute_regions(bounds);
+        let regions = self.compute_regions_full(bounds);
 
         // Check staged files
-        if staged_bounds.contains(x, y)
-            && let Some(file) = self.staged_list.file_at_y(y, staged_bounds) {
+        if regions.staged.contains(x, y)
+            && let Some(file) = self.staged_list.file_at_y(y, regions.staged) {
                 let items = vec![
                     MenuItem::new("Unstage File", format!("unstage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
@@ -309,8 +325,8 @@ impl StagingWell {
             }
 
         // Check unstaged files
-        if unstaged_bounds.contains(x, y)
-            && let Some(file) = self.unstaged_list.file_at_y(y, unstaged_bounds) {
+        if regions.unstaged.contains(x, y)
+            && let Some(file) = self.unstaged_list.file_at_y(y, regions.unstaged) {
                 let items = vec![
                     MenuItem::new("Stage File", format!("stage:{}", file)),
                     MenuItem::new("View Diff", format!("view_diff:{}", file)),
@@ -319,11 +335,21 @@ impl StagingWell {
                 return Some(items);
             }
 
+        // Check untracked files
+        if regions.untracked.contains(x, y)
+            && let Some(file) = self.untracked_list.file_at_y(y, regions.untracked) {
+                let items = vec![
+                    MenuItem::new("Stage File", format!("stage:{}", file)),
+                    MenuItem::new("Discard File", format!("discard:{}", file)),
+                ];
+                return Some(items);
+            }
+
         None
     }
 
     fn cycle_focus(&mut self, forward: bool) {
-        let sections = 4;
+        let sections = 5;
         if forward {
             self.focus_section = (self.focus_section + 1) % sections;
         } else {
@@ -332,12 +358,13 @@ impl StagingWell {
         self.update_focus_state();
     }
 
-    /// New focus mapping: 0=unstaged, 1=staged, 2=subject, 3=body
+    /// Focus mapping: 0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body
     fn update_focus_state(&mut self) {
         self.unstaged_list.set_focused(self.focus_section == 0);
-        self.staged_list.set_focused(self.focus_section == 1);
-        self.subject_input.set_focused(self.focus_section == 2);
-        self.body_area.set_focused(self.focus_section == 3);
+        self.untracked_list.set_focused(self.focus_section == 1);
+        self.staged_list.set_focused(self.focus_section == 2);
+        self.subject_input.set_focused(self.focus_section == 3);
+        self.body_area.set_focused(self.focus_section == 4);
     }
 
     /// Check if any text input in the staging well has keyboard focus.
@@ -351,6 +378,7 @@ impl StagingWell {
         self.body_area.set_focused(false);
         self.staged_list.set_focused(false);
         self.unstaged_list.set_focused(false);
+        self.untracked_list.set_focused(false);
     }
 
     /// Update cursor blink state for text inputs. Call once per frame.
@@ -519,6 +547,7 @@ impl StagingWell {
         // Clear stale file lists immediately and request a fresh status refresh
         self.staged_list.set_files(Vec::new());
         self.unstaged_list.set_files(Vec::new());
+        self.untracked_list.set_files(Vec::new());
         self.conflicted_list.set_files(Vec::new());
         self.status_refresh_needed = true;
     }
@@ -751,14 +780,20 @@ impl StagingWell {
         let regions = self.compute_regions_full(bounds);
 
         self.unstaged_list.update_hover(x, y, regions.unstaged);
+        self.untracked_list.update_hover(x, y, regions.untracked);
         self.staged_list.update_hover(x, y, regions.staged);
 
-        // Hide Stage All / Unstage All hover when the corresponding list is empty
+        // Hide Stage All / Track All / Unstage All hover when the corresponding list is empty
         let zero = Rect::new(0.0, 0.0, 0.0, 0.0);
         if self.unstaged_list.files.is_empty() {
             self.stage_all_btn.update_hover(x, y, zero);
         } else {
             self.stage_all_btn.update_hover(x, y, regions.stage_all_btn);
+        }
+        if self.untracked_list.files.is_empty() {
+            self.track_all_btn.update_hover(x, y, zero);
+        } else {
+            self.track_all_btn.update_hover(x, y, regions.track_all_btn);
         }
         if self.staged_list.files.is_empty() {
             self.unstage_all_btn.update_hover(x, y, zero);
@@ -766,6 +801,7 @@ impl StagingWell {
             self.unstage_all_btn.update_hover(x, y, regions.unstage_all_btn);
         }
 
+        self.ai_generate_btn.update_hover(x, y, regions.ai_btn);
         self.amend_btn.update_hover(x, y, regions.amend_btn);
         self.commit_btn.update_hover(x, y, regions.commit_btn);
     }
@@ -775,6 +811,7 @@ impl StagingWell {
         // Calculate sub-regions
         let regions = self.compute_regions_full(bounds);
         let unstaged_bounds = regions.unstaged;
+        let untracked_bounds = regions.untracked;
         let staged_bounds = regions.staged;
         let subject_bounds = regions.subject;
         let body_bounds = regions.body;
@@ -784,7 +821,7 @@ impl StagingWell {
         // to the panel-level cycling in main.rs.
         if let InputEvent::KeyDown { key: Key::Tab, modifiers, .. } = event {
             let forward = !modifiers.shift;
-            let sections = 4;
+            let sections = 5; // 0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body
             if forward && self.focus_section == sections - 1 {
                 // Would wrap past last section - let it bubble up
                 return EventResponse::Ignored;
@@ -813,6 +850,15 @@ impl StagingWell {
             if self.stage_all_btn.handle_event(event, regions.stage_all_btn).is_consumed() {
                 if self.stage_all_btn.was_clicked() {
                     self.pending_action = Some(StagingAction::StageAll);
+                }
+                return EventResponse::Consumed;
+            }
+        }
+
+        if !self.untracked_list.files.is_empty() {
+            if self.track_all_btn.handle_event(event, regions.track_all_btn).is_consumed() {
+                if self.track_all_btn.was_clicked() {
+                    self.pending_action = Some(StagingAction::StageAllUntracked);
                 }
                 return EventResponse::Consumed;
             }
@@ -871,24 +917,27 @@ impl StagingWell {
         }
 
         // For MouseDown, determine focus section before routing
-        // New order: 0=unstaged, 1=staged, 2=subject, 3=body
+        // Order: 0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body
         if let InputEvent::MouseDown { x, y, .. } = event {
             if unstaged_bounds.contains(*x, *y) {
                 self.focus_section = 0;
                 self.update_focus_state();
-            } else if staged_bounds.contains(*x, *y) {
+            } else if untracked_bounds.contains(*x, *y) {
                 self.focus_section = 1;
                 self.update_focus_state();
-            } else if subject_bounds.contains(*x, *y) {
+            } else if staged_bounds.contains(*x, *y) {
                 self.focus_section = 2;
                 self.update_focus_state();
-            } else if body_bounds.contains(*x, *y) {
+            } else if subject_bounds.contains(*x, *y) {
                 self.focus_section = 3;
+                self.update_focus_state();
+            } else if body_bounds.contains(*x, *y) {
+                self.focus_section = 4;
                 self.update_focus_state();
             }
         }
 
-        // Route to focused section
+        // Route to focused section: 0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body
         match self.focus_section {
             0 => {
                 let response = self.unstaged_list.handle_event(event, unstaged_bounds);
@@ -914,6 +963,26 @@ impl StagingWell {
                 }
             }
             1 => {
+                let response = self.untracked_list.handle_event(event, untracked_bounds);
+                if response.is_consumed() {
+                    if let Some(action) = self.untracked_list.take_action() {
+                        match action {
+                            FileListAction::ToggleStage(path) => {
+                                self.pending_action = Some(StagingAction::StageFile(path));
+                            }
+                            FileListAction::StageAll => {
+                                self.pending_action = Some(StagingAction::StageAll);
+                            }
+                            FileListAction::SelectionChanged(path) => {
+                                self.pending_action = Some(StagingAction::PreviewDiff(path, false));
+                            }
+                            _ => {}
+                        }
+                    }
+                    return response;
+                }
+            }
+            2 => {
                 let response = self.staged_list.handle_event(event, staged_bounds);
                 if response.is_consumed() {
                     if let Some(action) = self.staged_list.take_action() {
@@ -936,13 +1005,13 @@ impl StagingWell {
                     return response;
                 }
             }
-            2 => {
+            3 => {
                 let response = self.subject_input.handle_event(event, subject_bounds);
                 if response.is_consumed() {
                     return response;
                 }
             }
-            3 => {
+            4 => {
                 let response = self.body_area.handle_event(event, body_bounds);
                 if response.is_consumed() {
                     return response;
@@ -954,8 +1023,9 @@ impl StagingWell {
         EventResponse::Ignored
     }
 
-    /// Compute all regions for the new layout order.
-    /// Top-to-bottom: unstaged header + list, staged header + list, commit area, buttons.
+    /// Compute all regions for the layout order:
+    /// unstaged header + list, untracked header + list, staged header + list,
+    /// submodules, siblings, commit area, buttons.
     /// When file lists are empty, they collapse to just the header row and the saved
     /// space is given to the commit message body area.
     fn compute_regions_full(&self, bounds: Rect) -> StagingRegions {
@@ -967,7 +1037,13 @@ impl StagingWell {
         let divider_gap = 6.0 * s;
 
         let unstaged_empty = self.unstaged_list.files.is_empty();
+        let untracked_empty = self.untracked_list.files.is_empty();
         let staged_empty = self.staged_list.files.is_empty();
+
+        // How many section headers do we need? (always at least unstaged + staged)
+        let num_headers = 2 + if untracked_empty { 0 } else { 1 };
+        // How many dividers between sections?
+        let num_dividers = num_headers; // one after each header section
 
         // Bottom-up: reserve space for buttons and commit message area first
         let button_area_height = 40.0 * s;
@@ -996,11 +1072,9 @@ impl StagingWell {
         };
 
         // File lists: when empty, collapse to zero height (header-only).
-        // The header is already accounted for separately.
         let file_area_budget = (inner.height
-            - section_header_height * 2.0
-            - divider_gap
-            - divider_gap
+            - section_header_height * num_headers as f32
+            - divider_gap * num_dividers as f32
             - sm_total_h
             - sib_total_h
             - commit_title_height
@@ -1011,12 +1085,20 @@ impl StagingWell {
             - button_area_height)
             .max(40.0 * s);
 
-        // Distribute file area: empty lists get 0, non-empty get their share.
-        let (unstaged_list_h, staged_list_h, body_bonus) = match (unstaged_empty, staged_empty) {
-            (true, true) => (0.0, 0.0, file_area_budget),
-            (true, false) => (0.0, file_area_budget, 0.0),
-            (false, true) => (file_area_budget, 0.0, 0.0),
-            (false, false) => (file_area_budget / 2.0, file_area_budget / 2.0, 0.0),
+        // Distribute file area among non-empty lists.
+        let non_empty_count = [!unstaged_empty, !untracked_empty, !staged_empty]
+            .iter().filter(|&&b| b).count();
+
+        let (unstaged_list_h, untracked_list_h, staged_list_h, body_bonus) = if non_empty_count == 0 {
+            (0.0, 0.0, 0.0, file_area_budget)
+        } else {
+            let per_list = file_area_budget / non_empty_count as f32;
+            (
+                if unstaged_empty { 0.0 } else { per_list },
+                if untracked_empty { 0.0 } else { per_list },
+                if staged_empty { 0.0 } else { per_list },
+                0.0,
+            )
         };
 
         let body_height = base_body_height + body_bonus;
@@ -1026,8 +1108,20 @@ impl StagingWell {
         let (unstaged_header, remaining) = inner.take_top(section_header_height);
         let (unstaged, remaining) = remaining.take_top(unstaged_list_h);
 
-        // Divider between unstaged and staged
+        // Divider between unstaged and untracked/staged
         let (_div1, remaining) = remaining.take_top(divider_gap);
+
+        // --- Untracked section (only present when there are untracked files) ---
+        let (untracked_header, untracked, remaining) = if untracked_empty {
+            // Zero-height placeholder (no header rendered for empty untracked section)
+            let zero = Rect::new(remaining.x, remaining.y, remaining.width, 0.0);
+            (zero, zero, remaining)
+        } else {
+            let (uh, remaining) = remaining.take_top(section_header_height);
+            let (ul, remaining) = remaining.take_top(untracked_list_h);
+            let (_div, remaining) = remaining.take_top(divider_gap);
+            (uh, ul, remaining)
+        };
 
         // --- Staged section ---
         let (staged_header, remaining) = remaining.take_top(section_header_height);
@@ -1070,6 +1164,15 @@ impl StagingWell {
             22.0 * s,
         );
 
+        // Track All button in untracked section header (right-aligned)
+        let track_all_btn_w = 80.0 * s;
+        let track_all_btn = Rect::new(
+            untracked_header.right() - track_all_btn_w,
+            untracked_header.y + (section_header_height - 22.0 * s) / 2.0,
+            track_all_btn_w,
+            22.0 * s,
+        );
+
         // Unstage All button in staged section header (right-aligned)
         let unstage_all_btn_w = 96.0 * s;
         let unstage_all_btn = Rect::new(
@@ -1105,6 +1208,8 @@ impl StagingWell {
         StagingRegions {
             unstaged_header,
             unstaged,
+            untracked_header,
+            untracked,
             staged_header,
             staged,
             submodules,
@@ -1114,6 +1219,7 @@ impl StagingWell {
             body,
             buttons,
             stage_all_btn,
+            track_all_btn,
             unstage_all_btn,
             ai_btn,
             amend_btn,
@@ -1251,14 +1357,53 @@ impl StagingWell {
             output.extend(self.unstaged_list.layout(text_renderer, regions.unstaged));
         }
 
-        // --- Divider between unstaged and staged ---
-        // When unstaged list is empty, regions.unstaged has zero height,
-        // so .bottom() == unstaged_header.bottom(), placing divider right after header.
+        // --- Divider between unstaged and untracked/staged ---
         let div1_y = regions.unstaged.bottom() + 2.0 * s;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(bounds.x + 8.0 * s, div1_y, bounds.width - 16.0 * s, 1.0),
             theme::BORDER.to_array(),
         ));
+
+        // =============================================================
+        // 1b. UNTRACKED SECTION (only when there are untracked files)
+        // =============================================================
+
+        let untracked_count = self.untracked_list.files.len();
+        if untracked_count > 0 {
+            // Section header background (blue tint for new files)
+            output.spline_vertices.extend(create_rect_vertices(
+                &regions.untracked_header,
+                theme::STATUS_AHEAD.with_alpha(0.06).to_array(),
+            ));
+
+            // Section title
+            let untracked_title = format!("Untracked Files ({})", untracked_count);
+            output.text_vertices.extend(text_renderer.layout_text(
+                &untracked_title,
+                regions.untracked_header.x + 4.0 * s,
+                regions.untracked_header.y + 5.0 * s,
+                theme::STATUS_AHEAD.to_array(),
+            ));
+
+            // Track All button in header
+            output.extend(self.track_all_btn.layout(text_renderer, regions.track_all_btn));
+
+            // Subtle background tint for untracked area (blue tint)
+            output.spline_vertices.extend(create_rect_vertices(
+                &regions.untracked,
+                theme::STATUS_AHEAD.with_alpha(0.03).to_array(),
+            ));
+
+            // Untracked files list
+            output.extend(self.untracked_list.layout(text_renderer, regions.untracked));
+
+            // Divider after untracked section
+            let div_ut_y = regions.untracked.bottom() + 2.0 * s;
+            output.spline_vertices.extend(create_rect_vertices(
+                &Rect::new(bounds.x + 8.0 * s, div_ut_y, bounds.width - 16.0 * s, 1.0),
+                theme::BORDER.to_array(),
+            ));
+        }
 
         // =============================================================
         // 2. STAGED SECTION

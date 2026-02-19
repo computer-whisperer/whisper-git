@@ -252,6 +252,9 @@ impl TabViewState {
             StagingAction::StageAll => {
                 self.pending_messages.push(AppMessage::StageAll);
             }
+            StagingAction::StageAllUntracked => {
+                self.pending_messages.push(AppMessage::StageAllUntracked);
+            }
             StagingAction::UnstageAll => {
                 self.pending_messages.push(AppMessage::UnstageAll);
             }
