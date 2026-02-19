@@ -256,6 +256,9 @@ pub struct CommitGraphView {
     /// Truncated subject text zones for tooltip display (rebuilt each layout_text call).
     /// Each entry: (text_bounds_rect, full_summary_string)
     pub(crate) truncated_subjects: Vec<(Rect, String)>,
+    /// Overflow pill badge tooltips (rebuilt each layout_text call).
+    /// Each entry: (badge_rect, newline-joined hidden pill labels)
+    pub(crate) overflow_pill_tooltips: Vec<(Rect, String)>,
     /// Ratchet scroll: index of the topmost visible row
     pub top_row_index: usize,
     /// Ratchet scroll: accumulates fractional trackpad deltas until they cross the row threshold
@@ -295,6 +298,7 @@ impl Default for CommitGraphView {
             abbreviate_worktree_names: true,
             time_spacing_strength: 1.0,
             truncated_subjects: Vec::new(),
+            overflow_pill_tooltips: Vec::new(),
             top_row_index: 0,
             scroll_accumulator: 0.0,
             fast_scroll: false,
@@ -1450,6 +1454,7 @@ impl CommitGraphView {
         let mut avatar_vertices = Vec::new();
         self.pill_click_targets.clear();
         self.truncated_subjects.clear();
+        self.overflow_pill_tooltips.clear();
         let header_offset = self.header_offset();
         let line_height = text_renderer.line_height();
         let scrollbar_width = self.scrollbar_width();
@@ -1483,7 +1488,7 @@ impl CommitGraphView {
                 acc
             });
 
-        // Worktree lookup: only show WT: pills for CLEAN non-current worktrees on their HEAD.
+        // Worktree lookup: show WT: pills for all CLEAN worktrees on their HEAD commit.
         // Dirty worktrees get their WT: pill on the synthetic row instead.
         let dirty_wt_names: HashSet<String> = commits.iter()
             .filter(|c| c.is_synthetic)
@@ -1492,7 +1497,7 @@ impl CommitGraphView {
         let worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
             .worktrees
             .iter()
-            .filter(|wt| !wt.is_current && !dirty_wt_names.contains(&wt.name))
+            .filter(|wt| !dirty_wt_names.contains(&wt.name))
             .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
             .fold(HashMap::new(), |mut acc, (oid, wt)| {
                 acc.entry(oid).or_default().push(wt);
@@ -1633,42 +1638,188 @@ impl CommitGraphView {
                 // === Start rendering from text_x: pills first, then avatar, then subject ===
                 let mut current_x = text_x;
 
-                // === Branch and tag pills ===
-                current_x = Self::render_branch_pills(
-                    text_renderer, &pill_params, y,
-                    branch_tips_by_oid.get(&commit.id),
-                    current_x, &mut vertices, &mut pill_vertices,
-                );
-                current_x = Self::render_tag_pills(
-                    text_renderer, &pill_params, y,
-                    tags_by_oid.get(&commit.id),
-                    current_x, &mut vertices, &mut pill_vertices,
-                );
+                // Collect all pills for this row in priority order:
+                // Worktree → Branch → Tag → HEAD → ORPHAN
+                let mut all_pills: Vec<PillEntry> = Vec::new();
 
-                // === Worktree pills (only for clean worktrees — dirty ones show on synthetic row) ===
-                let (new_x, wt_targets) = Self::render_worktree_pills(
-                    text_renderer, &pill_params, y,
-                    worktrees_by_oid.get(&commit.id),
-                    current_x, &mut vertices, &mut pill_vertices,
-                    &wt_display_names,
-                );
-                current_x = new_x;
-                self.pill_click_targets.extend(wt_targets);
-
-                // === HEAD indicator (after branch/tag/worktree pills) ===
-                if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
-                    current_x = Self::render_head_pill(
-                        text_renderer, &pill_params, y,
-                        current_x, &mut vertices, &mut pill_vertices,
-                    );
+                // 1. Worktree pills (highest priority — most likely to be cut previously)
+                if let Some(wts) = worktrees_by_oid.get(&commit.id) {
+                    for wt in wts {
+                        let display_name = wt_display_names.get(&wt.name).unwrap_or(&wt.name);
+                        let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
+                        all_pills.push(PillEntry {
+                            label: format!("WT:{}", display_name),
+                            text_color: wt_text_color,
+                            bg_color: Color::rgba(1.0, 0.596, 0.0, 0.20),
+                            border_color: wt_text_color.with_alpha(0.45),
+                            worktree_name: Some(wt.name.clone()),
+                        });
+                    }
                 }
 
-                // === ORPHAN pill for orphaned commits ===
+                // 2. Branch pills
+                if let Some(tips) = branch_tips_by_oid.get(&commit.id) {
+                    for tip in tips {
+                        let (label_color, pill_bg) = if tip.is_remote {
+                            (
+                                Color::rgba(0.149, 0.776, 0.855, 1.0),  // #26C6DA
+                                Color::rgba(0.149, 0.776, 0.855, 0.20),
+                            )
+                        } else if tip.is_head {
+                            (
+                                Color::rgba(0.400, 0.733, 0.416, 1.0),  // #66BB6A
+                                Color::rgba(0.400, 0.733, 0.416, 0.22),
+                            )
+                        } else {
+                            (
+                                Color::rgba(0.259, 0.647, 0.961, 1.0),  // #42A5F5
+                                Color::rgba(0.259, 0.647, 0.961, 0.22),
+                            )
+                        };
+                        all_pills.push(PillEntry {
+                            label: tip.name.clone(),
+                            text_color: label_color,
+                            bg_color: pill_bg,
+                            border_color: label_color.with_alpha(0.45),
+                            worktree_name: None,
+                        });
+                    }
+                }
+
+                // 3. Tag pills
+                if let Some(tags) = tags_by_oid.get(&commit.id) {
+                    for tag in tags {
+                        let tag_text_color = Color::rgba(1.0, 0.718, 0.302, 1.0); // #FFB74D
+                        all_pills.push(PillEntry {
+                            label: format!("\u{25C6} {}", tag.name),
+                            text_color: tag_text_color,
+                            bg_color: Color::rgba(1.0, 0.718, 0.302, 0.20),
+                            border_color: tag_text_color.with_alpha(0.45),
+                            worktree_name: None,
+                        });
+                    }
+                }
+
+                // 4. HEAD pill (only when no branch tip points to HEAD)
+                if is_head && !branch_tips_by_oid.contains_key(&commit.id) {
+                    let head_color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A
+                    all_pills.push(PillEntry {
+                        label: "HEAD".to_string(),
+                        text_color: head_color,
+                        bg_color: Color::rgba(0.400, 0.733, 0.416, 0.22),
+                        border_color: head_color.with_alpha(0.45),
+                        worktree_name: None,
+                    });
+                }
+
+                // 5. ORPHAN pill
                 if commit.is_orphaned {
-                    current_x = Self::render_orphan_pill(
-                        text_renderer, &pill_params, y,
-                        current_x, &mut vertices, &mut pill_vertices,
-                    );
+                    all_pills.push(PillEntry {
+                        label: "ORPHAN".to_string(),
+                        text_color: theme::ORPHAN,
+                        bg_color: theme::ORPHAN.with_alpha(0.22),
+                        border_color: theme::ORPHAN.with_alpha(0.45),
+                        worktree_name: None,
+                    });
+                }
+
+                // Pre-scan to determine how many pills fit before the stats column
+                if !all_pills.is_empty() {
+                    let pill_limit_x = pill_params.time_col_left - pill_params.col_gap;
+                    let total = all_pills.len();
+
+                    // Measure badge width for "+N" overflow indicator
+                    let badge_label = format!("+{}", total); // worst case
+                    let badge_width = text_renderer.measure_text(&badge_label)
+                        + pill_params.pill_pad_h * 2.0
+                        + pill_params.char_width;
+
+                    // Walk pills and count how many fit
+                    let mut test_x = current_x;
+                    let mut fits_count = 0;
+                    for (i, pill) in all_pills.iter().enumerate() {
+                        let pw = pill.total_width(text_renderer, &pill_params);
+                        let remaining = total - i - 1;
+                        if remaining > 0 {
+                            // Not the last pill — need to reserve space for "+N" badge
+                            if test_x + pw + badge_width > pill_limit_x {
+                                break;
+                            }
+                        } else {
+                            // Last pill — just needs to fit itself
+                            if test_x + pw > pill_limit_x {
+                                break;
+                            }
+                        }
+                        test_x += pw;
+                        fits_count += 1;
+                    }
+
+                    // Render pills that fit
+                    for pill in &all_pills[..fits_count] {
+                        let new_x = pill.render(
+                            text_renderer, &pill_params, y,
+                            current_x, &mut vertices, &mut pill_vertices,
+                        );
+                        // Track click targets for worktree pills
+                        if let Some(ref wt_name) = pill.worktree_name {
+                            let label_width = text_renderer.measure_text(&pill.label);
+                            let pill_rect = Rect::new(
+                                current_x,
+                                y - pill_params.pill_pad_v,
+                                label_width + pill_params.pill_pad_h * 2.0,
+                                pill_params.line_height + pill_params.pill_pad_v * 2.0,
+                            );
+                            self.pill_click_targets.push(PillClickTarget {
+                                worktree_name: wt_name.clone(),
+                                bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
+                            });
+                        }
+                        current_x = new_x;
+                    }
+
+                    // Render "+N" overflow badge if needed
+                    let overflow_count = total - fits_count;
+                    if overflow_count > 0 {
+                        let badge_text = format!("+{}", overflow_count);
+                        let badge_text_width = text_renderer.measure_text(&badge_text);
+                        let badge_rect = Rect::new(
+                            current_x,
+                            y - pill_params.pill_pad_v,
+                            badge_text_width + pill_params.pill_pad_h * 2.0,
+                            pill_params.line_height + pill_params.pill_pad_v * 2.0,
+                        );
+                        // Muted gray pill style
+                        pill_vertices.extend(create_rounded_rect_vertices(
+                            &badge_rect,
+                            [0.5, 0.5, 0.5, 0.15],
+                            pill_params.pill_radius,
+                        ));
+                        pill_vertices.extend(create_rounded_rect_outline_vertices(
+                            &badge_rect,
+                            [0.5, 0.5, 0.5, 0.35],
+                            pill_params.pill_radius,
+                            pill_params.pill_border_thickness,
+                        ));
+                        vertices.extend(text_renderer.layout_text(
+                            &badge_text,
+                            current_x + pill_params.pill_pad_h,
+                            y,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+
+                        // Build tooltip text from hidden pills
+                        let hidden_labels: Vec<&str> = all_pills[fits_count..]
+                            .iter()
+                            .map(|p| p.label.as_str())
+                            .collect();
+                        self.overflow_pill_tooltips.push((
+                            badge_rect,
+                            hidden_labels.join("\n"),
+                        ));
+
+                        current_x += badge_text_width + pill_params.pill_pad_h * 2.0 + pill_params.char_width;
+                    }
                 }
 
                 // === Author avatar or identicon fallback (after pills) ===
@@ -1724,265 +1875,6 @@ impl CommitGraphView {
         }
 
         (vertices, pill_vertices, avatar_vertices)
-    }
-
-    /// Render branch label pills (local, remote, HEAD). Returns updated current_x.
-    fn render_branch_pills(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        tips: Option<&Vec<&BranchTip>>,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-    ) -> f32 {
-        let Some(tips) = tips else { return current_x };
-        for tip in tips {
-            let (label_color, pill_bg) = if tip.is_remote {
-                // Remote tracking: teal/cyan
-                (
-                    Color::rgba(0.149, 0.776, 0.855, 1.0),  // #26C6DA
-                    Color::rgba(0.149, 0.776, 0.855, 0.20),
-                )
-            } else if tip.is_head {
-                // HEAD pointer: green
-                (
-                    Color::rgba(0.400, 0.733, 0.416, 1.0),  // #66BB6A
-                    Color::rgba(0.400, 0.733, 0.416, 0.22),
-                )
-            } else {
-                // Local branches: blue
-                (
-                    Color::rgba(0.259, 0.647, 0.961, 1.0),  // #42A5F5
-                    Color::rgba(0.259, 0.647, 0.961, 0.22),
-                )
-            };
-
-            let label = &tip.name;
-            let label_width = text_renderer.measure_text(label);
-
-            // Don't render if it would overflow into time column
-            if current_x + label_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
-                break;
-            }
-
-            // Pill background (rounded rect)
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                label_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                pill_bg.to_array(),
-                p.pill_radius,
-            ));
-            // Pill border outline
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                label_color.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-
-            // Label text (centered in pill)
-            vertices.extend(text_renderer.layout_text(
-                label,
-                current_x + p.pill_pad_h,
-                y,
-                label_color.to_array(),
-            ));
-            current_x += label_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
-        }
-        current_x
-    }
-
-    /// Render tag label pills. Returns updated current_x.
-    fn render_tag_pills(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        tags: Option<&Vec<&TagInfo>>,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-    ) -> f32 {
-        let Some(tags) = tags else { return current_x };
-        for tag in tags {
-            let tag_label = format!("\u{25C6} {}", tag.name);
-            let tag_width = text_renderer.measure_text(&tag_label);
-            if current_x + tag_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
-                break;
-            }
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                tag_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            let tag_text_color = Color::rgba(1.0, 0.718, 0.302, 1.0); // #FFB74D
-            // Tags: amber/yellow
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                Color::rgba(1.0, 0.718, 0.302, 0.20).to_array(),  // #FFB74D bg
-                p.pill_radius,
-            ));
-            // Tag pill border outline
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                tag_text_color.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-            vertices.extend(text_renderer.layout_text(
-                &tag_label,
-                current_x + p.pill_pad_h,
-                y,
-                tag_text_color.to_array(),
-            ));
-            current_x += tag_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
-        }
-        current_x
-    }
-
-    /// Render worktree label pills (WT:name). Returns (updated current_x, click targets).
-    fn render_worktree_pills(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        wts: Option<&Vec<&WorktreeInfo>>,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-        wt_display_names: &HashMap<String, String>,
-    ) -> (f32, Vec<PillClickTarget>) {
-        let mut click_targets = Vec::new();
-        let Some(wts) = wts else { return (current_x, click_targets) };
-        for wt in wts {
-            let display_name = wt_display_names.get(&wt.name).unwrap_or(&wt.name);
-            let wt_label = format!("WT:{}", display_name);
-            let wt_width = text_renderer.measure_text(&wt_label);
-            if current_x + wt_width + p.pill_pad_h * 2.0 + p.char_width > p.time_col_left - p.col_gap {
-                break;
-            }
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                wt_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            // Track click target for this worktree pill
-            click_targets.push(PillClickTarget {
-                worktree_name: wt.name.clone(),
-                bounds: [pill_rect.x, pill_rect.y, pill_rect.width, pill_rect.height],
-            });
-            let wt_text_color = Color::rgba(1.0, 0.596, 0.0, 1.0); // #FF9800
-            // Worktrees: orange
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                Color::rgba(1.0, 0.596, 0.0, 0.20).to_array(),  // #FF9800 bg
-                p.pill_radius,
-            ));
-            // Worktree pill border outline
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                wt_text_color.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-            vertices.extend(text_renderer.layout_text(
-                &wt_label,
-                current_x + p.pill_pad_h,
-                y,
-                wt_text_color.to_array(),
-            ));
-            current_x += wt_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
-        }
-        (current_x, click_targets)
-    }
-
-    /// Render the HEAD pill (shown when no branch tip points to HEAD). Returns updated current_x.
-    fn render_head_pill(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-    ) -> f32 {
-        let head_label = "HEAD";
-        let head_width = text_renderer.measure_text(head_label);
-        if current_x + head_width + p.pill_pad_h * 2.0 < p.time_col_left - p.col_gap {
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                head_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            let head_color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A
-            // HEAD pill: green
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                Color::rgba(0.400, 0.733, 0.416, 0.22).to_array(),  // #66BB6A bg
-                p.pill_radius,
-            ));
-            // HEAD pill border outline
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                head_color.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-            vertices.extend(text_renderer.layout_text(
-                head_label,
-                current_x + p.pill_pad_h,
-                y,
-                head_color.to_array(),
-            ));
-            current_x += head_width + p.pill_pad_h * 2.0 + p.char_width * 1.0;
-        }
-        current_x
-    }
-
-    /// Render ORPHAN pill for orphaned commits. Returns updated current_x.
-    fn render_orphan_pill(
-        text_renderer: &TextRenderer,
-        p: &PillParams,
-        y: f32,
-        mut current_x: f32,
-        vertices: &mut Vec<TextVertex>,
-        pill_vertices: &mut Vec<SplineVertex>,
-    ) -> f32 {
-        let label = "ORPHAN";
-        let label_width = text_renderer.measure_text(label);
-        if current_x + label_width + p.pill_pad_h * 2.0 < p.time_col_left - p.col_gap {
-            let pill_rect = Rect::new(
-                current_x,
-                y - p.pill_pad_v,
-                label_width + p.pill_pad_h * 2.0,
-                p.line_height + p.pill_pad_v * 2.0,
-            );
-            pill_vertices.extend(create_rounded_rect_vertices(
-                &pill_rect,
-                theme::ORPHAN.with_alpha(0.22).to_array(),
-                p.pill_radius,
-            ));
-            pill_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                theme::ORPHAN.with_alpha(0.45).to_array(),
-                p.pill_radius,
-                p.pill_border_thickness,
-            ));
-            vertices.extend(text_renderer.layout_text(
-                label,
-                current_x + p.pill_pad_h,
-                y,
-                theme::ORPHAN.to_array(),
-            ));
-            current_x += label_width + p.pill_pad_h * 2.0 + p.char_width;
-        }
-        current_x
     }
 
     /// Render author avatar or identicon fallback. Returns updated current_x.
@@ -2191,6 +2083,65 @@ struct PillParams {
     pill_border_thickness: f32,
     col_gap: f32,
     time_col_left: f32,
+}
+
+/// A collected pill entry ready for measurement and rendering.
+struct PillEntry {
+    /// The display label for this pill
+    label: String,
+    /// Text color
+    text_color: Color,
+    /// Pill background color
+    bg_color: Color,
+    /// Pill border color
+    border_color: Color,
+    /// Optional worktree name for click targets (only for worktree pills)
+    worktree_name: Option<String>,
+}
+
+impl PillEntry {
+    /// Compute the total horizontal width this pill occupies (pill + trailing gap).
+    fn total_width(&self, text_renderer: &TextRenderer, p: &PillParams) -> f32 {
+        let label_width = text_renderer.measure_text(&self.label);
+        label_width + p.pill_pad_h * 2.0 + p.char_width
+    }
+
+    /// Render this pill at the given position. Returns the new current_x.
+    fn render(
+        &self,
+        text_renderer: &TextRenderer,
+        p: &PillParams,
+        y: f32,
+        current_x: f32,
+        vertices: &mut Vec<TextVertex>,
+        pill_vertices: &mut Vec<SplineVertex>,
+    ) -> f32 {
+        let label_width = text_renderer.measure_text(&self.label);
+        let pill_rect = Rect::new(
+            current_x,
+            y - p.pill_pad_v,
+            label_width + p.pill_pad_h * 2.0,
+            p.line_height + p.pill_pad_v * 2.0,
+        );
+        pill_vertices.extend(create_rounded_rect_vertices(
+            &pill_rect,
+            self.bg_color.to_array(),
+            p.pill_radius,
+        ));
+        pill_vertices.extend(create_rounded_rect_outline_vertices(
+            &pill_rect,
+            self.border_color.to_array(),
+            p.pill_radius,
+            p.pill_border_thickness,
+        ));
+        vertices.extend(text_renderer.layout_text(
+            &self.label,
+            current_x + p.pill_pad_h,
+            y,
+            self.text_color.to_array(),
+        ));
+        current_x + label_width + p.pill_pad_h * 2.0 + p.char_width
+    }
 }
 
 /// Author identicon colors - distinct hues for visual differentiation

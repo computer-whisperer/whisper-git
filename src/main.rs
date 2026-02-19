@@ -168,7 +168,7 @@ struct TabViewState {
     worktrees: Vec<crate::git::WorktreeInfo>,
     /// Cache of opened worktree repos keyed by path, to avoid re-discovering on switch
     worktree_repo_cache: HashMap<PathBuf, GitRepo>,
-    /// Path of the currently active worktree (None = main worktree)
+    /// Path of the user-selected worktree (None = no worktree selected)
     active_worktree_path: Option<PathBuf>,
     /// Submodule drill-down state (None when viewing root repo)
     submodule_focus: Option<SubmoduleFocus>,
@@ -191,12 +191,24 @@ impl TabViewState {
 
     /// Re-derive current_branch and head_oid from the active worktree's repo,
     /// and update branch_tips[].is_head accordingly.
+    /// When no worktree is selected on a multi-worktree repo, clears both fields
+    /// since HEAD is a worktree property, not a repo property.
     fn sync_worktree_derived_state(&mut self, repo: &GitRepo) {
-        let staging_repo: &GitRepo = self.active_worktree_path.as_ref()
+        if let Some(staging_repo) = self.active_worktree_path.as_ref()
             .and_then(|p| self.worktree_repo_cache.get(p))
-            .unwrap_or(repo);
-        self.current_branch = staging_repo.current_branch().unwrap_or_default();
-        self.head_oid = staging_repo.head_oid().ok();
+        {
+            // Worktree explicitly selected — derive from it
+            self.current_branch = staging_repo.current_branch().unwrap_or_default();
+            self.head_oid = staging_repo.head_oid().ok();
+        } else if self.staging_well.has_worktree_selector() {
+            // Multi-worktree repo but no worktree selected — HEAD is meaningless
+            self.current_branch = String::new();
+            self.head_oid = None;
+        } else {
+            // Normal single-worktree repo — derive from the repo itself
+            self.current_branch = repo.current_branch().unwrap_or_default();
+            self.head_oid = repo.head_oid().ok();
+        }
         for tip in &mut self.commit_graph_view.branch_tips {
             tip.is_head = !tip.is_remote && tip.name == self.current_branch;
         }
@@ -213,17 +225,13 @@ impl TabViewState {
         self.commit_graph_view.selected_commit = None;
         self.last_diff_commit = None;
         if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
-            if wt_ctx.is_current {
-                self.active_worktree_path = None;
-            } else {
-                let path = wt_ctx.path.clone();
-                if !self.worktree_repo_cache.contains_key(&path) {
-                    if let Ok(wt_repo) = GitRepo::open(&path) {
-                        self.worktree_repo_cache.insert(path.clone(), wt_repo);
-                    }
+            let path = wt_ctx.path.clone();
+            if !self.worktree_repo_cache.contains_key(&path) {
+                if let Ok(wt_repo) = GitRepo::open(&path) {
+                    self.worktree_repo_cache.insert(path.clone(), wt_repo);
                 }
-                self.active_worktree_path = Some(path);
             }
+            self.active_worktree_path = Some(path);
         }
         self.sync_worktree_derived_state(repo);
     }
@@ -1957,23 +1965,31 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     // main.rs-specific extras beyond the shared core:
 
-    // Store derived worktree state centrally
-    view_state.current_branch = current;
-    view_state.head_oid = staging_head;
+    // Store derived worktree state centrally.
+    // When no worktree is selected on a multi-worktree repo, clear branch/head
+    // since HEAD is a worktree property, not a repo property.
+    let has_worktrees = view_state.staging_well.has_worktree_selector();
+    if has_worktrees && view_state.active_worktree_path.is_none() {
+        view_state.current_branch = String::new();
+        view_state.head_oid = None;
+        // Clear stale is_head flags set by refresh_repo_state_core
+        for tip in &mut view_state.commit_graph_view.branch_tips {
+            tip.is_head = false;
+        }
+    } else {
+        view_state.current_branch = current;
+        view_state.head_oid = staging_head;
+    }
 
     // Sync active_worktree_path with staging well's selection so status loads from the right repo
     if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-        if wt_ctx.is_current {
-            view_state.active_worktree_path = None;
-        } else {
-            let path = wt_ctx.path.clone();
-            if !view_state.worktree_repo_cache.contains_key(&path) {
-                if let Ok(wt_repo) = GitRepo::open(&path) {
-                    view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
-                }
+        let path = wt_ctx.path.clone();
+        if !view_state.worktree_repo_cache.contains_key(&path) {
+            if let Ok(wt_repo) = GitRepo::open(&path) {
+                view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
             }
-            view_state.active_worktree_path = Some(path);
         }
+        view_state.active_worktree_path = Some(path);
     }
     // Prune cached worktree repos for paths that no longer exist
     let valid_paths: std::collections::HashSet<PathBuf> = view_state.worktrees.iter()
@@ -2004,31 +2020,16 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     view_state.staging_well.set_scale(scale);
 
     if let Some(ref repo) = repo_tab.repo {
-        // Set initial repo path in header (refresh_repo_state will update it too)
-        let repo_path_str = repo.workdir()
-            .or_else(|| Some(repo.git_dir()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        // Set initial repo path in header — use common_dir parent to show project path,
+        // not a worktree-specific path.
+        let project_path = repo.common_dir().parent().unwrap_or(repo.common_dir());
+        let repo_path_str = project_path.to_string_lossy().into_owned();
         let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
         view_state.header_bar.set_repo_path(&repo_path_str);
     }
 
-    // For bare repos, set active_worktree_path to the first worktree BEFORE refresh
-    // so that current_branch is derived from the worktree repo, not the bare repo's stale HEAD.
-    if let Some(ref repo) = repo_tab.repo {
-        if repo.is_effectively_bare() && view_state.active_worktree_path.is_none() {
-            let worktrees = repo.worktrees().unwrap_or_default();
-            if let Some(wt) = worktrees.first() {
-                let path = PathBuf::from(&wt.path);
-                if !view_state.worktree_repo_cache.contains_key(&path) {
-                    if let Ok(wt_repo) = GitRepo::open(&path) {
-                        view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
-                    }
-                }
-                view_state.active_worktree_path = Some(path);
-            }
-        }
-    }
+    // No worktree is auto-selected at init. The user picks one via the staging well selector.
+    // active_worktree_path stays None until explicitly set.
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
     // (refresh_repo_state handles all of these — no need to call them separately)
@@ -3668,6 +3669,12 @@ fn build_ui_output(
                 for (text_bounds, full_text) in &view_state.commit_graph_view.truncated_subjects {
                     if text_bounds.contains(mx, my) {
                         tooltip.offer(*text_bounds, full_text, mx, my);
+                        break;
+                    }
+                }
+                for (badge_bounds, hidden_labels) in &view_state.commit_graph_view.overflow_pill_tooltips {
+                    if badge_bounds.contains(mx, my) {
+                        tooltip.offer(*badge_bounds, hidden_labels, mx, my);
                         break;
                     }
                 }

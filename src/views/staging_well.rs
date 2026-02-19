@@ -16,7 +16,6 @@ pub struct WorktreeContext {
     pub display_name: String,
     pub path: PathBuf,
     pub branch: String,
-    pub is_current: bool,
     pub dirty_file_count: usize,
     pub subject_draft: String,
     pub body_draft: String,
@@ -493,15 +492,14 @@ impl StagingWell {
                 display_name: wt.name.clone(), // temporary, overwritten below
                 path,
                 branch: wt.branch.clone(),
-                is_current: wt.is_current,
                 dirty_file_count: wt.dirty_file_count,
                 subject_draft,
                 body_draft,
             }
         }).collect();
 
-        // Sort: current worktree first, then alphabetical
-        new_contexts.sort_by(|a, b| b.is_current.cmp(&a.is_current).then(a.name.cmp(&b.name)));
+        // Sort alphabetically
+        new_contexts.sort_by(|a, b| a.name.cmp(&b.name));
 
         // Compute prefix-stripped display names
         let names: Vec<String> = new_contexts.iter().map(|c| c.name.clone()).collect();

@@ -644,20 +644,17 @@ impl GitRepo {
 
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {
-        if let Some(workdir) = self.workdir() {
-            return workdir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-        }
-
-        // Bare repo: path() returns e.g. "/project/.bare/" -- walk up to find a
-        // non-hidden directory name that represents the project.
-        let mut dir = self.repo.path();
+        // Derive name from common_dir (the shared git repo identity).
+        // For normal repos: common_dir = /project/.git/ → parent "project"
+        // For bare repos: common_dir = /project/.bare/ → walk up to "project"
+        // For linked worktrees: common_dir = /project/Repo.git/ → walk up to "project"
+        // This avoids returning a worktree-specific name when opened from a linked worktree.
+        let mut dir = self.common_dir();
         loop {
             match dir.file_name().and_then(|n| n.to_str()) {
-                Some(name) if !name.starts_with('.') => return name.to_string(),
+                Some(name) if !name.starts_with('.') && !name.ends_with(".git") => {
+                    return name.to_string();
+                }
                 _ => match dir.parent() {
                     Some(parent) if parent != dir => dir = parent,
                     _ => return "unknown".to_string(),
@@ -953,21 +950,12 @@ impl GitRepo {
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         let worktrees = self.repo.worktrees().context("Failed to get worktrees")?;
 
-        // Get the current working directory for comparison
-        let current_workdir = self.workdir().map(|p| p.to_path_buf());
-
         let mut infos = Vec::new();
         for name in worktrees.iter() {
             if let Some(name) = name
                 && let Ok(wt) = self.repo.find_worktree(name) {
                     let wt_path = wt.path();
                     let path = wt_path.to_string_lossy().to_string();
-
-                    // Check if this is the current worktree
-                    let is_current = current_workdir
-                        .as_ref()
-                        .map(|cwd| cwd == wt_path)
-                        .unwrap_or(false);
 
                     // Try to get branch info, HEAD oid, and dirty status
                     let (branch, head_oid, is_dirty, dirty_file_count) = if let Ok(wt_repo) = Repository::open(wt_path) {
@@ -998,7 +986,6 @@ impl GitRepo {
                         path,
                         branch,
                         head_oid,
-                        is_current,
                         is_dirty,
                         dirty_file_count,
                     });
@@ -1419,7 +1406,6 @@ pub struct WorktreeInfo {
     pub path: String,
     pub branch: String,
     pub head_oid: Option<Oid>,
-    pub is_current: bool,
     pub is_dirty: bool,
     pub dirty_file_count: usize,
 }
