@@ -1,8 +1,11 @@
 //! Multi-line text area widget
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
+use crate::ui::widget::{
+    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices, theme,
+};
 use crate::ui::{Rect, TextRenderer};
+use std::cell::RefCell;
 
 /// Find the byte offset of the previous word boundary from cursor position within a line.
 fn word_boundary_left(text: &str, cursor: usize) -> usize {
@@ -58,12 +61,47 @@ fn word_boundary_right(text: &str, cursor: usize) -> usize {
     cursor + offset
 }
 
+#[inline]
+fn prev_char_boundary(text: &str, idx: usize) -> usize {
+    if idx == 0 {
+        return 0;
+    }
+    text[..idx]
+        .char_indices()
+        .next_back()
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+#[inline]
+fn next_char_boundary(text: &str, idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    text[idx..]
+        .chars()
+        .next()
+        .map(|c| idx + c.len_utf8())
+        .unwrap_or(text.len())
+}
+
+#[inline]
+fn clamp_to_boundary(text: &str, idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    if text.is_char_boundary(idx) {
+        return idx;
+    }
+    prev_char_boundary(text, idx)
+}
+
 /// A multi-line text editing area
 pub struct TextArea {
     state: WidgetState,
     /// Lines of text
     lines: Vec<String>,
-    /// Cursor position (line, column)
+    /// Cursor position (line, column), where column is a UTF-8 byte index.
     cursor_line: usize,
     cursor_col: usize,
     /// Selection anchor (line, col) - set when shift+arrow or Ctrl+A starts selection
@@ -79,6 +117,10 @@ pub struct TextArea {
     cursor_visible: bool,
     /// Last time the cursor blink state changed
     last_blink: std::time::Instant,
+    /// Cached line height from renderer for hit-testing and scroll calculations.
+    cached_line_height: RefCell<f32>,
+    /// Cached per-line boundary map for click-to-cursor: (byte_offset, x_offset).
+    line_boundaries: RefCell<Vec<Vec<(usize, f32)>>>,
 }
 
 impl TextArea {
@@ -94,6 +136,8 @@ impl TextArea {
             inserted_from_key: false,
             cursor_visible: true,
             last_blink: std::time::Instant::now(),
+            cached_line_height: RefCell::new(24.0),
+            line_boundaries: RefCell::new(Vec::new()),
         }
     }
 
@@ -123,8 +167,11 @@ impl TextArea {
         let (sl, sc) = self.selection_start?;
         let (el, ec) = (self.cursor_line, self.cursor_col);
         // Determine start/end in document order
-        let (start_line, start_col, end_line, end_col) =
-            if (sl, sc) <= (el, ec) { (sl, sc, el, ec) } else { (el, ec, sl, sc) };
+        let (start_line, start_col, end_line, end_col) = if (sl, sc) <= (el, ec) {
+            (sl, sc, el, ec)
+        } else {
+            (el, ec, sl, sc)
+        };
         if start_line == end_line {
             let line = &self.lines[start_line];
             Some(line[start_col..end_col].to_string())
@@ -148,8 +195,11 @@ impl TextArea {
             None => return,
         };
         let (el, ec) = (self.cursor_line, self.cursor_col);
-        let (start_line, start_col, end_line, end_col) =
-            if (sl, sc) <= (el, ec) { (sl, sc, el, ec) } else { (el, ec, sl, sc) };
+        let (start_line, start_col, end_line, end_col) = if (sl, sc) <= (el, ec) {
+            (sl, sc, el, ec)
+        } else {
+            (el, ec, sl, sc)
+        };
 
         if start_line == end_line {
             self.lines[start_line].drain(start_col..end_col);
@@ -170,7 +220,7 @@ impl TextArea {
     fn insert_char(&mut self, c: char) {
         let line = &mut self.lines[self.cursor_line];
         line.insert(self.cursor_col, c);
-        self.cursor_col += 1;
+        self.cursor_col += c.len_utf8();
         self.modified = true;
     }
 
@@ -185,8 +235,9 @@ impl TextArea {
 
     fn delete_backward(&mut self) {
         if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-            self.lines[self.cursor_line].remove(self.cursor_col);
+            let prev = prev_char_boundary(&self.lines[self.cursor_line], self.cursor_col);
+            self.lines[self.cursor_line].drain(prev..self.cursor_col);
+            self.cursor_col = prev;
             self.modified = true;
         } else if self.cursor_line > 0 {
             // Join with previous line
@@ -201,7 +252,8 @@ impl TextArea {
     fn delete_forward(&mut self) {
         let line_len = self.current_line().len();
         if self.cursor_col < line_len {
-            self.lines[self.cursor_line].remove(self.cursor_col);
+            let next = next_char_boundary(&self.lines[self.cursor_line], self.cursor_col);
+            self.lines[self.cursor_line].drain(self.cursor_col..next);
             self.modified = true;
         } else if self.cursor_line < self.lines.len() - 1 {
             // Join with next line
@@ -227,7 +279,7 @@ impl TextArea {
         if dx != 0 {
             if dx < 0 {
                 if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
+                    self.cursor_col = prev_char_boundary(self.current_line(), self.cursor_col);
                 } else if self.cursor_line > 0 {
                     self.cursor_line -= 1;
                     self.cursor_col = self.current_line().len();
@@ -235,7 +287,7 @@ impl TextArea {
             } else {
                 let line_len = self.current_line().len();
                 if self.cursor_col < line_len {
-                    self.cursor_col += 1;
+                    self.cursor_col = next_char_boundary(self.current_line(), self.cursor_col);
                 } else if self.cursor_line < self.lines.len() - 1 {
                     self.cursor_line += 1;
                     self.cursor_col = 0;
@@ -251,7 +303,7 @@ impl TextArea {
             self.selection_start = None;
         }
         self.cursor_line = line.min(self.lines.len() - 1);
-        self.cursor_col = col.min(self.lines[self.cursor_line].len());
+        self.cursor_col = clamp_to_boundary(&self.lines[self.cursor_line], col);
     }
 
     /// Delete from cursor to the previous word boundary on the current line.
@@ -296,6 +348,10 @@ impl TextArea {
         }
     }
 
+    fn cached_line_height(&self) -> f32 {
+        (*self.cached_line_height.borrow()).max(1.0)
+    }
+
     /// Update cursor blink state. Call once per frame.
     pub fn update_cursor(&mut self, now: std::time::Instant) {
         if self.state.focused {
@@ -327,22 +383,41 @@ impl Widget for TextArea {
             } => {
                 if bounds.contains(*x, *y) {
                     self.state.focused = true;
-                    // Calculate cursor position from click
-                    let line_height = 24.0; // Approximate
+                    // Calculate cursor position from click using cached layout metrics.
+                    let line_height = self.cached_line_height();
                     let text_x = bounds.x + 8.0;
                     let text_y = bounds.y + 4.0;
 
-                    let clicked_line = ((*y - text_y) / line_height) as usize + self.scroll_offset;
+                    let clicked_line =
+                        (((*y - text_y).max(0.0) / line_height) as usize) + self.scroll_offset;
                     self.cursor_line = clicked_line.min(self.lines.len() - 1);
 
-                    let char_width = 10.0;
                     let click_offset = (*x - text_x).max(0.0);
-                    self.cursor_col = ((click_offset / char_width) as usize).min(self.current_line().len());
+                    let boundaries = self.line_boundaries.borrow();
+                    if let Some(line_bounds) = boundaries.get(self.cursor_line) {
+                        let mut best_byte = 0usize;
+                        let mut best_dist = f32::INFINITY;
+                        for &(byte_offset, x_off) in line_bounds {
+                            let dist = (click_offset - x_off).abs();
+                            if dist < best_dist {
+                                best_dist = dist;
+                                best_byte = byte_offset;
+                            }
+                        }
+                        self.cursor_col = best_byte;
+                    } else {
+                        self.cursor_col = 0;
+                    }
+                    self.selection_start = None;
 
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
+            InputEvent::KeyDown {
+                key,
+                modifiers,
+                text,
+            } if self.state.focused => {
                 match key {
                     Key::Left if modifiers.ctrl => {
                         let line = &self.lines[self.cursor_line];
@@ -385,7 +460,8 @@ impl Widget for TextArea {
                             self.selection_start = None;
                         }
                         self.move_cursor(0, -1);
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
@@ -396,14 +472,16 @@ impl Widget for TextArea {
                             self.selection_start = None;
                         }
                         self.move_cursor(0, 1);
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
                     Key::Home if modifiers.ctrl => {
                         // Ctrl+Home: move to start of document
                         self.move_cursor_to(0, 0, modifiers.shift);
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
@@ -412,7 +490,8 @@ impl Widget for TextArea {
                         let last_line = self.lines.len() - 1;
                         let last_col = self.lines[last_line].len();
                         self.move_cursor_to(last_line, last_col, modifiers.shift);
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
@@ -429,7 +508,8 @@ impl Widget for TextArea {
                     }
                     Key::Enter => {
                         self.insert_newline();
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
@@ -519,7 +599,8 @@ impl Widget for TextArea {
                         }
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
-                        let visible_lines = (bounds.height / 24.0) as usize;
+                        let visible_lines =
+                            (bounds.height / self.cached_line_height()).max(1.0) as usize;
                         self.ensure_cursor_visible(visible_lines);
                         return EventResponse::Consumed;
                     }
@@ -579,7 +660,8 @@ impl Widget for TextArea {
             InputEvent::Scroll { delta_y, .. } if self.state.focused => {
                 let scroll_lines = (delta_y / 10.0) as i32;
                 if scroll_lines < 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub((-scroll_lines) as usize);
+                    self.scroll_offset =
+                        self.scroll_offset.saturating_sub((-scroll_lines) as usize);
                 } else {
                     self.scroll_offset = (self.scroll_offset + scroll_lines as usize)
                         .min(self.lines.len().saturating_sub(1));
@@ -601,7 +683,9 @@ impl Widget for TextArea {
         } else {
             theme::SURFACE
         };
-        output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color.to_array()));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, bg_color.to_array()));
 
         // Border
         let border_color = if self.state.focused {
@@ -618,7 +702,26 @@ impl Widget for TextArea {
         let line_height = text_renderer.line_height();
         let text_x = bounds.x + 8.0;
         let text_y_start = bounds.y + 4.0;
-        let visible_lines = ((bounds.height - 8.0) / line_height) as usize;
+        let visible_lines = ((bounds.height - 8.0) / line_height).max(1.0) as usize;
+
+        // Cache layout metrics for precise click-to-cursor mapping in handle_event.
+        *self.cached_line_height.borrow_mut() = line_height;
+        {
+            let mut all_boundaries = self.line_boundaries.borrow_mut();
+            all_boundaries.clear();
+            all_boundaries.reserve(self.lines.len());
+            for line in &self.lines {
+                let mut line_boundaries = Vec::with_capacity(line.chars().count() + 1);
+                line_boundaries.push((0, 0.0));
+                let mut byte_end = 0usize;
+                for c in line.chars() {
+                    byte_end += c.len_utf8();
+                    let x_off = text_renderer.measure_text(&line[..byte_end]);
+                    line_boundaries.push((byte_end, x_off));
+                }
+                all_boundaries.push(line_boundaries);
+            }
+        }
 
         // Draw visible lines
         for (i, line_idx) in (self.scroll_offset..self.lines.len())
@@ -639,13 +742,12 @@ impl Widget for TextArea {
 
             // Draw cursor on this line (blinks when focused)
             if self.state.focused && self.cursor_visible && line_idx == self.cursor_line {
-                let col = self.cursor_col.min(line.len());
+                let col = clamp_to_boundary(line, self.cursor_col.min(line.len()));
                 let cursor_x = text_x + text_renderer.measure_text(&line[..col]);
                 let cursor_rect = Rect::new(cursor_x, y, 2.0, line_height);
-                output.spline_vertices.extend(create_rect_vertices(
-                    &cursor_rect,
-                    theme::TEXT.to_array(),
-                ));
+                output
+                    .spline_vertices
+                    .extend(create_rect_vertices(&cursor_rect, theme::TEXT.to_array()));
             }
         }
 
@@ -660,4 +762,3 @@ impl Widget for TextArea {
         self.state.focused
     }
 }
-

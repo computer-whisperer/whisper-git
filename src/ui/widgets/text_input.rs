@@ -1,9 +1,12 @@
 //! Single-line text input widget
 
-use std::cell::RefCell;
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
+use crate::ui::widget::{
+    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices,
+    create_rounded_rect_vertices, theme,
+};
 use crate::ui::{Rect, TextRenderer};
+use std::cell::RefCell;
 
 /// Find the byte offset of the previous word boundary from cursor position.
 /// Word boundaries are transitions between alphanumeric and non-alphanumeric characters.
@@ -62,6 +65,41 @@ fn word_boundary_right(text: &str, cursor: usize) -> usize {
     cursor + offset
 }
 
+#[inline]
+fn prev_char_boundary(text: &str, idx: usize) -> usize {
+    if idx == 0 {
+        return 0;
+    }
+    text[..idx]
+        .char_indices()
+        .next_back()
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+#[inline]
+fn next_char_boundary(text: &str, idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    text[idx..]
+        .chars()
+        .next()
+        .map(|c| idx + c.len_utf8())
+        .unwrap_or(text.len())
+}
+
+#[inline]
+fn clamp_to_boundary(text: &str, idx: usize) -> usize {
+    if idx >= text.len() {
+        return text.len();
+    }
+    if text.is_char_boundary(idx) {
+        return idx;
+    }
+    prev_char_boundary(text, idx)
+}
+
 /// A single-line text input field
 pub struct TextInput {
     state: WidgetState,
@@ -69,9 +107,9 @@ pub struct TextInput {
     pub text: String,
     /// Placeholder text shown when empty
     pub placeholder: String,
-    /// Cursor position (character index)
+    /// Cursor position (byte index at a UTF-8 char boundary)
     cursor: usize,
-    /// Selection start (if any)
+    /// Selection start (byte index, if any)
     selection_start: Option<usize>,
     /// Maximum length (0 = unlimited)
     pub max_length: usize,
@@ -86,8 +124,9 @@ pub struct TextInput {
     last_blink: std::time::Instant,
     /// Scale factor for rendering
     scale: f32,
-    /// Cached character boundary positions for click-to-cursor
-    char_boundaries: RefCell<Vec<f32>>,
+    /// Cached character boundary positions for click-to-cursor:
+    /// each entry is (byte_offset, rendered_x_offset_from_text_start).
+    char_boundaries: RefCell<Vec<(usize, f32)>>,
 }
 
 impl TextInput {
@@ -152,7 +191,7 @@ impl TextInput {
         self.delete_selection();
 
         self.text.insert(self.cursor, c);
-        self.cursor += 1;
+        self.cursor += c.len_utf8();
         self.modified = true;
     }
 
@@ -178,9 +217,13 @@ impl TextInput {
         }
 
         if delta < 0 {
-            self.cursor = self.cursor.saturating_sub((-delta) as usize);
+            for _ in 0..((-delta) as usize) {
+                self.cursor = prev_char_boundary(&self.text, self.cursor);
+            }
         } else {
-            self.cursor = (self.cursor + delta as usize).min(self.text.len());
+            for _ in 0..(delta as usize) {
+                self.cursor = next_char_boundary(&self.text, self.cursor);
+            }
         }
     }
 
@@ -190,7 +233,7 @@ impl TextInput {
         } else if !extend_selection {
             self.selection_start = None;
         }
-        self.cursor = pos.min(self.text.len());
+        self.cursor = clamp_to_boundary(&self.text, pos);
     }
 }
 
@@ -221,24 +264,28 @@ impl Widget for TextInput {
                     if boundaries.is_empty() {
                         self.cursor = 0;
                     } else {
-                        let mut best_idx = 0;
+                        let mut best_byte = 0;
                         let mut best_dist = (click_offset - 0.0).abs();
 
-                        for (idx, &boundary) in boundaries.iter().enumerate() {
-                            let dist = (click_offset - boundary).abs();
+                        for &(byte_offset, boundary_x) in boundaries.iter() {
+                            let dist = (click_offset - boundary_x).abs();
                             if dist < best_dist {
                                 best_dist = dist;
-                                best_idx = idx;
+                                best_byte = byte_offset;
                             }
                         }
-                        self.cursor = best_idx;
+                        self.cursor = best_byte;
                     }
 
                     self.selection_start = None;
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, modifiers, text } if self.state.focused => {
+            InputEvent::KeyDown {
+                key,
+                modifiers,
+                text,
+            } if self.state.focused => {
                 match key {
                     Key::Left if modifiers.ctrl => {
                         let target = word_boundary_left(&self.text, self.cursor);
@@ -309,8 +356,9 @@ impl Widget for TextInput {
                         if self.selection_start.is_some() {
                             self.delete_selection();
                         } else if self.cursor > 0 {
-                            self.cursor -= 1;
-                            self.text.remove(self.cursor);
+                            let prev = prev_char_boundary(&self.text, self.cursor);
+                            self.text.drain(prev..self.cursor);
+                            self.cursor = prev;
                             self.modified = true;
                         }
                         self.cursor_visible = true;
@@ -321,7 +369,8 @@ impl Widget for TextInput {
                         if self.selection_start.is_some() {
                             self.delete_selection();
                         } else if self.cursor < self.text.len() {
-                            self.text.remove(self.cursor);
+                            let next = next_char_boundary(&self.text, self.cursor);
+                            self.text.drain(self.cursor..next);
                             self.modified = true;
                         }
                         self.cursor_visible = true;
@@ -356,7 +405,8 @@ impl Widget for TextInput {
                         if let Ok(mut clipboard) = arboard::Clipboard::new() {
                             if let Ok(pasted) = clipboard.get_text() {
                                 // Strip newlines/carriage returns for single-line input
-                                let clean: String = pasted.chars()
+                                let clean: String = pasted
+                                    .chars()
                                     .filter(|c| *c != '\n' && *c != '\r')
                                     .collect();
                                 if !clean.is_empty() {
@@ -439,11 +489,12 @@ impl Widget for TextInput {
         {
             let mut boundaries = self.char_boundaries.borrow_mut();
             boundaries.clear();
-            boundaries.push(0.0); // Start position
-            for (i, _) in self.text.char_indices() {
-                let char_text = &self.text[..i + 1];
-                let x_offset = text_renderer.measure_text(char_text);
-                boundaries.push(x_offset);
+            boundaries.push((0, 0.0)); // Start position
+            let mut byte_end = 0usize;
+            for c in self.text.chars() {
+                byte_end += c.len_utf8();
+                let x_offset = text_renderer.measure_text(&self.text[..byte_end]);
+                boundaries.push((byte_end, x_offset));
             }
         }
 
@@ -453,7 +504,11 @@ impl Widget for TextInput {
         } else {
             theme::SURFACE
         };
-        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &bounds,
+            bg_color.to_array(),
+            corner_radius,
+        ));
 
         // Border - accent color when focused, thicker
         let border_color = if self.state.focused {
@@ -499,10 +554,9 @@ impl Widget for TextInput {
         if self.state.focused && self.cursor_visible {
             let cursor_x = text_x + text_renderer.measure_text(&self.text[..self.cursor]);
             let cursor_rect = Rect::new(cursor_x, bounds.y + 6.0, 2.0, bounds.height - 12.0);
-            output.spline_vertices.extend(create_rect_vertices(
-                &cursor_rect,
-                theme::ACCENT.to_array(),
-            ));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(&cursor_rect, theme::ACCENT.to_array()));
         }
 
         // Character count (for max_length) - show in corner
@@ -528,4 +582,3 @@ impl Widget for TextInput {
         self.state.focused
     }
 }
-

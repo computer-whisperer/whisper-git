@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use vulkano::{
     format::Format,
-    image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount},
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
     swapchain::{Surface, Swapchain, SwapchainCreateInfo},
@@ -69,7 +69,9 @@ impl SurfaceManager {
                 min_image_count: surface_capabilities.min_image_count.max(2),
                 image_format,
                 image_extent: size.into(),
-                image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST,
+                image_usage: ImageUsage::COLOR_ATTACHMENT
+                    | ImageUsage::TRANSFER_SRC
+                    | ImageUsage::TRANSFER_DST,
                 composite_alpha: surface_capabilities
                     .supported_composite_alpha
                     .into_iter()
@@ -122,8 +124,8 @@ impl SurfaceManager {
             .iter()
             .zip(msaa_views.iter())
             .map(|(image, msaa_view)| {
-                let resolve_view = ImageView::new_default(image.clone())
-                    .context("Failed to create image view")?;
+                let resolve_view =
+                    ImageView::new_default(image.clone()).context("Failed to create image view")?;
                 Framebuffer::new(
                     render_pass.clone(),
                     FramebufferCreateInfo {
@@ -137,7 +139,11 @@ impl SurfaceManager {
     }
 
     /// Recreate the swapchain (e.g., after resize)
-    pub fn recreate(&mut self, ctx: &VulkanContext, size: winit::dpi::PhysicalSize<u32>) -> Result<()> {
+    pub fn recreate(
+        &mut self,
+        ctx: &VulkanContext,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> Result<()> {
         if size.width == 0 || size.height == 0 {
             return Ok(());
         }
@@ -153,7 +159,8 @@ impl SurfaceManager {
         self.swapchain = new_swapchain;
         self.images = new_images;
         self.msaa_views = Self::create_msaa_images(ctx, &self.images)?;
-        self.framebuffers = Self::create_framebuffers(&self.images, &self.msaa_views, &self.render_pass)?;
+        self.framebuffers =
+            Self::create_framebuffers(&self.images, &self.msaa_views, &self.render_pass)?;
         self.needs_recreate = false;
 
         Ok(())

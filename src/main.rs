@@ -600,7 +600,7 @@ impl App {
                 .map(|m| m.scale_factor())
                 .fold(window_scale, f64::max)
         });
-        let text_renderer = TextRenderer::new(
+        let mut text_renderer = TextRenderer::new(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
@@ -608,13 +608,15 @@ impl App {
         )
         .context("Failed to create text renderer")?;
 
-        let bold_text_renderer = TextRenderer::new_bold(
+        let mut bold_text_renderer = TextRenderer::new_bold(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
             max_scale,
         )
         .context("Failed to create bold text renderer")?;
+        text_renderer.set_render_scale(window_scale);
+        bold_text_renderer.set_render_scale(window_scale);
 
         let spline_renderer = SplineRenderer::new(
             ctx.memory_allocator.clone(),
