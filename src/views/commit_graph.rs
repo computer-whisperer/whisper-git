@@ -987,10 +987,11 @@ impl CommitGraphView {
 
         // Column separator lines between diff stats / time columns
         // (mirrors the column positions computed in layout_text)
-        let time_col_width: f32 = 80.0;
-        let stats_col_width: f32 = 100.0;
-        let right_margin: f32 = 8.0;
-        let col_gap: f32 = 16.0;
+        let line_height = text_renderer.line_height();
+        let time_col_width = (line_height * 2.0).max(52.0);
+        let stats_col_width = (line_height * 4.5).max(68.0);
+        let right_margin = (line_height * 0.4).max(4.0);
+        let col_gap = (line_height * 0.25).max(4.0);
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let time_col_left = time_col_right - time_col_width;
         let stats_col_right = time_col_left - col_gap;
@@ -1456,11 +1457,11 @@ impl CommitGraphView {
         // Graph offset for text - right after the graph column (uses adaptive width)
         let text_x = bounds.x + self.lane_left_pad() + self.adaptive_graph_width + self.lane_width * 1.0;
 
-        // Column layout: fixed-width time column right-aligned (~80px for "12 months ago" etc.)
-        let time_col_width: f32 = 80.0;
-        let stats_col_width: f32 = 100.0; // "+9999 / -9999" fits comfortably
-        let right_margin: f32 = 8.0;
-        let col_gap: f32 = 16.0; // wider gap to prevent collision with commit messages
+        // Column layout: scale-proportional widths derived from line_height
+        let time_col_width = (line_height * 2.0).max(52.0);
+        let stats_col_width = (line_height * 4.5).max(68.0);
+        let right_margin = (line_height * 0.4).max(4.0);
+        let col_gap = (line_height * 0.25).max(4.0);
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
         let stats_col_right = time_col_right - time_col_width - col_gap;
         let stats_col_left = stats_col_right - stats_col_width;
