@@ -15,7 +15,7 @@ mod views;
 mod watcher;
 
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -113,7 +113,115 @@ enum FocusedPanel {
 }
 
 
-/// Saved parent state when drilling into a submodule
+/// Saved worktree state for submodule drill-down/restore.
+struct SavedWorktreeState {
+    worktrees: Vec<WorktreeInfo>,
+    selected_path: Option<PathBuf>,
+}
+
+/// Consolidated worktree state for a tab.
+/// Owns the worktree metadata list, the repo cache, and the user's selection.
+struct WorktreeState {
+    /// Worktree info from git (refreshed on repo state change)
+    worktrees: Vec<WorktreeInfo>,
+    /// Opened git2::Repository handles keyed by worktree path
+    repo_cache: HashMap<PathBuf, GitRepo>,
+    /// User's currently selected worktree (None = no worktree selected)
+    selected_path: Option<PathBuf>,
+}
+
+impl WorktreeState {
+    fn new() -> Self {
+        Self {
+            worktrees: Vec::new(),
+            repo_cache: HashMap::new(),
+            selected_path: None,
+        }
+    }
+
+    /// Returns the staging repo for the selected worktree, if any.
+    /// This is the ONLY place worktree repo resolution happens.
+    fn staging_repo(&self) -> Option<&GitRepo> {
+        self.selected_path.as_ref()
+            .and_then(|p| self.repo_cache.get(p))
+    }
+
+    /// Returns the staging repo, falling back to the ref repo.
+    /// Use for operations that work on either (status, diff, stage, commit).
+    fn staging_repo_or<'a>(&'a self, ref_repo: &'a GitRepo) -> &'a GitRepo {
+        self.staging_repo().unwrap_or(ref_repo)
+    }
+
+    /// Select a worktree by path, opening its repo if not cached.
+    fn select(&mut self, path: PathBuf) {
+        if !self.repo_cache.contains_key(&path) {
+            if let Ok(repo) = GitRepo::open(&path) {
+                self.repo_cache.insert(path.clone(), repo);
+            }
+        }
+        self.selected_path = Some(path);
+    }
+
+    /// Clear selection (no worktree selected).
+    #[allow(dead_code)]
+    fn deselect(&mut self) {
+        self.selected_path = None;
+    }
+
+    /// Whether we have multiple worktrees (determines if selector is shown).
+    fn has_selector(&self) -> bool {
+        self.worktrees.len() >= 2
+    }
+
+    /// Refresh worktree list from repo, populate cache, prune stale entries.
+    fn refresh(&mut self, repo: &GitRepo) {
+        self.worktrees = repo.worktrees().unwrap_or_default();
+        // Open repos for any new worktrees
+        for wt in &self.worktrees {
+            let path = PathBuf::from(&wt.path);
+            if !self.repo_cache.contains_key(&path) {
+                if let Ok(wt_repo) = GitRepo::open(&path) {
+                    self.repo_cache.insert(path, wt_repo);
+                }
+            }
+        }
+        // Prune cache entries for removed worktrees
+        let valid: HashSet<PathBuf> = self.worktrees.iter()
+            .map(|wt| PathBuf::from(&wt.path)).collect();
+        self.repo_cache.retain(|p, _| valid.contains(p));
+    }
+
+    /// Derive current_branch and head_oid from the selected worktree.
+    /// Returns (branch, head_oid).
+    fn derive_head(&self, ref_repo: &GitRepo) -> (String, Option<Oid>) {
+        if let Some(staging) = self.staging_repo() {
+            (staging.current_branch().unwrap_or_default(), staging.head_oid().ok())
+        } else if self.has_selector() {
+            // Multi-worktree, nothing selected — HEAD is meaningless
+            (String::new(), None)
+        } else {
+            // Single-worktree / normal repo — use the repo itself
+            (ref_repo.current_branch().unwrap_or_default(), ref_repo.head_oid().ok())
+        }
+    }
+
+    /// Save state for submodule drill-down.
+    fn save(&self) -> SavedWorktreeState {
+        SavedWorktreeState {
+            worktrees: self.worktrees.clone(),
+            selected_path: self.selected_path.clone(),
+        }
+    }
+
+    /// Restore state from submodule drill-up.
+    fn restore(&mut self, saved: SavedWorktreeState, repo: &GitRepo) {
+        self.worktrees = saved.worktrees;
+        self.selected_path = saved.selected_path;
+        self.repo_cache.clear();
+        self.refresh(repo);
+    }
+}
+
 struct SavedParentState {
     repo: GitRepo,
     commits: Vec<CommitInfo>,
@@ -124,8 +232,7 @@ struct SavedParentState {
     sidebar_scroll_offset: f32,
     submodule_name: String,
     parent_submodules: Vec<SubmoduleInfo>,
-    active_worktree_path: Option<PathBuf>,
-    worktrees: Vec<WorktreeInfo>,
+    worktree_state: SavedWorktreeState,
 }
 
 /// Focus state when viewing a submodule (supports nesting via stack)
@@ -136,7 +243,7 @@ struct SubmoduleFocus {
 
 /// Per-tab repository data
 struct RepoTab {
-    repo: Option<GitRepo>,
+    repo: GitRepo,
     commits: Vec<CommitInfo>,
     name: String,
 }
@@ -164,12 +271,8 @@ struct TabViewState {
     generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
     /// Track whether we already showed the "still running" toast for each op
     showed_timeout_toast: [bool; 4],
-    /// Worktree info list (moved from sidebar)
-    worktrees: Vec<crate::git::WorktreeInfo>,
-    /// Cache of opened worktree repos keyed by path, to avoid re-discovering on switch
-    worktree_repo_cache: HashMap<PathBuf, GitRepo>,
-    /// Path of the user-selected worktree (None = no worktree selected)
-    active_worktree_path: Option<PathBuf>,
+    /// Consolidated worktree state: metadata, repo cache, and selection
+    worktree_state: WorktreeState,
     /// Submodule drill-down state (None when viewing root repo)
     submodule_focus: Option<SubmoduleFocus>,
     /// Filesystem watcher for auto-refresh on external changes
@@ -189,26 +292,12 @@ impl TabViewState {
         if self.current_branch.is_empty() { None } else { Some(&self.current_branch) }
     }
 
-    /// Re-derive current_branch and head_oid from the active worktree's repo,
+    /// Re-derive current_branch and head_oid from worktree state,
     /// and update branch_tips[].is_head accordingly.
-    /// When no worktree is selected on a multi-worktree repo, clears both fields
-    /// since HEAD is a worktree property, not a repo property.
     fn sync_worktree_derived_state(&mut self, repo: &GitRepo) {
-        if let Some(staging_repo) = self.active_worktree_path.as_ref()
-            .and_then(|p| self.worktree_repo_cache.get(p))
-        {
-            // Worktree explicitly selected — derive from it
-            self.current_branch = staging_repo.current_branch().unwrap_or_default();
-            self.head_oid = staging_repo.head_oid().ok();
-        } else if self.staging_well.has_worktree_selector() {
-            // Multi-worktree repo but no worktree selected — HEAD is meaningless
-            self.current_branch = String::new();
-            self.head_oid = None;
-        } else {
-            // Normal single-worktree repo — derive from the repo itself
-            self.current_branch = repo.current_branch().unwrap_or_default();
-            self.head_oid = repo.head_oid().ok();
-        }
+        let (branch, head) = self.worktree_state.derive_head(repo);
+        self.current_branch = branch;
+        self.head_oid = head;
         for tip in &mut self.commit_graph_view.branch_tips {
             tip.is_head = !tip.is_remote && tip.name == self.current_branch;
         }
@@ -216,7 +305,6 @@ impl TabViewState {
 
     /// Switch the staging well to a different worktree by index.
     /// Dismisses any commit inspect activity and enters staging mode.
-    /// `repo` is the root/ref repo needed for `sync_worktree_derived_state`.
     fn switch_to_worktree(&mut self, index: usize, repo: &GitRepo) {
         self.staging_well.switch_worktree(index);
         self.right_panel_mode = RightPanelMode::Staging;
@@ -225,21 +313,9 @@ impl TabViewState {
         self.commit_graph_view.selected_commit = None;
         self.last_diff_commit = None;
         if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
-            let path = wt_ctx.path.clone();
-            if !self.worktree_repo_cache.contains_key(&path) {
-                if let Ok(wt_repo) = GitRepo::open(&path) {
-                    self.worktree_repo_cache.insert(path.clone(), wt_repo);
-                }
-            }
-            self.active_worktree_path = Some(path);
+            self.worktree_state.select(wt_ctx.path.clone());
         }
         self.sync_worktree_derived_state(repo);
-    }
-
-    /// Get a reference to the active worktree repo, if any.
-    fn active_worktree_repo(&self) -> Option<&GitRepo> {
-        self.active_worktree_path.as_ref()
-            .and_then(|path| self.worktree_repo_cache.get(path))
     }
 
     /// Switch to a named worktree (looks up index by name).
@@ -333,9 +409,7 @@ impl TabViewState {
             push_receiver: None,
             generic_op_receiver: None,
             showed_timeout_toast: [false; 4],
-            worktrees: Vec::new(),
-            worktree_repo_cache: HashMap::new(),
-            active_worktree_path: None,
+            worktree_state: WorktreeState::new(),
             submodule_focus: None,
             watcher: None,
             watcher_rx: None,
@@ -457,7 +531,7 @@ impl App {
                     tab_bar.add_tab(name.clone());
                     tabs.push((
                         RepoTab {
-                            repo: Some(repo),
+                            repo,
                             commits: Vec::new(),
                             name,
                         },
@@ -466,22 +540,13 @@ impl App {
                 }
                 Err(e) => {
                     eprintln!("Warning: Could not open repository at {:?}: {e}", repo_path);
-                    // Still add a tab with no repo
-                    let name = repo_path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    tab_bar.add_tab(name.clone());
-                    tabs.push((
-                        RepoTab {
-                            repo: None,
-                            commits: Vec::new(),
-                            name,
-                        },
-                        TabViewState::new(),
-                    ));
+                    // Skip creating a tab for failed repos
                 }
             }
+        }
+        // Ensure at least one tab exists (even if all repos failed to open)
+        if tabs.is_empty() {
+            anyhow::bail!("No repositories could be opened");
         }
 
         let mut settings_dialog = SettingsDialog::new();
@@ -702,12 +767,12 @@ impl App {
 
     fn refresh_status(&mut self) {
         if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-            let Some(ref repo) = repo_tab.repo else { return };
+            let repo = &repo_tab.repo;
 
             // Active worktree status for staging well
             // Compute status and repo_state before mutable borrow of staging_well
             let (wt_status, wt_repo_state) = {
-                let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
+                let staging_repo = view_state.worktree_state.staging_repo_or(repo);
                 (staging_repo.status().ok(), staging_repo.repo_state())
             };
             if let Some(status) = wt_status {
@@ -725,7 +790,7 @@ impl App {
 
             // Refresh dirty flags for all worktrees
             let mut dirty_changed = false;
-            for wt in &mut view_state.worktrees {
+            for wt in &mut view_state.worktree_state.worktrees {
                 if let Ok(wt_repo) = git2::Repository::open(&wt.path) {
                     let (dirty, count) = wt_repo.statuses(None)
                         .map(|statuses| {
@@ -744,10 +809,10 @@ impl App {
             }
             // Sync dirty flags to commit graph view + staging well
             if dirty_changed {
-                view_state.commit_graph_view.worktrees = view_state.worktrees.clone();
-                view_state.staging_well.set_worktrees(&view_state.worktrees);
+                view_state.commit_graph_view.worktrees = view_state.worktree_state.worktrees.clone();
+                view_state.staging_well.set_worktrees(&view_state.worktree_state.worktrees);
                 // Regenerate synthetic entries to add/remove "uncommitted changes" rows
-                let synthetics = git::create_synthetic_entries(repo, &view_state.worktrees, &repo_tab.commits);
+                let synthetics = git::create_synthetic_entries(repo, &view_state.worktree_state.worktrees, &repo_tab.commits);
                 // Remove old synthetics, insert new ones
                 repo_tab.commits.retain(|c| !c.is_synthetic);
                 if !synthetics.is_empty() {
@@ -761,10 +826,6 @@ impl App {
     /// Diagnostic reload: capture current UI state, do a full re-read, and report deltas.
     fn do_diagnostic_reload(&mut self) {
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-        if repo_tab.repo.is_none() {
-            self.toast_manager.push("No repo open", ToastSeverity::Error);
-            return;
-        }
 
         // 1. Capture "before" snapshot from current UI state
         let before = {
@@ -781,7 +842,7 @@ impl App {
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
-                worktrees: &mut view_state.worktrees,
+                worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
             };
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
@@ -791,9 +852,9 @@ impl App {
         refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
         // Also refresh file status (staged/unstaged/conflicted)
         {
-            let repo = repo_tab.repo.as_ref().unwrap();
+            let repo = &repo_tab.repo;
             let (wt_status, wt_repo_state) = {
-                let staging_repo = view_state.active_worktree_repo().unwrap_or(repo);
+                let staging_repo = view_state.worktree_state.staging_repo_or(repo);
                 (staging_repo.status().ok(), staging_repo.repo_state())
             };
             if let Some(status) = wt_status {
@@ -821,7 +882,7 @@ impl App {
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
-                worktrees: &mut view_state.worktrees,
+                worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
             };
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
@@ -909,16 +970,14 @@ impl App {
         // Handle ShowPullDialog and ShowPushDialog separately (need to access dialogs)
         normal_messages.retain(|msg| {
             if let AppMessage::ShowPullDialog(branch) = msg {
-                if let Some(ref repo) = repo_tab.repo {
-                    let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                    self.pull_dialog.show(branch, &default_remote);
-                }
+                let repo = &repo_tab.repo;
+                let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                self.pull_dialog.show(branch, &default_remote);
                 false
             } else if let AppMessage::ShowPushDialog(branch) = msg {
-                if let Some(ref repo) = repo_tab.repo {
-                    let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
-                    self.push_dialog.show(branch, &default_remote);
-                }
+                let repo = &repo_tab.repo;
+                let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                self.push_dialog.show(branch, &default_remote);
                 false
             } else if matches!(msg, AppMessage::AiGenerateCommitMessage) {
                 // Inline AI generation (can't call method due to borrow conflict with repo_tab/view_state)
@@ -926,10 +985,9 @@ impl App {
                     self.toast_manager.push("AI generation already in progress".to_string(), ToastSeverity::Info);
                 } else if view_state.staging_well.staged_list.files.is_empty() {
                     self.toast_manager.push("No staged files — stage changes first".to_string(), ToastSeverity::Info);
-                } else if let Some(ref repo) = repo_tab.repo {
-                    let staging_repo = view_state.active_worktree_path.as_ref()
-                        .and_then(|p| view_state.worktree_repo_cache.get(p))
-                        .unwrap_or(repo);
+                } else {
+                    let repo = &repo_tab.repo;
+                    let staging_repo = view_state.worktree_state.staging_repo_or(repo);
                     match staging_repo.staged_diff_text(50_000) {
                         Ok(diff_text) if diff_text.trim().is_empty() => {
                             self.toast_manager.push("Staged diff is empty".to_string(), ToastSeverity::Info);
@@ -1011,13 +1069,16 @@ impl App {
 
         let ctx = MessageContext { graph_bounds, show_orphaned_commits: self.config.show_orphaned_commits };
 
-        let Some(ref repo) = repo_tab.repo else {
-            return;
-        };
+        let repo = &repo_tab.repo;
 
         // Any normal message likely changes state, so mark status dirty
         self.status_dirty = true;
 
+        // Resolve staging_repo via direct field access to avoid borrow conflict
+        // (repo_cache is immutably borrowed, worktrees is mutably borrowed in msg_view_state)
+        let staging_repo: &GitRepo = view_state.worktree_state.selected_path.as_ref()
+            .and_then(|p| view_state.worktree_state.repo_cache.get(p))
+            .unwrap_or(repo);
         for msg in normal_messages {
             let mut msg_view_state = MessageViewState {
                 commit_graph_view: &mut view_state.commit_graph_view,
@@ -1032,12 +1093,9 @@ impl App {
                 push_receiver: &mut view_state.push_receiver,
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
-                worktrees: &mut view_state.worktrees,
+                worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
             };
-            let staging_repo = view_state.active_worktree_path.as_ref()
-                .and_then(|p| view_state.worktree_repo_cache.get(p))
-                .unwrap_or(repo);
             handle_app_message(
                 msg,
                 repo,
@@ -1058,7 +1116,7 @@ impl App {
             return; // computation already in progress
         }
         let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-        let Some(ref repo) = repo_tab.repo else { return };
+        let repo = &repo_tab.repo;
         let needs_stats: Vec<Oid> = repo_tab.commits.iter()
             .filter(|c| !c.is_synthetic && c.insertions == 0 && c.deletions == 0)
             .map(|c| c.id)
@@ -1096,11 +1154,9 @@ impl App {
                 let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
                 // Update watcher paths for new/removed worktrees
-                if let Some(ref repo) = repo_tab.repo {
-                    let common_dir = repo.common_dir().to_path_buf();
-                    if let Some(ref mut w) = view_state.watcher {
-                        w.update_worktree_watches(&view_state.worktrees, &common_dir);
-                    }
+                let common_dir = repo_tab.repo.common_dir().to_path_buf();
+                if let Some(ref mut w) = view_state.watcher {
+                    w.update_worktree_watches(&view_state.worktree_state.worktrees, &common_dir);
                 }
             }
             None => {}
@@ -1203,12 +1259,10 @@ impl App {
                         let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                         // Also refresh worktrees/stashes
-                        if let Some(ref repo) = repo_tab.repo {
-                            if let Ok(worktrees) = repo.worktrees() {
-                                view_state.worktrees = worktrees;
-                            }
-                            view_state.branch_sidebar.stashes = repo.stash_list();
+                        if let Ok(worktrees) = repo_tab.repo.worktrees() {
+                            view_state.worktree_state.worktrees = worktrees;
                         }
+                        view_state.branch_sidebar.stashes = repo_tab.repo.stash_list();
                     } else {
                         let (msg, _) = git::classify_git_error(&label, &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
@@ -1287,7 +1341,7 @@ impl App {
                 // Initialize the view if render state exists
                 // (init_tab_view -> refresh_repo_state will load commits)
                 let mut repo_tab = RepoTab {
-                    repo: Some(repo),
+                    repo,
                     commits: Vec::new(),
                     name,
                 };
@@ -1578,7 +1632,7 @@ impl App {
                                 &mut self.remote_dialog,
                                 &mut self.merge_dialog,
                                 &mut self.rebase_dialog,
-                                repo_tab.repo.as_ref(),
+                                &repo_tab.repo,
                                 &mut self.pending_confirm_action,
                             );
                         }
@@ -1769,13 +1823,11 @@ impl App {
             };
             if let Some(idx) = wt_index {
                 if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                    if let Some(ref repo) = repo_tab.repo {
-                        if view_state.staging_well.has_worktree_selector()
-                            && idx < view_state.staging_well.worktree_count()
-                        {
-                            view_state.switch_to_worktree(idx, repo);
-                            return true;
-                        }
+                    if view_state.staging_well.has_worktree_selector()
+                        && idx < view_state.staging_well.worktree_count()
+                    {
+                        view_state.switch_to_worktree(idx, &repo_tab.repo);
+                        return true;
                     }
                 }
             }
@@ -1818,10 +1870,8 @@ impl App {
                 if !view_state.staging_well.has_text_focus()
                     && !view_state.branch_sidebar.has_text_focus()
                 {
-                    if let Some(ref repo) = repo_tab.repo {
-                        let path = repo.git_command_dir();
-                        open_terminal_at(&path.to_string_lossy(), "repo", &mut self.toast_manager);
-                    }
+                    let path = repo_tab.repo.git_command_dir();
+                    open_terminal_at(&path.to_string_lossy(), "repo", &mut self.toast_manager);
                     return true;
                 }
             }
@@ -1857,9 +1907,7 @@ impl App {
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
             }
             SidebarAction::SwitchWorktree(wt_name) => {
-                if let Some(ref repo) = repo_tab.repo {
-                    view_state.switch_to_worktree_by_name(&wt_name, repo);
-                }
+                view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
             }
         }
     }
@@ -1930,20 +1978,27 @@ fn poll_remote_op(
 /// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
 /// async diff stats computation that should be stored in `App::diff_stats_receiver`.
 fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
-    let Some(ref repo) = repo_tab.repo else { return None };
+    let repo = &repo_tab.repo;
 
-    // staging_repo is the working context — for normal repos it's the same as
-    // repo, for bare repos it's the active worktree's repo.
-    // Resolve through the cache directly to avoid borrow conflicts with msg_view.
-    let staging_repo: &GitRepo = view_state.active_worktree_path.as_ref()
-        .and_then(|p| view_state.worktree_repo_cache.get(p))
+    // Refresh worktree state (list, cache, pruning — all in one call)
+    view_state.worktree_state.refresh(repo);
+
+    // Sync staging well's selected worktree path into worktree_state
+    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
+        view_state.worktree_state.select(wt_ctx.path.clone());
+    }
+
+    // Resolve staging_repo via direct field access to avoid borrow conflict
+    // (repo_cache is immutably borrowed here, worktrees is mutably borrowed in msg_view below)
+    let staging_repo: &GitRepo = view_state.worktree_state.selected_path.as_ref()
+        .and_then(|p| view_state.worktree_state.repo_cache.get(p))
         .unwrap_or(repo);
 
-    // Capture staging_repo state early to avoid borrow conflicts with cache mutations below.
+    // Capture staging_repo state early to avoid borrow conflicts with msg_view.
     let staging_repo_state = staging_repo.repo_state();
 
     // Delegate core refresh logic to the shared implementation in messages.rs
-    let (current, staging_head) = {
+    {
         let mut msg_view = MessageViewState {
             commit_graph_view: &mut view_state.commit_graph_view,
             staging_well: &mut view_state.staging_well,
@@ -1957,45 +2012,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             push_receiver: &mut view_state.push_receiver,
             generic_op_receiver: &mut view_state.generic_op_receiver,
             right_panel_mode: &mut view_state.right_panel_mode,
-            worktrees: &mut view_state.worktrees,
+            worktrees: &mut view_state.worktree_state.worktrees,
             submodule_focus: &mut view_state.submodule_focus,
         };
-        refresh_repo_state_core(repo, staging_repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits)
-    };
-
-    // main.rs-specific extras beyond the shared core:
-
-    // Store derived worktree state centrally.
-    // When no worktree is selected on a multi-worktree repo, clear branch/head
-    // since HEAD is a worktree property, not a repo property.
-    let has_worktrees = view_state.staging_well.has_worktree_selector();
-    if has_worktrees && view_state.active_worktree_path.is_none() {
-        view_state.current_branch = String::new();
-        view_state.head_oid = None;
-        // Clear stale is_head flags set by refresh_repo_state_core
-        for tip in &mut view_state.commit_graph_view.branch_tips {
-            tip.is_head = false;
-        }
-    } else {
-        view_state.current_branch = current;
-        view_state.head_oid = staging_head;
+        refresh_repo_state_core(repo, staging_repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits);
     }
 
-    // Sync active_worktree_path with staging well's selection so status loads from the right repo
-    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-        let path = wt_ctx.path.clone();
-        if !view_state.worktree_repo_cache.contains_key(&path) {
-            if let Ok(wt_repo) = GitRepo::open(&path) {
-                view_state.worktree_repo_cache.insert(path.clone(), wt_repo);
-            }
-        }
-        view_state.active_worktree_path = Some(path);
-    }
-    // Prune cached worktree repos for paths that no longer exist
-    let valid_paths: std::collections::HashSet<PathBuf> = view_state.worktrees.iter()
-        .map(|wt| PathBuf::from(&wt.path))
-        .collect();
-    view_state.worktree_repo_cache.retain(|path, _| valid_paths.contains(path));
+    // Derive HEAD from worktree state (single clean call)
+    view_state.sync_worktree_derived_state(repo);
 
     // Update operation state (merge/rebase/cherry-pick in progress)
     view_state.header_bar.operation_state_label = git::repo_state_label(staging_repo_state);
@@ -2019,17 +2043,15 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     view_state.branch_sidebar.sync_metrics(text_renderer);
     view_state.staging_well.set_scale(scale);
 
-    if let Some(ref repo) = repo_tab.repo {
-        // Set initial repo path in header — use common_dir parent to show project path,
-        // not a worktree-specific path.
-        let project_path = repo.common_dir().parent().unwrap_or(repo.common_dir());
-        let repo_path_str = project_path.to_string_lossy().into_owned();
-        let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
-        view_state.header_bar.set_repo_path(&repo_path_str);
-    }
+    // Set initial repo path in header — use common_dir parent to show project path,
+    // not a worktree-specific path.
+    let project_path = repo_tab.repo.common_dir().parent().unwrap_or(repo_tab.repo.common_dir());
+    let repo_path_str = project_path.to_string_lossy().into_owned();
+    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
+    view_state.header_bar.set_repo_path(&repo_path_str);
 
     // No worktree is auto-selected at init. The user picks one via the staging well selector.
-    // active_worktree_path stays None until explicitly set.
+    // worktree_state.selected_path stays None until explicitly set.
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
     // (refresh_repo_state handles all of these — no need to call them separately)
@@ -2047,12 +2069,12 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
     view_state.watcher = None;
     view_state.watcher_rx = None;
 
-    let Some(ref repo) = repo_tab.repo else { return };
+    let repo = &repo_tab.repo;
     let Some(workdir) = repo.workdir() else { return };
     let git_dir = repo.git_dir();
     let common_dir = repo.common_dir();
 
-    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktrees) {
+    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktree_state.worktrees) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
@@ -2077,8 +2099,6 @@ fn enter_submodule(
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
 ) -> bool {
-    if repo_tab.repo.is_none() { return false; }
-
     // Find the submodule info by name
     let sm = view_state.staging_well.submodules.iter()
         .find(|s| s.name == name)
@@ -2110,8 +2130,8 @@ fn enter_submodule(
         }
     };
 
-    // Save parent state
-    let parent_repo = repo_tab.repo.take().unwrap();
+    // Save parent state — use std::mem::replace for atomic swap (repo is non-optional)
+    let parent_repo = std::mem::replace(&mut repo_tab.repo, sub_repo);
     let parent_commits = std::mem::take(&mut repo_tab.commits);
     let parent_name = repo_tab.name.clone();
     let parent_submodules = view_state.staging_well.submodules.clone();
@@ -2126,25 +2146,22 @@ fn enter_submodule(
         sidebar_scroll_offset: view_state.branch_sidebar.scroll_offset,
         submodule_name: name.to_string(),
         parent_submodules,
-        active_worktree_path: view_state.active_worktree_path.clone(),
-        worktrees: std::mem::take(&mut view_state.worktrees),
+        worktree_state: view_state.worktree_state.save(),
     };
 
-    // Clear diff/detail views and worktree state
+    // Clear diff/detail views and worktree state for the submodule
     view_state.diff_view.clear();
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
-    view_state.worktree_repo_cache.clear();
-    view_state.active_worktree_path = None;
+    view_state.worktree_state = WorktreeState::new();
 
     // Clear staging well immediately to avoid showing stale parent files
     view_state.staging_well.clear_status();
 
-    // Swap in submodule data
-    let sub_commits = sub_repo.commit_graph(MAX_COMMITS).unwrap_or_default();
+    // Swap in submodule data (repo already swapped via std::mem::replace above)
+    let sub_commits = repo_tab.repo.commit_graph(MAX_COMMITS).unwrap_or_default();
     repo_tab.name = name.to_string();
     repo_tab.commits = sub_commits;
-    repo_tab.repo = Some(sub_repo);
 
     // Build/extend focus state
     match &mut view_state.submodule_focus {
@@ -2192,7 +2209,6 @@ fn exit_submodule(
     view_state.diff_view.clear();
     view_state.commit_detail_view.clear();
     view_state.last_diff_commit = None;
-    view_state.worktree_repo_cache.clear();
 
     // Restore parent data
     let scroll_offset = saved.graph_scroll_offset;
@@ -2201,11 +2217,10 @@ fn exit_submodule(
     let sidebar_scroll = saved.sidebar_scroll_offset;
     let parent_submodules = saved.parent_submodules;
 
-    repo_tab.repo = Some(saved.repo);
+    repo_tab.repo = saved.repo;
     repo_tab.commits = saved.commits;
     repo_tab.name = saved.repo_name;
-    view_state.active_worktree_path = saved.active_worktree_path;
-    view_state.worktrees = saved.worktrees;
+    view_state.worktree_state.restore(saved.worktree_state, &repo_tab.repo);
 
     // Re-init views with parent data
     let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits);
@@ -2740,9 +2755,7 @@ impl App {
             if view_state.staging_well.handle_pill_event(input_event, pill_rect).is_consumed() {
                 if let Some(action) = view_state.staging_well.take_action() {
                     if let StagingAction::SwitchWorktree(index) = action {
-                        if let Some(ref repo) = repo_tab.repo {
-                            view_state.switch_to_worktree(index, repo);
-                        }
+                        view_state.switch_to_worktree(index, &repo_tab.repo);
                     }
                 }
                 return;
@@ -2760,7 +2773,7 @@ impl App {
                             if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
                                 // Synthetic row: switch to that worktree if named
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    if let Some(ref repo) = repo_tab.repo { view_state.switch_to_worktree_by_name(&wt_name, repo); }
+                                    view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
                                 } else {
                                     // Single-worktree: enter staging mode directly
                                     view_state.right_panel_mode = RightPanelMode::Staging;
@@ -2773,7 +2786,7 @@ impl App {
                             }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
-                    if let Some(ref repo) = repo_tab.repo { view_state.handle_graph_action(action, repo); }
+                    view_state.handle_graph_action(action, &repo_tab.repo);
                 }
                 if response.is_consumed() {
                     return;
@@ -2785,7 +2798,7 @@ impl App {
                 let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
                 let response = view_state.staging_well.handle_event(input_event, staging_rect);
                 if let Some(action) = view_state.staging_well.take_action() {
-                    if let Some(ref repo) = repo_tab.repo { view_state.handle_staging_action(action, repo); }
+                    view_state.handle_staging_action(action, &repo_tab.repo);
                 }
                 if response.is_consumed() {
                     return;
@@ -2807,7 +2820,7 @@ impl App {
                         && view_state.last_diff_commit != Some(oid) {
                             if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
                                 if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    if let Some(ref repo) = repo_tab.repo { view_state.switch_to_worktree_by_name(&wt_name, repo); }
+                                    view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
                                 } else {
                                     // Single-worktree: enter staging mode directly
                                     view_state.right_panel_mode = RightPanelMode::Staging;
@@ -2820,7 +2833,7 @@ impl App {
                             }
                         }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
-                    if let Some(ref repo) = repo_tab.repo { view_state.handle_graph_action(action, repo); }
+                    view_state.handle_graph_action(action, &repo_tab.repo);
                 }
                 if response.is_consumed() {
                     return;
@@ -2834,7 +2847,7 @@ impl App {
                     let response = view_state.staging_well.handle_event(input_event, staging_rect);
 
                     if let Some(action) = view_state.staging_well.take_action() {
-                        if let Some(ref repo) = repo_tab.repo { view_state.handle_staging_action(action, repo); }
+                        view_state.handle_staging_action(action, &repo_tab.repo);
                     }
                     if response.is_consumed() {
                         return;
@@ -3048,7 +3061,7 @@ fn handle_context_menu_action(
     remote_dialog: &mut RemoteDialog,
     merge_dialog: &mut MergeDialog,
     rebase_dialog: &mut RebaseDialog,
-    repo: Option<&crate::git::GitRepo>,
+    repo: &crate::git::GitRepo,
     pending_confirm_action: &mut Option<AppMessage>,
 ) {
     // Actions may be in format "action:param" or just "action"
@@ -3214,7 +3227,7 @@ fn handle_context_menu_action(
         }
         "open_worktree" => {
             if !param.is_empty() {
-                let path = view_state.worktrees.iter()
+                let path = view_state.worktree_state.worktrees.iter()
                     .find(|w| w.name == param)
                     .map(|w| w.path.clone());
                 if let Some(path) = path {
@@ -3229,7 +3242,7 @@ fn handle_context_menu_action(
         }
         "switch_worktree" => {
             if !param.is_empty() {
-                if let Some(repo) = repo { view_state.switch_to_worktree_by_name(param, repo); }
+                view_state.switch_to_worktree_by_name(param, repo);
             }
         }
         "jump_to_worktree" => {
@@ -3239,7 +3252,7 @@ fn handle_context_menu_action(
         }
         "remove_worktree" => {
             if !param.is_empty() {
-                let is_dirty = view_state.worktrees.iter().any(|w| w.name == param && w.is_dirty);
+                let is_dirty = view_state.worktree_state.worktrees.iter().any(|w| w.name == param && w.is_dirty);
                 let msg = if is_dirty {
                     format!("Remove worktree '{}'? This worktree has uncommitted changes that will be lost.", param)
                 } else {
@@ -3251,44 +3264,40 @@ fn handle_context_menu_action(
         }
         "merge" => {
             if !param.is_empty() {
-                let effective_repo = view_state.active_worktree_repo().or(repo);
-                let target_dir = view_state.active_worktree_path.clone();
-                if let Some(r) = effective_repo {
-                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
-                        toast_manager.push(
-                            format!("Cannot merge: {}. Abort or complete it first.", label),
-                            ToastSeverity::Error,
-                        );
-                    } else {
-                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        let uncommitted = r.uncommitted_change_count();
-                        merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
-                    }
+                let r = view_state.worktree_state.staging_repo_or(repo);
+                let target_dir = view_state.worktree_state.selected_path.clone();
+                if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                    toast_manager.push(
+                        format!("Cannot merge: {}. Abort or complete it first.", label),
+                        ToastSeverity::Error,
+                    );
+                } else {
+                    let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                    let uncommitted = r.uncommitted_change_count();
+                    merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
                 }
             }
         }
         "rebase" => {
             if !param.is_empty() {
-                let effective_repo = view_state.active_worktree_repo().or(repo);
-                let target_dir = view_state.active_worktree_path.clone();
-                if let Some(r) = effective_repo {
-                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
-                        toast_manager.push(
-                            format!("Cannot rebase: {}. Abort or complete it first.", label),
-                            ToastSeverity::Error,
-                        );
-                    } else {
-                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        let uncommitted = r.uncommitted_change_count();
-                        rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
-                    }
+                let r = view_state.worktree_state.staging_repo_or(repo);
+                let target_dir = view_state.worktree_state.selected_path.clone();
+                if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                    toast_manager.push(
+                        format!("Cannot rebase: {}. Abort or complete it first.", label),
+                        ToastSeverity::Error,
+                    );
+                } else {
+                    let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                    let uncommitted = r.uncommitted_change_count();
+                    rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
                 }
             }
         }
         "cherry_pick" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let target_dir = view_state.active_worktree_path.clone();
+                let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {} into '{}'?", short, branch));
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
@@ -3297,7 +3306,7 @@ fn handle_context_menu_action(
         "revert_commit" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let target_dir = view_state.active_worktree_path.clone();
+                let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Revert Commit", &format!("Create a revert of {} on '{}'?", short, branch));
                 *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
@@ -3306,7 +3315,7 @@ fn handle_context_menu_action(
         "reset_soft" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let target_dir = view_state.active_worktree_path.clone();
+                let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Soft)", &format!("Reset '{}' to {}? Changes will be kept staged.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft, target_dir));
@@ -3315,7 +3324,7 @@ fn handle_context_menu_action(
         "reset_mixed" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let target_dir = view_state.active_worktree_path.clone();
+                let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Mixed)", &format!("Reset '{}' to {}? Changes will be kept unstaged.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed, target_dir));
@@ -3324,7 +3333,7 @@ fn handle_context_menu_action(
         "reset_hard" => {
             if let Some(oid) = view_state.context_menu_commit {
                 let short = &oid.to_string()[..7];
-                let target_dir = view_state.active_worktree_path.clone();
+                let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard, target_dir));
@@ -3393,8 +3402,7 @@ fn handle_context_menu_action(
         }
         "edit_remote_url" => {
             if !param.is_empty() {
-                let current_url = repo
-                    .and_then(|r| r.remote_url(param))
+                let current_url = repo.remote_url(param)
                     .unwrap_or_default();
                 remote_dialog.show_edit_url(param, &current_url);
             }
@@ -3412,37 +3420,33 @@ fn handle_context_menu_action(
         }
         "merge_remote" => {
             if !param.is_empty() {
-                let effective_repo = view_state.active_worktree_repo().or(repo);
-                let target_dir = view_state.active_worktree_path.clone();
-                if let Some(r) = effective_repo {
-                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
-                        toast_manager.push(
-                            format!("Cannot merge: {}. Abort or complete it first.", label),
-                            ToastSeverity::Error,
-                        );
-                    } else {
-                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        let uncommitted = r.uncommitted_change_count();
-                        merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
-                    }
+                let r = view_state.worktree_state.staging_repo_or(repo);
+                let target_dir = view_state.worktree_state.selected_path.clone();
+                if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                    toast_manager.push(
+                        format!("Cannot merge: {}. Abort or complete it first.", label),
+                        ToastSeverity::Error,
+                    );
+                } else {
+                    let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                    let uncommitted = r.uncommitted_change_count();
+                    merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
                 }
             }
         }
         "rebase_remote" => {
             if !param.is_empty() {
-                let effective_repo = view_state.active_worktree_repo().or(repo);
-                let target_dir = view_state.active_worktree_path.clone();
-                if let Some(r) = effective_repo {
-                    if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
-                        toast_manager.push(
-                            format!("Cannot rebase: {}. Abort or complete it first.", label),
-                            ToastSeverity::Error,
-                        );
-                    } else {
-                        let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
-                        let uncommitted = r.uncommitted_change_count();
-                        rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
-                    }
+                let r = view_state.worktree_state.staging_repo_or(repo);
+                let target_dir = view_state.worktree_state.selected_path.clone();
+                if let Some(label) = crate::git::repo_state_label(r.repo_state()) {
+                    toast_manager.push(
+                        format!("Cannot rebase: {}. Abort or complete it first.", label),
+                        ToastSeverity::Error,
+                    );
+                } else {
+                    let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
+                    let uncommitted = r.uncommitted_change_count();
+                    rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
                 }
             }
         }
@@ -3458,7 +3462,7 @@ fn handle_context_menu_action(
             // Format: "checkout_in_wt:branch|wt_name" — from context menu
             if !param.is_empty() {
                 if let Some((branch, wt_name)) = param.split_once('|') {
-                    if let Some(wt) = view_state.worktrees.iter().find(|w| w.name == wt_name) {
+                    if let Some(wt) = view_state.worktree_state.worktrees.iter().find(|w| w.name == wt_name) {
                         view_state.pending_messages.push(AppMessage::CheckoutBranchInWorktree(
                             branch.to_string(),
                             PathBuf::from(&wt.path),
@@ -4326,9 +4330,8 @@ fn apply_screenshot_state(app: &mut App) {
                 && let Some(first) = repo_tab.commits.first()
             {
                 let oid = first.id;
-                if let Some(ref repo) = repo_tab.repo
-                    && let Ok(info) = repo.full_commit_info(oid)
-                {
+                let repo = &repo_tab.repo;
+                if let Ok(info) = repo.full_commit_info(oid) {
                     let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
                     let sm_entries = repo.submodules_at_commit(oid).unwrap_or_default();
                     view_state.commit_detail_view.set_commit(info, diff_files.clone(), sm_entries);
