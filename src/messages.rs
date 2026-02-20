@@ -1487,7 +1487,6 @@ pub fn refresh_repo_state(
     view_state.commit_graph_view.update_layout(commits);
     view_state.commit_graph_view.branch_tips = branch_tips.clone();
     view_state.commit_graph_view.tags = tags.clone();
-    view_state.commit_graph_view.worktrees = worktrees.clone();
     let remote_names = repo.remote_names();
     let is_bare = repo.is_effectively_bare();
 

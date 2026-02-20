@@ -1,5 +1,6 @@
 //! Staging well view - commit message editor and file staging
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
@@ -8,18 +9,6 @@ use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, crea
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::{Button, FileList, FileListAction, TextArea, TextInput};
 use crate::ui::{Rect, TextRenderer, Widget};
-
-/// Per-worktree state for the staging context switcher
-#[derive(Clone, Debug)]
-pub struct WorktreeContext {
-    pub name: String,
-    pub display_name: String,
-    pub path: PathBuf,
-    pub branch: String,
-    pub dirty_file_count: usize,
-    pub subject_draft: String,
-    pub body_draft: String,
-}
 
 /// Compute short display names by stripping the longest common prefix
 /// (up to and including the last separator: `-`, `_`, or `/`).
@@ -107,9 +96,11 @@ pub struct StagingWell {
     focus_section: usize,
     /// Display scale factor for 4K/HiDPI scaling
     pub scale: f32,
-    /// Worktree contexts for multi-worktree repos
-    worktree_contexts: Vec<WorktreeContext>,
-    /// Index of the active worktree in worktree_contexts
+    /// Sorted worktree identities (name, path) — rebuilt by set_worktrees()
+    sorted_worktrees: Vec<(String, PathBuf)>,
+    /// Per-worktree commit message drafts keyed by worktree path
+    worktree_drafts: HashMap<PathBuf, (String, String)>,
+    /// Index into sorted_worktrees for the active worktree
     active_worktree_idx: usize,
     /// Individual pill rects in the pill bar (for click hit testing)
     pill_bar_rects: Vec<Rect>,
@@ -178,7 +169,8 @@ impl StagingWell {
             pending_action: None,
             focus_section: 0,
             scale: 1.0,
-            worktree_contexts: Vec::new(),
+            sorted_worktrees: Vec::new(),
+            worktree_drafts: HashMap::new(),
             active_worktree_idx: 0,
             pill_bar_rects: Vec::new(),
             cached_pill_rows: 1,
@@ -464,80 +456,82 @@ impl StagingWell {
 
     // ---- Worktree context switching ----
 
-    /// Build worktree contexts from the repo's worktree list.
-    /// Always populates contexts (even for 1 worktree) so name-based lookups work.
+    /// Rebuild worktree identity list from the repo's worktree list.
+    /// Always populates (even for 1 worktree) so name-based lookups work.
     /// The pill selector UI is only shown when there are 2+ worktrees.
     /// Preserves existing drafts by matching on path.
     pub fn set_worktrees(&mut self, worktrees: &[WorktreeInfo]) {
         if worktrees.is_empty() {
-            self.worktree_contexts.clear();
+            self.sorted_worktrees.clear();
             self.active_worktree_idx = 0;
             return;
         }
 
-        let old_contexts = std::mem::take(&mut self.worktree_contexts);
-        let old_active_path = old_contexts.get(self.active_worktree_idx)
-            .map(|c| c.path.clone());
-
-        let mut new_contexts: Vec<WorktreeContext> = worktrees.iter().map(|wt| {
-            let path = PathBuf::from(&wt.path);
-            // Preserve drafts from existing context with same path
-            let (subject_draft, body_draft) = old_contexts.iter()
-                .find(|c| c.path == path)
-                .map(|c| (c.subject_draft.clone(), c.body_draft.clone()))
-                .unwrap_or_default();
-
-            WorktreeContext {
-                name: wt.name.clone(),
-                display_name: wt.name.clone(), // temporary, overwritten below
-                path,
-                branch: wt.branch.clone(),
-                dirty_file_count: wt.dirty_file_count,
-                subject_draft,
-                body_draft,
-            }
-        }).collect();
-
-        // Sort alphabetically
-        new_contexts.sort_by(|a, b| a.name.cmp(&b.name));
-
-        // Compute prefix-stripped display names
-        let names: Vec<String> = new_contexts.iter().map(|c| c.name.clone()).collect();
-        let display_names = compute_display_names(&names);
-        for (ctx, dn) in new_contexts.iter_mut().zip(display_names) {
-            ctx.display_name = dn;
+        // Save current drafts before rebuilding
+        if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
+            self.worktree_drafts.insert(
+                path.clone(),
+                (self.subject_input.text().to_string(), self.body_area.text().to_string()),
+            );
         }
+
+        let old_active_path = self.sorted_worktrees.get(self.active_worktree_idx)
+            .map(|(_, p)| p.clone());
+
+        // Build sorted identity list
+        let mut new_sorted: Vec<(String, PathBuf)> = worktrees.iter()
+            .map(|wt| (wt.name.clone(), PathBuf::from(&wt.path)))
+            .collect();
+        new_sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
         // Restore active index by path match, or reset to 0
         self.active_worktree_idx = if let Some(ref old_path) = old_active_path {
-            new_contexts.iter().position(|c| &c.path == old_path).unwrap_or(0)
+            new_sorted.iter().position(|(_, p)| p == old_path).unwrap_or(0)
         } else {
             0
         };
 
-        self.worktree_contexts = new_contexts;
+        // Prune stale drafts for worktrees that no longer exist
+        let valid_paths: std::collections::HashSet<&PathBuf> = new_sorted.iter().map(|(_, p)| p).collect();
+        self.worktree_drafts.retain(|p, _| valid_paths.contains(p));
+
+        self.sorted_worktrees = new_sorted;
+
+        // Restore active worktree's drafts to the input widgets
+        if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
+            if let Some((subj, body)) = self.worktree_drafts.get(path) {
+                self.subject_input.set_text(subj);
+                self.body_area.set_text(body);
+            }
+        }
     }
 
-    /// Switch to a different worktree context, saving/restoring drafts.
+    /// Switch to a different worktree, saving/restoring drafts.
     pub fn switch_worktree(&mut self, index: usize) {
-        if index >= self.worktree_contexts.len() || index == self.active_worktree_idx {
+        if index >= self.sorted_worktrees.len() || index == self.active_worktree_idx {
             return;
         }
 
         // Save current drafts
-        if self.active_worktree_idx < self.worktree_contexts.len() {
-            self.worktree_contexts[self.active_worktree_idx].subject_draft =
-                self.subject_input.text().to_string();
-            self.worktree_contexts[self.active_worktree_idx].body_draft =
-                self.body_area.text().to_string();
+        if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
+            self.worktree_drafts.insert(
+                path.clone(),
+                (self.subject_input.text().to_string(), self.body_area.text().to_string()),
+            );
         }
 
         self.active_worktree_idx = index;
 
-        // Restore drafts from new context
-        let ctx = &self.worktree_contexts[index];
-        self.subject_input.set_text(&ctx.subject_draft);
-        self.body_area.set_text(&ctx.body_draft);
+        // Restore drafts from new worktree
+        if let Some((_, path)) = self.sorted_worktrees.get(index) {
+            if let Some((subj, body)) = self.worktree_drafts.get(path) {
+                self.subject_input.set_text(subj);
+                self.body_area.set_text(body);
+            } else {
+                self.subject_input.set_text("");
+                self.body_area.set_text("");
+            }
+        }
 
         // Exit amend mode on switch
         self.amend_mode = false;
@@ -550,32 +544,32 @@ impl StagingWell {
         self.status_refresh_needed = true;
     }
 
-    /// Returns the active worktree context, if any.
-    pub fn active_worktree_context(&self) -> Option<&WorktreeContext> {
-        self.worktree_contexts.get(self.active_worktree_idx)
+    /// Returns the active worktree path, if any.
+    pub fn active_worktree_path(&self) -> Option<PathBuf> {
+        self.sorted_worktrees.get(self.active_worktree_idx).map(|(_, p)| p.clone())
     }
 
     /// Whether the worktree selector pill should be shown (2+ worktrees).
     pub fn has_worktree_selector(&self) -> bool {
-        self.worktree_contexts.len() >= 2
+        self.sorted_worktrees.len() >= 2
     }
 
     /// Number of worktree contexts.
     pub fn worktree_count(&self) -> usize {
-        self.worktree_contexts.len()
+        self.sorted_worktrees.len()
     }
 
     /// Height of the pill bar in pixels.
     /// Shows branch name header even for single-worktree repos.
     pub fn pill_bar_height(&self, current_branch: &str) -> f32 {
         let s = self.scale;
-        if self.worktree_contexts.is_empty() {
+        if self.sorted_worktrees.is_empty() {
             if current_branch.is_empty() {
                 0.0
             } else {
                 32.0 * s
             }
-        } else if self.worktree_contexts.len() == 1 {
+        } else if self.sorted_worktrees.len() == 1 {
             26.0 * s
         } else {
             let pill_h = 20.0 * s;
@@ -587,18 +581,18 @@ impl StagingWell {
 
     /// Find a worktree index by name.
     pub fn worktree_index_by_name(&self, name: &str) -> Option<usize> {
-        self.worktree_contexts.iter().position(|c| c.name == name)
+        self.sorted_worktrees.iter().position(|(n, _)| n == name)
     }
 
     /// Layout the worktree pill bar at the top of the right panel.
     /// Renders wrapping rows of pills (one per worktree), active one highlighted.
     /// Single-worktree: renders just the branch name as muted text.
-    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect, current_branch: &str) -> WidgetOutput {
+    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect, current_branch: &str, worktrees: &[WorktreeInfo]) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let s = self.scale;
         self.pill_bar_rects.clear();
 
-        if self.worktree_contexts.is_empty() {
+        if self.sorted_worktrees.is_empty() {
             if !current_branch.is_empty() {
                 // Single-worktree repo: show branch name as a bold header
                 let bar_rect = Rect::new(bounds.x, bounds.y, bounds.width, bounds.height);
@@ -617,10 +611,17 @@ impl StagingWell {
             return output;
         }
 
-        if self.worktree_contexts.len() == 1 {
+        // Build a name→WorktreeInfo lookup from the passed-in slice
+        let wt_by_name: HashMap<&str, &WorktreeInfo> = worktrees.iter()
+            .map(|wt| (wt.name.as_str(), wt))
+            .collect();
+
+        if self.sorted_worktrees.len() == 1 {
             // Single worktree: just show branch name as muted text
-            let ctx = &self.worktree_contexts[0];
-            let label = &ctx.branch;
+            let (name, _) = &self.sorted_worktrees[0];
+            let label = wt_by_name.get(name.as_str())
+                .map(|wt| wt.branch.as_str())
+                .unwrap_or(current_branch);
             let text_y = bounds.y + (bounds.height - text_renderer.line_height()) / 2.0;
             output.text_vertices.extend(text_renderer.layout_text(
                 label,
@@ -631,6 +632,10 @@ impl StagingWell {
 
             return output;
         }
+
+        // Compute display names from sorted worktree names
+        let names: Vec<String> = self.sorted_worktrees.iter().map(|(n, _)| n.clone()).collect();
+        let display_names = compute_display_names(&names);
 
         // Multiple worktrees: render wrapping rows of pills
         let left_margin = 6.0 * s;
@@ -643,13 +648,16 @@ impl StagingWell {
         let mut row = 0;
         let mut pill_y = bounds.y + top_pad;
 
-        for (i, ctx) in self.worktree_contexts.iter().enumerate() {
+        for (i, ((name, _), display_name)) in self.sorted_worktrees.iter().zip(display_names.iter()).enumerate() {
             let is_active = i == self.active_worktree_idx;
-            let label = &ctx.display_name;
+            let label = display_name;
             let label_w = text_renderer.measure_text(label);
-            // Dirty count suffix: " *N"
-            let dirty_suffix = if ctx.dirty_file_count > 0 {
-                format!(" *{}", ctx.dirty_file_count)
+            // Dirty count suffix: " *N" from canonical worktree data
+            let dirty_count = wt_by_name.get(name.as_str())
+                .map(|wt| wt.dirty_file_count)
+                .unwrap_or(0);
+            let dirty_suffix = if dirty_count > 0 {
+                format!(" *{}", dirty_count)
             } else {
                 String::new()
             };
@@ -733,8 +741,7 @@ impl StagingWell {
     pub fn pill_context_menu_at(&self, x: f32, y: f32) -> Option<Vec<MenuItem>> {
         for (i, pill_rect) in self.pill_bar_rects.iter().enumerate() {
             if pill_rect.contains(x, y) {
-                if let Some(ctx) = self.worktree_contexts.get(i) {
-                    let name = &ctx.name;
+                if let Some((name, _)) = self.sorted_worktrees.get(i) {
                     let items = vec![
                         MenuItem::new("Switch Staging", format!("switch_worktree:{}", name)),
                         MenuItem::new("Jump to Branch", format!("jump_to_worktree:{}", name)),
@@ -752,7 +759,7 @@ impl StagingWell {
     /// Handle events on the worktree pill bar.
     /// Returns EventResponse::Consumed if a pill was clicked.
     pub fn handle_pill_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
-        if self.worktree_contexts.len() < 2 {
+        if self.sorted_worktrees.len() < 2 {
             return EventResponse::Ignored;
         }
 

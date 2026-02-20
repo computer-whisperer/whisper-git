@@ -312,8 +312,8 @@ impl TabViewState {
         self.commit_detail_view.clear();
         self.commit_graph_view.selected_commit = None;
         self.last_diff_commit = None;
-        if let Some(wt_ctx) = self.staging_well.active_worktree_context() {
-            self.worktree_state.select(wt_ctx.path.clone());
+        if let Some(path) = self.staging_well.active_worktree_path() {
+            self.worktree_state.select(path);
         }
         self.sync_worktree_derived_state(repo);
     }
@@ -809,7 +809,6 @@ impl App {
             }
             // Sync dirty flags to commit graph view + staging well
             if dirty_changed {
-                view_state.commit_graph_view.worktrees = view_state.worktree_state.worktrees.clone();
                 view_state.staging_well.set_worktrees(&view_state.worktree_state.worktrees);
                 // Regenerate synthetic entries to add/remove "uncommitted changes" rows
                 let synthetics = git::create_synthetic_entries(repo, &view_state.worktree_state.worktrees, &repo_tab.commits);
@@ -1984,8 +1983,8 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.worktree_state.refresh(repo);
 
     // Sync staging well's selected worktree path into worktree_state
-    if let Some(wt_ctx) = view_state.staging_well.active_worktree_context() {
-        view_state.worktree_state.select(wt_ctx.path.clone());
+    if let Some(path) = view_state.staging_well.active_worktree_path() {
+        view_state.worktree_state.select(path);
     }
 
     // Resolve staging_repo via direct field access to avoid borrow conflict
@@ -2109,8 +2108,8 @@ fn enter_submodule(
     };
 
     // Resolve submodule path relative to the active worktree's workdir
-    let parent_workdir = match view_state.staging_well.active_worktree_context() {
-        Some(ctx) => ctx.path.clone(),
+    let parent_workdir = match view_state.staging_well.active_worktree_path() {
+        Some(path) => path,
         None => {
             toast_manager.push("No active worktree".to_string(), ToastSeverity::Error);
             return false;
@@ -3648,6 +3647,7 @@ fn build_ui_output(
         let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
             text_renderer, &repo_tab.commits, layout.graph,
             avatar_cache, avatar_renderer, view_state.head_oid,
+            &view_state.worktree_state.worktrees,
         );
         graph_output.spline_vertices.extend(spline_vertices);
         graph_output.spline_vertices.extend(pill_vertices);
@@ -3713,7 +3713,7 @@ fn build_ui_output(
 
             // Worktree pill bar (visible when there are worktree contexts)
             if pill_bar_h > 0.0 {
-                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect, &view_state.current_branch));
+                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect, &view_state.current_branch, &view_state.worktree_state.worktrees));
             }
 
             match view_state.right_panel_mode {

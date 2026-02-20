@@ -225,8 +225,6 @@ pub struct CommitGraphView {
     pub branch_tips: Vec<BranchTip>,
     /// Tags
     pub tags: Vec<TagInfo>,
-    /// Worktrees (for WT: pills on commits)
-    pub worktrees: Vec<WorktreeInfo>,
     /// Row scale factor (1.0 = normal, 1.5 = large)
     pub row_scale: f32,
     /// Scroll offset
@@ -284,7 +282,6 @@ impl Default for CommitGraphView {
             working_dir_status: None,
             branch_tips: Vec::new(),
             tags: Vec::new(),
-            worktrees: Vec::new(),
             scroll_offset: 0.0,
             scrollbar: Scrollbar::new(),
             search_bar: SearchBar::new(),
@@ -1448,6 +1445,7 @@ impl CommitGraphView {
         avatar_cache: &mut AvatarCache,
         avatar_renderer: &AvatarRenderer,
         head_oid: Option<Oid>,
+        worktrees: &[WorktreeInfo],
     ) -> (Vec<TextVertex>, Vec<SplineVertex>, Vec<TextVertex>) {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
@@ -1494,8 +1492,7 @@ impl CommitGraphView {
             .filter(|c| c.is_synthetic)
             .filter_map(|c| c.synthetic_wt_name.clone())
             .collect();
-        let worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = self
-            .worktrees
+        let worktrees_by_oid: HashMap<Oid, Vec<&WorktreeInfo>> = worktrees
             .iter()
             .filter(|wt| !dirty_wt_names.contains(&wt.name))
             .filter_map(|wt| wt.head_oid.map(|oid| (oid, wt)))
@@ -1505,8 +1502,8 @@ impl CommitGraphView {
             });
 
         // Pre-compute abbreviated worktree names if enabled
-        let wt_display_names: HashMap<String, String> = if self.abbreviate_worktree_names && self.worktrees.len() >= 2 {
-            let names: Vec<String> = self.worktrees.iter().map(|wt| wt.name.clone()).collect();
+        let wt_display_names: HashMap<String, String> = if self.abbreviate_worktree_names && worktrees.len() >= 2 {
+            let names: Vec<String> = worktrees.iter().map(|wt| wt.name.clone()).collect();
             let abbreviated = compute_display_names(&names);
             names.into_iter().zip(abbreviated).collect()
         } else {
