@@ -10,6 +10,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
+use winit::event_loop::EventLoopProxy;
 
 /// Byte offset ranges for intra-line diff highlighting
 type DiffRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
@@ -609,13 +610,14 @@ impl GitRepo {
 
     /// Spawn a background thread to compute diff stats for a list of commit OIDs.
     /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
-    pub fn compute_diff_stats_async(&self, oids: Vec<Oid>) -> Receiver<Vec<(Oid, usize, usize)>> {
+    pub fn compute_diff_stats_async(&self, oids: Vec<Oid>, proxy: EventLoopProxy<()>) -> Receiver<Vec<(Oid, usize, usize)>> {
         crate::crash_log::breadcrumb(format!("diff_stats_async: {} commits", oids.len()));
         let repo_path = self.repo.path().to_path_buf();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let Ok(repo) = Repository::open(&repo_path) else {
                 let _ = tx.send(Vec::new());
+                let _ = proxy.send_event(());
                 return;
             };
             let mut results = Vec::with_capacity(oids.len());
@@ -638,6 +640,7 @@ impl GitRepo {
                 results.push((oid, ins, del));
             }
             let _ = tx.send(results);
+            let _ = proxy.send_event(());
         });
         rx
     }
@@ -2056,7 +2059,7 @@ impl GitRepo {
 }
 
 /// Spawn a background thread to run a git CLI command and send the result over a channel.
-fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver<RemoteOpResult> {
+fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
     crate::crash_log::breadcrumb(format!("git_async: {op_name} args={args:?}"));
     let op_name = op_name.to_string();
     let (tx, rx) = mpsc::channel();
@@ -2078,6 +2081,7 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str) -> Receiver
         };
         crate::crash_log::breadcrumb(format!("git_async done: {op_name} success={}", op_result.success));
         let _ = tx.send(op_result);
+        let _ = proxy.send_event(());
     });
     rx
 }
@@ -2096,8 +2100,8 @@ macro_rules! define_async_git_op {
     )*) => {
         $(
             $(#[doc = $doc])*
-            pub fn $name(workdir: PathBuf, $($param: $pty),*) -> Receiver<RemoteOpResult> {
-                run_git_async(vec![$($arg.into()),+], workdir, $op)
+            pub fn $name(workdir: PathBuf, $($param: $pty,)* proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+                run_git_async(vec![$($arg.into()),+], workdir, $op, proxy)
             }
         )*
     };
@@ -2176,13 +2180,13 @@ define_async_git_op! {
 
 /// Spawn a background thread to rebase with options (--autostash, --rebase-merges)
 pub fn rebase_with_options_async(
-    workdir: PathBuf, branch: String, autostash: bool, rebase_merges: bool,
+    workdir: PathBuf, branch: String, autostash: bool, rebase_merges: bool, proxy: EventLoopProxy<()>,
 ) -> Receiver<RemoteOpResult> {
     let mut args: Vec<String> = vec!["rebase".into()];
     if autostash { args.push("--autostash".into()); }
     if rebase_merges { args.push("--rebase-merges".into()); }
     args.push(branch);
-    run_git_async(args, workdir, "rebase")
+    run_git_async(args, workdir, "rebase", proxy)
 }
 
 define_async_git_op! {
@@ -2204,22 +2208,22 @@ define_async_git_op! {
 }
 
 /// Spawn a background thread to apply a stash entry (without removing it)
-pub fn stash_apply_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply")
+pub fn stash_apply_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply", proxy)
 }
 
 /// Spawn a background thread to drop a stash entry
-pub fn stash_drop_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop")
+pub fn stash_drop_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop", proxy)
 }
 
 /// Spawn a background thread to pop a stash entry by index
-pub fn stash_pop_index_async(workdir: PathBuf, index: usize) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop")
+pub fn stash_pop_index_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop", proxy)
 }
 
 /// Spawn a background thread to remove a submodule (deinit + rm)
-pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<RemoteOpResult> {
+pub fn remove_submodule_async(workdir: PathBuf, name: String, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         // Step 1: deinit
@@ -2259,6 +2263,7 @@ pub fn remove_submodule_async(workdir: PathBuf, name: String) -> Receiver<Remote
                 });
             }
         }
+        let _ = proxy.send_event(());
     });
     rx
 }

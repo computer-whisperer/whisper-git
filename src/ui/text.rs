@@ -198,7 +198,7 @@ impl TextRenderer {
             render_pass,
             command_buffer_builder,
             scale_factor,
-            include_bytes!("/usr/share/fonts/TTF/Roboto-Regular.ttf"),
+            include_bytes!("../../assets/fonts/Roboto-Regular.ttf"),
         )
     }
 
@@ -214,7 +214,7 @@ impl TextRenderer {
             render_pass,
             command_buffer_builder,
             scale_factor,
-            include_bytes!("/usr/share/fonts/TTF/Roboto-Bold.ttf"),
+            include_bytes!("../../assets/fonts/Roboto-Bold.ttf"),
         )
     }
 
@@ -247,7 +247,7 @@ impl TextRenderer {
         let font = Font::from_bytes(font_bytes, fontdue::FontSettings::default())
             .map_err(|e| anyhow::anyhow!(e))?;
         // Fallback with broader Unicode coverage than Roboto.
-        let fallback_bytes: &[u8] = include_bytes!("/usr/share/fonts/TTF/DejaVuSans.ttf");
+        let fallback_bytes: &[u8] = include_bytes!("../../assets/fonts/DejaVuSans.ttf");
         let fallback_font = Font::from_bytes(fallback_bytes, fontdue::FontSettings::default())
             .map_err(|e| anyhow::anyhow!(e))?;
 

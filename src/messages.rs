@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use git2::Oid;
+use winit::event_loop::EventLoopProxy;
 
 use crate::git::{self, CommitInfo, DiffFile, GitRepo, RemoteOpResult, WorktreeInfo};
 use crate::ui::Rect;
@@ -241,6 +242,7 @@ pub fn handle_app_message(
     ctx: &MessageContext,
 ) -> bool {
     crate::crash_log::breadcrumb(format!("msg: {msg:?}"));
+    let proxy = view_state.proxy.clone();
     match msg {
         AppMessage::StageFile(path) => {
             if let Err(e) = staging_repo.stage_file(&path) {
@@ -393,9 +395,10 @@ pub fn handle_app_message(
                 );
             }
             let remote_for_closure = remote.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch", remote,
-                |wd| git::fetch_remote_async(wd, remote_for_closure),
+                |wd| git::fetch_remote_async(wd, remote_for_closure, p),
                 |hb| hb.fetching = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -403,10 +406,11 @@ pub fn handle_app_message(
             }
         }
         AppMessage::FetchAll => {
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.fetch_receiver, repo, "Fetch All",
                 "all remotes".to_string(),
-                |wd| git::fetch_all_async(wd),
+                |wd| git::fetch_all_async(wd, p),
                 |hb| hb.fetching = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -418,9 +422,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
-                |wd| git::pull_remote_async(wd, remote_for_closure, branch),
+                |wd| git::pull_remote_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pulling = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -432,9 +437,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
-                |wd| git::pull_rebase_async(wd, remote_for_closure, branch),
+                |wd| git::pull_rebase_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pulling = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -447,13 +453,14 @@ pub fn handle_app_message(
         AppMessage::PullBranchFrom { remote, branch, rebase } => {
             let remote_for_closure = remote.clone();
             let branch_for_closure = branch.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.pull_receiver, repo, "Pull", remote,
                 |wd| {
                     if rebase {
-                        git::pull_rebase_async(wd, remote_for_closure, branch_for_closure)
+                        git::pull_rebase_async(wd, remote_for_closure, branch_for_closure, p)
                     } else {
-                        git::pull_remote_async(wd, remote_for_closure, branch_for_closure)
+                        git::pull_remote_async(wd, remote_for_closure, branch_for_closure, p)
                     }
                 },
                 |hb| hb.pulling = true,
@@ -467,9 +474,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push", remote,
-                |wd| git::push_remote_async(wd, remote_for_closure, branch),
+                |wd| git::push_remote_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pushing = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -481,9 +489,10 @@ pub fn handle_app_message(
                 repo.default_remote().unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
+            let p = proxy.clone();
             if !start_remote_op(
                 view_state.push_receiver, repo, "Push", remote,
-                |wd| git::push_force_async(wd, remote_for_closure, branch),
+                |wd| git::push_force_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pushing = true,
                 toast_manager, view_state.header_bar,
             ) {
@@ -504,9 +513,10 @@ pub fn handle_app_message(
                 format!("Pushing {} to {}/{}...", local_branch, remote, remote_branch)
             };
             if force {
+                let p = proxy.clone();
                 if !start_remote_op(
                     view_state.push_receiver, repo, "Push", remote,
-                    |wd| git::push_force_refspec_async(wd, remote_for_closure, refspec_for_closure),
+                    |wd| git::push_force_refspec_async(wd, remote_for_closure, refspec_for_closure, p),
                     |hb| hb.pushing = true,
                     toast_manager, view_state.header_bar,
                 ) {
@@ -514,9 +524,10 @@ pub fn handle_app_message(
                 }
                 toast_manager.push(toast_msg, ToastSeverity::Info);
             } else {
+                let p = proxy.clone();
                 if !start_remote_op(
                     view_state.push_receiver, repo, "Push", remote,
-                    |wd| git::push_refspec_async(wd, remote_for_closure, refspec_for_closure),
+                    |wd| git::push_refspec_async(wd, remote_for_closure, refspec_for_closure, p),
                     |hb| hb.pushing = true,
                     toast_manager, view_state.header_bar,
                 ) {
@@ -778,7 +789,7 @@ pub fn handle_app_message(
         }
         AppMessage::DeleteSubmodule(name) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::remove_submodule_async(cmd_dir, name.clone());
+            let rx = git::remove_submodule_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -789,7 +800,7 @@ pub fn handle_app_message(
         }
         AppMessage::UpdateSubmodule(name) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::update_submodule_async(cmd_dir, name.clone());
+            let rx = git::update_submodule_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -816,7 +827,7 @@ pub fn handle_app_message(
         }
         AppMessage::RemoveWorktree(name) => {
             let cmd_dir = repo.git_command_dir();
-            let rx = git::remove_worktree_async(cmd_dir, name.clone());
+            let rx = git::remove_worktree_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -836,9 +847,9 @@ pub fn handle_app_message(
             // Heuristic: if source looks like a hex SHA (7+ hex chars), use detached mode
             let is_sha = source.len() >= 7 && source.chars().all(|c| c.is_ascii_hexdigit());
             let rx = if is_sha {
-                git::create_worktree_detached_async(cmd_dir, wt_path, source.clone())
+                git::create_worktree_detached_async(cmd_dir, wt_path, source.clone(), proxy.clone())
             } else {
-                git::create_worktree_async(cmd_dir, wt_path, source.clone())
+                git::create_worktree_async(cmd_dir, wt_path, source.clone(), proxy.clone())
             };
             queue_async_op(
                 view_state.generic_op_receiver,
@@ -850,7 +861,7 @@ pub fn handle_app_message(
         }
         AppMessage::MergeBranch(name, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::merge_branch_async(cmd_dir, name.clone());
+            let rx = git::merge_branch_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -861,7 +872,7 @@ pub fn handle_app_message(
         }
         AppMessage::MergeNoFf(name, message, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::merge_noff_async(cmd_dir, name.clone(), message);
+            let rx = git::merge_noff_async(cmd_dir, name.clone(), message, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -872,7 +883,7 @@ pub fn handle_app_message(
         }
         AppMessage::MergeFfOnly(name, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::merge_ffonly_async(cmd_dir, name.clone());
+            let rx = git::merge_ffonly_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -883,7 +894,7 @@ pub fn handle_app_message(
         }
         AppMessage::MergeSquash(name, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::merge_squash_async(cmd_dir, name.clone());
+            let rx = git::merge_squash_async(cmd_dir, name.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -894,7 +905,7 @@ pub fn handle_app_message(
         }
         AppMessage::RebaseBranchWithOptions(name, autostash, rebase_merges, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::rebase_with_options_async(cmd_dir, name.clone(), autostash, rebase_merges);
+            let rx = git::rebase_with_options_async(cmd_dir, name.clone(), autostash, rebase_merges, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -929,7 +940,7 @@ pub fn handle_app_message(
         }
         AppMessage::StashPush => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::stash_push_async(cmd_dir);
+            let rx = git::stash_push_async(cmd_dir, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -940,7 +951,7 @@ pub fn handle_app_message(
         }
         AppMessage::StashPop => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::stash_pop_async(cmd_dir);
+            let rx = git::stash_pop_async(cmd_dir, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -951,7 +962,7 @@ pub fn handle_app_message(
         }
         AppMessage::StashApply(index) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::stash_apply_async(cmd_dir, index);
+            let rx = git::stash_apply_async(cmd_dir, index, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -962,7 +973,7 @@ pub fn handle_app_message(
         }
         AppMessage::StashDrop(index) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::stash_drop_async(cmd_dir, index);
+            let rx = git::stash_drop_async(cmd_dir, index, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -973,7 +984,7 @@ pub fn handle_app_message(
         }
         AppMessage::StashPopIndex(index) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::stash_pop_index_async(cmd_dir, index);
+            let rx = git::stash_pop_index_async(cmd_dir, index, proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -985,7 +996,7 @@ pub fn handle_app_message(
         AppMessage::CherryPick(oid, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let sha = oid.to_string();
-            let rx = git::cherry_pick_async(cmd_dir, sha.clone());
+            let rx = git::cherry_pick_async(cmd_dir, sha.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -1030,7 +1041,7 @@ pub fn handle_app_message(
         AppMessage::RevertCommit(oid, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
             let sha = oid.to_string();
-            let rx = git::revert_commit_async(cmd_dir, sha.clone());
+            let rx = git::revert_commit_async(cmd_dir, sha.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -1104,7 +1115,7 @@ pub fn handle_app_message(
 
         AppMessage::DeleteRemoteBranch(remote, branch) => {
             let cmd_dir = repo.git_command_dir();
-            let rx = git::delete_remote_branch_async(cmd_dir, remote.clone(), branch.clone());
+            let rx = git::delete_remote_branch_async(cmd_dir, remote.clone(), branch.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -1177,6 +1188,7 @@ pub struct MessageViewState<'a> {
     pub right_panel_mode: &'a mut RightPanelMode,
     pub worktrees: &'a mut Vec<WorktreeInfo>,
     pub submodule_focus: &'a mut Option<crate::SubmoduleFocus>,
+    pub proxy: EventLoopProxy<()>,
 }
 
 /// Lightweight snapshot of diffable repo state for diagnostic reload comparison.

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
+use winit::event_loop::EventLoopProxy;
 
 use crate::git::WorktreeInfo;
 
@@ -66,12 +67,13 @@ impl RepoWatcher {
         git_dir: &Path,
         common_dir: &Path,
         worktrees: &[WorktreeInfo],
+        proxy: EventLoopProxy<()>,
     ) -> notify::Result<(Self, Receiver<FsChangeKind>)> {
         let (debounce_tx, debounce_rx) = mpsc::channel::<FsChangeKind>();
         let (raw_tx, raw_rx) = mpsc::channel::<FsChangeKind>();
 
         // Spawn tiered debounce thread
-        spawn_debounce_thread(raw_rx, debounce_tx);
+        spawn_debounce_thread(raw_rx, debounce_tx, proxy);
 
         // Build the event classifier with cloned paths for the closure.
         // Classify against both git_dir and common_dir so events from either
@@ -275,7 +277,7 @@ fn classify_git_path(path: &Path, git_dir: &Path) -> Option<FsChangeKind> {
 /// - Metadata lane: 150ms debounce (fast response for git ops)
 /// - Worktree lane: 500ms debounce (normal for file edits)
 /// Both have a 2-second hard cap to prevent indefinite deferral.
-fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChangeKind>) {
+fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChangeKind>, proxy: EventLoopProxy<()>) {
     std::thread::Builder::new()
         .name("fs-watcher-debounce".into())
         .spawn(move || {
@@ -332,6 +334,7 @@ fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChange
                     let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
                     if debounce_elapsed || cap_elapsed {
                         if out_tx.send(metadata_kind).is_err() { return; }
+                        let _ = proxy.send_event(());
                         metadata_first = None;
                         metadata_last = None;
                         metadata_kind = FsChangeKind::GitMetadata;
@@ -343,6 +346,7 @@ fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChange
                     let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
                     if debounce_elapsed || cap_elapsed {
                         if out_tx.send(FsChangeKind::WorkingTree).is_err() { return; }
+                        let _ = proxy.send_event(());
                         worktree_first = None;
                         worktree_last = None;
                     }

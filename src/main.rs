@@ -27,10 +27,11 @@ use vulkano::{
     sync::{self, GpuFuture},
     Validated, VulkanError,
 };
+use std::time::Duration;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy},
     window::{CursorIcon, Window, WindowId},
 };
 
@@ -430,9 +431,9 @@ fn main() -> Result<()> {
     let cli_args = parse_args();
 
     let event_loop = EventLoop::new().context("Failed to create event loop")?;
-    event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(cli_args)?;
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(cli_args, proxy)?;
 
     event_loop.run_app(&mut app).context("Event loop error")?;
 
@@ -493,6 +494,10 @@ struct App {
     ai_commit_receiver: Option<(Receiver<Result<ai::AiResponse, String>>, Instant)>,
     /// AI provider resolved from config at startup
     ai_provider: ai::AiProvider,
+    /// Proxy to wake the event loop from background threads
+    proxy: EventLoopProxy<()>,
+    /// Timestamp of the last frame render, for animation scheduling
+    last_frame_time: Instant,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -512,7 +517,7 @@ struct RenderState {
 }
 
 impl App {
-    fn new(cli_args: CliArgs) -> Result<Self> {
+    fn new(cli_args: CliArgs, proxy: EventLoopProxy<()>) -> Result<Self> {
         let config = Config::load();
         let mut tabs = Vec::new();
         let mut tab_bar = TabBar::new();
@@ -591,6 +596,8 @@ impl App {
             app_start: Instant::now(),
             ai_commit_receiver: None,
             ai_provider,
+            proxy,
+            last_frame_time: Instant::now(),
         })
     }
 
@@ -729,7 +736,7 @@ impl App {
             view_state.commit_graph_view.time_spacing_strength = time_strength;
             view_state.commit_graph_view.fast_scroll = fast_scroll;
             view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager, self.config.show_orphaned_commits);
+            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
             if rx.is_some() { self.diff_stats_receiver = rx; }
         }
 
@@ -741,12 +748,15 @@ impl App {
             bold_text_renderer,
             spline_renderer,
             avatar_renderer,
-            avatar_cache: AvatarCache::new(),
+            avatar_cache: AvatarCache::new(self.proxy.clone()),
             previous_frame_end,
             frame_count: 0,
             scale_factor: window_scale,
             input_state: InputState::new(),
         });
+
+        // Set event loop proxy for file picker wake-up
+        self.repo_dialog.set_proxy(self.proxy.clone());
 
         // Initial status refresh for active tab
         self.refresh_status();
@@ -761,6 +771,11 @@ impl App {
             );
         }
         crash_log::breadcrumb("init_state complete".to_string());
+
+        // Ensure first frame is drawn immediately (don't rely on platform Resized event)
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
+        }
 
         Ok(())
     }
@@ -843,12 +858,13 @@ impl App {
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
+                proxy: self.proxy.clone(),
             };
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
         };
 
         // 2. Full reload (same as refresh_repo_state + refresh_status)
-        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
         // Also refresh file status (staged/unstaged/conflicted)
         {
             let repo = &repo_tab.repo;
@@ -883,6 +899,7 @@ impl App {
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
+                proxy: self.proxy.clone(),
             };
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
         };
@@ -996,10 +1013,12 @@ impl App {
                             let provider = self.ai_provider.clone();
                             let provider_name = provider.display_name().to_string();
                             let (tx, rx) = std::sync::mpsc::channel();
+                            let ai_proxy = self.proxy.clone();
                             std::thread::spawn(move || {
                                 let request = ai::AiRequest { diff_text, branch };
                                 let result = provider.generate_commit_message(&request);
                                 let _ = tx.send(result);
+                                let _ = ai_proxy.send_event(());
                             });
                             self.ai_commit_receiver = Some((rx, Instant::now()));
                             view_state.staging_well.ai_generating = true;
@@ -1027,13 +1046,13 @@ impl App {
                     let show_orphans = self.config.show_orphaned_commits;
                     match msg {
                         AppMessage::EnterSubmodule(name) => {
-                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
+                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
                         }
                         AppMessage::ExitSubmodule => {
-                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
+                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
                         }
                         AppMessage::ExitToDepth(depth) => {
-                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans);
+                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
                         }
                         _ => unreachable!(),
                     }
@@ -1094,6 +1113,7 @@ impl App {
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
                 submodule_focus: &mut view_state.submodule_focus,
+                proxy: self.proxy.clone(),
             };
             handle_app_message(
                 msg,
@@ -1121,7 +1141,7 @@ impl App {
             .map(|c| c.id)
             .collect();
         if !needs_stats.is_empty() {
-            self.diff_stats_receiver = Some(repo.compute_diff_stats_async(needs_stats));
+            self.diff_stats_receiver = Some(repo.compute_diff_stats_async(needs_stats, self.proxy.clone()));
         }
     }
 
@@ -1145,12 +1165,12 @@ impl App {
             }
             Some(FsChangeKind::GitMetadata) => {
                 self.status_dirty = true;
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
             }
             Some(FsChangeKind::WorktreeStructure) => {
                 self.status_dirty = true;
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
                 // Update watcher paths for new/removed worktrees
                 let common_dir = repo_tab.repo.common_dir().to_path_buf();
@@ -1210,7 +1230,7 @@ impl App {
                             format!("{} {}", $past_tense, remote),
                             ToastSeverity::Success,
                         );
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                     }
                     AsyncOpPoll::Failed(msg) => {
@@ -1255,7 +1275,7 @@ impl App {
                                 ToastSeverity::Info,
                             );
                         }
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                         if rx.is_some() { self.diff_stats_receiver = rx; }
                         // Also refresh worktrees/stashes
                         if let Ok(worktrees) = repo_tab.repo.worktrees() {
@@ -1351,7 +1371,7 @@ impl App {
                     view_state.commit_graph_view.time_spacing_strength = self.settings_dialog.time_spacing_strength;
                     view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
                     view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager, self.config.show_orphaned_commits);
+                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                     if rx.is_some() { self.diff_stats_receiver = rx; }
                 }
 
@@ -1595,7 +1615,7 @@ impl App {
                         // Reload commits if orphan visibility changed
                         if orphans_changed {
                             if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                self.diff_stats_receiver = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits);
+                                self.diff_stats_receiver = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                             }
                         }
                     }
@@ -1976,7 +1996,7 @@ fn poll_remote_op(
 /// Call this after any operation that changes branches, commits, or remote state.
 /// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
 /// async diff stats computation that should be stored in `App::diff_stats_receiver`.
-fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool, proxy: &EventLoopProxy<()>) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let repo = &repo_tab.repo;
 
     // Refresh worktree state (list, cache, pruning — all in one call)
@@ -2013,6 +2033,7 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             right_panel_mode: &mut view_state.right_panel_mode,
             worktrees: &mut view_state.worktree_state.worktrees,
             submodule_focus: &mut view_state.submodule_focus,
+            proxy: proxy.clone(),
         };
         refresh_repo_state_core(repo, staging_repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits);
     }
@@ -2029,14 +2050,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
         .map(|c| c.id)
         .collect();
     if !real_oids.is_empty() {
-        Some(repo.compute_diff_stats_async(real_oids))
+        Some(repo.compute_diff_stats_async(real_oids, proxy.clone()))
     } else {
         None
     }
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager, show_orphaned_commits: bool) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager, show_orphaned_commits: bool, proxy: &EventLoopProxy<()>) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -2054,16 +2075,16 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
     // (refresh_repo_state handles all of these — no need to call them separately)
-    let rx = refresh_repo_state(repo_tab, view_state, toast_manager, show_orphaned_commits);
+    let rx = refresh_repo_state(repo_tab, view_state, toast_manager, show_orphaned_commits, proxy);
 
     // Start filesystem watcher for auto-refresh
-    start_watcher(repo_tab, view_state, toast_manager);
+    start_watcher(repo_tab, view_state, toast_manager, proxy);
 
     rx
 }
 
 /// Start (or restart) a filesystem watcher for the given tab's repo.
-fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager) {
+fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, proxy: &EventLoopProxy<()>) {
     // Drop any existing watcher first
     view_state.watcher = None;
     view_state.watcher_rx = None;
@@ -2073,7 +2094,7 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
     let git_dir = repo.git_dir();
     let common_dir = repo.common_dir();
 
-    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktree_state.worktrees) {
+    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktree_state.worktrees, proxy.clone()) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
@@ -2097,6 +2118,7 @@ fn enter_submodule(
     scale: f32,
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
+    proxy: &EventLoopProxy<()>,
 ) -> bool {
     // Find the submodule info by name
     let sm = view_state.staging_well.submodules.iter()
@@ -2177,7 +2199,7 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy);
 
     true
 }
@@ -2191,6 +2213,7 @@ fn exit_submodule(
     scale: f32,
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
+    proxy: &EventLoopProxy<()>,
 ) -> bool {
     // Pop saved state from the focus stack (release borrow before init_tab_view)
     let saved = {
@@ -2222,7 +2245,7 @@ fn exit_submodule(
     view_state.worktree_state.restore(saved.worktree_state, &repo_tab.repo);
 
     // Re-init views with parent data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits);
+    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy);
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
@@ -2258,6 +2281,7 @@ fn exit_to_depth(
     scale: f32,
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
+    proxy: &EventLoopProxy<()>,
 ) {
     let current_depth = view_state.submodule_focus.as_ref()
         .map(|f| f.parent_stack.len())
@@ -2267,7 +2291,7 @@ fn exit_to_depth(
     }
     let pops = current_depth - depth;
     for _ in 0..pops {
-        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits) {
+        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy) {
             break;
         }
     }
@@ -2338,6 +2362,13 @@ impl ApplicationHandler for App {
             }
     }
 
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // Background thread completed — request redraw to poll results
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
+        }
+    }
+
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -2354,6 +2385,7 @@ impl ApplicationHandler for App {
 
             WindowEvent::Resized(_) => {
                 state.surface.needs_recreate = true;
+                state.window.request_redraw();
             }
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
@@ -2367,9 +2399,12 @@ impl ApplicationHandler for App {
                     view_state.staging_well.set_scale(scale_factor as f32);
                 }
                 state.surface.needs_recreate = true;
+                state.window.request_redraw();
             }
 
             WindowEvent::RedrawRequested => {
+                self.last_frame_time = Instant::now();
+
                 // Poll async diff stats FIRST — apply completed results before
                 // watcher or remote ops can orphan the receiver with a new one
                 self.poll_diff_stats();
@@ -2457,10 +2492,11 @@ impl ApplicationHandler for App {
                         event_loop.exit();
                         return;
                     }
+                    // Screenshot mode needs continuous redraws to reach capture frame
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
                 }
-
-                let Some(state) = &self.state else { return };
-                state.window.request_redraw();
             }
 
             // Handle input events
@@ -2469,19 +2505,79 @@ impl ApplicationHandler for App {
                 let input_event = state.input_state.handle_window_event(win_event);
                 if let Some(input_event) = input_event {
                     self.handle_input_event(event_loop, &input_event);
+                    // Any user input should trigger a visual update
+                    if let Some(state) = &self.state {
+                        state.window.request_redraw();
+                    }
                 }
             }
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(state) = &self.state {
-            state.window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(state) = &self.state else { return };
+        let now = Instant::now();
+
+        // Determine the next time we need to wake up
+        let mut next_wake: Option<Instant> = None;
+        let mut merge = |t: Instant| {
+            next_wake = Some(next_wake.map_or(t, |w| w.min(t)));
+        };
+
+        // 1. Active animations (spinners, button pulse) → ~60fps
+        if let Some((_, vs)) = self.tabs.get(self.active_tab) {
+            let animating = vs.header_bar.fetching
+                || vs.header_bar.pulling
+                || vs.header_bar.pushing
+                || vs.generic_op_receiver.is_some()
+                || self.ai_commit_receiver.is_some();
+            if animating {
+                merge(self.last_frame_time + Duration::from_millis(16));
+            }
+        }
+
+        // 2. Active toasts (fade animation)
+        if self.toast_manager.has_active_toasts() {
+            merge(self.last_frame_time + Duration::from_millis(16));
+        }
+
+        // 3. Cursor blink (530ms)
+        if self.has_focused_text_input() {
+            merge(self.last_frame_time + Duration::from_millis(530));
+        }
+
+        // 4. Status refresh timer (3s)
+        merge(self.last_status_refresh + Duration::from_secs(3));
+
+        match next_wake {
+            Some(t) if t <= now => {
+                // Timer already due — draw immediately
+                state.window.request_redraw();
+            }
+            Some(t) => {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+            }
+            None => {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
         }
     }
 }
 
 impl App {
+    /// Check if any text input is currently focused (for cursor blink scheduling).
+    fn has_focused_text_input(&self) -> bool {
+        let Some((_, vs)) = self.tabs.get(self.active_tab) else { return false };
+        if vs.staging_well.subject_input.is_focused() { return true; }
+        if vs.staging_well.body_area.is_focused() { return true; }
+        if vs.branch_sidebar.has_text_focus() { return true; }
+        if vs.commit_graph_view.search_bar.is_active() { return true; }
+        if self.branch_name_dialog.is_visible() { return true; }
+        if self.remote_dialog.is_visible() { return true; }
+        if self.repo_dialog.is_visible() { return true; }
+        false
+    }
+
     /// Dispatch an input event to the appropriate handler.
     fn handle_input_event(&mut self, event_loop: &ActiveEventLoop, input_event: &InputEvent) {
         let Some(ref state) = self.state else { return };

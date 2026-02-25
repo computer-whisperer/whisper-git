@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use winit::event_loop::EventLoopProxy;
 
 use std::io::Read as IoRead;
 use vulkano::{
@@ -74,15 +75,17 @@ pub struct AvatarCache {
     states: HashMap<String, AvatarState>,
     sender: Sender<DownloadResult>,
     receiver: Receiver<DownloadResult>,
+    proxy: EventLoopProxy<()>,
 }
 
 impl AvatarCache {
-    pub fn new() -> Self {
+    pub fn new(proxy: EventLoopProxy<()>) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
             states: HashMap::new(),
             sender,
             receiver,
+            proxy,
         }
     }
 
@@ -95,6 +98,7 @@ impl AvatarCache {
 
         self.states.insert(key.clone(), AvatarState::Loading);
         let sender = self.sender.clone();
+        let proxy = self.proxy.clone();
 
         std::thread::spawn(move || {
             let result = download_avatar(&key);
@@ -102,6 +106,7 @@ impl AvatarCache {
                 email: key,
                 data: result,
             });
+            let _ = proxy.send_event(());
         });
     }
 

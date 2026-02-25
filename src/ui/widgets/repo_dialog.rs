@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc;
+use winit::event_loop::EventLoopProxy;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
@@ -33,6 +34,7 @@ pub struct RepoDialog {
     recent_repos: Vec<String>,
     /// Which recent repo item is hovered (-1 = none)
     hovered_recent: i32,
+    proxy: Option<EventLoopProxy<()>>,
 }
 
 impl RepoDialog {
@@ -48,7 +50,13 @@ impl RepoDialog {
             picker_rx: None,
             recent_repos: Vec::new(),
             hovered_recent: -1,
+            proxy: None,
         }
+    }
+
+    /// Set the event loop proxy for waking the event loop from picker threads.
+    pub fn set_proxy(&mut self, proxy: EventLoopProxy<()>) {
+        self.proxy = Some(proxy);
     }
 
     pub fn show(&mut self) {
@@ -112,6 +120,7 @@ impl RepoDialog {
         } else {
             self.path_input.text().trim().to_string()
         };
+        let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             if let Some(folder) = rfd::FileDialog::new()
                 .set_directory(&start_dir)
@@ -119,6 +128,9 @@ impl RepoDialog {
                 .pick_folder()
             {
                 let _ = tx.send(folder.to_string_lossy().to_string());
+            }
+            if let Some(p) = proxy {
+                let _ = p.send_event(());
             }
         });
         self.picker_rx = Some(rx);

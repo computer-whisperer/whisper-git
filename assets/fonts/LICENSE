@@ -1,0 +1,12 @@
+This directory contains bundled fonts used by whisper-git.
+
+Roboto (Regular, Bold)
+  Copyright Google LLC
+  Licensed under the Apache License, Version 2.0
+  https://fonts.google.com/specimen/Roboto
+  https://www.apache.org/licenses/LICENSE-2.0
+
+DejaVu Sans
+  Copyright Bitstream Inc. and others
+  Licensed under the Bitstream Vera Fonts License and Public Domain
+  https://dejavu-fonts.github.io/License.html

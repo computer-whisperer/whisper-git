@@ -93,6 +93,10 @@ impl ToastManager {
     }
 
     /// Push a new toast. Evicts the oldest if we already have 3.
+    pub fn has_active_toasts(&self) -> bool {
+        !self.toasts.is_empty()
+    }
+
     pub fn push(&mut self, message: impl Into<String>, severity: ToastSeverity) {
         if self.toasts.len() >= 3 {
             self.toasts.remove(0);
