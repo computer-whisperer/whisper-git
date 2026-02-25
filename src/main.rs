@@ -285,6 +285,9 @@ struct TabViewState {
     /// HEAD commit OID — derived from the active worktree's staging repo.
     /// Single source of truth for the graph HEAD glow and Key::G jump.
     head_oid: Option<Oid>,
+    /// Fingerprint of HEAD + local branch tip OIDs for periodic ref reconciliation.
+    /// Compared every 5s to detect external ref changes missed by the watcher.
+    ref_fingerprint: u64,
 }
 
 impl TabViewState {
@@ -416,6 +419,7 @@ impl TabViewState {
             watcher_rx: None,
             current_branch: String::new(),
             head_oid: None,
+            ref_fingerprint: 0,
         }
     }
 }
@@ -498,6 +502,8 @@ struct App {
     proxy: EventLoopProxy<()>,
     /// Timestamp of the last frame render, for animation scheduling
     last_frame_time: Instant,
+    /// Timestamp of the last periodic ref fingerprint check
+    last_ref_check: Instant,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -598,6 +604,7 @@ impl App {
             ai_provider,
             proxy,
             last_frame_time: Instant::now(),
+            last_ref_check: Instant::now(),
         })
     }
 
@@ -863,7 +870,11 @@ impl App {
             RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
         };
 
-        // 2. Full reload (same as refresh_repo_state + refresh_status)
+        // 2. Full reload (reopen to bypass libgit2 cache, then refresh)
+        let _ = repo_tab.repo.reopen();
+        for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+            let _ = wt_repo.reopen();
+        }
         refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
         // Also refresh file status (staged/unstaged/conflicted)
         {
@@ -1165,11 +1176,23 @@ impl App {
             }
             Some(FsChangeKind::GitMetadata) => {
                 self.status_dirty = true;
+                // Force-reopen repo handles to bypass libgit2 refdb cache
+                let _ = repo_tab.repo.reopen();
+                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                    let _ = wt_repo.reopen();
+                }
                 let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
+                // Update stored fingerprint to avoid redundant periodic re-check
+                view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
             }
             Some(FsChangeKind::WorktreeStructure) => {
                 self.status_dirty = true;
+                // Force-reopen repo handles to bypass libgit2 refdb cache
+                let _ = repo_tab.repo.reopen();
+                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                    let _ = wt_repo.reopen();
+                }
                 let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
                 if rx.is_some() { self.diff_stats_receiver = rx; }
                 // Update watcher paths for new/removed worktrees
@@ -1177,6 +1200,8 @@ impl App {
                 if let Some(ref mut w) = view_state.watcher {
                     w.update_worktree_watches(&view_state.worktree_state.worktrees, &common_dir);
                 }
+                // Update stored fingerprint to avoid redundant periodic re-check
+                view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
             }
             None => {}
         }
@@ -2077,6 +2102,9 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
     // (refresh_repo_state handles all of these — no need to call them separately)
     let rx = refresh_repo_state(repo_tab, view_state, toast_manager, show_orphaned_commits, proxy);
 
+    // Seed the ref fingerprint so the periodic check has a baseline
+    view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
+
     // Start filesystem watcher for auto-refresh
     start_watcher(repo_tab, view_state, toast_manager, proxy);
 
@@ -2438,6 +2466,29 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Periodic ref reconciliation: every 5s, check if branch tips / HEAD
+                // changed externally (safety net for missed watcher events or libgit2 cache staleness)
+                {
+                    let now = Instant::now();
+                    if now.duration_since(self.last_ref_check).as_secs() >= 5 {
+                        self.last_ref_check = now;
+                        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                            let fresh = git::ref_fingerprint(repo_tab.repo.git_dir());
+                            if fresh != 0 && fresh != view_state.ref_fingerprint {
+                                view_state.ref_fingerprint = fresh;
+                                // Refs changed — reopen handles and do full refresh
+                                let _ = repo_tab.repo.reopen();
+                                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                                    let _ = wt_repo.reopen();
+                                }
+                                self.status_dirty = true;
+                                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
+                                if rx.is_some() { self.diff_stats_receiver = rx; }
+                            }
+                        }
+                    }
+                }
+
                 // Poll native file picker for results
                 self.repo_dialog.poll_picker();
 
@@ -2548,6 +2599,9 @@ impl ApplicationHandler for App {
 
         // 4. Status refresh timer (3s)
         merge(self.last_status_refresh + Duration::from_secs(3));
+
+        // 5. Periodic ref reconciliation timer (5s)
+        merge(self.last_ref_check + Duration::from_secs(5));
 
         match next_wake {
             Some(t) if t <= now => {

@@ -52,6 +52,36 @@ pub fn repo_state_label(state: RepositoryState) -> Option<&'static str> {
     }
 }
 
+/// Compute a fingerprint of the repository's ref state by opening a FRESH
+/// git2::Repository handle (bypassing any cached state), reading HEAD OID +
+/// sorted local branch tip OIDs, and hashing them into a u64.
+/// Cost: ~0.5ms. Returns 0 on error.
+pub fn ref_fingerprint(git_dir: &Path) -> u64 {
+    let repo = match Repository::open(git_dir) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    let mut hasher = DefaultHasher::new();
+    // Hash HEAD target
+    if let Ok(head) = repo.head() {
+        if let Some(oid) = head.target() {
+            oid.as_bytes().hash(&mut hasher);
+        }
+    }
+    // Hash sorted local branch tip OIDs
+    if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
+        let mut oids: Vec<Oid> = branches
+            .filter_map(|b| b.ok())
+            .filter_map(|(b, _)| b.get().resolve().ok()?.target())
+            .collect();
+        oids.sort();
+        for oid in &oids {
+            oid.as_bytes().hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 /// Scan a directory for the most recently modified file and return its mtime
 /// as a Unix timestamp. Only checks top-level and one level deep to avoid
 /// expensive deep traversals. Skips `.git` directories.
@@ -351,6 +381,17 @@ impl GitRepo {
         let repo = Repository::discover(path.as_ref())
             .with_context(|| format!("Failed to open repository at {:?}", path.as_ref()))?;
         Ok(Self { repo })
+    }
+
+    /// Re-open the underlying git2::Repository from the same git dir path,
+    /// clearing all internal caches (refdb, odb). This forces subsequent calls
+    /// to read fresh data from disk. Uses Repository::open() (not discover())
+    /// so it's fast — no directory walk.
+    pub fn reopen(&mut self) -> Result<()> {
+        let git_dir = self.repo.path().to_path_buf();
+        self.repo = Repository::open(&git_dir)
+            .with_context(|| format!("Failed to reopen repository at {:?}", git_dir))?;
+        Ok(())
     }
 
     /// Get the current repository state (e.g. merge/rebase in progress)

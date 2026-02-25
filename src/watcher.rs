@@ -84,9 +84,15 @@ impl RepoWatcher {
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
-                if let Ok(event) = res {
-                    if let Some(kind) = classify_event(&event, &git_dir_owned, &common_dir_owned) {
-                        let _ = watcher_tx.send(kind);
+                match res {
+                    Ok(event) => {
+                        if let Some(kind) = classify_event(&event, &git_dir_owned, &common_dir_owned) {
+                            let _ = watcher_tx.send(kind);
+                        }
+                    }
+                    Err(_e) => {
+                        // Queue overflow or other error — trigger full refresh as safety net
+                        let _ = watcher_tx.send(FsChangeKind::GitMetadata);
                     }
                 }
             },
@@ -97,14 +103,23 @@ impl RepoWatcher {
         watcher.watch(workdir, RecursiveMode::Recursive)?;
 
         // Watch worktree-specific git dir (HEAD, index for this worktree)
-        let _ = watcher.watch(git_dir, RecursiveMode::NonRecursive);
+        if let Err(e) = watcher.watch(git_dir, RecursiveMode::NonRecursive) {
+            eprintln!("watcher: failed to watch git_dir {:?}: {e}", git_dir);
+        }
 
         // Watch shared common dir for refs, packed-refs, config
         // (For non-worktree repos common_dir == git_dir, so this is a no-op duplicate)
-        let _ = watcher.watch(common_dir, RecursiveMode::NonRecursive);
+        if let Err(e) = watcher.watch(common_dir, RecursiveMode::NonRecursive) {
+            // Ignore duplicate-watch errors (common_dir == git_dir for non-worktree repos)
+            if !format!("{e}").contains("already") {
+                eprintln!("watcher: failed to watch common_dir {:?}: {e}", common_dir);
+            }
+        }
         let common_refs = common_dir.join("refs");
         if common_refs.is_dir() {
-            let _ = watcher.watch(&common_refs, RecursiveMode::Recursive);
+            if let Err(e) = watcher.watch(&common_refs, RecursiveMode::Recursive) {
+                eprintln!("watcher: failed to watch refs {:?}: {e}", common_refs);
+            }
         }
 
         // Also watch git_dir/refs if it exists and differs from common_dir/refs
