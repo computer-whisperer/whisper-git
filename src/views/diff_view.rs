@@ -557,6 +557,10 @@ impl DiffView {
                                     continue;
                                 }
                                 let end = end.min(content_trimmed.len());
+                                // Skip if offsets aren't on char boundaries (multi-byte UTF-8 safety)
+                                if !content_trimmed.is_char_boundary(start) || !content_trimmed.is_char_boundary(end) {
+                                    continue;
+                                }
                                 // Measure actual text widths for proportional font
                                 let hl_x = content_x + text_renderer.measure_text(&content_trimmed[..start]) - self.h_scroll_offset;
                                 let hl_w = text_renderer.measure_text(&content_trimmed[start..end]);

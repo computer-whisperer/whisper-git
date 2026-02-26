@@ -1239,13 +1239,30 @@ impl GitRepo {
             return (Vec::new(), Vec::new());
         }
 
+        // Snap byte offsets to char boundaries so slicing never panics on multi-byte UTF-8
+        fn snap_to_char_boundaries(s: &str, start: usize, end: usize) -> (usize, usize) {
+            // Move start backward to the nearest char boundary
+            let mut s_start = start;
+            while s_start > 0 && !s.is_char_boundary(s_start) {
+                s_start -= 1;
+            }
+            // Move end forward to the nearest char boundary
+            let mut s_end = end;
+            while s_end < s.len() && !s.is_char_boundary(s_end) {
+                s_end += 1;
+            }
+            (s_start, s_end)
+        }
+
         let old_ranges = if prefix_len < old_diff_end {
-            vec![(prefix_len, old_diff_end)]
+            let (s, e) = snap_to_char_boundaries(old, prefix_len, old_diff_end);
+            vec![(s, e)]
         } else {
             Vec::new()
         };
         let new_ranges = if prefix_len < new_diff_end {
-            vec![(prefix_len, new_diff_end)]
+            let (s, e) = snap_to_char_boundaries(new, prefix_len, new_diff_end);
+            vec![(s, e)]
         } else {
             Vec::new()
         };
