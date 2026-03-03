@@ -260,8 +260,15 @@ mod fs {
 
             layout(location = 0) out vec4 f_color;
 
+            vec3 srgb_to_linear(vec3 c) {
+                bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+                vec3 low = c / 12.92;
+                vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                return mix(high, low, cutoff);
+            }
+
             void main() {
-                f_color = v_color;
+                f_color = vec4(srgb_to_linear(v_color.rgb), v_color.a);
             }
         ",
     }

@@ -81,8 +81,8 @@ impl SurfaceManager {
     }
 
     /// Pick a preferred swapchain format.
-    /// We prefer UNORM for now because most UI colors are authored in display-space
-    /// values and are not yet fully linearized across all render paths.
+    /// Prefer sRGB so blending is done in linear-light and conversion to display
+    /// space happens on store.
     pub fn choose_surface_format(ctx: &VulkanContext, surface: &Arc<Surface>) -> Result<Format> {
         let formats = ctx.device.physical_device()
             .surface_formats(surface, Default::default())
@@ -91,7 +91,7 @@ impl SurfaceManager {
         formats
             .iter()
             .map(|(format, _)| *format)
-            .find(|format| format.numeric_format_color() == Some(NumericFormat::UNORM))
+            .find(|format| format.numeric_format_color() == Some(NumericFormat::SRGB))
             .or_else(|| formats.first().map(|(format, _)| *format))
             .context("No surface formats available")
     }

@@ -241,13 +241,20 @@ mod fs {
 
             layout(set = 0, binding = 0) uniform sampler2D avatar_atlas;
 
+            vec3 srgb_to_linear(vec3 c) {
+                bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+                vec3 low = c / 12.92;
+                vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                return mix(high, low, cutoff);
+            }
+
             void main() {
                 vec4 texel = texture(avatar_atlas, v_tex_coord);
                 // v_color.xy carries local UV (0..1) across this avatar quad
                 vec2 local = v_color.xy - 0.5;
                 float dist = length(local);
                 float circle = 1.0 - smoothstep(0.45, 0.50, dist);
-                f_color = vec4(texel.rgb, texel.a * circle);
+                f_color = vec4(srgb_to_linear(texel.rgb), texel.a * circle);
             }
         ",
     }

@@ -185,6 +185,13 @@ mod fs {
                 vec4 sdf_params;
             } pc;
 
+            vec3 srgb_to_linear(vec3 c) {
+                bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+                vec3 low = c / 12.92;
+                vec3 high = pow((c + 0.055) / 1.055, vec3(2.4));
+                return mix(high, low, cutoff);
+            }
+
             void main() {
                 float d = texture(font_atlas, v_tex_coord).r;
                 vec2 atlas_size = vec2(textureSize(font_atlas, 0));
@@ -198,7 +205,8 @@ mod fs {
                 float aa_width = max(d_per_px * pc.sdf_params.y, 1.0 / 255.0);
                 float alpha = smoothstep(pc.sdf_params.x - aa_width, pc.sdf_params.x + aa_width, d);
                 float out_alpha = v_color.a * alpha;
-                f_color = vec4(v_color.rgb * out_alpha, out_alpha);
+                vec3 out_rgb = srgb_to_linear(v_color.rgb) * out_alpha;
+                f_color = vec4(out_rgb, out_alpha);
             }
         ",
     }

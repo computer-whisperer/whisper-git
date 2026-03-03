@@ -22,6 +22,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo},
+    format::{Format, NumericFormat},
     pipeline::graphics::viewport::Viewport,
     swapchain::{acquire_next_image, SwapchainPresentInfo},
     sync::{self, GpuFuture},
@@ -4226,7 +4227,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
+                clear_values: vec![Some(clear_color_for_format(state.surface.image_format()).into()), None],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -4276,6 +4277,29 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
     state.frame_count += 1;
     Ok(())
+}
+
+#[inline]
+fn srgb_to_linear_channel(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn clear_color_for_format(format: Format) -> [f32; 4] {
+    let bg = theme::BACKGROUND.to_array();
+    if format.numeric_format_color() == Some(NumericFormat::SRGB) {
+        [
+            srgb_to_linear_channel(bg[0]),
+            srgb_to_linear_channel(bg[1]),
+            srgb_to_linear_channel(bg[2]),
+            bg[3],
+        ]
+    } else {
+        bg
+    }
 }
 
 /// Draw the UI output into a command buffer builder (shared by all render paths).
@@ -4367,7 +4391,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
+                clear_values: vec![Some(clear_color_for_format(state.surface.image_format()).into()), None],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -4480,7 +4504,7 @@ fn capture_screenshot_offscreen(
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(theme::BACKGROUND.to_array().into()), None],
+                clear_values: vec![Some(clear_color_for_format(offscreen.format).into()), None],
                 ..RenderPassBeginInfo::framebuffer(offscreen.framebuffer.clone())
             },
             Default::default(),
