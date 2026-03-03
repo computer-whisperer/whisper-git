@@ -11,7 +11,10 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer},
+    command_buffer::{
+        AutoCommandBufferBuilder, BufferImageCopy, CopyBufferToImageInfo,
+        PrimaryAutoCommandBuffer,
+    },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
@@ -92,6 +95,10 @@ pub struct TextRenderer {
     ascent: f32,
     /// Scale factor used when building the atlas
     atlas_scale: f32,
+    /// Display scale factor used when building the atlas (before oversample)
+    atlas_build_scale: f32,
+    /// SDF spread in atlas pixels (padding distance encoded around glyph edges)
+    sdf_spread: f32,
     /// Current display scale factor from winit (updated on monitor changes).
     /// This is in window scale units (not multiplied by atlas oversample).
     render_scale: f32,
@@ -145,7 +152,7 @@ mod vs {
 
             layout(push_constant) uniform PushConstants {
                 vec2 screen_size;
-                vec2 sdf_params;
+                vec4 sdf_params;
             } pc;
 
             void main() {
@@ -173,12 +180,20 @@ mod fs {
             layout(set = 0, binding = 0) uniform sampler2D font_atlas;
             layout(push_constant) uniform PushConstants {
                 vec2 screen_size;
-                vec2 sdf_params;
+                vec4 sdf_params;
             } pc;
 
             void main() {
                 float d = texture(font_atlas, v_tex_coord).r;
-                float aa_width = max(fwidth(d) * pc.sdf_params.y, 1.0 / 255.0);
+                vec2 atlas_size = vec2(textureSize(font_atlas, 0));
+                vec2 uv_dx = dFdx(v_tex_coord);
+                vec2 uv_dy = dFdy(v_tex_coord);
+                float texels_per_px_x = length(vec2(uv_dx.x, uv_dy.x)) * atlas_size.x;
+                float texels_per_px_y = length(vec2(uv_dx.y, uv_dy.y)) * atlas_size.y;
+                float texels_per_px = max(texels_per_px_x, texels_per_px_y);
+                float spread = max(pc.sdf_params.z, 0.001);
+                float d_per_px = texels_per_px * (0.5 / spread);
+                float aa_width = max(d_per_px * pc.sdf_params.y, 1.0 / 255.0);
                 float alpha = smoothstep(pc.sdf_params.x - aa_width, pc.sdf_params.x + aa_width, d);
                 f_color = vec4(v_color.rgb, v_color.a * alpha);
             }
@@ -261,7 +276,8 @@ impl TextRenderer {
         let atlas_oversample = 2.0_f32;
         let display_font_size = (base_font_size * scale_factor) as f32;
         let font_size_px = display_font_size * atlas_oversample;
-        let atlas_scale = scale_factor as f32 * atlas_oversample;
+        let atlas_build_scale = scale_factor as f32;
+        let atlas_scale = atlas_build_scale * atlas_oversample;
 
         // SDF spread: how many atlas pixels of distance gradient around the glyph edge.
         // Each glyph gets `spread` pixels of padding on each side.
@@ -301,7 +317,8 @@ impl TextRenderer {
         // First pass: calculate atlas size (including SDF padding)
         let mut total_width = 0u32;
         let mut max_height = 0u32;
-        let padding = 2u32;
+        // Extra gap between glyph cells to reduce cross-glyph bleeding when minified.
+        let padding = (2 * sdf_spread + 2).max(4);
 
         for &c in &chars {
             let metrics = match glyph_fonts.get(&c).copied() {
@@ -360,10 +377,12 @@ impl TextRenderer {
                 glyphs.insert(
                     c,
                     GlyphInfo {
-                        tex_x: x_offset as f32 / atlas_width as f32,
-                        tex_y: 0.0,
-                        tex_w: sdf_w as f32 / atlas_width as f32,
-                        tex_h: sdf_h as f32 / atlas_height as f32,
+                        // Inset UVs by half a texel to keep bilinear filtering from
+                        // sampling adjacent glyph cells at atlas boundaries.
+                        tex_x: (x_offset as f32 + 0.5) / atlas_width as f32,
+                        tex_y: 0.5 / atlas_height as f32,
+                        tex_w: (sdf_w as f32 - 1.0).max(0.0) / atlas_width as f32,
+                        tex_h: (sdf_h as f32 - 1.0).max(0.0) / atlas_height as f32,
                         width: sdf_w as f32,
                         height: sdf_h as f32,
                         bearing_x: metrics.xmin as f32 - sdf_spread as f32,
@@ -418,7 +437,23 @@ impl TextRenderer {
             .or_else(|| chars.first().copied())
             .unwrap_or('?');
 
-        // Upload atlas to GPU
+        // Build mip chain on CPU to improve minification stability.
+        let mip_chain = build_r8_mip_chain(&atlas_data, atlas_width, atlas_height);
+        let mip_levels = mip_chain.len() as u32;
+
+        // Upload atlas + mips to GPU
+        let mut staging_data = Vec::new();
+        let mut regions = Vec::<BufferImageCopy>::with_capacity(mip_chain.len());
+
+        let mut mip_w = atlas_width;
+        let mut mip_h = atlas_height;
+        for level_data in &mip_chain {
+            debug_assert_eq!(level_data.len(), (mip_w * mip_h) as usize);
+            staging_data.extend_from_slice(level_data);
+            mip_w = (mip_w / 2).max(1);
+            mip_h = (mip_h / 2).max(1);
+        }
+
         let upload_buffer = Buffer::from_iter(
             memory_allocator.clone(),
             BufferCreateInfo {
@@ -430,7 +465,7 @@ impl TextRenderer {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            atlas_data,
+            staging_data,
         )
         .context("Failed to create upload buffer")?;
 
@@ -440,6 +475,7 @@ impl TextRenderer {
                 image_type: ImageType::Dim2d,
                 format: Format::R8_UNORM,
                 extent: [atlas_width, atlas_height, 1],
+                mip_levels,
                 usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                 ..Default::default()
             },
@@ -447,11 +483,29 @@ impl TextRenderer {
         )
         .context("Failed to create font texture")?;
 
+        let mut next_offset = 0u64;
+        let mut mip_w = atlas_width;
+        let mut mip_h = atlas_height;
+        let base_subresource = font_image.subresource_layers();
+        for (level, level_data) in mip_chain.iter().enumerate() {
+            let mut image_subresource = base_subresource.clone();
+            image_subresource.mip_level = level as u32;
+            regions.push(BufferImageCopy {
+                buffer_offset: next_offset,
+                image_subresource,
+                image_extent: [mip_w, mip_h, 1],
+                ..Default::default()
+            });
+            next_offset += level_data.len() as u64;
+            mip_w = (mip_w / 2).max(1);
+            mip_h = (mip_h / 2).max(1);
+        }
+
         command_buffer_builder
-            .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                upload_buffer,
-                font_image.clone(),
-            ))
+            .copy_buffer_to_image(CopyBufferToImageInfo {
+                regions: regions.into_iter().collect(),
+                ..CopyBufferToImageInfo::buffer_image(upload_buffer, font_image.clone())
+            })
             .context("Failed to copy buffer to image")?;
 
         let font_texture =
@@ -462,8 +516,9 @@ impl TextRenderer {
             SamplerCreateInfo {
                 mag_filter: Filter::Linear,
                 min_filter: Filter::Linear,
-                mipmap_mode: SamplerMipmapMode::Nearest,
+                mipmap_mode: SamplerMipmapMode::Linear,
                 address_mode: [SamplerAddressMode::ClampToEdge; 3],
+                lod: 0.0..=((mip_levels - 1) as f32),
                 ..Default::default()
             },
         )
@@ -544,6 +599,8 @@ impl TextRenderer {
             line_height,
             ascent,
             atlas_scale,
+            atlas_build_scale,
+            sdf_spread: sdf_spread as f32,
             render_scale: scale_factor as f32,
             sdf_edge_center: 0.5,
             sdf_aa_scale: 0.75,
@@ -560,6 +617,11 @@ impl TextRenderer {
     /// The atlas stays the same; metrics and glyph positions adjust via the ratio.
     pub fn set_render_scale(&mut self, scale: f64) {
         self.render_scale = scale as f32;
+    }
+
+    /// Scale factor (winit display scale) used when this atlas was built.
+    pub fn atlas_build_scale(&self) -> f32 {
+        self.atlas_build_scale
     }
 
     /// Tune SDF edge rendering parameters.
@@ -795,7 +857,6 @@ impl TextRenderer {
         .context("Failed to create descriptor set")?;
 
         let vertex_count = vertex_buffer.len() as u32;
-
         builder
             .bind_pipeline_graphics(self.pipeline.clone())
             .context("Failed to bind pipeline")?
@@ -810,8 +871,13 @@ impl TextRenderer {
                 layout,
                 0,
                 vs::PushConstants {
-                    screen_size: [viewport.extent[0], viewport.extent[1]],
-                    sdf_params: [self.sdf_edge_center, self.sdf_aa_scale],
+                    screen_size: [viewport.extent[0], viewport.extent[1]].into(),
+                    sdf_params: [
+                        self.sdf_edge_center,
+                        self.sdf_aa_scale,
+                        self.sdf_spread,
+                        0.0,
+                    ],
                 },
             )
             .context("Failed to push constants")?
@@ -830,6 +896,51 @@ impl TextRenderer {
 
         Ok(())
     }
+}
+
+/// Build a full mip chain for an R8 atlas using box filtering.
+/// Level 0 is the original image.
+fn build_r8_mip_chain(level0: &[u8], width: u32, height: u32) -> Vec<Vec<u8>> {
+    assert_eq!(level0.len(), (width * height) as usize);
+
+    let mut chain = Vec::new();
+    chain.push(level0.to_vec());
+
+    let mut w = width as usize;
+    let mut h = height as usize;
+
+    while w > 1 || h > 1 {
+        let next_w = (w / 2).max(1);
+        let next_h = (h / 2).max(1);
+        let mut next = vec![0u8; next_w * next_h];
+        let prev = chain.last().unwrap();
+
+        for y in 0..next_h {
+            for x in 0..next_w {
+                let sx0 = x * 2;
+                let sy0 = y * 2;
+                let sx1 = (sx0 + 2).min(w);
+                let sy1 = (sy0 + 2).min(h);
+
+                let mut sum = 0u32;
+                let mut count = 0u32;
+                for sy in sy0..sy1 {
+                    for sx in sx0..sx1 {
+                        sum += prev[sy * w + sx] as u32;
+                        count += 1;
+                    }
+                }
+
+                next[y * next_w + x] = (sum / count.max(1)) as u8;
+            }
+        }
+
+        chain.push(next);
+        w = next_w;
+        h = next_h;
+    }
+
+    chain
 }
 
 // ---------------------------------------------------------------------------
