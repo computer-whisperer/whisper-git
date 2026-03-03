@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use vulkano::{
-    format::Format,
+    format::{Format, NumericFormat},
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
@@ -57,10 +57,7 @@ impl SurfaceManager {
             .surface_capabilities(surface, Default::default())
             .context("Failed to get surface capabilities")?;
 
-        let image_format = physical_device
-            .surface_formats(surface, Default::default())
-            .context("Failed to get surface formats")?[0]
-            .0;
+        let image_format = Self::choose_surface_format(ctx, surface)?;
 
         Swapchain::new(
             ctx.device.clone(),
@@ -81,6 +78,21 @@ impl SurfaceManager {
             },
         )
         .context("Failed to create swapchain")
+    }
+
+    /// Pick a preferred swapchain format.
+    /// We favor sRGB formats for perceptually-correct blending of text/UI edges.
+    pub fn choose_surface_format(ctx: &VulkanContext, surface: &Arc<Surface>) -> Result<Format> {
+        let formats = ctx.device.physical_device()
+            .surface_formats(surface, Default::default())
+            .context("Failed to get surface formats")?;
+
+        formats
+            .iter()
+            .map(|(format, _)| *format)
+            .find(|format| format.numeric_format_color() == Some(NumericFormat::SRGB))
+            .or_else(|| formats.first().map(|(format, _)| *format))
+            .context("No surface formats available")
     }
 
     /// Create MSAA images matching swapchain images

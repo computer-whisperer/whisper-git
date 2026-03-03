@@ -439,7 +439,12 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
     let mut app = App::new(cli_args, proxy)?;
 
-    event_loop.run_app(&mut app).context("Event loop error")?;
+    // run_app may return an error on Wayland if the compositor disconnects
+    // (e.g. broken pipe during flush). Treat this as a clean exit rather than
+    // propagating a confusing error to the user.
+    if let Err(e) = event_loop.run_app(&mut app) {
+        eprintln!("Event loop exited: {e}");
+    }
 
     Ok(())
 }
@@ -520,6 +525,52 @@ struct RenderState {
     frame_count: u32,
     scale_factor: f64,
     input_state: InputState,
+}
+
+fn rebuild_text_renderers(state: &mut RenderState, atlas_build_scale: f64) -> Result<()> {
+    let mut upload_builder = AutoCommandBufferBuilder::primary(
+        state.ctx.command_buffer_allocator.clone(),
+        state.ctx.queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .context("Failed to create text upload command buffer")?;
+
+    let mut text_renderer = TextRenderer::new(
+        state.ctx.memory_allocator.clone(),
+        state.surface.render_pass.clone(),
+        &mut upload_builder,
+        atlas_build_scale,
+    )
+    .context("Failed to rebuild text renderer")?;
+
+    let mut bold_text_renderer = TextRenderer::new_bold(
+        state.ctx.memory_allocator.clone(),
+        state.surface.render_pass.clone(),
+        &mut upload_builder,
+        atlas_build_scale,
+    )
+    .context("Failed to rebuild bold text renderer")?;
+
+    text_renderer.set_render_scale(state.scale_factor);
+    bold_text_renderer.set_render_scale(state.scale_factor);
+
+    let upload_cb = upload_builder
+        .build()
+        .context("Failed to build text upload command buffer")?;
+    let upload_future = sync::now(state.ctx.device.clone())
+        .then_execute(state.ctx.queue.clone(), upload_cb)
+        .context("Failed to execute text upload")?
+        .then_signal_fence_and_flush()
+        .map_err(Validated::unwrap)
+        .context("Failed to flush text upload")?;
+    upload_future
+        .wait(None)
+        .context("Failed to wait for text upload")?;
+
+    state.text_renderer = text_renderer;
+    state.bold_text_renderer = bold_text_renderer;
+
+    Ok(())
 }
 
 impl App {
@@ -643,9 +694,7 @@ impl App {
         crash_log::set_vulkan_device(&ctx.device.physical_device().properties().device_name);
 
         // Create render pass with MSAA 4x
-        let image_format = ctx.device.physical_device()
-            .surface_formats(&surface, Default::default())
-            .unwrap()[0].0;
+        let image_format = SurfaceManager::choose_surface_format(&ctx, &surface)?;
         let render_pass = vulkano::single_pass_renderpass!(
             ctx.device.clone(),
             attachments: {
@@ -681,19 +730,16 @@ impl App {
         )
         .context("Failed to create upload command buffer")?;
 
-        // Build font atlas at the max scale across all monitors for crisp text everywhere.
-        // CLI --scale overrides for deterministic screenshots.
+        // Build font atlas close to the active window scale so low-DPI displays
+        // don't aggressively minify oversized glyph atlases.
+        // CLI --scale still overrides this for deterministic screenshots.
         let window_scale = window.scale_factor();
-        let max_scale = self.cli_args.screenshot_scale.unwrap_or_else(|| {
-            window.available_monitors()
-                .map(|m| m.scale_factor())
-                .fold(window_scale, f64::max)
-        });
+        let atlas_build_scale = self.cli_args.screenshot_scale.unwrap_or(window_scale);
         let mut text_renderer = TextRenderer::new(
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
-            max_scale,
+            atlas_build_scale,
         )
         .context("Failed to create text renderer")?;
 
@@ -701,11 +747,21 @@ impl App {
             ctx.memory_allocator.clone(),
             render_pass.clone(),
             &mut upload_builder,
-            max_scale,
+            atlas_build_scale,
         )
         .context("Failed to create bold text renderer")?;
         text_renderer.set_render_scale(window_scale);
         bold_text_renderer.set_render_scale(window_scale);
+
+        if std::env::var_os("WHISPER_TEXT_DIAG").is_some() {
+            let max_monitor_scale = window
+                .available_monitors()
+                .map(|m| m.scale_factor())
+                .fold(window_scale, f64::max);
+            eprintln!(
+                "text_diag init: window_scale={window_scale:.2} atlas_build_scale={atlas_build_scale:.2} max_monitor_scale={max_monitor_scale:.2}"
+            );
+        }
 
         let spline_renderer = SplineRenderer::new(
             ctx.memory_allocator.clone(),
@@ -2418,8 +2474,25 @@ impl ApplicationHandler for App {
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale_factor = scale_factor;
-                state.text_renderer.set_render_scale(scale_factor);
-                state.bold_text_renderer.set_render_scale(scale_factor);
+                let atlas_build_scale = state.text_renderer.atlas_build_scale() as f64;
+                let needs_rebuild = scale_factor > atlas_build_scale + 0.05;
+                if needs_rebuild {
+                    if std::env::var_os("WHISPER_TEXT_DIAG").is_some() {
+                        eprintln!(
+                            "text_diag scale_change: rebuilding atlas from {:.2} -> {:.2}",
+                            atlas_build_scale,
+                            scale_factor
+                        );
+                    }
+                    if let Err(e) = rebuild_text_renderers(state, scale_factor) {
+                        eprintln!("Failed to rebuild text atlases: {e:?}");
+                        state.text_renderer.set_render_scale(scale_factor);
+                        state.bold_text_renderer.set_render_scale(scale_factor);
+                    }
+                } else {
+                    state.text_renderer.set_render_scale(scale_factor);
+                    state.bold_text_renderer.set_render_scale(scale_factor);
+                }
                 for (repo_tab, view_state) in &mut self.tabs {
                     view_state.commit_graph_view.sync_metrics(&state.text_renderer);
                     view_state.commit_graph_view.update_layout(&repo_tab.commits);

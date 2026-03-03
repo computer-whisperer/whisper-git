@@ -31,7 +31,9 @@ use vulkano::{
         PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
-            color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
+            color_blend::{
+                AttachmentBlend, BlendFactor, BlendOp, ColorBlendAttachmentState, ColorBlendState,
+            },
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
             rasterization::RasterizationState,
@@ -195,7 +197,8 @@ mod fs {
                 float d_per_px = texels_per_px * (0.5 / spread);
                 float aa_width = max(d_per_px * pc.sdf_params.y, 1.0 / 255.0);
                 float alpha = smoothstep(pc.sdf_params.x - aa_width, pc.sdf_params.x + aa_width, d);
-                f_color = vec4(v_color.rgb, v_color.a * alpha);
+                float out_alpha = v_color.a * alpha;
+                f_color = vec4(v_color.rgb * out_alpha, out_alpha);
             }
         ",
     }
@@ -567,7 +570,15 @@ impl TextRenderer {
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState {
-                        blend: Some(AttachmentBlend::alpha()),
+                        // Premultiplied alpha blending for cleaner glyph edges.
+                        blend: Some(AttachmentBlend {
+                            src_color_blend_factor: BlendFactor::One,
+                            dst_color_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                            color_blend_op: BlendOp::Add,
+                            src_alpha_blend_factor: BlendFactor::One,
+                            dst_alpha_blend_factor: BlendFactor::OneMinusSrcAlpha,
+                            alpha_blend_op: BlendOp::Add,
+                        }),
                         ..Default::default()
                     },
                 )),
