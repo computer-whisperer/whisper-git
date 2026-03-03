@@ -143,10 +143,14 @@ impl RepoWatcher {
                 let _ = watcher.watch(&wt_meta_dir, RecursiveMode::NonRecursive);
                 watched_worktree_dirs.insert(wt_meta_dir);
             }
-            // Also watch the worktree's working directory for file edits
+            // Watch the worktree's working directory for file edits.
+            // Use NonRecursive to avoid blocking the main thread — recursive
+            // inotify setup walks the entire directory tree synchronously and
+            // can stall the Wayland event loop long enough to cause a broken pipe.
+            // The 3-second periodic status refresh catches deeper changes.
             let wt_work_dir = PathBuf::from(&wt.path);
             if wt_work_dir != workdir && wt_work_dir.is_dir() {
-                let _ = watcher.watch(&wt_work_dir, RecursiveMode::Recursive);
+                let _ = watcher.watch(&wt_work_dir, RecursiveMode::NonRecursive);
                 watched_worktree_workdirs.insert(wt_work_dir);
             }
         }
@@ -203,7 +207,7 @@ impl RepoWatcher {
             self.watched_worktree_workdirs.remove(&path);
         }
         for path in desired_workdirs.difference(&self.watched_worktree_workdirs).cloned().collect::<Vec<_>>() {
-            self.watch_path(&path, true); // recursive for working dirs
+            self.watch_path(&path, false); // non-recursive to avoid blocking event loop
             self.watched_worktree_workdirs.insert(path);
         }
     }
