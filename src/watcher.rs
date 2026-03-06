@@ -38,7 +38,11 @@ impl FsChangeKind {
     }
 
     fn max(self, other: Self) -> Self {
-        if other.priority() > self.priority() { other } else { self }
+        if other.priority() > self.priority() {
+            other
+        } else {
+            self
+        }
     }
 }
 
@@ -86,7 +90,9 @@ impl RepoWatcher {
             move |res: notify::Result<Event>| {
                 match res {
                     Ok(event) => {
-                        if let Some(kind) = classify_event(&event, &git_dir_owned, &common_dir_owned) {
+                        if let Some(kind) =
+                            classify_event(&event, &git_dir_owned, &common_dir_owned)
+                        {
                             let _ = watcher_tx.send(kind);
                         }
                     }
@@ -116,10 +122,10 @@ impl RepoWatcher {
             }
         }
         let common_refs = common_dir.join("refs");
-        if common_refs.is_dir() {
-            if let Err(e) = watcher.watch(&common_refs, RecursiveMode::Recursive) {
-                eprintln!("watcher: failed to watch refs {:?}: {e}", common_refs);
-            }
+        if common_refs.is_dir()
+            && let Err(e) = watcher.watch(&common_refs, RecursiveMode::Recursive)
+        {
+            eprintln!("watcher: failed to watch refs {:?}: {e}", common_refs);
         }
 
         // Also watch git_dir/refs if it exists and differs from common_dir/refs
@@ -167,7 +173,11 @@ impl RepoWatcher {
 
     /// Add a path to watch. Ignores errors gracefully (e.g., path doesn't exist).
     pub fn watch_path(&mut self, path: &Path, recursive: bool) {
-        let mode = if recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        let mode = if recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
         let _ = self.watcher.watch(path, mode);
     }
 
@@ -186,11 +196,20 @@ impl RepoWatcher {
             .filter(|p| p.is_dir())
             .collect();
 
-        for path in self.watched_worktree_dirs.difference(&desired).cloned().collect::<Vec<_>>() {
+        for path in self
+            .watched_worktree_dirs
+            .difference(&desired)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             self.unwatch_path(&path);
             self.watched_worktree_dirs.remove(&path);
         }
-        for path in desired.difference(&self.watched_worktree_dirs).cloned().collect::<Vec<_>>() {
+        for path in desired
+            .difference(&self.watched_worktree_dirs)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             self.watch_path(&path, false);
             self.watched_worktree_dirs.insert(path);
         }
@@ -202,11 +221,20 @@ impl RepoWatcher {
             .filter(|p| p.is_dir())
             .collect();
 
-        for path in self.watched_worktree_workdirs.difference(&desired_workdirs).cloned().collect::<Vec<_>>() {
+        for path in self
+            .watched_worktree_workdirs
+            .difference(&desired_workdirs)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             self.unwatch_path(&path);
             self.watched_worktree_workdirs.remove(&path);
         }
-        for path in desired_workdirs.difference(&self.watched_worktree_workdirs).cloned().collect::<Vec<_>>() {
+        for path in desired_workdirs
+            .difference(&self.watched_worktree_workdirs)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             self.watch_path(&path, false); // non-recursive to avoid blocking event loop
             self.watched_worktree_workdirs.insert(path);
         }
@@ -235,14 +263,14 @@ fn classify_event(event: &Event, git_dir: &Path, common_dir: &Path) -> Option<Fs
             });
             continue;
         }
-        if common_dir != git_dir {
-            if let Some(kind) = classify_git_path(path, git_dir) {
-                result = Some(match result {
-                    Some(k) => k.max(kind),
-                    None => kind,
-                });
-                continue;
-            }
+        if common_dir != git_dir
+            && let Some(kind) = classify_git_path(path, git_dir)
+        {
+            result = Some(match result {
+                Some(k) => k.max(kind),
+                None => kind,
+            });
+            continue;
         }
         // Paths outside both git dirs are working tree changes
         result = Some(match result {
@@ -295,14 +323,18 @@ fn classify_git_path(path: &Path, git_dir: &Path) -> Option<FsChangeKind> {
 /// Spawns a background thread with tiered debounce:
 /// - Metadata lane: 150ms debounce (fast response for git ops)
 /// - Worktree lane: 500ms debounce (normal for file edits)
-/// Both have a 2-second hard cap to prevent indefinite deferral.
-fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChangeKind>, proxy: EventLoopProxy<()>) {
+///   Both have a 2-second hard cap to prevent indefinite deferral.
+fn spawn_debounce_thread(
+    raw_rx: Receiver<FsChangeKind>,
+    out_tx: Sender<FsChangeKind>,
+    proxy: EventLoopProxy<()>,
+) {
     std::thread::Builder::new()
         .name("fs-watcher-debounce".into())
         .spawn(move || {
             // Track pending events per lane
             let mut metadata_first: Option<Instant> = None; // first event in current burst
-            let mut metadata_last: Option<Instant> = None;  // last event in current burst
+            let mut metadata_last: Option<Instant> = None; // last event in current burst
             let mut metadata_kind = FsChangeKind::GitMetadata;
 
             let mut worktree_first: Option<Instant> = None;
@@ -311,8 +343,20 @@ fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChange
             loop {
                 // Compute timeout: minimum of both lanes' next fire time
                 let now = Instant::now();
-                let meta_timeout = lane_timeout(metadata_last, metadata_first, METADATA_DEBOUNCE_MS, MAX_DELAY_MS, now);
-                let wt_timeout = lane_timeout(worktree_last, worktree_first, WORKTREE_DEBOUNCE_MS, MAX_DELAY_MS, now);
+                let meta_timeout = lane_timeout(
+                    metadata_last,
+                    metadata_first,
+                    METADATA_DEBOUNCE_MS,
+                    MAX_DELAY_MS,
+                    now,
+                );
+                let wt_timeout = lane_timeout(
+                    worktree_last,
+                    worktree_first,
+                    WORKTREE_DEBOUNCE_MS,
+                    MAX_DELAY_MS,
+                    now,
+                );
                 let timeout = match (meta_timeout, wt_timeout) {
                     (Some(a), Some(b)) => a.min(b),
                     (Some(a), None) => a,
@@ -349,10 +393,14 @@ fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChange
                 let now = Instant::now();
 
                 if let (Some(first), Some(last)) = (metadata_first, metadata_last) {
-                    let debounce_elapsed = now.duration_since(last) >= Duration::from_millis(METADATA_DEBOUNCE_MS);
-                    let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
+                    let debounce_elapsed =
+                        now.duration_since(last) >= Duration::from_millis(METADATA_DEBOUNCE_MS);
+                    let cap_elapsed =
+                        now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
                     if debounce_elapsed || cap_elapsed {
-                        if out_tx.send(metadata_kind).is_err() { return; }
+                        if out_tx.send(metadata_kind).is_err() {
+                            return;
+                        }
                         let _ = proxy.send_event(());
                         metadata_first = None;
                         metadata_last = None;
@@ -361,10 +409,14 @@ fn spawn_debounce_thread(raw_rx: Receiver<FsChangeKind>, out_tx: Sender<FsChange
                 }
 
                 if let (Some(first), Some(last)) = (worktree_first, worktree_last) {
-                    let debounce_elapsed = now.duration_since(last) >= Duration::from_millis(WORKTREE_DEBOUNCE_MS);
-                    let cap_elapsed = now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
+                    let debounce_elapsed =
+                        now.duration_since(last) >= Duration::from_millis(WORKTREE_DEBOUNCE_MS);
+                    let cap_elapsed =
+                        now.duration_since(first) >= Duration::from_millis(MAX_DELAY_MS);
                     if debounce_elapsed || cap_elapsed {
-                        if out_tx.send(FsChangeKind::WorkingTree).is_err() { return; }
+                        if out_tx.send(FsChangeKind::WorkingTree).is_err() {
+                            return;
+                        }
                         let _ = proxy.send_event(());
                         worktree_first = None;
                         worktree_last = None;
@@ -386,10 +438,10 @@ fn lane_timeout(
     let last = last?;
     let first = first?;
 
-    let debounce_remaining = Duration::from_millis(debounce_ms)
-        .saturating_sub(now.duration_since(last));
-    let cap_remaining = Duration::from_millis(max_delay_ms)
-        .saturating_sub(now.duration_since(first));
+    let debounce_remaining =
+        Duration::from_millis(debounce_ms).saturating_sub(now.duration_since(last));
+    let cap_remaining =
+        Duration::from_millis(max_delay_ms).saturating_sub(now.duration_since(first));
 
     Some(debounce_remaining.min(cap_remaining))
 }

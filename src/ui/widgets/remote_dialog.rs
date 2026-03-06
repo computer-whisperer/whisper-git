@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -177,12 +177,7 @@ impl Widget for RemoteDialog {
         let first_label_y = dialog.y + 44.0 * scale;
         let first_input_y = first_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
-        let first_input_bounds = Rect::new(
-            dialog.x + padding,
-            first_input_y,
-            input_w,
-            line_h,
-        );
+        let first_input_bounds = Rect::new(dialog.x + padding, first_input_y, input_w, line_h);
 
         // Second input field bounds (only in Add mode)
         let second_input_bounds = if self.is_two_field() {
@@ -237,39 +232,57 @@ impl Widget for RemoteDialog {
         }
 
         // Handle click-to-focus between fields
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             if first_input_bounds.contains(*x, *y) {
                 self.first_input.set_focused(true);
                 self.second_input.set_focused(false);
-            } else if let Some(ref sb) = second_input_bounds {
-                if sb.contains(*x, *y) {
-                    self.first_input.set_focused(false);
-                    self.second_input.set_focused(true);
-                }
+            } else if let Some(ref sb) = second_input_bounds
+                && sb.contains(*x, *y)
+            {
+                self.first_input.set_focused(false);
+                self.second_input.set_focused(true);
             }
         }
 
         // Route to first input
-        if self.first_input.handle_event(event, first_input_bounds).is_consumed() {
+        if self
+            .first_input
+            .handle_event(event, first_input_bounds)
+            .is_consumed()
+        {
             return EventResponse::Consumed;
         }
 
         // Route to second input (Add mode)
-        if let Some(sb) = second_input_bounds {
-            if self.second_input.handle_event(event, sb).is_consumed() {
-                return EventResponse::Consumed;
-            }
+        if let Some(sb) = second_input_bounds
+            && self.second_input.handle_event(event, sb).is_consumed()
+        {
+            return EventResponse::Consumed;
         }
 
         // Route to buttons
-        if self.confirm_button.handle_event(event, confirm_bounds).is_consumed() {
+        if self
+            .confirm_button
+            .handle_event(event, confirm_bounds)
+            .is_consumed()
+        {
             if self.confirm_button.was_clicked() {
                 self.try_confirm();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(RemoteDialogAction::Cancel);
                 self.hide();
@@ -278,12 +291,18 @@ impl Widget for RemoteDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
-            && !dialog.contains(*x, *y) {
-                self.pending_action = Some(RemoteDialogAction::Cancel);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && !dialog.contains(*x, *y)
+        {
+            self.pending_action = Some(RemoteDialogAction::Cancel);
+            self.hide();
+            return EventResponse::Consumed;
+        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed
@@ -295,7 +314,12 @@ impl Widget for RemoteDialog {
 }
 
 impl RemoteDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -343,12 +367,7 @@ impl RemoteDialog {
 
         let first_input_y = first_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
-        let first_input_bounds = Rect::new(
-            dialog.x + padding,
-            first_input_y,
-            input_w,
-            line_h,
-        );
+        let first_input_bounds = Rect::new(dialog.x + padding, first_input_y, input_w, line_h);
         output.extend(self.first_input.layout(text_renderer, first_input_bounds));
 
         // Second label + input (Add mode only)
@@ -362,12 +381,8 @@ impl RemoteDialog {
             ));
 
             let second_input_y = second_label_y + label_h;
-            let second_input_bounds = Rect::new(
-                dialog.x + padding,
-                second_input_y,
-                input_w,
-                line_h,
-            );
+            let second_input_bounds =
+                Rect::new(dialog.x + padding, second_input_y, input_w, line_h);
             output.extend(self.second_input.layout(text_renderer, second_input_bounds));
         }
 
@@ -381,7 +396,12 @@ impl RemoteDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 

@@ -3,9 +3,11 @@
 use std::time::Instant;
 
 use crate::input::InputEvent;
-use crate::ui::{Rect, TextRenderer};
 use crate::ui::text_util::wrap_text;
-use crate::ui::widget::{WidgetOutput, create_rounded_rect_vertices, create_rounded_rect_outline_vertices};
+use crate::ui::widget::{
+    WidgetOutput, create_rounded_rect_outline_vertices, create_rounded_rect_vertices,
+};
+use crate::ui::{Rect, TextRenderer};
 
 /// Severity determines the color scheme
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,16 +60,16 @@ impl Toast {
     fn bg_color(&self, opacity: f32) -> [f32; 4] {
         match self.severity {
             ToastSeverity::Success => [0.102, 0.227, 0.102, 0.95 * opacity],
-            ToastSeverity::Error   => [0.227, 0.102, 0.102, 0.95 * opacity],
-            ToastSeverity::Info    => [0.102, 0.102, 0.227, 0.95 * opacity],
+            ToastSeverity::Error => [0.227, 0.102, 0.102, 0.95 * opacity],
+            ToastSeverity::Info => [0.102, 0.102, 0.227, 0.95 * opacity],
         }
     }
 
     fn border_color(&self, opacity: f32) -> [f32; 4] {
         match self.severity {
             ToastSeverity::Success => [0.298, 0.686, 0.314, opacity],
-            ToastSeverity::Error   => [0.937, 0.325, 0.314, opacity],
-            ToastSeverity::Info    => [0.259, 0.647, 0.961, opacity],
+            ToastSeverity::Error => [0.937, 0.325, 0.314, opacity],
+            ToastSeverity::Info => [0.259, 0.647, 0.961, opacity],
         }
     }
 
@@ -131,7 +133,12 @@ impl ToastManager {
     }
 
     /// Render toasts at the bottom-center of `screen_bounds`.
-    pub fn layout(&mut self, text_renderer: &TextRenderer, screen_bounds: Rect, scale: f32) -> WidgetOutput {
+    pub fn layout(
+        &mut self,
+        text_renderer: &TextRenderer,
+        screen_bounds: Rect,
+        scale: f32,
+    ) -> WidgetOutput {
         let now = Instant::now();
         let mut output = WidgetOutput::new();
         self.toast_bounds.clear();
@@ -175,7 +182,8 @@ impl ToastManager {
 
             let lines = wrap_text(&toast.message, max_text_width, text_renderer);
             let num_lines = lines.len().max(1);
-            let text_width = lines.iter()
+            let text_width = lines
+                .iter()
                 .map(|l| text_renderer.measure_text(l))
                 .fold(0.0_f32, f32::max);
 
@@ -210,13 +218,20 @@ impl ToastManager {
 
             // Background
             output.spline_vertices.extend(create_rounded_rect_vertices(
-                &rect, toast.bg_color(opacity), corner_radius,
+                &rect,
+                toast.bg_color(opacity),
+                corner_radius,
             ));
 
             // Border (rounded, matching fill)
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &rect, toast.border_color(opacity), corner_radius, border_thickness,
-            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &rect,
+                    toast.border_color(opacity),
+                    corner_radius,
+                    border_thickness,
+                ));
 
             // Severity indicator bar (left side, full height minus padding)
             let bar_rect = Rect::new(
@@ -226,7 +241,9 @@ impl ToastManager {
                 rect.height - 2.0 * indicator_v_inset,
             );
             output.spline_vertices.extend(create_rounded_rect_vertices(
-                &bar_rect, toast.border_color(opacity), indicator_width / 2.0,
+                &bar_rect,
+                toast.border_color(opacity),
+                indicator_width / 2.0,
             ));
 
             // Text lines

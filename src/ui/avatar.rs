@@ -5,8 +5,8 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 use winit::event_loop::EventLoopProxy;
 
 use std::io::Read as IoRead;
@@ -14,29 +14,29 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer},
     descriptor_set::{
-        allocator::StandardDescriptorSetAllocator, DescriptorSet, WriteDescriptorSet,
+        DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
     device::DeviceOwned,
     format::Format,
     image::{
+        Image, ImageCreateInfo, ImageType, ImageUsage,
         sampler::{Filter, Sampler, SamplerCreateInfo},
         view::ImageView,
-        Image, ImageCreateInfo, ImageType, ImageUsage,
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
+        GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
+        PipelineShaderStageCreateInfo,
         graphics::{
+            GraphicsPipelineCreateInfo,
             color_blend::{AttachmentBlend, ColorBlendAttachmentState, ColorBlendState},
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
             rasterization::RasterizationState,
             vertex_input::{Vertex, VertexDefinition},
             viewport::{Viewport, ViewportState},
-            GraphicsPipelineCreateInfo,
         },
         layout::PipelineDescriptorSetLayoutCreateInfo,
-        GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo,
     },
     render_pass::{RenderPass, Subpass},
 };
@@ -117,10 +117,8 @@ impl AvatarCache {
         while let Ok(result) = self.receiver.try_recv() {
             match result.data {
                 Some((rgba, size)) => {
-                    self.states.insert(
-                        result.email.clone(),
-                        AvatarState::Loaded { rgba, size },
-                    );
+                    self.states
+                        .insert(result.email.clone(), AvatarState::Loaded { rgba, size });
                     newly_loaded.push(result.email);
                 }
                 None => {
@@ -165,18 +163,17 @@ fn download_avatar(email: &str) -> Option<(Vec<u8>, u32)> {
     }
 
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .ok()?;
+    response.into_reader().read_to_end(&mut bytes).ok()?;
 
     // Decode image
     let img = image::load_from_memory(&bytes).ok()?;
-    let rgba_img = img.resize_exact(
-        AVATAR_SIZE,
-        AVATAR_SIZE,
-        image::imageops::FilterType::Lanczos3,
-    ).to_rgba8();
+    let rgba_img = img
+        .resize_exact(
+            AVATAR_SIZE,
+            AVATAR_SIZE,
+            image::imageops::FilterType::Lanczos3,
+        )
+        .to_rgba8();
 
     // Save to disk cache
     let _ = std::fs::create_dir_all(&cache_dir);
@@ -308,8 +305,8 @@ impl AvatarRenderer {
         )
         .context("Failed to create avatar atlas image")?;
 
-        let atlas_view =
-            ImageView::new_default(atlas_image.clone()).context("Failed to create avatar image view")?;
+        let atlas_view = ImageView::new_default(atlas_image.clone())
+            .context("Failed to create avatar image view")?;
 
         let sampler = Sampler::new(
             device.clone(),
@@ -545,9 +542,13 @@ impl AvatarRenderer {
                 descriptor_set,
             )
             .context("Failed to bind avatar descriptor sets")?
-            .push_constants(layout, 0, vs::PushConstants {
-                screen_size: [viewport.extent[0], viewport.extent[1]],
-            })
+            .push_constants(
+                layout,
+                0,
+                vs::PushConstants {
+                    screen_size: [viewport.extent[0], viewport.extent[1]],
+                },
+            )
             .context("Failed to push avatar constants")?
             .set_viewport(0, [viewport].into_iter().collect())
             .context("Failed to set avatar viewport")?
@@ -566,12 +567,7 @@ impl AvatarRenderer {
 
 /// Create a textured quad (two triangles) for an avatar at the given position.
 /// color.xy carries local UV (0→1) for circle clipping in the fragment shader.
-pub fn avatar_quad(
-    x: f32,
-    y: f32,
-    size: f32,
-    tex_coords: [f32; 4],
-) -> [TextVertex; 6] {
+pub fn avatar_quad(x: f32, y: f32, size: f32, tex_coords: [f32; 4]) -> [TextVertex; 6] {
     let [u0, v0, u1, v1] = tex_coords;
     let x1 = x + size;
     let y1 = y + size;
@@ -582,11 +578,35 @@ pub fn avatar_quad(
     let br = [1.0, 1.0, 1.0, 1.0];
 
     [
-        TextVertex { position: [x, y], tex_coord: [u0, v0], color: tl },
-        TextVertex { position: [x1, y], tex_coord: [u1, v0], color: tr },
-        TextVertex { position: [x, y1], tex_coord: [u0, v1], color: bl },
-        TextVertex { position: [x1, y], tex_coord: [u1, v0], color: tr },
-        TextVertex { position: [x1, y1], tex_coord: [u1, v1], color: br },
-        TextVertex { position: [x, y1], tex_coord: [u0, v1], color: bl },
+        TextVertex {
+            position: [x, y],
+            tex_coord: [u0, v0],
+            color: tl,
+        },
+        TextVertex {
+            position: [x1, y],
+            tex_coord: [u1, v0],
+            color: tr,
+        },
+        TextVertex {
+            position: [x, y1],
+            tex_coord: [u0, v1],
+            color: bl,
+        },
+        TextVertex {
+            position: [x1, y],
+            tex_coord: [u1, v0],
+            color: tr,
+        },
+        TextVertex {
+            position: [x1, y1],
+            tex_coord: [u1, v1],
+            color: br,
+        },
+        TextVertex {
+            position: [x, y1],
+            tex_coord: [u0, v1],
+            color: bl,
+        },
     ]
 }

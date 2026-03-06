@@ -3,7 +3,7 @@
 //! Provides a retained-mode widget system where widgets track their own state
 //! but regenerate vertices each frame (immediate-mode rendering).
 
-use crate::input::{InputEvent, EventResponse};
+use crate::input::{EventResponse, InputEvent};
 use crate::ui::{Rect, SplineVertex, TextRenderer, TextVertex};
 
 /// Common widget state
@@ -102,13 +102,31 @@ pub fn create_rect_vertices(rect: &Rect, color: [f32; 4]) -> Vec<SplineVertex> {
 
     vec![
         // First triangle
-        SplineVertex { position: [x0, y0], color },
-        SplineVertex { position: [x1, y0], color },
-        SplineVertex { position: [x0, y1], color },
+        SplineVertex {
+            position: [x0, y0],
+            color,
+        },
+        SplineVertex {
+            position: [x1, y0],
+            color,
+        },
+        SplineVertex {
+            position: [x0, y1],
+            color,
+        },
         // Second triangle
-        SplineVertex { position: [x1, y0], color },
-        SplineVertex { position: [x1, y1], color },
-        SplineVertex { position: [x0, y1], color },
+        SplineVertex {
+            position: [x1, y0],
+            color,
+        },
+        SplineVertex {
+            position: [x1, y1],
+            color,
+        },
+        SplineVertex {
+            position: [x0, y1],
+            color,
+        },
     ]
 }
 
@@ -116,7 +134,11 @@ pub fn create_rect_vertices(rect: &Rect, color: [f32; 4]) -> Vec<SplineVertex> {
 ///
 /// Generates triangles for a rectangle with quarter-circle corner arcs.
 /// Uses center body + 2 side strips + 4 corner fans (adaptive segments per corner).
-pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -> Vec<SplineVertex> {
+pub fn create_rounded_rect_vertices(
+    rect: &Rect,
+    color: [f32; 4],
+    radius: f32,
+) -> Vec<SplineVertex> {
     let r = radius.min(rect.width / 2.0).min(rect.height / 2.0);
     if r < 0.5 {
         return create_rect_vertices(rect, color);
@@ -142,10 +164,30 @@ pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -
 
     // Corner arcs (quarter circles): (center_x, center_y, start_angle, end_angle)
     let corners = [
-        (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
-        (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
-        (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),
-        (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
+        (
+            rect.x + r,
+            rect.y + r,
+            std::f32::consts::PI,
+            std::f32::consts::FRAC_PI_2 * 3.0,
+        ),
+        (
+            rect.right() - r,
+            rect.y + r,
+            std::f32::consts::FRAC_PI_2 * 3.0,
+            std::f32::consts::TAU,
+        ),
+        (
+            rect.right() - r,
+            rect.bottom() - r,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+        ),
+        (
+            rect.x + r,
+            rect.bottom() - r,
+            std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+        ),
     ];
 
     // Adaptive segment count: more segments for larger radii to keep corners smooth.
@@ -155,9 +197,18 @@ pub fn create_rounded_rect_vertices(rect: &Rect, color: [f32; 4], radius: f32) -
         for i in 0..segments {
             let a1 = start_angle + (end_angle - start_angle) * (i as f32 / segments as f32);
             let a2 = start_angle + (end_angle - start_angle) * ((i + 1) as f32 / segments as f32);
-            vertices.push(SplineVertex { position: [cx, cy], color });
-            vertices.push(SplineVertex { position: [cx + r * a1.cos(), cy + r * a1.sin()], color });
-            vertices.push(SplineVertex { position: [cx + r * a2.cos(), cy + r * a2.sin()], color });
+            vertices.push(SplineVertex {
+                position: [cx, cy],
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: [cx + r * a1.cos(), cy + r * a1.sin()],
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: [cx + r * a2.cos(), cy + r * a2.sin()],
+                color,
+            });
         }
     }
 
@@ -189,7 +240,12 @@ pub fn create_rounded_rect_outline_vertices(
     ));
     // Bottom edge
     vertices.extend(create_rect_vertices(
-        &Rect::new(rect.x + r, rect.bottom() - thickness, rect.width - 2.0 * r, thickness),
+        &Rect::new(
+            rect.x + r,
+            rect.bottom() - thickness,
+            rect.width - 2.0 * r,
+            thickness,
+        ),
         color,
     ));
     // Left edge (between top-left and bottom-left corners)
@@ -199,16 +255,41 @@ pub fn create_rounded_rect_outline_vertices(
     ));
     // Right edge
     vertices.extend(create_rect_vertices(
-        &Rect::new(rect.right() - thickness, rect.y + r, thickness, rect.height - 2.0 * r),
+        &Rect::new(
+            rect.right() - thickness,
+            rect.y + r,
+            thickness,
+            rect.height - 2.0 * r,
+        ),
         color,
     ));
 
     // Corner arcs: thin triangle strips between outer radius and inner radius
     let corners = [
-        (rect.x + r, rect.y + r, std::f32::consts::PI, std::f32::consts::FRAC_PI_2 * 3.0),
-        (rect.right() - r, rect.y + r, std::f32::consts::FRAC_PI_2 * 3.0, std::f32::consts::TAU),
-        (rect.right() - r, rect.bottom() - r, 0.0, std::f32::consts::FRAC_PI_2),
-        (rect.x + r, rect.bottom() - r, std::f32::consts::FRAC_PI_2, std::f32::consts::PI),
+        (
+            rect.x + r,
+            rect.y + r,
+            std::f32::consts::PI,
+            std::f32::consts::FRAC_PI_2 * 3.0,
+        ),
+        (
+            rect.right() - r,
+            rect.y + r,
+            std::f32::consts::FRAC_PI_2 * 3.0,
+            std::f32::consts::TAU,
+        ),
+        (
+            rect.right() - r,
+            rect.bottom() - r,
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+        ),
+        (
+            rect.x + r,
+            rect.bottom() - r,
+            std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+        ),
     ];
 
     // Adaptive segment count: match fill function for consistent corner smoothness.
@@ -224,13 +305,31 @@ pub fn create_rounded_rect_outline_vertices(
             let inner2 = [cx + ri * a2.cos(), cy + ri * a2.sin()];
 
             // Two triangles for each arc segment
-            vertices.push(SplineVertex { position: outer1, color });
-            vertices.push(SplineVertex { position: outer2, color });
-            vertices.push(SplineVertex { position: inner1, color });
+            vertices.push(SplineVertex {
+                position: outer1,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: outer2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner1,
+                color,
+            });
 
-            vertices.push(SplineVertex { position: outer2, color });
-            vertices.push(SplineVertex { position: inner2, color });
-            vertices.push(SplineVertex { position: inner1, color });
+            vertices.push(SplineVertex {
+                position: outer2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner2,
+                color,
+            });
+            vertices.push(SplineVertex {
+                position: inner1,
+                color,
+            });
         }
     }
 
@@ -238,7 +337,11 @@ pub fn create_rounded_rect_outline_vertices(
 }
 
 /// Helper to create rectangle outline vertices
-pub fn create_rect_outline_vertices(rect: &Rect, color: [f32; 4], thickness: f32) -> Vec<SplineVertex> {
+pub fn create_rect_outline_vertices(
+    rect: &Rect,
+    color: [f32; 4],
+    thickness: f32,
+) -> Vec<SplineVertex> {
     let mut vertices = Vec::new();
 
     // Top edge
@@ -255,13 +358,23 @@ pub fn create_rect_outline_vertices(rect: &Rect, color: [f32; 4], thickness: f32
 
     // Left edge
     vertices.extend(create_rect_vertices(
-        &Rect::new(rect.x, rect.y + thickness, thickness, rect.height - 2.0 * thickness),
+        &Rect::new(
+            rect.x,
+            rect.y + thickness,
+            thickness,
+            rect.height - 2.0 * thickness,
+        ),
         color,
     ));
 
     // Right edge
     vertices.extend(create_rect_vertices(
-        &Rect::new(rect.right() - thickness, rect.y + thickness, thickness, rect.height - 2.0 * thickness),
+        &Rect::new(
+            rect.right() - thickness,
+            rect.y + thickness,
+            thickness,
+            rect.height - 2.0 * thickness,
+        ),
         color,
     ));
 
@@ -297,13 +410,31 @@ pub fn create_arc_vertices(
         let inner2 = [cx + inner_radius * a2.cos(), cy + inner_radius * a2.sin()];
 
         // Two triangles per segment
-        vertices.push(SplineVertex { position: outer1, color });
-        vertices.push(SplineVertex { position: outer2, color });
-        vertices.push(SplineVertex { position: inner1, color });
+        vertices.push(SplineVertex {
+            position: outer1,
+            color,
+        });
+        vertices.push(SplineVertex {
+            position: outer2,
+            color,
+        });
+        vertices.push(SplineVertex {
+            position: inner1,
+            color,
+        });
 
-        vertices.push(SplineVertex { position: outer2, color });
-        vertices.push(SplineVertex { position: inner2, color });
-        vertices.push(SplineVertex { position: inner1, color });
+        vertices.push(SplineVertex {
+            position: outer2,
+            color,
+        });
+        vertices.push(SplineVertex {
+            position: inner2,
+            color,
+        });
+        vertices.push(SplineVertex {
+            position: inner1,
+            color,
+        });
     }
 
     vertices
@@ -358,40 +489,40 @@ pub mod theme {
     pub const SCROLLBAR_WIDTH: f32 = 8.0;
 
     // Dark blue-gray palette
-    pub const BACKGROUND: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);      // #1a1e24 - dark blue-gray
-    pub const SURFACE: Color = Color::rgba(0.133, 0.149, 0.173, 1.0);         // #222630 - panels
-    pub const SURFACE_RAISED: Color = Color::rgba(0.165, 0.188, 0.251, 1.0);  // #2a3040 - elevated elements
-    pub const SURFACE_HOVER: Color = Color::rgba(0.200, 0.224, 0.290, 1.0);   // #33394a - hover states
-    pub const BORDER: Color = Color::rgba(0.227, 0.227, 0.251, 1.0);          // #3a3a40 - subtle borders
-    pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0);    // #48484e - emphasized borders
-    pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0);            // #e0e0e0 - primary text
-    pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0);     // #f0f0f0 - emphasized text
-    pub const TEXT_MUTED: Color = Color::rgba(0.635, 0.635, 0.635, 1.0);      // #a2a2a2 - secondary text (brightened for contrast)
+    pub const BACKGROUND: Color = Color::rgba(0.102, 0.118, 0.141, 1.0); // #1a1e24 - dark blue-gray
+    pub const SURFACE: Color = Color::rgba(0.133, 0.149, 0.173, 1.0); // #222630 - panels
+    pub const SURFACE_RAISED: Color = Color::rgba(0.165, 0.188, 0.251, 1.0); // #2a3040 - elevated elements
+    pub const SURFACE_HOVER: Color = Color::rgba(0.200, 0.224, 0.290, 1.0); // #33394a - hover states
+    pub const BORDER: Color = Color::rgba(0.227, 0.227, 0.251, 1.0); // #3a3a40 - subtle borders
+    pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0); // #48484e - emphasized borders
+    pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0); // #e0e0e0 - primary text
+    pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0); // #f0f0f0 - emphasized text
+    pub const TEXT_MUTED: Color = Color::rgba(0.635, 0.635, 0.635, 1.0); // #a2a2a2 - secondary text (brightened for contrast)
 
     // Status colors - slightly desaturated for dark theme
-    pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);    // #4CAF50 (Green)
-    pub const STATUS_BEHIND: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);   // #FF9800 (Orange)
-    pub const STATUS_DIRTY: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);    // #EF5350 (Red)
-    pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);    // #42A5F5 (Blue)
+    pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0); // #4CAF50 (Green)
+    pub const STATUS_BEHIND: Color = Color::rgba(1.000, 0.596, 0.000, 1.0); // #FF9800 (Orange)
+    pub const STATUS_DIRTY: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350 (Red)
+    pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0); // #42A5F5 (Blue)
 
     // Branch colors - vibrant but balanced
-    pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0);  // #FF9800 (Orange)
-    pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0);   // #9e9e9e (Gray)
+    pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0); // #FF9800 (Orange)
+    pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0); // #9e9e9e (Gray)
 
     // Accent color for selections and focus
-    pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);          // #42A5F5 (Blue)
-    pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.4);    // Blue at 40% opacity
+    pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0); // #42A5F5 (Blue)
+    pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.4); // Blue at 40% opacity
 
     // Panel depth - dark blue-gray hierarchy
-    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.090, 0.110, 1.0);   // #131720 - sidebar (darkest)
-    pub const PANEL_GRAPH: Color = Color::rgba(0.102, 0.118, 0.141, 1.0);     // #1a1e24 - graph (base)
-    pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0);   // #1f2430 - staging (slightly lighter)
+    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.090, 0.110, 1.0); // #131720 - sidebar (darkest)
+    pub const PANEL_GRAPH: Color = Color::rgba(0.102, 0.118, 0.141, 1.0); // #1a1e24 - graph (base)
+    pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0); // #1f2430 - staging (slightly lighter)
 
     // Zebra striping for graph rows
-    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.145, 0.165, 0.204, 1.0);   // #252a34 - increased zebra stripe contrast (~5-6% luminance diff)
+    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.145, 0.165, 0.204, 1.0); // #252a34 - increased zebra stripe contrast (~5-6% luminance diff)
 
     // Orphaned commit colors (purple)
-    pub const ORPHAN: Color = Color::rgba(0.671, 0.278, 0.737, 1.0);       // #AB47BC purple
+    pub const ORPHAN: Color = Color::rgba(0.671, 0.278, 0.737, 1.0); // #AB47BC purple
 
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[

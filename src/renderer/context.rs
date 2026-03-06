@@ -7,8 +7,8 @@ use std::sync::Arc;
 use vulkano::{
     command_buffer::allocator::StandardCommandBufferAllocator,
     device::{
-        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, Queue,
-        QueueCreateInfo, QueueFlags,
+        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
+        physical::PhysicalDeviceType,
     },
     instance::Instance,
     memory::allocator::StandardMemoryAllocator,

@@ -2,8 +2,8 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_outline_vertices,
-    create_rounded_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -124,32 +124,18 @@ impl Widget for PullDialog {
         let remote_label_y = dialog.y + 44.0 * scale;
         let remote_input_y = remote_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
-        let remote_input_bounds = Rect::new(
-            dialog.x + padding,
-            remote_input_y,
-            input_w,
-            line_h,
-        );
+        let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
 
         // Branch input bounds
         let branch_label_y = remote_input_y + line_h + 8.0 * scale;
         let branch_input_y = branch_label_y + label_h;
-        let branch_input_bounds = Rect::new(
-            dialog.x + padding,
-            branch_input_y,
-            input_w,
-            line_h,
-        );
+        let branch_input_bounds = Rect::new(dialog.x + padding, branch_input_y, input_w, line_h);
 
         // Checkbox bounds
         let checkbox_y = branch_input_y + line_h + 8.0 * scale;
         let checkbox_size = 16.0 * scale;
-        let checkbox_bounds = Rect::new(
-            dialog.x + padding,
-            checkbox_y,
-            checkbox_size,
-            checkbox_size,
-        );
+        let checkbox_bounds =
+            Rect::new(dialog.x + padding, checkbox_y, checkbox_size, checkbox_size);
 
         // Button bounds
         let button_y = dialog.bottom() - padding - line_h;
@@ -182,7 +168,13 @@ impl Widget for PullDialog {
         }
 
         // Handle click-to-focus between fields
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             if remote_input_bounds.contains(*x, *y) {
                 self.focused_field = 0;
                 self.update_focus();
@@ -196,22 +188,38 @@ impl Widget for PullDialog {
         }
 
         // Route to text inputs
-        if self.remote_input.handle_event(event, remote_input_bounds).is_consumed() {
+        if self
+            .remote_input
+            .handle_event(event, remote_input_bounds)
+            .is_consumed()
+        {
             return EventResponse::Consumed;
         }
-        if self.branch_input.handle_event(event, branch_input_bounds).is_consumed() {
+        if self
+            .branch_input
+            .handle_event(event, branch_input_bounds)
+            .is_consumed()
+        {
             return EventResponse::Consumed;
         }
 
         // Route to buttons
-        if self.pull_button.handle_event(event, confirm_bounds).is_consumed() {
+        if self
+            .pull_button
+            .handle_event(event, confirm_bounds)
+            .is_consumed()
+        {
             if self.pull_button.was_clicked() {
                 self.try_confirm();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(PullDialogAction::Cancel);
                 self.hide();
@@ -220,12 +228,18 @@ impl Widget for PullDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
-            && !dialog.contains(*x, *y) {
-                self.pending_action = Some(PullDialogAction::Cancel);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && !dialog.contains(*x, *y)
+        {
+            self.pending_action = Some(PullDialogAction::Cancel);
+            self.hide();
+            return EventResponse::Consumed;
+        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed
@@ -237,7 +251,12 @@ impl Widget for PullDialog {
 }
 
 impl PullDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -279,12 +298,7 @@ impl PullDialog {
         ));
         let remote_input_y = remote_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
-        let remote_input_bounds = Rect::new(
-            dialog.x + padding,
-            remote_input_y,
-            input_w,
-            line_h,
-        );
+        let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
         output.extend(self.remote_input.layout(text_renderer, remote_input_bounds));
 
         // Remote branch label + input
@@ -296,12 +310,7 @@ impl PullDialog {
             theme::TEXT_MUTED.to_array(),
         ));
         let branch_input_y = branch_label_y + label_h;
-        let branch_input_bounds = Rect::new(
-            dialog.x + padding,
-            branch_input_y,
-            input_w,
-            line_h,
-        );
+        let branch_input_bounds = Rect::new(dialog.x + padding, branch_input_y, input_w, line_h);
         output.extend(self.branch_input.layout(text_renderer, branch_input_bounds));
 
         // Checkbox + label
@@ -317,12 +326,14 @@ impl PullDialog {
         } else {
             theme::BORDER.to_array()
         };
-        output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-            &checkbox_rect,
-            border_color,
-            cb_r,
-            1.0 * scale,
-        ));
+        output
+            .spline_vertices
+            .extend(create_rounded_rect_outline_vertices(
+                &checkbox_rect,
+                border_color,
+                cb_r,
+                1.0 * scale,
+            ));
 
         // Draw checkmark if checked (rounded)
         if self.rebase {
@@ -359,7 +370,12 @@ impl PullDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 

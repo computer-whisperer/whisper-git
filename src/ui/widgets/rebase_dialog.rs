@@ -2,8 +2,8 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_outline_vertices,
-    create_rounded_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -73,7 +73,13 @@ impl RebaseDialog {
     }
 
     /// Show the dialog with an explicit target worktree directory.
-    pub fn show_with_target(&mut self, target_branch: &str, current_branch: &str, uncommitted: usize, target_dir: Option<std::path::PathBuf>) {
+    pub fn show_with_target(
+        &mut self,
+        target_branch: &str,
+        current_branch: &str,
+        uncommitted: usize,
+        target_dir: Option<std::path::PathBuf>,
+    ) {
         self.visible = true;
         self.target_branch = target_branch.to_string();
         self.current_branch = current_branch.to_string();
@@ -188,7 +194,13 @@ impl Widget for RebaseDialog {
         }
 
         // Checkbox click detection
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             let checkbox_start_y = dialog.y + 64.0 * scale;
             let items = Self::checkbox_items();
             for (i, (field_idx, _label)) in items.iter().enumerate() {
@@ -215,14 +227,22 @@ impl Widget for RebaseDialog {
         let rebase_bounds = Rect::new(rebase_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        if self.rebase_button.handle_event(event, rebase_bounds).is_consumed() {
+        if self
+            .rebase_button
+            .handle_event(event, rebase_bounds)
+            .is_consumed()
+        {
             if self.rebase_button.was_clicked() {
                 self.try_confirm();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(RebaseDialogAction::Cancel);
                 self.hide();
@@ -231,7 +251,12 @@ impl Widget for RebaseDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
             && !dialog.contains(*x, *y)
         {
             self.pending_action = Some(RebaseDialogAction::Cancel);
@@ -249,7 +274,12 @@ impl Widget for RebaseDialog {
 }
 
 impl RebaseDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -314,7 +344,12 @@ impl RebaseDialog {
             };
             output
                 .spline_vertices
-                .extend(create_rounded_rect_outline_vertices(&cb_rect, border_color, cb_r, 1.0 * scale));
+                .extend(create_rounded_rect_outline_vertices(
+                    &cb_rect,
+                    border_color,
+                    cb_r,
+                    1.0 * scale,
+                ));
 
             // Draw filled inner rect when checked (rounded)
             if checked {
@@ -325,9 +360,11 @@ impl RebaseDialog {
                     checkbox_size - check_padding * 2.0,
                     checkbox_size - check_padding * 2.0,
                 );
-                output
-                    .spline_vertices
-                    .extend(create_rounded_rect_vertices(&check_rect, theme::ACCENT.to_array(), cb_r - 1.0));
+                output.spline_vertices.extend(create_rounded_rect_vertices(
+                    &check_rect,
+                    theme::ACCENT.to_array(),
+                    cb_r - 1.0,
+                ));
             }
 
             // Label text
@@ -346,17 +383,17 @@ impl RebaseDialog {
         }
 
         // Warning text (amber) - only when uncommitted > 0 and autostash is off
-        if self.show_warning() {
-            if let Some(ref warning) = self.warning {
-                let warning_y = dialog.bottom() - padding - line_h - 22.0 * scale;
-                let amber = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
-                output.text_vertices.extend(text_renderer.layout_text(
-                    warning,
-                    dialog.x + padding,
-                    warning_y,
-                    amber,
-                ));
-            }
+        if self.show_warning()
+            && let Some(ref warning) = self.warning
+        {
+            let warning_y = dialog.bottom() - padding - line_h - 22.0 * scale;
+            let amber = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
+            output.text_vertices.extend(text_renderer.layout_text(
+                warning,
+                dialog.x + padding,
+                warning_y,
+                amber,
+            ));
         }
 
         // Buttons at bottom
@@ -369,7 +406,12 @@ impl RebaseDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 

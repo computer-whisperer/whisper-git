@@ -1,9 +1,12 @@
 //! Button widget - clickable with visual states
 
-use crate::input::{InputEvent, EventResponse, MouseButton};
-use crate::ui::{Color, Rect, TextRenderer};
+use crate::input::{EventResponse, InputEvent, MouseButton};
 use crate::ui::text_util::truncate_to_width;
-use crate::ui::widget::{Widget, WidgetState, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
+use crate::ui::widget::{
+    Widget, WidgetOutput, WidgetState, create_rect_vertices, create_rounded_rect_outline_vertices,
+    create_rounded_rect_vertices, theme,
+};
+use crate::ui::{Color, Rect, TextRenderer};
 
 /// A clickable button with text
 pub struct Button {
@@ -53,7 +56,7 @@ impl Button {
     /// Make this a primary action button
     pub fn primary(mut self) -> Self {
         self.background = theme::ACCENT;
-        self.hover_background = Color::rgba(0.35, 0.70, 1.0, 1.0);  // Lighter blue on hover
+        self.hover_background = Color::rgba(0.35, 0.70, 1.0, 1.0); // Lighter blue on hover
         self.pressed_background = Color::rgba(0.20, 0.55, 0.85, 1.0); // Darker blue on press
         self.text_color = theme::TEXT_BRIGHT;
         self.border_color = None;
@@ -62,11 +65,11 @@ impl Button {
 
     /// Make this a ghost button (transparent bg, subtle border for visibility)
     pub fn ghost(mut self) -> Self {
-        self.background = Color::rgba(0.0, 0.0, 0.0, 0.0);  // Fully transparent
+        self.background = Color::rgba(0.0, 0.0, 0.0, 0.0); // Fully transparent
         self.hover_background = Color::rgba(1.0, 1.0, 1.0, 0.08); // Subtle white overlay on hover
         self.pressed_background = Color::rgba(1.0, 1.0, 1.0, 0.12); // Slightly more visible on press
         self.text_color = theme::TEXT_MUTED;
-        self.border_color = Some(theme::BORDER);  // Visible border so ghost buttons look like buttons
+        self.border_color = Some(theme::BORDER); // Visible border so ghost buttons look like buttons
         self
     }
 
@@ -83,13 +86,22 @@ impl Button {
 
 impl Button {
     /// Layout with bold text for the label.
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let corner_radius = (bounds.height * 0.20).min(8.0);
 
         // Draw background with rounded corners
         let bg_color = self.current_background();
-        output.spline_vertices.extend(create_rounded_rect_vertices(&bounds, bg_color.to_array(), corner_radius));
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &bounds,
+            bg_color.to_array(),
+            corner_radius,
+        ));
 
         // Draw border
         if let Some(border) = self.border_color {
@@ -98,12 +110,14 @@ impl Button {
             } else {
                 border
             };
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &bounds,
-                border_color.to_array(),
-                corner_radius,
-                1.0,
-            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &bounds,
+                    border_color.to_array(),
+                    corner_radius,
+                    1.0,
+                ));
         }
 
         // Top highlight line when hovered
@@ -121,7 +135,8 @@ impl Button {
         let max_text_width = bounds.width - h_padding * 2.0;
 
         let text_width = bold_renderer.measure_text(&self.label);
-        let (display_label, display_width) = if text_width > max_text_width && max_text_width > 0.0 {
+        let (display_label, display_width) = if text_width > max_text_width && max_text_width > 0.0
+        {
             let truncated = truncate_to_width(&self.label, bold_renderer, max_text_width);
             let w = bold_renderer.measure_text(&truncated);
             (truncated, w)
@@ -156,13 +171,23 @@ impl Widget for Button {
         }
 
         match event {
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if bounds.contains(*x, *y) {
                     self.state.pressed = true;
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::MouseUp { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseUp {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if self.state.pressed {
                     self.state.pressed = false;
                     if bounds.contains(*x, *y) {
@@ -194,11 +219,20 @@ impl Widget for Button {
 
         // Press offset: shift content down 1px for tactile press feedback
         let press_offset = if self.state.pressed { 1.0 } else { 0.0 };
-        let draw_bounds = Rect::new(bounds.x, bounds.y + press_offset, bounds.width, bounds.height);
+        let draw_bounds = Rect::new(
+            bounds.x,
+            bounds.y + press_offset,
+            bounds.width,
+            bounds.height,
+        );
 
         // Draw background with rounded corners
         let bg_color = self.current_background();
-        output.spline_vertices.extend(create_rounded_rect_vertices(&draw_bounds, bg_color.to_array(), corner_radius));
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &draw_bounds,
+            bg_color.to_array(),
+            corner_radius,
+        ));
 
         // Draw border - brighter on hover (using overlaid rounded rect for outline effect)
         if let Some(border) = self.border_color {
@@ -209,17 +243,24 @@ impl Widget for Button {
             } else {
                 border
             };
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &draw_bounds,
-                border_color.to_array(),
-                corner_radius,
-                1.0,
-            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &draw_bounds,
+                    border_color.to_array(),
+                    corner_radius,
+                    1.0,
+                ));
         }
 
         // Top highlight line when hovered but NOT pressed (subtle depth effect)
         if self.state.hovered && !self.state.pressed && self.border_color.is_some() {
-            let highlight_rect = Rect::new(draw_bounds.x + 1.0, draw_bounds.y + 1.0, draw_bounds.width - 2.0, 1.0);
+            let highlight_rect = Rect::new(
+                draw_bounds.x + 1.0,
+                draw_bounds.y + 1.0,
+                draw_bounds.width - 2.0,
+                1.0,
+            );
             output.spline_vertices.extend(create_rect_vertices(
                 &highlight_rect,
                 theme::BORDER_LIGHT.with_alpha(0.7).to_array(),

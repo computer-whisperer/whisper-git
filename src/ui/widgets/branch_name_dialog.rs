@@ -4,7 +4,7 @@ use git2::Oid;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -126,7 +126,8 @@ impl BranchNameDialog {
             self.pending_action = Some(BranchNameDialogAction::Rename(name, old_name.clone()));
             self.hide();
         } else if let Some(ref source) = self.worktree_source {
-            self.pending_action = Some(BranchNameDialogAction::CreateWorktree(name, source.clone()));
+            self.pending_action =
+                Some(BranchNameDialogAction::CreateWorktree(name, source.clone()));
             self.hide();
         } else if let Some(oid) = self.target_oid {
             self.pending_action = Some(BranchNameDialogAction::Create(name, oid));
@@ -190,19 +191,31 @@ impl Widget for BranchNameDialog {
         }
 
         // Route to text input
-        if self.name_input.handle_event(event, input_bounds).is_consumed() {
+        if self
+            .name_input
+            .handle_event(event, input_bounds)
+            .is_consumed()
+        {
             return EventResponse::Consumed;
         }
 
         // Route to buttons
-        if self.create_button.handle_event(event, create_bounds).is_consumed() {
+        if self
+            .create_button
+            .handle_event(event, create_bounds)
+            .is_consumed()
+        {
             if self.create_button.was_clicked() {
                 self.try_create();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(BranchNameDialogAction::Cancel);
                 self.hide();
@@ -211,12 +224,18 @@ impl Widget for BranchNameDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
-            && !dialog.contains(*x, *y) {
-                self.pending_action = Some(BranchNameDialogAction::Cancel);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && !dialog.contains(*x, *y)
+        {
+            self.pending_action = Some(BranchNameDialogAction::Cancel);
+            self.hide();
+            return EventResponse::Consumed;
+        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed
@@ -228,7 +247,12 @@ impl Widget for BranchNameDialog {
 }
 
 impl BranchNameDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -279,7 +303,12 @@ impl BranchNameDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 

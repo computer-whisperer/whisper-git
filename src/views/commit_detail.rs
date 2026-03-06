@@ -4,9 +4,9 @@ use git2::Oid;
 
 use crate::git::{CommitSubmoduleEntry, DiffFile, FullCommitInfo};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
-use crate::ui::{Rect, TextRenderer};
 use crate::ui::text_util::truncate_to_width;
+use crate::ui::widget::{WidgetOutput, create_rect_vertices, theme};
+use crate::ui::{Rect, TextRenderer};
 
 /// Actions emitted by the commit detail view
 #[derive(Clone, Debug)]
@@ -56,12 +56,21 @@ impl CommitDetailView {
     }
 
     /// Set the commit to display
-    pub fn set_commit(&mut self, info: FullCommitInfo, diff_files: Vec<DiffFile>, submodule_entries: Vec<CommitSubmoduleEntry>) {
+    pub fn set_commit(
+        &mut self,
+        info: FullCommitInfo,
+        diff_files: Vec<DiffFile>,
+        submodule_entries: Vec<CommitSubmoduleEntry>,
+    ) {
         self.commit_info = Some(info);
         self.changed_files = diff_files;
         self.submodule_entries = submodule_entries;
         self.submodule_bounds.clear();
-        self.selected_file = if self.changed_files.is_empty() { None } else { Some(0) };
+        self.selected_file = if self.changed_files.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         self.file_scroll_offset = 0.0;
     }
 
@@ -87,18 +96,22 @@ impl CommitDetailView {
 
     /// Compute the file list region from cached metadata height
     fn file_rect(&self, bounds: Rect) -> Rect {
-        Rect::new(bounds.x, bounds.y + self.meta_height, bounds.width, bounds.height - self.meta_height)
+        Rect::new(
+            bounds.x,
+            bounds.y + self.meta_height,
+            bounds.width,
+            bounds.height - self.meta_height,
+        )
     }
 
     /// Emit action for the currently selected file
     fn emit_file_action(&mut self) {
         if let (Some(info), Some(idx)) = (&self.commit_info, self.selected_file)
-            && let Some(file) = self.changed_files.get(idx) {
-                self.pending_action = Some(CommitDetailAction::ViewFileDiff(
-                    info.id,
-                    file.path.clone(),
-                ));
-            }
+            && let Some(file) = self.changed_files.get(idx)
+        {
+            self.pending_action =
+                Some(CommitDetailAction::ViewFileDiff(info.id, file.path.clone()));
+        }
     }
 
     /// Handle input events
@@ -108,7 +121,13 @@ impl CommitDetailView {
         }
 
         // Check submodule row clicks first
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             for (rect, name) in &self.submodule_bounds {
                 if rect.contains(*x, *y) {
                     self.pending_action = Some(CommitDetailAction::OpenSubmodule(name.clone()));
@@ -128,36 +147,40 @@ impl CommitDetailView {
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::KeyDown { key, .. } => {
-                match key {
-                    Key::J | Key::Down => {
-                        if let Some(idx) = self.selected_file {
-                            if idx + 1 < self.changed_files.len() {
-                                self.selected_file = Some(idx + 1);
-                                self.emit_file_action();
-                            }
-                        } else if !self.changed_files.is_empty() {
-                            self.selected_file = Some(0);
+            InputEvent::KeyDown { key, .. } => match key {
+                Key::J | Key::Down => {
+                    if let Some(idx) = self.selected_file {
+                        if idx + 1 < self.changed_files.len() {
+                            self.selected_file = Some(idx + 1);
                             self.emit_file_action();
                         }
-                        return EventResponse::Consumed;
-                    }
-                    Key::K | Key::Up => {
-                        if let Some(idx) = self.selected_file
-                            && idx > 0 {
-                                self.selected_file = Some(idx - 1);
-                                self.emit_file_action();
-                            }
-                        return EventResponse::Consumed;
-                    }
-                    Key::Enter => {
+                    } else if !self.changed_files.is_empty() {
+                        self.selected_file = Some(0);
                         self.emit_file_action();
-                        return EventResponse::Consumed;
                     }
-                    _ => {}
+                    return EventResponse::Consumed;
                 }
-            }
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+                Key::K | Key::Up => {
+                    if let Some(idx) = self.selected_file
+                        && idx > 0
+                    {
+                        self.selected_file = Some(idx - 1);
+                        self.emit_file_action();
+                    }
+                    return EventResponse::Consumed;
+                }
+                Key::Enter => {
+                    self.emit_file_action();
+                    return EventResponse::Consumed;
+                }
+                _ => {}
+            },
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if file_rect.contains(*x, *y) {
                     // Find which file was clicked
                     let line_height = self.line_height;
@@ -185,7 +208,12 @@ impl CommitDetailView {
 
     /// Count the number of display lines needed for the commit message,
     /// including word wrapping for lines that exceed the available width.
-    fn count_message_lines(&self, message: &str, text_renderer: &TextRenderer, max_width: f32) -> usize {
+    fn count_message_lines(
+        &self,
+        message: &str,
+        text_renderer: &TextRenderer,
+        max_width: f32,
+    ) -> usize {
         let mut count = 0;
         for line in message.lines() {
             if line.is_empty() {
@@ -213,10 +241,9 @@ impl CommitDetailView {
         };
 
         // Background
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
         let padding = 8.0;
         let line_height = self.line_height;
@@ -230,12 +257,17 @@ impl CommitDetailView {
             meta_lines += 1.0; // Parents
         }
         let gap = 4.0;
-        let msg_line_count = self.count_message_lines(&info.full_message, text_renderer, inner_width);
+        let msg_line_count =
+            self.count_message_lines(&info.full_message, text_renderer, inner_width);
         // Cap message display at 30 lines to leave room for the file list
         let max_msg_lines = 30usize;
         let display_msg_lines = msg_line_count.min(max_msg_lines);
 
-        let needed_meta = padding + meta_lines * line_height + gap + display_msg_lines as f32 * line_height + padding;
+        let needed_meta = padding
+            + meta_lines * line_height
+            + gap
+            + display_msg_lines as f32 * line_height
+            + padding;
         // Clamp: at least 3 lines worth (for minimal header), at most 60% of bounds
         let min_meta = padding * 2.0 + 3.0 * line_height;
         let max_meta = bounds.height * 0.60;
@@ -259,7 +291,8 @@ impl CommitDetailView {
         // Full SHA on the right (truncated if needed)
         let full_sha = info.id.to_string();
         let sha_width = text_renderer.measure_text(&full_sha);
-        let sha_x = (meta_inner_right - sha_width).max(meta_inner_x + text_renderer.measure_text(&sha_label) + 16.0);
+        let sha_x = (meta_inner_right - sha_width)
+            .max(meta_inner_x + text_renderer.measure_text(&sha_label) + 16.0);
         output.text_vertices.extend(text_renderer.layout_text(
             &full_sha,
             sha_x,
@@ -403,12 +436,8 @@ impl CommitDetailView {
 
                 // Selection highlight
                 if is_selected {
-                    let highlight_rect = Rect::new(
-                        file_inner.x - 4.0,
-                        fy,
-                        file_inner.width + 8.0,
-                        line_height,
-                    );
+                    let highlight_rect =
+                        Rect::new(file_inner.x - 4.0, fy, file_inner.width + 8.0, line_height);
                     output.spline_vertices.extend(create_rect_vertices(
                         &highlight_rect,
                         theme::ACCENT_MUTED.to_array(),
@@ -470,10 +499,9 @@ impl CommitDetailView {
             // Divider
             if fy + 8.0 > visible_top && fy < visible_bottom {
                 let div_rect = Rect::new(file_inner.x, fy + 4.0, file_inner.width, 1.0);
-                output.spline_vertices.extend(create_rect_vertices(
-                    &div_rect,
-                    theme::BORDER.to_array(),
-                ));
+                output
+                    .spline_vertices
+                    .extend(create_rect_vertices(&div_rect, theme::BORDER.to_array()));
             }
             fy += 10.0;
 
@@ -499,7 +527,8 @@ impl CommitDetailView {
                     break;
                 }
                 if fy + line_height > visible_top {
-                    let row_rect = Rect::new(file_inner.x - 4.0, fy, file_inner.width + 8.0, line_height);
+                    let row_rect =
+                        Rect::new(file_inner.x - 4.0, fy, file_inner.width + 8.0, line_height);
 
                     // Changed entries get amber highlight
                     let name_color = if entry.changed {
@@ -520,12 +549,16 @@ impl CommitDetailView {
                     // Short SHA on the right
                     let sha_str = if entry.changed {
                         if let Some(parent_oid) = entry.parent_oid {
-                            format!("{} \u{2192} {}", &parent_oid.to_string()[..7], &entry.pinned_oid.to_string()[..7])
+                            format!(
+                                "{} \u{2192} {}",
+                                &parent_oid.to_string()[..7],
+                                &entry.pinned_oid.to_string()[..7]
+                            )
                         } else {
-                            format!("{}", &entry.pinned_oid.to_string()[..7])
+                            entry.pinned_oid.to_string()[..7].to_string()
                         }
                     } else {
-                        format!("{}", &entry.pinned_oid.to_string()[..7])
+                        entry.pinned_oid.to_string()[..7].to_string()
                     };
                     let sha_width = text_renderer.measure_text(&sha_str);
                     let sha_x = file_inner.right() - sha_width;
@@ -548,7 +581,8 @@ impl CommitDetailView {
         } else {
             0.0
         };
-        self.file_content_height = (self.changed_files.len() as f32 + 1.5) * line_height + extra_submodule_h;
+        self.file_content_height =
+            (self.changed_files.len() as f32 + 1.5) * line_height + extra_submodule_h;
 
         output
     }

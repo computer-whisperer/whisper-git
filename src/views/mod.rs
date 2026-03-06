@@ -5,7 +5,7 @@ mod diff_view;
 mod staging_well;
 
 pub use branch_sidebar::{BranchSidebar, SidebarAction};
-pub use commit_detail::{CommitDetailView, CommitDetailAction};
+pub use commit_detail::{CommitDetailAction, CommitDetailView};
 pub use commit_graph::{CommitGraphView, GraphAction};
-pub use diff_view::{DiffView, DiffAction};
-pub use staging_well::{StagingWell, StagingAction};
+pub use diff_view::{DiffAction, DiffView};
+pub use staging_well::{StagingAction, StagingWell};

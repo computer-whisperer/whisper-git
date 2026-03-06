@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widget::{
+    WidgetOutput, create_rect_outline_vertices, create_rect_vertices,
+    create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
+};
 use crate::ui::widgets::context_menu::MenuItem;
 use crate::ui::widgets::{Button, FileList, FileListAction, TextArea, TextInput};
 use crate::ui::{Rect, TextRenderer, Widget};
@@ -19,13 +22,22 @@ pub(crate) fn compute_display_names(names: &[String]) -> Vec<String> {
     // Find longest common prefix
     let first = &names[0];
     let prefix_len = first.len().min(
-        names[1..].iter().map(|n| {
-            first.chars().zip(n.chars()).take_while(|(a, b)| a == b).count()
-        }).min().unwrap_or(0)
+        names[1..]
+            .iter()
+            .map(|n| {
+                first
+                    .chars()
+                    .zip(n.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            })
+            .min()
+            .unwrap_or(0),
     );
     let common = &first[..prefix_len];
     // Walk backward to last separator
-    let strip_len = common.rfind(|c: char| c == '-' || c == '_' || c == '/')
+    let strip_len = common
+        .rfind(['-', '_', '/'])
         .map(|i| i + 1) // include separator
         .unwrap_or(0);
     if strip_len == 0 {
@@ -156,10 +168,26 @@ impl StagingWell {
                 .with_placeholder("Commit subject line...")
                 .with_max_length(72),
             body_area: TextArea::new(),
-            staged_list: { let mut fl = FileList::new("Staged", true); fl.hide_header = true; fl },
-            unstaged_list: { let mut fl = FileList::new("Unstaged", false); fl.hide_header = true; fl },
-            untracked_list: { let mut fl = FileList::new("Untracked", false); fl.hide_header = true; fl },
-            conflicted_list: { let mut fl = FileList::new("Conflicted", false); fl.hide_header = true; fl },
+            staged_list: {
+                let mut fl = FileList::new("Staged", true);
+                fl.hide_header = true;
+                fl
+            },
+            unstaged_list: {
+                let mut fl = FileList::new("Unstaged", false);
+                fl.hide_header = true;
+                fl
+            },
+            untracked_list: {
+                let mut fl = FileList::new("Untracked", false);
+                fl.hide_header = true;
+                fl
+            },
+            conflicted_list: {
+                let mut fl = FileList::new("Conflicted", false);
+                fl.hide_header = true;
+                fl
+            },
             stage_all_btn: Button::new("Stage All"),
             track_all_btn: Button::new("Track All"),
             unstage_all_btn: Button::new("Unstage All"),
@@ -237,7 +265,9 @@ impl StagingWell {
 
     /// Returns true if a file in any list is hovered
     pub fn is_file_hovered(&self) -> bool {
-        self.staged_list.is_item_hovered() || self.unstaged_list.is_item_hovered() || self.untracked_list.is_item_hovered()
+        self.staged_list.is_item_hovered()
+            || self.unstaged_list.is_item_hovered()
+            || self.untracked_list.is_item_hovered()
     }
 
     /// Get and clear any pending action
@@ -307,34 +337,37 @@ impl StagingWell {
 
         // Check staged files
         if regions.staged.contains(x, y)
-            && let Some(file) = self.staged_list.file_at_y(y, regions.staged) {
-                let items = vec![
-                    MenuItem::new("Unstage File", format!("unstage:{}", file)),
-                    MenuItem::new("View Diff", format!("view_diff:{}", file)),
-                ];
-                return Some(items);
-            }
+            && let Some(file) = self.staged_list.file_at_y(y, regions.staged)
+        {
+            let items = vec![
+                MenuItem::new("Unstage File", format!("unstage:{}", file)),
+                MenuItem::new("View Diff", format!("view_diff:{}", file)),
+            ];
+            return Some(items);
+        }
 
         // Check unstaged files
         if regions.unstaged.contains(x, y)
-            && let Some(file) = self.unstaged_list.file_at_y(y, regions.unstaged) {
-                let items = vec![
-                    MenuItem::new("Stage File", format!("stage:{}", file)),
-                    MenuItem::new("View Diff", format!("view_diff:{}", file)),
-                    MenuItem::new("Discard Changes", format!("discard:{}", file)),
-                ];
-                return Some(items);
-            }
+            && let Some(file) = self.unstaged_list.file_at_y(y, regions.unstaged)
+        {
+            let items = vec![
+                MenuItem::new("Stage File", format!("stage:{}", file)),
+                MenuItem::new("View Diff", format!("view_diff:{}", file)),
+                MenuItem::new("Discard Changes", format!("discard:{}", file)),
+            ];
+            return Some(items);
+        }
 
         // Check untracked files
         if regions.untracked.contains(x, y)
-            && let Some(file) = self.untracked_list.file_at_y(y, regions.untracked) {
-                let items = vec![
-                    MenuItem::new("Stage File", format!("stage:{}", file)),
-                    MenuItem::new("Discard File", format!("discard:{}", file)),
-                ];
-                return Some(items);
-            }
+            && let Some(file) = self.untracked_list.file_at_y(y, regions.untracked)
+        {
+            let items = vec![
+                MenuItem::new("Stage File", format!("stage:{}", file)),
+                MenuItem::new("Discard File", format!("discard:{}", file)),
+            ];
+            return Some(items);
+        }
 
         None
     }
@@ -444,7 +477,11 @@ impl StagingWell {
             self.commit_btn.text_color = theme::TEXT_BRIGHT;
             self.commit_btn.border_color = None;
         } else {
-            self.commit_btn.label = if self.amend_mode { "Amend Commit".to_string() } else { "Commit".to_string() };
+            self.commit_btn.label = if self.amend_mode {
+                "Amend Commit".to_string()
+            } else {
+                "Commit".to_string()
+            };
             self.commit_btn.background = theme::SURFACE_RAISED;
             // No hover/press effect when disabled — looks inert
             self.commit_btn.hover_background = theme::SURFACE_RAISED;
@@ -471,38 +508,48 @@ impl StagingWell {
         if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
             self.worktree_drafts.insert(
                 path.clone(),
-                (self.subject_input.text().to_string(), self.body_area.text().to_string()),
+                (
+                    self.subject_input.text().to_string(),
+                    self.body_area.text().to_string(),
+                ),
             );
         }
 
-        let old_active_path = self.sorted_worktrees.get(self.active_worktree_idx)
+        let old_active_path = self
+            .sorted_worktrees
+            .get(self.active_worktree_idx)
             .map(|(_, p)| p.clone());
 
         // Build sorted identity list
-        let mut new_sorted: Vec<(String, PathBuf)> = worktrees.iter()
+        let mut new_sorted: Vec<(String, PathBuf)> = worktrees
+            .iter()
             .map(|wt| (wt.name.clone(), PathBuf::from(&wt.path)))
             .collect();
         new_sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
         // Restore active index by path match, or reset to 0
         self.active_worktree_idx = if let Some(ref old_path) = old_active_path {
-            new_sorted.iter().position(|(_, p)| p == old_path).unwrap_or(0)
+            new_sorted
+                .iter()
+                .position(|(_, p)| p == old_path)
+                .unwrap_or(0)
         } else {
             0
         };
 
         // Prune stale drafts for worktrees that no longer exist
-        let valid_paths: std::collections::HashSet<&PathBuf> = new_sorted.iter().map(|(_, p)| p).collect();
+        let valid_paths: std::collections::HashSet<&PathBuf> =
+            new_sorted.iter().map(|(_, p)| p).collect();
         self.worktree_drafts.retain(|p, _| valid_paths.contains(p));
 
         self.sorted_worktrees = new_sorted;
 
         // Restore active worktree's drafts to the input widgets
-        if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
-            if let Some((subj, body)) = self.worktree_drafts.get(path) {
-                self.subject_input.set_text(subj);
-                self.body_area.set_text(body);
-            }
+        if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx)
+            && let Some((subj, body)) = self.worktree_drafts.get(path)
+        {
+            self.subject_input.set_text(subj);
+            self.body_area.set_text(body);
         }
     }
 
@@ -516,7 +563,10 @@ impl StagingWell {
         if let Some((_, path)) = self.sorted_worktrees.get(self.active_worktree_idx) {
             self.worktree_drafts.insert(
                 path.clone(),
-                (self.subject_input.text().to_string(), self.body_area.text().to_string()),
+                (
+                    self.subject_input.text().to_string(),
+                    self.body_area.text().to_string(),
+                ),
             );
         }
 
@@ -546,7 +596,9 @@ impl StagingWell {
 
     /// Returns the active worktree path, if any.
     pub fn active_worktree_path(&self) -> Option<PathBuf> {
-        self.sorted_worktrees.get(self.active_worktree_idx).map(|(_, p)| p.clone())
+        self.sorted_worktrees
+            .get(self.active_worktree_idx)
+            .map(|(_, p)| p.clone())
     }
 
     /// Whether the worktree selector pill should be shown (2+ worktrees).
@@ -587,7 +639,13 @@ impl StagingWell {
     /// Layout the worktree pill bar at the top of the right panel.
     /// Renders wrapping rows of pills (one per worktree), active one highlighted.
     /// Single-worktree: renders just the branch name as muted text.
-    pub fn layout_worktree_pills(&mut self, text_renderer: &TextRenderer, bounds: Rect, current_branch: &str, worktrees: &[WorktreeInfo]) -> WidgetOutput {
+    pub fn layout_worktree_pills(
+        &mut self,
+        text_renderer: &TextRenderer,
+        bounds: Rect,
+        current_branch: &str,
+        worktrees: &[WorktreeInfo],
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let s = self.scale;
         self.pill_bar_rects.clear();
@@ -612,14 +670,14 @@ impl StagingWell {
         }
 
         // Build a name→WorktreeInfo lookup from the passed-in slice
-        let wt_by_name: HashMap<&str, &WorktreeInfo> = worktrees.iter()
-            .map(|wt| (wt.name.as_str(), wt))
-            .collect();
+        let wt_by_name: HashMap<&str, &WorktreeInfo> =
+            worktrees.iter().map(|wt| (wt.name.as_str(), wt)).collect();
 
         if self.sorted_worktrees.len() == 1 {
             // Single worktree: just show branch name as muted text
             let (name, _) = &self.sorted_worktrees[0];
-            let label = wt_by_name.get(name.as_str())
+            let label = wt_by_name
+                .get(name.as_str())
                 .map(|wt| wt.branch.as_str())
                 .unwrap_or(current_branch);
             let text_y = bounds.y + (bounds.height - text_renderer.line_height()) / 2.0;
@@ -634,7 +692,11 @@ impl StagingWell {
         }
 
         // Compute display names from sorted worktree names
-        let names: Vec<String> = self.sorted_worktrees.iter().map(|(n, _)| n.clone()).collect();
+        let names: Vec<String> = self
+            .sorted_worktrees
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect();
         let display_names = compute_display_names(&names);
 
         // Multiple worktrees: render wrapping rows of pills
@@ -648,12 +710,18 @@ impl StagingWell {
         let mut row = 0;
         let mut pill_y = bounds.y + top_pad;
 
-        for (i, ((name, _), display_name)) in self.sorted_worktrees.iter().zip(display_names.iter()).enumerate() {
+        for (i, ((name, _), display_name)) in self
+            .sorted_worktrees
+            .iter()
+            .zip(display_names.iter())
+            .enumerate()
+        {
             let is_active = i == self.active_worktree_idx;
             let label = display_name;
             let label_w = text_renderer.measure_text(label);
             // Dirty count suffix: " *N" from canonical worktree data
-            let dirty_count = wt_by_name.get(name.as_str())
+            let dirty_count = wt_by_name
+                .get(name.as_str())
                 .map(|wt| wt.dirty_file_count)
                 .unwrap_or(0);
             let dirty_suffix = if dirty_count > 0 {
@@ -696,15 +764,21 @@ impl StagingWell {
             } else {
                 theme::BORDER
             };
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-                &pill_rect,
-                border_color.to_array(),
-                4.0 * s,
-                1.0,
-            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &pill_rect,
+                    border_color.to_array(),
+                    4.0 * s,
+                    1.0,
+                ));
 
             // Pill text
-            let text_color = if is_active { theme::TEXT_BRIGHT } else { theme::TEXT_MUTED };
+            let text_color = if is_active {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT_MUTED
+            };
             let text_x = pill_x + 6.0 * s;
             let text_y_pill = pill_y + (pill_h - text_renderer.line_height()) / 2.0;
             output.text_vertices.extend(text_renderer.layout_text(
@@ -740,17 +814,17 @@ impl StagingWell {
     /// Get context menu items for a right-clicked worktree pill at (x, y).
     pub fn pill_context_menu_at(&self, x: f32, y: f32) -> Option<Vec<MenuItem>> {
         for (i, pill_rect) in self.pill_bar_rects.iter().enumerate() {
-            if pill_rect.contains(x, y) {
-                if let Some((name, _)) = self.sorted_worktrees.get(i) {
-                    let items = vec![
-                        MenuItem::new("Switch Staging", format!("switch_worktree:{}", name)),
-                        MenuItem::new("Jump to Branch", format!("jump_to_worktree:{}", name)),
-                        MenuItem::new("Open in Terminal", format!("open_worktree:{}", name)),
-                        MenuItem::separator(),
-                        MenuItem::new("Remove Worktree", format!("remove_worktree:{}", name)),
-                    ];
-                    return Some(items);
-                }
+            if pill_rect.contains(x, y)
+                && let Some((name, _)) = self.sorted_worktrees.get(i)
+            {
+                let items = vec![
+                    MenuItem::new("Switch Staging", format!("switch_worktree:{}", name)),
+                    MenuItem::new("Jump to Branch", format!("jump_to_worktree:{}", name)),
+                    MenuItem::new("Open in Terminal", format!("open_worktree:{}", name)),
+                    MenuItem::separator(),
+                    MenuItem::new("Remove Worktree", format!("remove_worktree:{}", name)),
+                ];
+                return Some(items);
             }
         }
         None
@@ -803,7 +877,8 @@ impl StagingWell {
         if self.staged_list.files.is_empty() {
             self.unstage_all_btn.update_hover(x, y, zero);
         } else {
-            self.unstage_all_btn.update_hover(x, y, regions.unstage_all_btn);
+            self.unstage_all_btn
+                .update_hover(x, y, regions.unstage_all_btn);
         }
 
         self.ai_generate_btn.update_hover(x, y, regions.ai_btn);
@@ -824,7 +899,12 @@ impl StagingWell {
         // Tab to cycle focus within staging sections.
         // When cycling past the last section, return Ignored so Tab bubbles up
         // to the panel-level cycling in main.rs.
-        if let InputEvent::KeyDown { key: Key::Tab, modifiers, .. } = event {
+        if let InputEvent::KeyDown {
+            key: Key::Tab,
+            modifiers,
+            ..
+        } = event
+        {
             let forward = !modifiers.shift;
             let sections = 5; // 0=unstaged, 1=untracked, 2=staged, 3=subject, 4=body
             if forward && self.focus_section == sections - 1 {
@@ -839,61 +919,88 @@ impl StagingWell {
         }
 
         // Ctrl+Enter to commit (or amend)
-        if let InputEvent::KeyDown { key: Key::Enter, modifiers, .. } = event
-            && modifiers.only_ctrl() && self.can_commit() {
-                if self.amend_mode {
-                    self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
-                } else {
-                    self.pending_action = Some(StagingAction::Commit(self.commit_message()));
-                }
-                return EventResponse::Consumed;
+        if let InputEvent::KeyDown {
+            key: Key::Enter,
+            modifiers,
+            ..
+        } = event
+            && modifiers.only_ctrl()
+            && self.can_commit()
+        {
+            if self.amend_mode {
+                self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
+            } else {
+                self.pending_action = Some(StagingAction::Commit(self.commit_message()));
             }
+            return EventResponse::Consumed;
+        }
 
         // Handle header button clicks (Stage All, Unstage All in section headers)
         // Only process when the corresponding file list is non-empty (button is visible)
-        if !self.unstaged_list.files.is_empty() {
-            if self.stage_all_btn.handle_event(event, regions.stage_all_btn).is_consumed() {
-                if self.stage_all_btn.was_clicked() {
-                    self.pending_action = Some(StagingAction::StageAll);
-                }
-                return EventResponse::Consumed;
+        if !self.unstaged_list.files.is_empty()
+            && self
+                .stage_all_btn
+                .handle_event(event, regions.stage_all_btn)
+                .is_consumed()
+        {
+            if self.stage_all_btn.was_clicked() {
+                self.pending_action = Some(StagingAction::StageAll);
             }
+            return EventResponse::Consumed;
         }
 
-        if !self.untracked_list.files.is_empty() {
-            if self.track_all_btn.handle_event(event, regions.track_all_btn).is_consumed() {
-                if self.track_all_btn.was_clicked() {
-                    self.pending_action = Some(StagingAction::StageAllUntracked);
-                }
-                return EventResponse::Consumed;
+        if !self.untracked_list.files.is_empty()
+            && self
+                .track_all_btn
+                .handle_event(event, regions.track_all_btn)
+                .is_consumed()
+        {
+            if self.track_all_btn.was_clicked() {
+                self.pending_action = Some(StagingAction::StageAllUntracked);
             }
+            return EventResponse::Consumed;
         }
 
-        if !self.staged_list.files.is_empty() {
-            if self.unstage_all_btn.handle_event(event, regions.unstage_all_btn).is_consumed() {
-                if self.unstage_all_btn.was_clicked() {
-                    self.pending_action = Some(StagingAction::UnstageAll);
-                }
-                return EventResponse::Consumed;
+        if !self.staged_list.files.is_empty()
+            && self
+                .unstage_all_btn
+                .handle_event(event, regions.unstage_all_btn)
+                .is_consumed()
+        {
+            if self.unstage_all_btn.was_clicked() {
+                self.pending_action = Some(StagingAction::UnstageAll);
             }
+            return EventResponse::Consumed;
         }
 
         // Handle bottom button clicks (AI, Amend, Commit)
-        if self.ai_generate_btn.handle_event(event, regions.ai_btn).is_consumed() {
+        if self
+            .ai_generate_btn
+            .handle_event(event, regions.ai_btn)
+            .is_consumed()
+        {
             if self.ai_generate_btn.was_clicked() && !self.ai_generating {
                 self.pending_action = Some(StagingAction::GenerateAiCommitMessage);
             }
             return EventResponse::Consumed;
         }
 
-        if self.amend_btn.handle_event(event, regions.amend_btn).is_consumed() {
+        if self
+            .amend_btn
+            .handle_event(event, regions.amend_btn)
+            .is_consumed()
+        {
             if self.amend_btn.was_clicked() {
                 self.pending_action = Some(StagingAction::ToggleAmend);
             }
             return EventResponse::Consumed;
         }
 
-        if self.commit_btn.handle_event(event, regions.commit_btn).is_consumed() {
+        if self
+            .commit_btn
+            .handle_event(event, regions.commit_btn)
+            .is_consumed()
+        {
             if self.commit_btn.was_clicked() && self.can_commit() {
                 if self.amend_mode {
                     self.pending_action = Some(StagingAction::AmendCommit(self.commit_message()));
@@ -1058,7 +1165,11 @@ impl StagingWell {
         let base_body_height = 80.0 * s;
 
         // Submodule section: allocate a fixed height if submodules exist
-        let sm_section_header_h = if self.submodules.is_empty() { 0.0 } else { 22.0 * s };
+        let sm_section_header_h = if self.submodules.is_empty() {
+            0.0
+        } else {
+            22.0 * s
+        };
         let sm_row_h = 20.0 * s; // approximate line_height * 1.2
         let sm_max_rows = self.submodules.len().min(8) as f32;
         let sm_total_h = if self.submodules.is_empty() {
@@ -1068,7 +1179,11 @@ impl StagingWell {
         };
 
         // Sibling submodule section: allocate height if siblings exist
-        let sib_section_header_h = if self.sibling_submodules.is_empty() { 0.0 } else { 22.0 * s };
+        let sib_section_header_h = if self.sibling_submodules.is_empty() {
+            0.0
+        } else {
+            22.0 * s
+        };
         let sib_max_rows = self.sibling_submodules.len().min(8) as f32;
         let sib_total_h = if self.sibling_submodules.is_empty() {
             0.0
@@ -1092,9 +1207,12 @@ impl StagingWell {
 
         // Distribute file area among non-empty lists.
         let non_empty_count = [!unstaged_empty, !untracked_empty, !staged_empty]
-            .iter().filter(|&&b| b).count();
+            .iter()
+            .filter(|&&b| b)
+            .count();
 
-        let (unstaged_list_h, untracked_list_h, staged_list_h, body_bonus) = if non_empty_count == 0 {
+        let (unstaged_list_h, untracked_list_h, staged_list_h, body_bonus) = if non_empty_count == 0
+        {
             (0.0, 0.0, 0.0, file_area_budget)
         } else {
             let per_list = file_area_budget / non_empty_count as f32;
@@ -1188,7 +1306,11 @@ impl StagingWell {
         );
 
         // Amend and Commit buttons in bottom button row
-        let commit_btn_w = if self.amend_mode { 130.0 * s } else { 110.0 * s };
+        let commit_btn_w = if self.amend_mode {
+            130.0 * s
+        } else {
+            110.0 * s
+        };
         let commit_btn = Rect::new(
             buttons.right() - commit_btn_w,
             buttons.y + 6.0 * s,
@@ -1245,10 +1367,9 @@ impl StagingWell {
         let s = self.scale;
 
         // Background - elevated surface for panel
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
         // Border
         output.spline_vertices.extend(create_rect_outline_vertices(
@@ -1265,21 +1386,27 @@ impl StagingWell {
 
         let conflict_count = self.conflicted_list.files.len();
         let has_conflicts = conflict_count > 0;
-        let conflict_banner_h = if has_conflicts || self.repo_state_label.is_some() { 52.0 * s } else { 0.0 };
+        let conflict_banner_h = if has_conflicts || self.repo_state_label.is_some() {
+            52.0 * s
+        } else {
+            0.0
+        };
 
         if has_conflicts || self.repo_state_label.is_some() {
             let banner_rect = Rect::new(bounds.x, bounds.y, bounds.width, conflict_banner_h);
 
             // Amber-tinted background
-            output.spline_vertices.extend(create_rect_vertices(
-                &banner_rect,
-                [0.35, 0.25, 0.10, 0.4],
-            ));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(&banner_rect, [0.35, 0.25, 0.10, 0.4]));
 
             // Banner text
             let banner_text = if has_conflicts {
-                format!("Resolve {} conflict{}, then stage and commit to complete the operation",
-                    conflict_count, if conflict_count == 1 { "" } else { "s" })
+                format!(
+                    "Resolve {} conflict{}, then stage and commit to complete the operation",
+                    conflict_count,
+                    if conflict_count == 1 { "" } else { "s" }
+                )
             } else if let Some(label) = self.repo_state_label {
                 format!("{} - stage resolved files and commit", label)
             } else {
@@ -1335,7 +1462,11 @@ impl StagingWell {
             &unstaged_title,
             regions.unstaged_header.x + 4.0 * s,
             regions.unstaged_header.y + 5.0 * s,
-            if unstaged_empty { theme::TEXT_MUTED.with_alpha(0.6).to_array() } else { theme::STATUS_BEHIND.to_array() },
+            if unstaged_empty {
+                theme::TEXT_MUTED.with_alpha(0.6).to_array()
+            } else {
+                theme::STATUS_BEHIND.to_array()
+            },
         ));
 
         if unstaged_empty {
@@ -1350,7 +1481,10 @@ impl StagingWell {
             ));
         } else {
             // Stage All button in header (only when there are files)
-            output.extend(self.stage_all_btn.layout(text_renderer, regions.stage_all_btn));
+            output.extend(
+                self.stage_all_btn
+                    .layout(text_renderer, regions.stage_all_btn),
+            );
 
             // Subtle background tint for unstaged area (orange tint)
             output.spline_vertices.extend(create_rect_vertices(
@@ -1391,7 +1525,10 @@ impl StagingWell {
             ));
 
             // Track All button in header
-            output.extend(self.track_all_btn.layout(text_renderer, regions.track_all_btn));
+            output.extend(
+                self.track_all_btn
+                    .layout(text_renderer, regions.track_all_btn),
+            );
 
             // Subtle background tint for untracked area (blue tint)
             output.spline_vertices.extend(create_rect_vertices(
@@ -1429,7 +1566,11 @@ impl StagingWell {
             &staged_title,
             regions.staged_header.x + 4.0 * s,
             regions.staged_header.y + 5.0 * s,
-            if staged_empty { theme::TEXT_MUTED.with_alpha(0.6).to_array() } else { theme::STATUS_CLEAN.to_array() },
+            if staged_empty {
+                theme::TEXT_MUTED.with_alpha(0.6).to_array()
+            } else {
+                theme::STATUS_CLEAN.to_array()
+            },
         ));
 
         if staged_empty {
@@ -1444,7 +1585,10 @@ impl StagingWell {
             ));
         } else {
             // Unstage All button in header (only when there are files)
-            output.extend(self.unstage_all_btn.layout(text_renderer, regions.unstage_all_btn));
+            output.extend(
+                self.unstage_all_btn
+                    .layout(text_renderer, regions.unstage_all_btn),
+            );
 
             // Subtle background tint for staged area (green tint)
             output.spline_vertices.extend(create_rect_vertices(
@@ -1481,8 +1625,16 @@ impl StagingWell {
 
         // Title
         let title_y = regions.commit_area.y + 2.0 * s;
-        let title_text = if self.amend_mode { "Amend Commit" } else { "Commit Message" };
-        let title_color = if self.amend_mode { theme::STATUS_BEHIND } else { theme::TEXT_BRIGHT };
+        let title_text = if self.amend_mode {
+            "Amend Commit"
+        } else {
+            "Commit Message"
+        };
+        let title_color = if self.amend_mode {
+            theme::STATUS_BEHIND
+        } else {
+            theme::TEXT_BRIGHT
+        };
         output.text_vertices.extend(text_renderer.layout_text(
             title_text,
             regions.commit_area.x + 4.0 * s,
@@ -1543,7 +1695,12 @@ impl StagingWell {
         // --- Divider between commit area and buttons ---
         let btn_divider_y = regions.buttons.y - 2.0 * s;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(bounds.x + 8.0 * s, btn_divider_y, bounds.width - 16.0 * s, 1.0),
+            &Rect::new(
+                bounds.x + 8.0 * s,
+                btn_divider_y,
+                bounds.width - 16.0 * s,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -1726,7 +1883,6 @@ impl StagingWell {
 
         output
     }
-
 }
 
 impl Default for StagingWell {

@@ -60,8 +60,11 @@ mod claude_cli {
             }
         }
         // Fall back to PATH lookup
-        if Command::new("which").arg("claude").output()
-            .map(|o| o.status.success()).unwrap_or(false)
+        if Command::new("which")
+            .arg("claude")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
         {
             return Some("claude".to_string());
         }
@@ -107,7 +110,8 @@ mod claude_cli {
         let parsed: serde_json::Value = serde_json::from_str(&stdout)
             .map_err(|e| format!("Failed to parse Claude response: {}", e))?;
 
-        let result_text = parsed.get("result")
+        let result_text = parsed
+            .get("result")
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Claude response missing 'result' field".to_string())?
             .trim()
@@ -115,7 +119,10 @@ mod claude_cli {
 
         // Split on first double-newline into subject + body
         let (subject, body) = if let Some(pos) = result_text.find("\n\n") {
-            (result_text[..pos].trim().to_string(), result_text[pos+2..].trim().to_string())
+            (
+                result_text[..pos].trim().to_string(),
+                result_text[pos + 2..].trim().to_string(),
+            )
         } else {
             (result_text, String::new())
         };

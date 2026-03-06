@@ -4,15 +4,18 @@ use std::time::Instant;
 
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, create_rounded_rect_vertices, theme, Widget, WidgetOutput, WidgetState};
-use crate::ui::widgets::scrollbar::{Scrollbar, ScrollAction};
+use crate::ui::widget::{
+    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices,
+    create_rounded_rect_vertices, theme,
+};
+use crate::ui::widgets::scrollbar::{ScrollAction, Scrollbar};
 use crate::ui::{Color, Rect, TextRenderer};
 
 // File status colors (matching git status indicators)
-const STATUS_MODIFIED: Color = Color::rgba(0.400, 0.733, 0.416, 1.0);   // #66BB6A green
-const STATUS_ADDED: Color = Color::rgba(0.259, 0.647, 0.961, 1.0);      // #42A5F5 blue
-const STATUS_DELETED: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);    // #EF5350 red
-const STATUS_RENAMED: Color = Color::rgba(0.149, 0.776, 0.855, 1.0);    // #26C6DA cyan
+const STATUS_MODIFIED: Color = Color::rgba(0.400, 0.733, 0.416, 1.0); // #66BB6A green
+const STATUS_ADDED: Color = Color::rgba(0.259, 0.647, 0.961, 1.0); // #42A5F5 blue
+const STATUS_DELETED: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350 red
+const STATUS_RENAMED: Color = Color::rgba(0.149, 0.776, 0.855, 1.0); // #26C6DA cyan
 const STATUS_TYPE_CHANGE: Color = Color::rgba(1.000, 0.718, 0.302, 1.0); // #FFB74D amber
 const STATUS_CONFLICTED: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350 red
 
@@ -109,14 +112,20 @@ impl FileList {
         self.files = files;
         // Adjust selection if needed
         if let Some(idx) = self.selected
-            && idx >= self.files.len() {
-                self.selected = if self.files.is_empty() { None } else { Some(self.files.len() - 1) };
-            }
+            && idx >= self.files.len()
+        {
+            self.selected = if self.files.is_empty() {
+                None
+            } else {
+                Some(self.files.len() - 1)
+            };
+        }
     }
 
     /// Get the selected file path
     pub fn selected_file(&self) -> Option<&str> {
-        self.selected.and_then(|idx| self.files.get(idx).map(|f| f.path.as_str()))
+        self.selected
+            .and_then(|idx| self.files.get(idx).map(|f| f.path.as_str()))
     }
 
     /// Check for pending action and clear it
@@ -126,7 +135,9 @@ impl FileList {
 
     /// Get total additions/deletions
     pub fn totals(&self) -> (usize, usize) {
-        self.files.iter().fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions))
+        self.files
+            .iter()
+            .fold((0, 0), |(a, d), f| (a + f.additions, d + f.deletions))
     }
 
     /// Set the display scale factor for HiDPI scaling
@@ -150,7 +161,11 @@ impl FileList {
 
     /// Base header height (title row only, without summary line)
     fn title_row_height(&self) -> f32 {
-        if self.hide_header { 0.0 } else { 24.0 * self.scale }
+        if self.hide_header {
+            0.0
+        } else {
+            24.0 * self.scale
+        }
     }
 
     /// Count files by status kind
@@ -240,12 +255,17 @@ impl Widget for FileList {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         // Update scrollbar state
         let visible = self.visible_lines(&bounds);
-        self.scrollbar.set_content(self.files.len(), visible, self.scroll_offset);
+        self.scrollbar
+            .set_content(self.files.len(), visible, self.scroll_offset);
 
         // Scrollbar on right edge
         let scrollbar_width = theme::SCROLLBAR_WIDTH;
         let (_content_bounds, scrollbar_bounds) = bounds.take_right(scrollbar_width);
-        if self.scrollbar.handle_event(event, scrollbar_bounds).is_consumed() {
+        if self
+            .scrollbar
+            .handle_event(event, scrollbar_bounds)
+            .is_consumed()
+        {
             if let Some(ScrollAction::ScrollTo(ratio)) = self.scrollbar.take_action() {
                 let max_scroll = self.files.len().saturating_sub(visible);
                 self.scroll_offset = (ratio * max_scroll as f32).round() as usize;
@@ -275,7 +295,9 @@ impl Widget for FileList {
                             // Double-click detection
                             let now = Instant::now();
                             if self.last_click_index == Some(file_idx)
-                                && self.last_click_time.is_some_and(|t| now.duration_since(t).as_millis() < 400)
+                                && self
+                                    .last_click_time
+                                    .is_some_and(|t| now.duration_since(t).as_millis() < 400)
                             {
                                 // Double-click: toggle stage
                                 let path = self.files[file_idx].path.clone();
@@ -332,7 +354,8 @@ impl Widget for FileList {
                     Key::Space => {
                         // Toggle staging
                         if let Some(path) = self.selected_file() {
-                            self.pending_action = Some(FileListAction::ToggleStage(path.to_string()));
+                            self.pending_action =
+                                Some(FileListAction::ToggleStage(path.to_string()));
                             return EventResponse::Consumed;
                         }
                     }
@@ -355,13 +378,20 @@ impl Widget for FileList {
                     _ => {}
                 }
             }
-            InputEvent::Scroll { delta_y, .. } if bounds.contains(event.position().unwrap_or((0.0, 0.0)).0, event.position().unwrap_or((0.0, 0.0)).1) => {
+            InputEvent::Scroll { delta_y, .. }
+                if bounds.contains(
+                    event.position().unwrap_or((0.0, 0.0)).0,
+                    event.position().unwrap_or((0.0, 0.0)).1,
+                ) =>
+            {
                 let scroll_lines = (-delta_y / 10.0) as i32;
                 if scroll_lines < 0 {
-                    self.scroll_offset = self.scroll_offset.saturating_sub((-scroll_lines) as usize);
+                    self.scroll_offset =
+                        self.scroll_offset.saturating_sub((-scroll_lines) as usize);
                 } else {
                     let max_scroll = self.files.len().saturating_sub(self.visible_lines(&bounds));
-                    self.scroll_offset = (self.scroll_offset + scroll_lines as usize).min(max_scroll);
+                    self.scroll_offset =
+                        (self.scroll_offset + scroll_lines as usize).min(max_scroll);
                 }
                 return EventResponse::Consumed;
             }
@@ -375,10 +405,9 @@ impl Widget for FileList {
         let mut output = WidgetOutput::new();
 
         // Background
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
         // Border - accent color when focused, thicker
         let border_color = if self.state.focused {
@@ -401,7 +430,12 @@ impl Widget for FileList {
 
         if !self.hide_header {
             // Header background - slightly elevated with subtle tint (covers full header including summary)
-            let header_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, header_height);
+            let header_rect = Rect::new(
+                bounds.x + 1.0,
+                bounds.y + 1.0,
+                bounds.width - 2.0,
+                header_height,
+            );
             output.spline_vertices.extend(create_rounded_rect_vertices(
                 &header_rect,
                 theme::SURFACE_RAISED.lighten(0.03).to_array(),
@@ -409,7 +443,11 @@ impl Widget for FileList {
             ));
 
             // Header: arrow icon and title text
-            let arrow = if self.is_staged { "\u{25B2}" } else { "\u{25BC}" }; // ▲ Staged / ▼ Unstaged
+            let arrow = if self.is_staged {
+                "\u{25B2}"
+            } else {
+                "\u{25BC}"
+            }; // ▲ Staged / ▼ Unstaged
             let title_text = format!("{} {}", arrow, self.title);
             output.text_vertices.extend(text_renderer.layout_text(
                 &title_text,
@@ -477,52 +515,71 @@ impl Widget for FileList {
 
             // File change summary line below title row (when files exist)
             if !self.files.is_empty() {
-                let (modified, added, deleted, renamed, type_change, conflicted) = self.status_counts();
+                let (modified, added, deleted, renamed, type_change, conflicted) =
+                    self.status_counts();
                 let summary_y = bounds.y + title_row_h + 1.0;
                 let mut sx = bounds.x + 10.0;
                 let small_scale = 0.85;
 
                 let mut parts: Vec<(&str, usize, Color)> = Vec::new();
-                if conflicted > 0 { parts.push(("conflicted", conflicted, STATUS_CONFLICTED)); }
-                if modified > 0 { parts.push(("modified", modified, STATUS_MODIFIED)); }
-                if added > 0 { parts.push(("added", added, STATUS_ADDED)); }
-                if deleted > 0 { parts.push(("deleted", deleted, STATUS_DELETED)); }
-                if renamed > 0 { parts.push(("renamed", renamed, STATUS_RENAMED)); }
-                if type_change > 0 { parts.push(("typechange", type_change, STATUS_TYPE_CHANGE)); }
+                if conflicted > 0 {
+                    parts.push(("conflicted", conflicted, STATUS_CONFLICTED));
+                }
+                if modified > 0 {
+                    parts.push(("modified", modified, STATUS_MODIFIED));
+                }
+                if added > 0 {
+                    parts.push(("added", added, STATUS_ADDED));
+                }
+                if deleted > 0 {
+                    parts.push(("deleted", deleted, STATUS_DELETED));
+                }
+                if renamed > 0 {
+                    parts.push(("renamed", renamed, STATUS_RENAMED));
+                }
+                if type_change > 0 {
+                    parts.push(("typechange", type_change, STATUS_TYPE_CHANGE));
+                }
 
                 for (i, (label, count, color)) in parts.iter().enumerate() {
                     let count_str = format!("{}", count);
                     // Render count in color
-                    output.text_vertices.extend(text_renderer.layout_text_scaled(
-                        &count_str,
-                        sx,
-                        summary_y,
-                        color.to_array(),
-                        small_scale,
-                    ));
+                    output
+                        .text_vertices
+                        .extend(text_renderer.layout_text_scaled(
+                            &count_str,
+                            sx,
+                            summary_y,
+                            color.to_array(),
+                            small_scale,
+                        ));
                     sx += text_renderer.measure_text_scaled(&count_str, small_scale);
 
                     // Render label in muted text
                     let label_str = format!(" {}", label);
-                    output.text_vertices.extend(text_renderer.layout_text_scaled(
-                        &label_str,
-                        sx,
-                        summary_y,
-                        theme::TEXT_MUTED.with_alpha(0.7).to_array(),
-                        small_scale,
-                    ));
+                    output
+                        .text_vertices
+                        .extend(text_renderer.layout_text_scaled(
+                            &label_str,
+                            sx,
+                            summary_y,
+                            theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                            small_scale,
+                        ));
                     sx += text_renderer.measure_text_scaled(&label_str, small_scale);
 
                     // Comma separator
                     if i + 1 < parts.len() {
                         let sep = ", ";
-                        output.text_vertices.extend(text_renderer.layout_text_scaled(
-                            sep,
-                            sx,
-                            summary_y,
-                            theme::TEXT_MUTED.with_alpha(0.5).to_array(),
-                            small_scale,
-                        ));
+                        output
+                            .text_vertices
+                            .extend(text_renderer.layout_text_scaled(
+                                sep,
+                                sx,
+                                summary_y,
+                                theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                                small_scale,
+                            ));
                         sx += text_renderer.measure_text_scaled(sep, small_scale);
                     }
                 }
@@ -551,7 +608,8 @@ impl Widget for FileList {
 
             // Hover highlight (subtle, below selection highlight)
             if is_hovered && !is_selected {
-                let highlight_rect = Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
+                let highlight_rect =
+                    Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
                 output.spline_vertices.extend(create_rect_vertices(
                     &highlight_rect,
                     theme::SURFACE_HOVER.with_alpha(0.3).to_array(),
@@ -560,7 +618,8 @@ impl Widget for FileList {
 
             // Selection highlight
             if is_selected {
-                let highlight_rect = Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
+                let highlight_rect =
+                    Rect::new(bounds.x + 2.0, y - 1.0, bounds.width - 4.0, entry_height);
                 output.spline_vertices.extend(create_rect_vertices(
                     &highlight_rect,
                     theme::ACCENT_MUTED.to_array(),
@@ -569,10 +628,10 @@ impl Widget for FileList {
 
             // Status indicator - colored letter
             let (status_color, status_letter) = match file.status {
-                FileStatusKind::New =>        (STATUS_ADDED, "A"),
-                FileStatusKind::Modified =>   (STATUS_MODIFIED, "M"),
-                FileStatusKind::Deleted =>    (STATUS_DELETED, "D"),
-                FileStatusKind::Renamed =>    (STATUS_RENAMED, "R"),
+                FileStatusKind::New => (STATUS_ADDED, "A"),
+                FileStatusKind::Modified => (STATUS_MODIFIED, "M"),
+                FileStatusKind::Deleted => (STATUS_DELETED, "D"),
+                FileStatusKind::Renamed => (STATUS_RENAMED, "R"),
                 FileStatusKind::TypeChange => (STATUS_TYPE_CHANGE, "T"),
                 FileStatusKind::Conflicted => (STATUS_CONFLICTED, "C"),
             };
@@ -628,7 +687,8 @@ impl Widget for FileList {
             // +/- counts on the right
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
-                let stats_x = bounds.right() - text_renderer.measure_text(&stats) - 10.0 * self.scale;
+                let stats_x =
+                    bounds.right() - text_renderer.measure_text(&stats) - 10.0 * self.scale;
                 output.text_vertices.extend(text_renderer.layout_text(
                     &stats,
                     stats_x,
@@ -659,7 +719,8 @@ impl Widget for FileList {
             let text_width = text_renderer.measure_text(&full_text);
             let center_x = bounds.x + (bounds.width - text_width) / 2.0;
             // Offset slightly upward to make room for hint below
-            let center_y = content_area_top + (content_area_height - line_height) / 2.0 - line_height * 0.6;
+            let center_y =
+                content_area_top + (content_area_height - line_height) / 2.0 - line_height * 0.6;
 
             // Muted green-tinted checkmark
             let check_color = if self.is_staged {
@@ -704,7 +765,9 @@ impl Widget for FileList {
             scrollbar_bounds.height - header_height - 1.0,
         );
         let scrollbar_output = self.scrollbar.layout(scrollbar_area);
-        output.spline_vertices.extend(scrollbar_output.spline_vertices);
+        output
+            .spline_vertices
+            .extend(scrollbar_output.spline_vertices);
 
         output
     }

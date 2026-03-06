@@ -37,14 +37,35 @@ pub enum AppMessage {
     UnstageAll,
     Commit(String),
     Fetch(Option<String>),
-    Pull { remote: Option<String>, branch: String },
-    PullRebase { remote: Option<String>, branch: String },
-    ShowPullDialog(String),  // (branch) — caller specifies which branch
-    PullBranchFrom { remote: String, branch: String, rebase: bool },
-    Push { remote: Option<String>, branch: String },
-    PushForce { remote: Option<String>, branch: String },
-    ShowPushDialog(String),  // (branch) — caller specifies which branch
-    PushBranchTo { local_branch: String, remote: String, remote_branch: String, force: bool },
+    Pull {
+        remote: Option<String>,
+        branch: String,
+    },
+    PullRebase {
+        remote: Option<String>,
+        branch: String,
+    },
+    ShowPullDialog(String), // (branch) — caller specifies which branch
+    PullBranchFrom {
+        remote: String,
+        branch: String,
+        rebase: bool,
+    },
+    Push {
+        remote: Option<String>,
+        branch: String,
+    },
+    PushForce {
+        remote: Option<String>,
+        branch: String,
+    },
+    ShowPushDialog(String), // (branch) — caller specifies which branch
+    PushBranchTo {
+        local_branch: String,
+        remote: String,
+        remote_branch: String,
+        force: bool,
+    },
     SelectedCommit(Oid),
     ViewCommitFileDiff(Oid, String),
     ViewDiff(String, bool), // (path, staged)
@@ -52,22 +73,22 @@ pub enum AppMessage {
     CheckoutRemoteBranch(String, String),
     DeleteBranch(String),
     RenameBranch(String, String), // (old_name, new_name)
-    StageHunk(String, usize),    // (file_path, hunk_index)
-    UnstageHunk(String, usize),  // (file_path, hunk_index)
+    StageHunk(String, usize),     // (file_path, hunk_index)
+    UnstageHunk(String, usize),   // (file_path, hunk_index)
     DiscardFile(String),
-    DiscardHunk(String, usize),  // (file_path, hunk_index)
+    DiscardHunk(String, usize), // (file_path, hunk_index)
     LoadMoreCommits,
     DeleteSubmodule(String),
     UpdateSubmodule(String),
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
-    MergeBranch(String, Option<PathBuf>),           // (branch, target_worktree_dir)
-    MergeNoFf(String, String, Option<PathBuf>),    // (branch, commit_message, target_worktree_dir)
+    MergeBranch(String, Option<PathBuf>), // (branch, target_worktree_dir)
+    MergeNoFf(String, String, Option<PathBuf>), // (branch, commit_message, target_worktree_dir)
     MergeFfOnly(String, Option<PathBuf>),
     MergeSquash(String, Option<PathBuf>),
     RebaseBranchWithOptions(String, bool, bool, Option<PathBuf>), // (branch, autostash, rebase_merges, target_worktree_dir)
-    CreateBranch(String, Oid),  // (name, at_commit)
-    CreateTag(String, Oid),     // (name, at_commit)
+    CreateBranch(String, Oid),                                    // (name, at_commit)
+    CreateTag(String, Oid),                                       // (name, at_commit)
     DeleteTag(String),
     StashPush,
     StashPop,
@@ -84,10 +105,10 @@ pub enum AppMessage {
     ExitToDepth(usize),
     AbortOperation,
     CreateWorktree(String, String), // (name, source_ref)
-    AddRemote(String, String),     // (name, url)
+    AddRemote(String, String),      // (name, url)
     DeleteRemote(String),
-    RenameRemote(String, String),  // (old_name, new_name)
-    SetRemoteUrl(String, String),  // (name, new_url)
+    RenameRemote(String, String),       // (old_name, new_name)
+    SetRemoteUrl(String, String),       // (name, new_url)
     DeleteRemoteBranch(String, String), // (remote, branch)
     FetchAll,
     CheckoutBranchInWorktree(String, PathBuf), // (branch, worktree_path)
@@ -107,7 +128,10 @@ pub fn queue_async_op(
     toast_manager: &mut ToastManager,
 ) -> bool {
     if generic_op_receiver.is_some() {
-        toast_manager.push("Another operation is in progress".to_string(), ToastSeverity::Info);
+        toast_manager.push(
+            "Another operation is in progress".to_string(),
+            ToastSeverity::Info,
+        );
         return false;
     }
     *generic_op_receiver = Some((rx, label, std::time::Instant::now()));
@@ -154,6 +178,7 @@ fn validate_commit_preconditions(
 /// Execute a synchronous git operation that mutates repo state, then refresh
 /// the UI. On success, shows `success_msg` as a toast. On error, shows
 /// `error_msg_prefix: <error>`.
+#[allow(clippy::too_many_arguments)]
 fn handle_repo_mutation(
     result: Result<(), anyhow::Error>,
     success_msg: String,
@@ -167,14 +192,18 @@ fn handle_repo_mutation(
 ) {
     match result {
         Ok(()) => {
-            refresh_repo_state(repo, staging_repo, commits, view_state, toast_manager, show_orphaned_commits);
+            refresh_repo_state(
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                show_orphaned_commits,
+            );
             toast_manager.push(success_msg, ToastSeverity::Success);
         }
         Err(e) => {
-            toast_manager.push(
-                format!("{}: {}", error_msg_prefix, e),
-                ToastSeverity::Error,
-            );
+            toast_manager.push(format!("{}: {}", error_msg_prefix, e), ToastSeverity::Error);
         }
     }
 }
@@ -183,6 +212,7 @@ fn handle_repo_mutation(
 /// check that no operation is already in progress on the given receiver,
 /// verify a working directory exists, then launch the async function and
 /// store the receiver. Returns `false` if the operation was already busy.
+#[allow(clippy::too_many_arguments)]
 fn start_remote_op(
     receiver: &mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
     repo: &GitRepo,
@@ -219,10 +249,10 @@ fn start_remote_op(
 /// Otherwise fall back to staging_repo's command dir. This decouples operations
 /// from the "currently viewed worktree" UI state.
 fn resolve_cmd_dir(target_dir: &Option<PathBuf>, staging_repo: &GitRepo) -> PathBuf {
-    if let Some(dir) = target_dir {
-        if let Ok(target_repo) = GitRepo::open(dir) {
-            return target_repo.git_command_dir();
-        }
+    if let Some(dir) = target_dir
+        && let Ok(target_repo) = GitRepo::open(dir)
+    {
+        return target_repo.git_command_dir();
     }
     staging_repo.git_command_dir()
 }
@@ -246,129 +276,147 @@ pub fn handle_app_message(
     match msg {
         AppMessage::StageFile(path) => {
             if let Err(e) = staging_repo.stage_file(&path) {
-                toast_manager.push(
-                    format!("Stage failed: {}", e),
-                    ToastSeverity::Error,
-                );
+                toast_manager.push(format!("Stage failed: {}", e), ToastSeverity::Error);
             }
         }
         AppMessage::UnstageFile(path) => {
             if let Err(e) = staging_repo.unstage_file(&path) {
+                toast_manager.push(format!("Unstage failed: {}", e), ToastSeverity::Error);
+            }
+        }
+        AppMessage::StageAll => match staging_repo.status() {
+            Ok(status) => {
+                let total = status.unstaged.len();
+                if total == 0 {
+                    toast_manager.push("No unstaged files".to_string(), ToastSeverity::Info);
+                } else {
+                    let mut failed = 0;
+                    for file in &status.unstaged {
+                        if staging_repo.stage_file(&file.path).is_err() {
+                            failed += 1;
+                        }
+                    }
+                    if failed > 0 {
+                        toast_manager.push(
+                            format!(
+                                "Staged {}/{} files ({} failed)",
+                                total - failed,
+                                total,
+                                failed
+                            ),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        toast_manager.push(
+                            format!("Staged {} file{}", total, if total == 1 { "" } else { "s" }),
+                            ToastSeverity::Success,
+                        );
+                    }
+                }
+            }
+            Err(e) => {
                 toast_manager.push(
-                    format!("Unstage failed: {}", e),
+                    format!("Failed to read file status: {}", e),
                     ToastSeverity::Error,
                 );
             }
-        }
-        AppMessage::StageAll => {
-            match staging_repo.status() {
-                Ok(status) => {
-                    let total = status.unstaged.len();
-                    if total == 0 {
-                        toast_manager.push("No unstaged files".to_string(), ToastSeverity::Info);
-                    } else {
-                        let mut failed = 0;
-                        for file in &status.unstaged {
-                            if staging_repo.stage_file(&file.path).is_err() {
-                                failed += 1;
-                            }
-                        }
-                        if failed > 0 {
-                            toast_manager.push(
-                                format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
-                                ToastSeverity::Error,
-                            );
-                        } else {
-                            toast_manager.push(
-                                format!("Staged {} file{}", total, if total == 1 { "" } else { "s" }),
-                                ToastSeverity::Success,
-                            );
+        },
+        AppMessage::StageAllUntracked => match staging_repo.status() {
+            Ok(status) => {
+                let total = status.untracked.len();
+                if total == 0 {
+                    toast_manager.push("No untracked files".to_string(), ToastSeverity::Info);
+                } else {
+                    let mut failed = 0;
+                    for file in &status.untracked {
+                        if staging_repo.stage_file(&file.path).is_err() {
+                            failed += 1;
                         }
                     }
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to read file status: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
-        }
-        AppMessage::StageAllUntracked => {
-            match staging_repo.status() {
-                Ok(status) => {
-                    let total = status.untracked.len();
-                    if total == 0 {
-                        toast_manager.push("No untracked files".to_string(), ToastSeverity::Info);
+                    if failed > 0 {
+                        toast_manager.push(
+                            format!(
+                                "Staged {}/{} files ({} failed)",
+                                total - failed,
+                                total,
+                                failed
+                            ),
+                            ToastSeverity::Error,
+                        );
                     } else {
-                        let mut failed = 0;
-                        for file in &status.untracked {
-                            if staging_repo.stage_file(&file.path).is_err() {
-                                failed += 1;
-                            }
-                        }
-                        if failed > 0 {
-                            toast_manager.push(
-                                format!("Staged {}/{} files ({} failed)", total - failed, total, failed),
-                                ToastSeverity::Error,
-                            );
-                        } else {
-                            toast_manager.push(
-                                format!("Tracked {} file{}", total, if total == 1 { "" } else { "s" }),
-                                ToastSeverity::Success,
-                            );
-                        }
+                        toast_manager.push(
+                            format!(
+                                "Tracked {} file{}",
+                                total,
+                                if total == 1 { "" } else { "s" }
+                            ),
+                            ToastSeverity::Success,
+                        );
                     }
                 }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to read file status: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
             }
-        }
-        AppMessage::UnstageAll => {
-            match staging_repo.status() {
-                Ok(status) => {
-                    let total = status.staged.len();
-                    if total == 0 {
-                        toast_manager.push("No staged files".to_string(), ToastSeverity::Info);
-                    } else {
-                        let mut failed = 0;
-                        for file in &status.staged {
-                            if staging_repo.unstage_file(&file.path).is_err() {
-                                failed += 1;
-                            }
-                        }
-                        if failed > 0 {
-                            toast_manager.push(
-                                format!("Unstaged {}/{} files ({} failed)", total - failed, total, failed),
-                                ToastSeverity::Error,
-                            );
-                        } else {
-                            toast_manager.push(
-                                format!("Unstaged {} file{}", total, if total == 1 { "" } else { "s" }),
-                                ToastSeverity::Success,
-                            );
+            Err(e) => {
+                toast_manager.push(
+                    format!("Failed to read file status: {}", e),
+                    ToastSeverity::Error,
+                );
+            }
+        },
+        AppMessage::UnstageAll => match staging_repo.status() {
+            Ok(status) => {
+                let total = status.staged.len();
+                if total == 0 {
+                    toast_manager.push("No staged files".to_string(), ToastSeverity::Info);
+                } else {
+                    let mut failed = 0;
+                    for file in &status.staged {
+                        if staging_repo.unstage_file(&file.path).is_err() {
+                            failed += 1;
                         }
                     }
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to read file status: {}", e),
-                        ToastSeverity::Error,
-                    );
+                    if failed > 0 {
+                        toast_manager.push(
+                            format!(
+                                "Unstaged {}/{} files ({} failed)",
+                                total - failed,
+                                total,
+                                failed
+                            ),
+                            ToastSeverity::Error,
+                        );
+                    } else {
+                        toast_manager.push(
+                            format!(
+                                "Unstaged {} file{}",
+                                total,
+                                if total == 1 { "" } else { "s" }
+                            ),
+                            ToastSeverity::Success,
+                        );
+                    }
                 }
             }
-        }
+            Err(e) => {
+                toast_manager.push(
+                    format!("Failed to read file status: {}", e),
+                    ToastSeverity::Error,
+                );
+            }
+        },
         AppMessage::Commit(message) => {
             if !validate_commit_preconditions(&message, staging_repo, toast_manager) {
                 return true;
             }
             match staging_repo.commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
+                    refresh_repo_state(
+                        repo,
+                        staging_repo,
+                        commits,
+                        view_state,
+                        toast_manager,
+                        ctx.show_orphaned_commits,
+                    );
                     view_state.staging_well.clear_and_focus();
                     toast_manager.push(
                         format!("Commit {}", &oid.to_string()[..7]),
@@ -376,16 +424,14 @@ pub fn handle_app_message(
                     );
                 }
                 Err(e) => {
-                    toast_manager.push(
-                        format!("Commit failed: {}", e),
-                        ToastSeverity::Error,
-                    );
+                    toast_manager.push(format!("Commit failed: {}", e), ToastSeverity::Error);
                 }
             }
         }
         AppMessage::Fetch(remote_name) => {
             let remote = remote_name.unwrap_or_else(|| {
-                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+                repo.default_remote()
+                    .unwrap_or_else(|_| "origin".to_string())
             });
             // Warn if remote has no fetch refspec (fetch would silently do nothing)
             if repo.remote_missing_fetch_refspec(&remote) {
@@ -397,10 +443,14 @@ pub fn handle_app_message(
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.fetch_receiver, repo, "Fetch", remote,
+                view_state.fetch_receiver,
+                repo,
+                "Fetch",
+                remote,
                 |wd| git::fetch_remote_async(wd, remote_for_closure, p),
                 |hb| hb.fetching = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
@@ -408,41 +458,60 @@ pub fn handle_app_message(
         AppMessage::FetchAll => {
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.fetch_receiver, repo, "Fetch All",
+                view_state.fetch_receiver,
+                repo,
+                "Fetch All",
                 "all remotes".to_string(),
                 |wd| git::fetch_all_async(wd, p),
                 |hb| hb.fetching = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
         }
-        AppMessage::Pull { remote: remote_name, branch } => {
+        AppMessage::Pull {
+            remote: remote_name,
+            branch,
+        } => {
             let remote = remote_name.unwrap_or_else(|| {
-                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+                repo.default_remote()
+                    .unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.pull_receiver, repo, "Pull", remote,
+                view_state.pull_receiver,
+                repo,
+                "Pull",
+                remote,
                 |wd| git::pull_remote_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pulling = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
         }
-        AppMessage::PullRebase { remote: remote_name, branch } => {
+        AppMessage::PullRebase {
+            remote: remote_name,
+            branch,
+        } => {
             let remote = remote_name.unwrap_or_else(|| {
-                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+                repo.default_remote()
+                    .unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.pull_receiver, repo, "Pull", remote,
+                view_state.pull_receiver,
+                repo,
+                "Pull",
+                remote,
                 |wd| git::pull_rebase_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pulling = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
@@ -450,12 +519,19 @@ pub fn handle_app_message(
         AppMessage::ShowPullDialog(_) => {
             // Handled in main.rs before message processing
         }
-        AppMessage::PullBranchFrom { remote, branch, rebase } => {
+        AppMessage::PullBranchFrom {
+            remote,
+            branch,
+            rebase,
+        } => {
             let remote_for_closure = remote.clone();
             let branch_for_closure = branch.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.pull_receiver, repo, "Pull", remote,
+                view_state.pull_receiver,
+                repo,
+                "Pull",
+                remote,
                 |wd| {
                     if rebase {
                         git::pull_rebase_async(wd, remote_for_closure, branch_for_closure, p)
@@ -464,37 +540,54 @@ pub fn handle_app_message(
                     }
                 },
                 |hb| hb.pulling = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
         }
-        AppMessage::Push { remote: remote_name, branch } => {
+        AppMessage::Push {
+            remote: remote_name,
+            branch,
+        } => {
             let remote = remote_name.unwrap_or_else(|| {
-                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+                repo.default_remote()
+                    .unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.push_receiver, repo, "Push", remote,
+                view_state.push_receiver,
+                repo,
+                "Push",
+                remote,
                 |wd| git::push_remote_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pushing = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
         }
-        AppMessage::PushForce { remote: remote_name, branch } => {
+        AppMessage::PushForce {
+            remote: remote_name,
+            branch,
+        } => {
             let remote = remote_name.unwrap_or_else(|| {
-                repo.default_remote().unwrap_or_else(|_| "origin".to_string())
+                repo.default_remote()
+                    .unwrap_or_else(|_| "origin".to_string())
             });
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
             if !start_remote_op(
-                view_state.push_receiver, repo, "Push", remote,
+                view_state.push_receiver,
+                repo,
+                "Push",
+                remote,
                 |wd| git::push_force_async(wd, remote_for_closure, branch, p),
                 |hb| hb.pushing = true,
-                toast_manager, view_state.header_bar,
+                toast_manager,
+                view_state.header_bar,
             ) {
                 return false;
             }
@@ -503,22 +596,44 @@ pub fn handle_app_message(
         AppMessage::ShowPushDialog(_) => {
             // Handled in main.rs
         }
-        AppMessage::PushBranchTo { local_branch, remote, remote_branch, force } => {
+        AppMessage::PushBranchTo {
+            local_branch,
+            remote,
+            remote_branch,
+            force,
+        } => {
             let refspec = format!("{}:{}", local_branch, remote_branch);
             let remote_for_closure = remote.clone();
             let refspec_for_closure = refspec.clone();
             let toast_msg = if force {
-                format!("Force pushing {} to {}/{}...", local_branch, remote, remote_branch)
+                format!(
+                    "Force pushing {} to {}/{}...",
+                    local_branch, remote, remote_branch
+                )
             } else {
-                format!("Pushing {} to {}/{}...", local_branch, remote, remote_branch)
+                format!(
+                    "Pushing {} to {}/{}...",
+                    local_branch, remote, remote_branch
+                )
             };
             if force {
                 let p = proxy.clone();
                 if !start_remote_op(
-                    view_state.push_receiver, repo, "Push", remote,
-                    |wd| git::push_force_refspec_async(wd, remote_for_closure, refspec_for_closure, p),
+                    view_state.push_receiver,
+                    repo,
+                    "Push",
+                    remote,
+                    |wd| {
+                        git::push_force_refspec_async(
+                            wd,
+                            remote_for_closure,
+                            refspec_for_closure,
+                            p,
+                        )
+                    },
                     |hb| hb.pushing = true,
-                    toast_manager, view_state.header_bar,
+                    toast_manager,
+                    view_state.header_bar,
                 ) {
                     return false;
                 }
@@ -526,10 +641,14 @@ pub fn handle_app_message(
             } else {
                 let p = proxy.clone();
                 if !start_remote_op(
-                    view_state.push_receiver, repo, "Push", remote,
+                    view_state.push_receiver,
+                    repo,
+                    "Push",
+                    remote,
                     |wd| git::push_refspec_async(wd, remote_for_closure, refspec_for_closure, p),
                     |hb| hb.pushing = true,
-                    toast_manager, view_state.header_bar,
+                    toast_manager,
+                    view_state.header_bar,
                 ) {
                     return false;
                 }
@@ -542,13 +661,20 @@ pub fn handle_app_message(
             match repo.diff_for_commit(oid) {
                 Ok(diff_files) => {
                     if let Ok(info) = full_info {
-                        view_state.commit_detail_view.set_commit(info, diff_files.clone(), submodule_entries);
+                        view_state.commit_detail_view.set_commit(
+                            info,
+                            diff_files.clone(),
+                            submodule_entries,
+                        );
                     }
                     if let Some(first_file) = diff_files.first() {
                         let title = first_file.path.clone();
-                        view_state.diff_view.set_diff(vec![first_file.clone()], title);
+                        view_state
+                            .diff_view
+                            .set_diff(vec![first_file.clone()], title);
                     } else {
-                        let title = commits.iter()
+                        let title = commits
+                            .iter()
                             .find(|c| c.id == oid)
                             .map(|c| format!("{} {}", c.short_id, c.summary))
                             .unwrap_or_else(|| oid.to_string());
@@ -565,51 +691,52 @@ pub fn handle_app_message(
                 }
             }
         }
-        AppMessage::ViewCommitFileDiff(oid, path) => {
-            match repo.diff_file_in_commit(oid, &path) {
-                Ok(diff_files) => {
-                    view_state.diff_view.set_diff(diff_files, path);
-                }
-                Err(e) => {
-                    view_state.diff_view.clear();
-                    toast_manager.push(
-                        format!("Failed to load diff for '{}': {}", path, e),
-                        ToastSeverity::Error,
-                    );
-                }
+        AppMessage::ViewCommitFileDiff(oid, path) => match repo.diff_file_in_commit(oid, &path) {
+            Ok(diff_files) => {
+                view_state.diff_view.set_diff(diff_files, path);
             }
-        }
-        AppMessage::ViewDiff(path, staged) => {
-            match staging_repo.diff_working_file(&path, staged) {
-                Ok(hunks) => {
-                    let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                    let title = if staged {
-                        format!("Staged: {}", path)
-                    } else {
-                        format!("Unstaged: {}", path)
-                    };
-                    if staged {
-                        view_state.diff_view.set_staged_diff(vec![diff_file], title);
-                    } else {
-                        view_state.diff_view.set_diff(vec![diff_file], title);
-                    }
-                    *view_state.last_diff_commit = None;
-                }
-                Err(e) => {
-                    view_state.diff_view.clear();
-                    toast_manager.push(
-                        format!("Failed to load diff for '{}': {}", path, e),
-                        ToastSeverity::Error,
-                    );
-                }
+            Err(e) => {
+                view_state.diff_view.clear();
+                toast_manager.push(
+                    format!("Failed to load diff for '{}': {}", path, e),
+                    ToastSeverity::Error,
+                );
             }
-        }
+        },
+        AppMessage::ViewDiff(path, staged) => match staging_repo.diff_working_file(&path, staged) {
+            Ok(hunks) => {
+                let diff_file = DiffFile::from_hunks(path.clone(), hunks);
+                let title = if staged {
+                    format!("Staged: {}", path)
+                } else {
+                    format!("Unstaged: {}", path)
+                };
+                if staged {
+                    view_state.diff_view.set_staged_diff(vec![diff_file], title);
+                } else {
+                    view_state.diff_view.set_diff(vec![diff_file], title);
+                }
+                *view_state.last_diff_commit = None;
+            }
+            Err(e) => {
+                view_state.diff_view.clear();
+                toast_manager.push(
+                    format!("Failed to load diff for '{}': {}", path, e),
+                    ToastSeverity::Error,
+                );
+            }
+        },
         AppMessage::CheckoutBranch(name) => {
             handle_repo_mutation(
                 staging_repo.checkout_branch(&name),
                 format!("Switched to {}", name),
                 "Checkout failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
         AppMessage::CheckoutRemoteBranch(remote, branch) => {
@@ -617,17 +744,26 @@ pub fn handle_app_message(
                 staging_repo.checkout_remote_branch(&remote, &branch),
                 format!("Switched to {}/{}", remote, branch),
                 "Checkout failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteBranch(name) => {
             match repo.delete_branch(&name) {
                 Ok(()) => {
-                    refresh_repo_state(repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
-                    toast_manager.push(
-                        format!("Deleted branch {}", name),
-                        ToastSeverity::Success,
+                    refresh_repo_state(
+                        repo,
+                        staging_repo,
+                        commits,
+                        view_state,
+                        toast_manager,
+                        ctx.show_orphaned_commits,
                     );
+                    toast_manager.push(format!("Deleted branch {}", name), ToastSeverity::Success);
                 }
                 Err(e) => {
                     // Show root cause for a cleaner message
@@ -642,7 +778,14 @@ pub fn handle_app_message(
         AppMessage::RenameBranch(old_name, new_name) => {
             match repo.rename_branch(&old_name, &new_name, false) {
                 Ok(()) => {
-                    refresh_repo_state(repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
+                    refresh_repo_state(
+                        repo,
+                        staging_repo,
+                        commits,
+                        view_state,
+                        toast_manager,
+                        ctx.show_orphaned_commits,
+                    );
                     toast_manager.push(
                         format!("Renamed branch '{}' to '{}'", old_name, new_name),
                         ToastSeverity::Success,
@@ -657,30 +800,25 @@ pub fn handle_app_message(
                 }
             }
         }
-        AppMessage::StageHunk(path, hunk_idx) => {
-            match staging_repo.stage_hunk(&path, hunk_idx) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Staged hunk {} in {}", hunk_idx + 1, path),
-                        ToastSeverity::Success,
-                    );
-                    if let Ok(hunks) = staging_repo.diff_working_file(&path, false) {
-                        if hunks.is_empty() {
-                            view_state.diff_view.clear();
-                        } else {
-                            let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                            view_state.diff_view.set_diff(vec![diff_file], path);
-                        }
+        AppMessage::StageHunk(path, hunk_idx) => match staging_repo.stage_hunk(&path, hunk_idx) {
+            Ok(()) => {
+                toast_manager.push(
+                    format!("Staged hunk {} in {}", hunk_idx + 1, path),
+                    ToastSeverity::Success,
+                );
+                if let Ok(hunks) = staging_repo.diff_working_file(&path, false) {
+                    if hunks.is_empty() {
+                        view_state.diff_view.clear();
+                    } else {
+                        let diff_file = DiffFile::from_hunks(path.clone(), hunks);
+                        view_state.diff_view.set_diff(vec![diff_file], path);
                     }
                 }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Stage hunk failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
             }
-        }
+            Err(e) => {
+                toast_manager.push(format!("Stage hunk failed: {}", e), ToastSeverity::Error);
+            }
+        },
         AppMessage::UnstageHunk(path, hunk_idx) => {
             match staging_repo.unstage_hunk(&path, hunk_idx) {
                 Ok(()) => {
@@ -698,29 +836,18 @@ pub fn handle_app_message(
                     }
                 }
                 Err(e) => {
-                    toast_manager.push(
-                        format!("Unstage hunk failed: {}", e),
-                        ToastSeverity::Error,
-                    );
+                    toast_manager.push(format!("Unstage hunk failed: {}", e), ToastSeverity::Error);
                 }
             }
         }
-        AppMessage::DiscardFile(path) => {
-            match staging_repo.discard_file(&path) {
-                Ok(()) => {
-                    toast_manager.push(
-                        format!("Discarded: {}", path),
-                        ToastSeverity::Info,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Discard failed: {}", e),
-                        ToastSeverity::Error,
-                    );
-                }
+        AppMessage::DiscardFile(path) => match staging_repo.discard_file(&path) {
+            Ok(()) => {
+                toast_manager.push(format!("Discarded: {}", path), ToastSeverity::Info);
             }
-        }
+            Err(e) => {
+                toast_manager.push(format!("Discard failed: {}", e), ToastSeverity::Error);
+            }
+        },
         AppMessage::DiscardHunk(path, hunk_idx) => {
             match staging_repo.discard_hunk(&path, hunk_idx) {
                 Ok(()) => {
@@ -739,19 +866,20 @@ pub fn handle_app_message(
                     }
                 }
                 Err(e) => {
-                    toast_manager.push(
-                        format!("Discard hunk failed: {}", e),
-                        ToastSeverity::Error,
-                    );
+                    toast_manager.push(format!("Discard hunk failed: {}", e), ToastSeverity::Error);
                 }
             }
         }
         AppMessage::LoadMoreCommits => {
             // Count only graph commits (exclude synthetics + orphans) for the load-more request
-            let real_count = commits.iter().filter(|c| !c.is_synthetic && !c.is_orphaned).count();
+            let real_count = commits
+                .iter()
+                .filter(|c| !c.is_synthetic && !c.is_orphaned)
+                .count();
             let new_count = real_count + 50;
             // Preserve existing diff stats so they don't flicker away
-            let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
+            let prev_stats: HashMap<Oid, (usize, usize)> = commits
+                .iter()
                 .filter(|c| c.insertions > 0 || c.deletions > 0)
                 .map(|c| (c.id, (c.insertions, c.deletions)))
                 .collect();
@@ -813,16 +941,31 @@ pub fn handle_app_message(
             // Find the worktree by name, get its branch, find the branch tip, select it
             if let Some(wt) = view_state.worktrees.iter().find(|w| w.name == name) {
                 let branch_name = wt.branch.clone();
-                if let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
-                    .find(|t| t.name == branch_name && !t.is_remote) {
-                        view_state.commit_graph_view.selected_commit = Some(tip.oid);
-                        view_state.commit_graph_view.scroll_to_selection(commits, ctx.graph_bounds);
-                        toast_manager.push(format!("Jumped to branch '{}'", branch_name), ToastSeverity::Info);
+                if let Some(tip) = view_state
+                    .commit_graph_view
+                    .branch_tips
+                    .iter()
+                    .find(|t| t.name == branch_name && !t.is_remote)
+                {
+                    view_state.commit_graph_view.selected_commit = Some(tip.oid);
+                    view_state
+                        .commit_graph_view
+                        .scroll_to_selection(commits, ctx.graph_bounds);
+                    toast_manager.push(
+                        format!("Jumped to branch '{}'", branch_name),
+                        ToastSeverity::Info,
+                    );
                 } else {
-                    toast_manager.push(format!("Branch '{}' not found in graph", branch_name), ToastSeverity::Error);
+                    toast_manager.push(
+                        format!("Branch '{}' not found in graph", branch_name),
+                        ToastSeverity::Error,
+                    );
                 }
             } else {
-                toast_manager.push(format!("Worktree '{}' not found", name), ToastSeverity::Error);
+                toast_manager.push(
+                    format!("Worktree '{}' not found", name),
+                    ToastSeverity::Error,
+                );
             }
         }
         AppMessage::RemoveWorktree(name) => {
@@ -839,7 +982,8 @@ pub fn handle_app_message(
         AppMessage::CreateWorktree(name, source) => {
             let cmd_dir = repo.git_command_dir();
             // Compute worktree path: sibling directory to the current workdir
-            let wt_path = cmd_dir.parent()
+            let wt_path = cmd_dir
+                .parent()
                 .unwrap_or(&cmd_dir)
                 .join(&name)
                 .to_string_lossy()
@@ -905,7 +1049,13 @@ pub fn handle_app_message(
         }
         AppMessage::RebaseBranchWithOptions(name, autostash, rebase_merges, target_dir) => {
             let cmd_dir = resolve_cmd_dir(&target_dir, staging_repo);
-            let rx = git::rebase_with_options_async(cmd_dir, name.clone(), autostash, rebase_merges, proxy.clone());
+            let rx = git::rebase_with_options_async(
+                cmd_dir,
+                name.clone(),
+                autostash,
+                rebase_merges,
+                proxy.clone(),
+            );
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -919,7 +1069,12 @@ pub fn handle_app_message(
                 repo.create_branch_at(&name, oid),
                 format!("Created branch '{}'", name),
                 "Create branch failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
         AppMessage::CreateTag(name, oid) => {
@@ -927,7 +1082,12 @@ pub fn handle_app_message(
                 repo.create_tag(&name, oid),
                 format!("Created tag '{}'", name),
                 "Create tag failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteTag(name) => {
@@ -935,7 +1095,12 @@ pub fn handle_app_message(
                 repo.delete_tag(&name),
                 format!("Deleted tag '{}'", name),
                 "Delete tag failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
         AppMessage::StashPush => {
@@ -1011,7 +1176,14 @@ pub fn handle_app_message(
             }
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits);
+                    refresh_repo_state(
+                        repo,
+                        staging_repo,
+                        commits,
+                        view_state,
+                        toast_manager,
+                        ctx.show_orphaned_commits,
+                    );
                     view_state.staging_well.exit_amend_mode();
                     toast_manager.push(
                         format!("Amended {}", &oid.to_string()[..7]),
@@ -1019,10 +1191,7 @@ pub fn handle_app_message(
                     );
                 }
                 Err(e) => {
-                    toast_manager.push(
-                        format!("Amend failed: {}", e),
-                        ToastSeverity::Error,
-                    );
+                    toast_manager.push(format!("Amend failed: {}", e), ToastSeverity::Error);
                 }
             }
         }
@@ -1032,10 +1201,7 @@ pub fn handle_app_message(
             } else if let Some((subject, body)) = staging_repo.head_commit_message() {
                 view_state.staging_well.enter_amend_mode(&subject, &body);
             } else {
-                toast_manager.push(
-                    "No HEAD commit to amend".to_string(),
-                    ToastSeverity::Error,
-                );
+                toast_manager.push("No HEAD commit to amend".to_string(), ToastSeverity::Error);
             }
         }
         AppMessage::RevertCommit(oid, target_dir) => {
@@ -1057,14 +1223,18 @@ pub fn handle_app_message(
                 git2::ResetType::Hard => "hard",
             };
             // Reset the target worktree (or staging_repo if no explicit target)
-            let target_repo = target_dir.as_ref()
-                .and_then(|d| GitRepo::open(d).ok());
+            let target_repo = target_dir.as_ref().and_then(|d| GitRepo::open(d).ok());
             let reset_repo = target_repo.as_ref().unwrap_or(staging_repo);
             handle_repo_mutation(
                 reset_repo.reset_to_commit(oid, mode),
                 format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
                 "Reset failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1073,7 +1243,12 @@ pub fn handle_app_message(
                 staging_repo.cleanup_state(),
                 "Operation aborted".to_string(),
                 "Abort failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1082,7 +1257,12 @@ pub fn handle_app_message(
                 repo.add_remote(&name, &url),
                 format!("Added remote '{}'", name),
                 "Failed to add remote",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1091,7 +1271,12 @@ pub fn handle_app_message(
                 repo.delete_remote(&name),
                 format!("Deleted remote '{}'", name),
                 "Failed to delete remote",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1100,7 +1285,12 @@ pub fn handle_app_message(
                 repo.rename_remote(&old_name, &new_name),
                 format!("Renamed remote '{}' to '{}'", old_name, new_name),
                 "Failed to rename remote",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1109,13 +1299,23 @@ pub fn handle_app_message(
                 repo.set_remote_url(&name, &url),
                 format!("Updated URL for '{}'", name),
                 "Failed to update remote URL",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
         AppMessage::DeleteRemoteBranch(remote, branch) => {
             let cmd_dir = repo.git_command_dir();
-            let rx = git::delete_remote_branch_async(cmd_dir, remote.clone(), branch.clone(), proxy.clone());
+            let rx = git::delete_remote_branch_async(
+                cmd_dir,
+                remote.clone(),
+                branch.clone(),
+                proxy.clone(),
+            );
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
@@ -1125,31 +1325,39 @@ pub fn handle_app_message(
             );
         }
 
-        AppMessage::CheckoutBranchInWorktree(name, wt_path) => {
-            match GitRepo::open(&wt_path) {
-                Ok(wt_repo) => {
-                    handle_repo_mutation(
-                        wt_repo.checkout_branch(&name),
-                        format!("Switched to {} in {}", name, wt_path.display()),
-                        "Checkout failed",
-                        repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
-                    );
-                }
-                Err(e) => {
-                    toast_manager.push(
-                        format!("Failed to open worktree at {}: {}", wt_path.display(), e),
-                        ToastSeverity::Error,
-                    );
-                }
+        AppMessage::CheckoutBranchInWorktree(name, wt_path) => match GitRepo::open(&wt_path) {
+            Ok(wt_repo) => {
+                handle_repo_mutation(
+                    wt_repo.checkout_branch(&name),
+                    format!("Switched to {} in {}", name, wt_path.display()),
+                    "Checkout failed",
+                    repo,
+                    staging_repo,
+                    commits,
+                    view_state,
+                    toast_manager,
+                    ctx.show_orphaned_commits,
+                );
             }
-        }
+            Err(e) => {
+                toast_manager.push(
+                    format!("Failed to open worktree at {}: {}", wt_path.display(), e),
+                    ToastSeverity::Error,
+                );
+            }
+        },
 
         AppMessage::SetHead(name) => {
             handle_repo_mutation(
                 repo.set_head_to(&name),
                 format!("HEAD now points to {}", name),
                 "Set HEAD failed",
-                repo, staging_repo, commits, view_state, toast_manager, ctx.show_orphaned_commits,
+                repo,
+                staging_repo,
+                commits,
+                view_state,
+                toast_manager,
+                ctx.show_orphaned_commits,
             );
         }
 
@@ -1216,29 +1424,35 @@ impl RepoStateSnapshot {
         current_branch: &str,
         head_oid: Option<Oid>,
     ) -> Self {
-        let commit_oids: Vec<Oid> = commits.iter()
+        let commit_oids: Vec<Oid> = commits
+            .iter()
             .filter(|c| !c.is_synthetic)
             .map(|c| c.id)
             .collect();
 
-        let head_oid = head_oid;
-
-        let branch_tips: Vec<(String, Oid, bool)> = view_state.commit_graph_view.branch_tips
+        let branch_tips: Vec<(String, Oid, bool)> = view_state
+            .commit_graph_view
+            .branch_tips
             .iter()
             .map(|t| (t.name.clone(), t.oid, t.is_remote))
             .collect();
 
-        let tags: Vec<(String, Oid)> = view_state.commit_graph_view.tags
+        let tags: Vec<(String, Oid)> = view_state
+            .commit_graph_view
+            .tags
             .iter()
             .map(|t| (t.name.clone(), t.oid))
             .collect();
 
-        let stashes: Vec<(usize, String)> = view_state.branch_sidebar.stashes
+        let stashes: Vec<(usize, String)> = view_state
+            .branch_sidebar
+            .stashes
             .iter()
             .map(|s| (s.index, s.message.clone()))
             .collect();
 
-        let worktrees: Vec<(String, bool, usize)> = view_state.worktrees
+        let worktrees: Vec<(String, bool, usize)> = view_state
+            .worktrees
             .iter()
             .map(|w| (w.name.clone(), w.is_dirty, w.dirty_file_count))
             .collect();
@@ -1250,7 +1464,9 @@ impl RepoStateSnapshot {
 
         let ahead_behind = view_state.branch_sidebar.ahead_behind_cache();
 
-        let submodules: Vec<(String, bool)> = view_state.staging_well.submodules
+        let submodules: Vec<(String, bool)> = view_state
+            .staging_well
+            .submodules
             .iter()
             .map(|s| (s.name.clone(), s.is_dirty))
             .collect();
@@ -1297,42 +1513,68 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
             Some(oid) => oid.to_string()[..7].to_string(),
             None => "None".to_string(),
         };
-        deltas.push(format!("HEAD moved: {} -> {}", fmt_oid(&before.head_oid), fmt_oid(&after.head_oid)));
+        deltas.push(format!(
+            "HEAD moved: {} -> {}",
+            fmt_oid(&before.head_oid),
+            fmt_oid(&after.head_oid)
+        ));
     }
 
     // Current branch
     if before.current_branch != after.current_branch {
-        deltas.push(format!("Branch: '{}' -> '{}'", before.current_branch, after.current_branch));
+        deltas.push(format!(
+            "Branch: '{}' -> '{}'",
+            before.current_branch, after.current_branch
+        ));
     }
 
     // Branch tips
     {
-        let before_map: HashMap<(&str, bool), Oid> = before.branch_tips.iter()
+        let before_map: HashMap<(&str, bool), Oid> = before
+            .branch_tips
+            .iter()
             .map(|(n, o, r)| ((n.as_str(), *r), *o))
             .collect();
-        let after_map: HashMap<(&str, bool), Oid> = after.branch_tips.iter()
+        let after_map: HashMap<(&str, bool), Oid> = after
+            .branch_tips
+            .iter()
             .map(|(n, o, r)| ((n.as_str(), *r), *o))
             .collect();
         for (key, oid) in &after_map {
             match before_map.get(key) {
-                None => deltas.push(format!("Branch added: {}{}", if key.1 { "(remote) " } else { "" }, key.0)),
+                None => deltas.push(format!(
+                    "Branch added: {}{}",
+                    if key.1 { "(remote) " } else { "" },
+                    key.0
+                )),
                 Some(old_oid) if old_oid != oid => {
-                    deltas.push(format!("Branch moved: {} {} -> {}", key.0, &old_oid.to_string()[..7], &oid.to_string()[..7]));
+                    deltas.push(format!(
+                        "Branch moved: {} {} -> {}",
+                        key.0,
+                        &old_oid.to_string()[..7],
+                        &oid.to_string()[..7]
+                    ));
                 }
                 _ => {}
             }
         }
         for key in before_map.keys() {
             if !after_map.contains_key(key) {
-                deltas.push(format!("Branch removed: {}{}", if key.1 { "(remote) " } else { "" }, key.0));
+                deltas.push(format!(
+                    "Branch removed: {}{}",
+                    if key.1 { "(remote) " } else { "" },
+                    key.0
+                ));
             }
         }
     }
 
     // Tags
     {
-        let before_tags: HashMap<&str, Oid> = before.tags.iter().map(|(n, o)| (n.as_str(), *o)).collect();
-        let after_tags: HashMap<&str, Oid> = after.tags.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+        let before_tags: HashMap<&str, Oid> =
+            before.tags.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+        let after_tags: HashMap<&str, Oid> =
+            after.tags.iter().map(|(n, o)| (n.as_str(), *o)).collect();
         for name in after_tags.keys() {
             if !before_tags.contains_key(name) {
                 deltas.push(format!("Tag added: {}", name));
@@ -1347,15 +1589,21 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
 
     // Stashes
     if before.stashes.len() != after.stashes.len() {
-        deltas.push(format!("Stashes: {} -> {}", before.stashes.len(), after.stashes.len()));
+        deltas.push(format!(
+            "Stashes: {} -> {}",
+            before.stashes.len(),
+            after.stashes.len()
+        ));
     }
 
     // Worktrees
     for after_wt in &after.worktrees {
         if let Some(before_wt) = before.worktrees.iter().find(|w| w.0 == after_wt.0) {
             if before_wt.1 != after_wt.1 || before_wt.2 != after_wt.2 {
-                deltas.push(format!("Worktree '{}': dirty {}({}) -> {}({})",
-                    after_wt.0, before_wt.1, before_wt.2, after_wt.1, after_wt.2));
+                deltas.push(format!(
+                    "Worktree '{}': dirty {}({}) -> {}({})",
+                    after_wt.0, before_wt.1, before_wt.2, after_wt.1, after_wt.2
+                ));
             }
         } else {
             deltas.push(format!("Worktree added: {}", after_wt.0));
@@ -1369,28 +1617,47 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
 
     // Status counts
     if before.staged_count != after.staged_count {
-        deltas.push(format!("Staged: {} -> {}", before.staged_count, after.staged_count));
+        deltas.push(format!(
+            "Staged: {} -> {}",
+            before.staged_count, after.staged_count
+        ));
     }
     if before.unstaged_count != after.unstaged_count {
-        deltas.push(format!("Unstaged: {} -> {}", before.unstaged_count, after.unstaged_count));
+        deltas.push(format!(
+            "Unstaged: {} -> {}",
+            before.unstaged_count, after.unstaged_count
+        ));
     }
     if before.untracked_count != after.untracked_count {
-        deltas.push(format!("Untracked: {} -> {}", before.untracked_count, after.untracked_count));
+        deltas.push(format!(
+            "Untracked: {} -> {}",
+            before.untracked_count, after.untracked_count
+        ));
     }
     if before.conflicted_count != after.conflicted_count {
-        deltas.push(format!("Conflicted: {} -> {}", before.conflicted_count, after.conflicted_count));
+        deltas.push(format!(
+            "Conflicted: {} -> {}",
+            before.conflicted_count, after.conflicted_count
+        ));
     }
 
     // Ahead/behind
     {
         let mut all_branches: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for key in before.ahead_behind.keys() { all_branches.insert(key.as_str()); }
-        for key in after.ahead_behind.keys() { all_branches.insert(key.as_str()); }
+        for key in before.ahead_behind.keys() {
+            all_branches.insert(key.as_str());
+        }
+        for key in after.ahead_behind.keys() {
+            all_branches.insert(key.as_str());
+        }
         for branch in all_branches {
             let b = before.ahead_behind.get(branch).copied().unwrap_or((0, 0));
             let a = after.ahead_behind.get(branch).copied().unwrap_or((0, 0));
             if b != a {
-                deltas.push(format!("Ahead/behind '{}': ({},{}) -> ({},{})", branch, b.0, b.1, a.0, a.1));
+                deltas.push(format!(
+                    "Ahead/behind '{}': ({},{}) -> ({},{})",
+                    branch, b.0, b.1, a.0, a.1
+                ));
             }
         }
     }
@@ -1399,7 +1666,10 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
     for after_sm in &after.submodules {
         if let Some(before_sm) = before.submodules.iter().find(|s| s.0 == after_sm.0) {
             if before_sm.1 != after_sm.1 {
-                deltas.push(format!("Submodule '{}': dirty {} -> {}", after_sm.0, before_sm.1, after_sm.1));
+                deltas.push(format!(
+                    "Submodule '{}': dirty {} -> {}",
+                    after_sm.0, before_sm.1, after_sm.1
+                ));
             }
         } else {
             deltas.push(format!("Submodule added: {}", after_sm.0));
@@ -1432,7 +1702,8 @@ pub fn refresh_repo_state(
     show_orphaned_commits: bool,
 ) -> (String, Option<Oid>) {
     // Preserve existing diff stats so they don't flicker away during refresh
-    let prev_stats: HashMap<Oid, (usize, usize)> = commits.iter()
+    let prev_stats: HashMap<Oid, (usize, usize)> = commits
+        .iter()
         .filter(|c| c.insertions > 0 || c.deletions > 0)
         .map(|c| (c.id, (c.insertions, c.deletions)))
         .collect();
@@ -1466,7 +1737,10 @@ pub fn refresh_repo_state(
     let staging_head_oid = staging_repo.head_oid().ok();
 
     let mut branch_tips = repo.branch_tips().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load branches: {}", e), ToastSeverity::Error);
+        toast_manager.push(
+            format!("Failed to load branches: {}", e),
+            ToastSeverity::Error,
+        );
         Vec::new()
     });
     let tags = repo.tags().unwrap_or_else(|e| {
@@ -1474,7 +1748,10 @@ pub fn refresh_repo_state(
         Vec::new()
     });
     let current = staging_repo.current_branch().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to get current branch: {}", e), ToastSeverity::Error);
+        toast_manager.push(
+            format!("Failed to get current branch: {}", e),
+            ToastSeverity::Error,
+        );
         String::new()
     });
 
@@ -1486,7 +1763,10 @@ pub fn refresh_repo_state(
     }
 
     let worktrees = repo.worktrees().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load worktrees: {}", e), ToastSeverity::Error);
+        toast_manager.push(
+            format!("Failed to load worktrees: {}", e),
+            ToastSeverity::Error,
+        );
         Vec::new()
     });
 
@@ -1503,14 +1783,20 @@ pub fn refresh_repo_state(
     let is_bare = repo.is_effectively_bare();
 
     view_state.branch_sidebar.set_branch_data(
-        &branch_tips, &tags, &remote_names,
-        &worktrees, is_bare,
+        &branch_tips,
+        &tags,
+        &remote_names,
+        &worktrees,
+        is_bare,
     );
     view_state.staging_well.set_worktrees(&worktrees);
     *view_state.worktrees = worktrees;
 
     let submodules = repo.submodules().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load submodules: {}", e), ToastSeverity::Error);
+        toast_manager.push(
+            format!("Failed to load submodules: {}", e),
+            ToastSeverity::Error,
+        );
         Vec::new()
     });
     view_state.staging_well.set_submodules(submodules);
@@ -1518,7 +1804,9 @@ pub fn refresh_repo_state(
     // When inside a submodule, populate sibling submodules for lateral navigation
     if let Some(focus) = view_state.submodule_focus.as_ref() {
         if let Some(parent) = focus.parent_stack.last() {
-            view_state.staging_well.set_sibling_submodules(parent.parent_submodules.clone());
+            view_state
+                .staging_well
+                .set_sibling_submodules(parent.parent_submodules.clone());
         }
     } else {
         // At top level, clear siblings

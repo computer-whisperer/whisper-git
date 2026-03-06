@@ -35,10 +35,15 @@ pub fn init() {
 /// Record a breadcrumb. Thread-safe, lock-free if contention is low.
 pub fn breadcrumb(message: String) {
     let Some(start) = START.get() else { return };
-    let Some(crumbs) = BREADCRUMBS.get() else { return };
+    let Some(crumbs) = BREADCRUMBS.get() else {
+        return;
+    };
     let entry = Breadcrumb {
         elapsed: start.elapsed(),
-        thread: std::thread::current().name().unwrap_or("unnamed").to_string(),
+        thread: std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_string(),
         message,
     };
     if let Ok(mut guard) = crumbs.lock() {
@@ -89,10 +94,10 @@ fn init_system_info() {
 
 /// Set the Vulkan device name after GPU selection.
 pub fn set_vulkan_device(name: &str) {
-    if let Some(info) = SYSTEM_INFO.get() {
-        if let Ok(mut guard) = info.lock() {
-            guard.gpu = name.to_string();
-        }
+    if let Some(info) = SYSTEM_INFO.get()
+        && let Ok(mut guard) = info.lock()
+    {
+        guard.gpu = name.to_string();
     }
 }
 
@@ -151,7 +156,7 @@ fn format_timestamp(secs_since_epoch: u64) -> String {
     // Days since epoch
     let total_secs = secs_since_epoch;
     let days = (total_secs / 86400) as i64;
-    let day_secs = (total_secs % 86400) as u64;
+    let day_secs = total_secs % 86400;
     let hh = day_secs / 3600;
     let mm = (day_secs % 3600) / 60;
     let ss = day_secs % 60;
@@ -229,7 +234,12 @@ pub fn install_panic_hook() {
         };
         report.push_str(&format!("Message: {}\n", message));
         if let Some(loc) = info.location() {
-            report.push_str(&format!("Location: {}:{}:{}\n", loc.file(), loc.line(), loc.column()));
+            report.push_str(&format!(
+                "Location: {}:{}:{}\n",
+                loc.file(),
+                loc.line(),
+                loc.column()
+            ));
         }
 
         // Breadcrumbs
@@ -285,14 +295,11 @@ pub fn has_crash_since_last_exit() -> Option<PathBuf> {
         if path.extension().and_then(|e| e.to_str()) != Some("log") {
             continue;
         }
-        if let Ok(meta) = path.metadata() {
-            if let Ok(mtime) = meta.modified() {
-                if mtime > marker_mtime {
-                    if newest.as_ref().map_or(true, |(t, _)| mtime > *t) {
-                        newest = Some((mtime, path));
-                    }
-                }
-            }
+        if let Ok(mtime) = path.metadata().and_then(|m| m.modified())
+            && mtime > marker_mtime
+            && newest.as_ref().is_none_or(|(t, _)| mtime > *t)
+        {
+            newest = Some((mtime, path));
         }
     }
 
@@ -302,7 +309,9 @@ pub fn has_crash_since_last_exit() -> Option<PathBuf> {
 /// Delete oldest crash logs beyond the keep limit.
 pub fn prune_crash_logs(keep: usize) {
     let dir = crash_dir();
-    let Ok(entries) = fs::read_dir(&dir) else { return };
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
 
     let mut logs: Vec<PathBuf> = entries
         .flatten()

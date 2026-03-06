@@ -12,8 +12,7 @@ use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, BufferImageCopy, CopyBufferToImageInfo,
-        PrimaryAutoCommandBuffer,
+        AutoCommandBufferBuilder, BufferImageCopy, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
     },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
@@ -436,7 +435,9 @@ impl TextRenderer {
                     }
                     _ => None,
                 };
-                if let Some(kern) = kern && kern != 0.0 {
+                if let Some(kern) = kern
+                    && kern != 0.0
+                {
                     kerning.insert((left, right), kern);
                 }
             }

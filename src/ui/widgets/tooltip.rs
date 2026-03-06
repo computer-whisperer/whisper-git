@@ -2,9 +2,11 @@
 
 use std::time::Instant;
 
-use crate::ui::{Rect, TextRenderer};
 use crate::ui::text_util::wrap_text;
-use crate::ui::widget::{WidgetOutput, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
+use crate::ui::widget::{
+    WidgetOutput, create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
+};
+use crate::ui::{Rect, TextRenderer};
 
 /// A tooltip that appears after hovering over a truncated element.
 ///
@@ -68,11 +70,11 @@ impl Tooltip {
         self.mouse_y = mouse_y;
 
         // Check if this is the same element we were already hovering
-        if let Some(prev) = self.hover_bounds {
-            if Self::same_bounds(prev, bounds) {
-                // Same element — keep the timer running
-                return;
-            }
+        if let Some(prev) = self.hover_bounds
+            && Self::same_bounds(prev, bounds)
+        {
+            // Same element — keep the timer running
+            return;
         }
 
         // New element — reset timer
@@ -95,15 +97,21 @@ impl Tooltip {
 
     /// Check the delay timer and make the tooltip visible when elapsed.
     pub fn update(&mut self) {
-        if let Some(start) = self.hover_start {
-            if !self.visible && start.elapsed().as_millis() >= Self::DELAY_MS {
-                self.visible = true;
-            }
+        if let Some(start) = self.hover_start
+            && !self.visible
+            && start.elapsed().as_millis() >= Self::DELAY_MS
+        {
+            self.visible = true;
         }
     }
 
     /// Render the tooltip if visible.
-    pub fn layout(&self, text_renderer: &TextRenderer, screen_bounds: Rect, scale: f32) -> WidgetOutput {
+    pub fn layout(
+        &self,
+        text_renderer: &TextRenderer,
+        screen_bounds: Rect,
+        scale: f32,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         if !self.visible || self.text.is_empty() {
             return output;
@@ -124,7 +132,8 @@ impl Tooltip {
         let num_lines = lines.len().max(1);
 
         // Measure actual content width
-        let content_width = lines.iter()
+        let content_width = lines
+            .iter()
             .map(|l| text_renderer.measure_text(l))
             .fold(0.0_f32, f32::max);
 
@@ -148,19 +157,28 @@ impl Tooltip {
 
         // Background
         let bg_color = theme::SURFACE_RAISED.lighten(0.04).to_array();
-        output.spline_vertices.extend(create_rounded_rect_vertices(&rect, bg_color, corner_radius));
+        output
+            .spline_vertices
+            .extend(create_rounded_rect_vertices(&rect, bg_color, corner_radius));
 
         // Border
-        output.spline_vertices.extend(create_rounded_rect_outline_vertices(
-            &rect, theme::BORDER_LIGHT.to_array(), corner_radius, 1.0,
-        ));
+        output
+            .spline_vertices
+            .extend(create_rounded_rect_outline_vertices(
+                &rect,
+                theme::BORDER_LIGHT.to_array(),
+                corner_radius,
+                1.0,
+            ));
 
         // Text lines
         let text_x = rect.x + padding;
         for (i, line) in lines.iter().enumerate() {
             let text_y = rect.y + padding + i as f32 * line_height;
             output.text_vertices.extend(text_renderer.layout_text(
-                line, text_x, text_y,
+                line,
+                text_x,
+                text_y,
                 theme::TEXT_BRIGHT.to_array(),
             ));
         }

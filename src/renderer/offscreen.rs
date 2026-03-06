@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use vulkano::{
     format::Format,
-    image::{view::ImageView, Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount},
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
 };
@@ -59,7 +59,9 @@ impl OffscreenTarget {
                 image_type: ImageType::Dim2d,
                 format,
                 extent: [width, height, 1],
-                usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST,
+                usage: ImageUsage::COLOR_ATTACHMENT
+                    | ImageUsage::TRANSFER_SRC
+                    | ImageUsage::TRANSFER_DST,
                 ..Default::default()
             },
             AllocationCreateInfo {

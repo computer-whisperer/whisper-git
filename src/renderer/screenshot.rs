@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, CopyImageToBufferInfo, PrimaryAutoCommandBuffer},
@@ -6,7 +7,6 @@ use vulkano::{
     image::Image,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
 };
-use std::sync::Arc;
 
 /// Capture a screenshot from a swapchain image
 pub fn capture_to_buffer(
@@ -84,12 +84,10 @@ impl CaptureBuffer {
                     .collect()
             }
             // BGRA 8-bit formats
-            Format::B8G8R8A8_SRGB | Format::B8G8R8A8_UNORM => {
-                buffer_content
-                    .chunks(4)
-                    .flat_map(|bgra| [bgra[2], bgra[1], bgra[0], bgra[3]])
-                    .collect()
-            }
+            Format::B8G8R8A8_SRGB | Format::B8G8R8A8_UNORM => buffer_content
+                .chunks(4)
+                .flat_map(|bgra| [bgra[2], bgra[1], bgra[0], bgra[3]])
+                .collect(),
             // RGBA 8-bit formats
             _ => buffer_content.to_vec(),
         };

@@ -84,7 +84,9 @@ impl SurfaceManager {
     /// Prefer sRGB so blending is done in linear-light and conversion to display
     /// space happens on store.
     pub fn choose_surface_format(ctx: &VulkanContext, surface: &Arc<Surface>) -> Result<Format> {
-        let formats = ctx.device.physical_device()
+        let formats = ctx
+            .device
+            .physical_device()
             .surface_formats(surface, Default::default())
             .context("Failed to get surface formats")?;
 

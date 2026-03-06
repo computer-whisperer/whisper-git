@@ -19,16 +19,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::time::Duration;
 use std::time::Instant;
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo},
+    Validated, VulkanError,
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+    },
     format::{Format, NumericFormat},
     pipeline::graphics::viewport::Viewport,
-    swapchain::{acquire_next_image, SwapchainPresentInfo},
+    swapchain::{SwapchainPresentInfo, acquire_next_image},
     sync::{self, GpuFuture},
-    Validated, VulkanError,
 };
-use std::time::Duration;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -41,12 +43,27 @@ use git2::Oid;
 use crate::config::Config;
 use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo, WorktreeInfo};
 use crate::input::{InputEvent, InputState, Key};
-use crate::renderer::{capture_to_buffer, OffscreenTarget, SurfaceManager, VulkanContext};
-use crate::ui::{AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget, WidgetOutput};
+use crate::messages::{
+    AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode,
+    compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core,
+};
+use crate::renderer::{OffscreenTarget, SurfaceManager, VulkanContext, capture_to_buffer};
 use crate::ui::widget::theme;
-use crate::ui::widgets::{BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu, MenuAction, MenuItem, HeaderBar, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext, TabBar, TabAction, ToastManager, ToastSeverity, Tooltip};
-use crate::messages::{AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode, compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core};
-use crate::views::{BranchSidebar, CommitDetailView, CommitDetailAction, CommitGraphView, GraphAction, DiffView, DiffAction, StagingWell, StagingAction, SidebarAction};
+use crate::ui::widgets::{
+    BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu,
+    HeaderBar, MenuAction, MenuItem, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog,
+    PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog,
+    RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction,
+    ShortcutBar, ShortcutContext, TabAction, TabBar, ToastManager, ToastSeverity, Tooltip,
+};
+use crate::ui::{
+    AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget,
+    WidgetOutput,
+};
+use crate::views::{
+    BranchSidebar, CommitDetailAction, CommitDetailView, CommitGraphView, DiffAction, DiffView,
+    GraphAction, SidebarAction, StagingAction, StagingWell,
+};
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
 /// Maximum number of commits to load into the graph view.
@@ -77,9 +94,10 @@ fn parse_args() -> CliArgs {
                 // Parse WxH format (e.g., "1920x1080")
                 if let Some(size_str) = iter.next()
                     && let Some((w, h)) = size_str.split_once('x')
-                        && let (Ok(width), Ok(height)) = (w.parse(), h.parse()) {
-                            args.screenshot_size = Some((width, height));
-                        }
+                    && let (Ok(width), Ok(height)) = (w.parse(), h.parse())
+                {
+                    args.screenshot_size = Some((width, height));
+                }
             }
             "--scale" => {
                 if let Some(s) = iter.next() {
@@ -114,7 +132,6 @@ enum FocusedPanel {
     Sidebar,
 }
 
-
 /// Saved worktree state for submodule drill-down/restore.
 struct SavedWorktreeState {
     worktrees: Vec<WorktreeInfo>,
@@ -144,7 +161,8 @@ impl WorktreeState {
     /// Returns the staging repo for the selected worktree, if any.
     /// This is the ONLY place worktree repo resolution happens.
     fn staging_repo(&self) -> Option<&GitRepo> {
-        self.selected_path.as_ref()
+        self.selected_path
+            .as_ref()
             .and_then(|p| self.repo_cache.get(p))
     }
 
@@ -156,10 +174,11 @@ impl WorktreeState {
 
     /// Select a worktree by path, opening its repo if not cached.
     fn select(&mut self, path: PathBuf) {
-        if !self.repo_cache.contains_key(&path) {
-            if let Ok(repo) = GitRepo::open(&path) {
-                self.repo_cache.insert(path.clone(), repo);
-            }
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            self.repo_cache.entry(path.clone())
+            && let Ok(repo) = GitRepo::open(entry.key())
+        {
+            entry.insert(repo);
         }
         self.selected_path = Some(path);
     }
@@ -181,15 +200,18 @@ impl WorktreeState {
         // Open repos for any new worktrees
         for wt in &self.worktrees {
             let path = PathBuf::from(&wt.path);
-            if !self.repo_cache.contains_key(&path) {
-                if let Ok(wt_repo) = GitRepo::open(&path) {
-                    self.repo_cache.insert(path, wt_repo);
-                }
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.repo_cache.entry(path)
+                && let Ok(wt_repo) = GitRepo::open(entry.key())
+            {
+                entry.insert(wt_repo);
             }
         }
         // Prune cache entries for removed worktrees
-        let valid: HashSet<PathBuf> = self.worktrees.iter()
-            .map(|wt| PathBuf::from(&wt.path)).collect();
+        let valid: HashSet<PathBuf> = self
+            .worktrees
+            .iter()
+            .map(|wt| PathBuf::from(&wt.path))
+            .collect();
         self.repo_cache.retain(|p, _| valid.contains(p));
     }
 
@@ -197,13 +219,19 @@ impl WorktreeState {
     /// Returns (branch, head_oid).
     fn derive_head(&self, ref_repo: &GitRepo) -> (String, Option<Oid>) {
         if let Some(staging) = self.staging_repo() {
-            (staging.current_branch().unwrap_or_default(), staging.head_oid().ok())
+            (
+                staging.current_branch().unwrap_or_default(),
+                staging.head_oid().ok(),
+            )
         } else if self.has_selector() {
             // Multi-worktree, nothing selected — HEAD is meaningless
             (String::new(), None)
         } else {
             // Single-worktree / normal repo — use the repo itself
-            (ref_repo.current_branch().unwrap_or_default(), ref_repo.head_oid().ok())
+            (
+                ref_repo.current_branch().unwrap_or_default(),
+                ref_repo.head_oid().ok(),
+            )
         }
     }
 
@@ -294,7 +322,11 @@ struct TabViewState {
 impl TabViewState {
     /// Returns `Some(&str)` when current_branch is non-empty, `None` otherwise.
     fn current_branch_opt(&self) -> Option<&str> {
-        if self.current_branch.is_empty() { None } else { Some(&self.current_branch) }
+        if self.current_branch.is_empty() {
+            None
+        } else {
+            Some(&self.current_branch)
+        }
     }
 
     /// Re-derive current_branch and head_oid from worktree state,
@@ -358,15 +390,21 @@ impl TabViewState {
                 self.pending_messages.push(AppMessage::ToggleAmend);
             }
             StagingAction::ViewDiff(path) => {
-                let staged = self.staging_well.staged_list.files
-                    .iter().any(|f| f.path == path);
-                self.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                let staged = self
+                    .staging_well
+                    .staged_list
+                    .files
+                    .iter()
+                    .any(|f| f.path == path);
+                self.pending_messages
+                    .push(AppMessage::ViewDiff(path, staged));
             }
             StagingAction::SwitchWorktree(index) => {
                 self.switch_to_worktree(index, repo);
             }
             StagingAction::PreviewDiff(path, staged) => {
-                self.pending_messages.push(AppMessage::ViewDiff(path, staged));
+                self.pending_messages
+                    .push(AppMessage::ViewDiff(path, staged));
             }
             StagingAction::OpenSubmodule(name) => {
                 self.pending_messages.push(AppMessage::EnterSubmodule(name));
@@ -377,7 +415,8 @@ impl TabViewState {
                 self.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
             StagingAction::GenerateAiCommitMessage => {
-                self.pending_messages.push(AppMessage::AiGenerateCommitMessage);
+                self.pending_messages
+                    .push(AppMessage::AiGenerateCommitMessage);
             }
         }
     }
@@ -764,27 +803,27 @@ impl App {
             );
         }
 
-        let spline_renderer = SplineRenderer::new(
-            ctx.memory_allocator.clone(),
-            render_pass.clone(),
-        )
-        .context("Failed to create spline renderer")?;
+        let spline_renderer =
+            SplineRenderer::new(ctx.memory_allocator.clone(), render_pass.clone())
+                .context("Failed to create spline renderer")?;
 
-        let avatar_renderer = AvatarRenderer::new(
-            ctx.memory_allocator.clone(),
-            render_pass.clone(),
-        )
-        .context("Failed to create avatar renderer")?;
+        let avatar_renderer =
+            AvatarRenderer::new(ctx.memory_allocator.clone(), render_pass.clone())
+                .context("Failed to create avatar renderer")?;
 
         // Submit font atlas upload
-        let upload_buffer = upload_builder.build().context("Failed to build upload buffer")?;
+        let upload_buffer = upload_builder
+            .build()
+            .context("Failed to build upload buffer")?;
         let upload_future = sync::now(ctx.device.clone())
             .then_execute(ctx.queue.clone(), upload_buffer)
             .context("Failed to execute upload")?
             .then_signal_fence_and_flush()
             .map_err(Validated::unwrap)
             .context("Failed to flush upload")?;
-        upload_future.wait(None).context("Failed to wait for upload")?;
+        upload_future
+            .wait(None)
+            .context("Failed to wait for upload")?;
 
         let previous_frame_end = Some(sync::now(ctx.device.clone()).boxed());
 
@@ -800,8 +839,18 @@ impl App {
             view_state.commit_graph_view.time_spacing_strength = time_strength;
             view_state.commit_graph_view.fast_scroll = fast_scroll;
             view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-            let rx = init_tab_view(repo_tab, view_state, &text_renderer, scale, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-            if rx.is_some() { self.diff_stats_receiver = rx; }
+            let rx = init_tab_view(
+                repo_tab,
+                view_state,
+                &text_renderer,
+                scale,
+                &mut self.toast_manager,
+                self.config.show_orphaned_commits,
+                &self.proxy,
+            );
+            if rx.is_some() {
+                self.diff_stats_receiver = rx;
+            }
         }
 
         self.state = Some(RenderState {
@@ -871,9 +920,11 @@ impl App {
             let mut dirty_changed = false;
             for wt in &mut view_state.worktree_state.worktrees {
                 if let Ok(wt_repo) = git2::Repository::open(&wt.path) {
-                    let (dirty, count) = wt_repo.statuses(None)
+                    let (dirty, count) = wt_repo
+                        .statuses(None)
                         .map(|statuses| {
-                            let c = statuses.iter()
+                            let c = statuses
+                                .iter()
                                 .filter(|e| !e.status().intersects(git2::Status::IGNORED))
                                 .count();
                             (c > 0, c)
@@ -888,22 +939,32 @@ impl App {
             }
             // Sync dirty flags to commit graph view + staging well
             if dirty_changed {
-                view_state.staging_well.set_worktrees(&view_state.worktree_state.worktrees);
+                view_state
+                    .staging_well
+                    .set_worktrees(&view_state.worktree_state.worktrees);
                 // Regenerate synthetic entries to add/remove "uncommitted changes" rows
-                let synthetics = git::create_synthetic_entries(repo, &view_state.worktree_state.worktrees, &repo_tab.commits);
+                let synthetics = git::create_synthetic_entries(
+                    repo,
+                    &view_state.worktree_state.worktrees,
+                    &repo_tab.commits,
+                );
                 // Remove old synthetics, insert new ones
                 repo_tab.commits.retain(|c| !c.is_synthetic);
                 if !synthetics.is_empty() {
                     git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
                 }
-                view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                view_state
+                    .commit_graph_view
+                    .update_layout(&repo_tab.commits);
             }
         }
     }
 
     /// Diagnostic reload: capture current UI state, do a full re-read, and report deltas.
     fn do_diagnostic_reload(&mut self) {
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
 
         // 1. Capture "before" snapshot from current UI state
         let before = {
@@ -924,7 +985,12 @@ impl App {
                 submodule_focus: &mut view_state.submodule_focus,
                 proxy: self.proxy.clone(),
             };
-            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
+            RepoStateSnapshot::from_ui(
+                &repo_tab.commits,
+                &msg_view,
+                &view_state.current_branch,
+                view_state.head_oid,
+            )
         };
 
         // 2. Full reload (reopen to bypass libgit2 cache, then refresh)
@@ -932,7 +998,13 @@ impl App {
         for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
             let _ = wt_repo.reopen();
         }
-        refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
+        refresh_repo_state(
+            repo_tab,
+            view_state,
+            &mut self.toast_manager,
+            self.config.show_orphaned_commits,
+            &self.proxy,
+        );
         // Also refresh file status (staged/unstaged/conflicted)
         {
             let repo = &repo_tab.repo;
@@ -969,13 +1041,23 @@ impl App {
                 submodule_focus: &mut view_state.submodule_focus,
                 proxy: self.proxy.clone(),
             };
-            RepoStateSnapshot::from_ui(&repo_tab.commits, &msg_view, &view_state.current_branch, view_state.head_oid)
+            RepoStateSnapshot::from_ui(
+                &repo_tab.commits,
+                &msg_view,
+                &view_state.current_branch,
+                view_state.head_oid,
+            )
         };
 
         // 4. Compare and write report to file
         let deltas = compute_reload_deltas(&before, &after);
         let report_dir = std::env::var("HOME")
-            .map(|h| std::path::PathBuf::from(h).join(".config").join("whisper-git").join("reload-reports"))
+            .map(|h| {
+                std::path::PathBuf::from(h)
+                    .join(".config")
+                    .join("whisper-git")
+                    .join("reload-reports")
+            })
             .ok();
         if let Some(ref dir) = report_dir {
             let _ = std::fs::create_dir_all(dir);
@@ -998,35 +1080,58 @@ impl App {
                     report.push('\n');
                 }
             }
-            report.push_str(&format!("\n--- Before snapshot ---\n"));
-            report.push_str(&format!("Commits: {} (non-synthetic)\n", before.commit_oids.len()));
+            report.push_str("\n--- Before snapshot ---\n");
+            report.push_str(&format!(
+                "Commits: {} (non-synthetic)\n",
+                before.commit_oids.len()
+            ));
             report.push_str(&format!("HEAD: {:?}\n", before.head_oid));
             report.push_str(&format!("Branch: {}\n", before.current_branch));
             report.push_str(&format!("Branch tips: {}\n", before.branch_tips.len()));
             report.push_str(&format!("Tags: {}\n", before.tags.len()));
-            report.push_str(&format!("Staged/Unstaged/Conflicted: {}/{}/{}\n", before.staged_count, before.unstaged_count, before.conflicted_count));
-            report.push_str(&format!("\n--- After snapshot ---\n"));
-            report.push_str(&format!("Commits: {} (non-synthetic)\n", after.commit_oids.len()));
+            report.push_str(&format!(
+                "Staged/Unstaged/Conflicted: {}/{}/{}\n",
+                before.staged_count, before.unstaged_count, before.conflicted_count
+            ));
+            report.push_str("\n--- After snapshot ---\n");
+            report.push_str(&format!(
+                "Commits: {} (non-synthetic)\n",
+                after.commit_oids.len()
+            ));
             report.push_str(&format!("HEAD: {:?}\n", after.head_oid));
             report.push_str(&format!("Branch: {}\n", after.current_branch));
             report.push_str(&format!("Branch tips: {}\n", after.branch_tips.len()));
             report.push_str(&format!("Tags: {}\n", after.tags.len()));
-            report.push_str(&format!("Staged/Unstaged/Conflicted: {}/{}/{}\n", after.staged_count, after.unstaged_count, after.conflicted_count));
+            report.push_str(&format!(
+                "Staged/Unstaged/Conflicted: {}/{}/{}\n",
+                after.staged_count, after.unstaged_count, after.conflicted_count
+            ));
 
             match std::fs::write(&path, &report) {
                 Ok(()) => {
                     let summary = if deltas.is_empty() {
                         "Reload: no deltas".to_string()
                     } else {
-                        format!("Reload: {} delta{}", deltas.len(), if deltas.len() == 1 { "" } else { "s" })
+                        format!(
+                            "Reload: {} delta{}",
+                            deltas.len(),
+                            if deltas.len() == 1 { "" } else { "s" }
+                        )
                     };
                     self.toast_manager.push(
                         format!("{} — {}", summary, path.display()),
-                        if deltas.is_empty() { ToastSeverity::Success } else { ToastSeverity::Info },
+                        if deltas.is_empty() {
+                            ToastSeverity::Success
+                        } else {
+                            ToastSeverity::Info
+                        },
                     );
                 }
                 Err(e) => {
-                    self.toast_manager.push(format!("Failed to write reload report: {}", e), ToastSeverity::Error);
+                    self.toast_manager.push(
+                        format!("Failed to write reload report: {}", e),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
@@ -1036,7 +1141,9 @@ impl App {
 
     fn process_messages(&mut self) {
         let tab_count = self.tabs.len();
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
 
         // Extract messages to avoid borrow conflicts
         let messages: Vec<_> = view_state.pending_messages.drain(..).collect();
@@ -1047,34 +1154,51 @@ impl App {
         crash_log::breadcrumb(format!("process_messages: {} pending", messages.len()));
 
         // Partition: submodule navigation vs normal messages
-        let (nav_messages, mut normal_messages): (Vec<_>, Vec<_>) = messages.into_iter().partition(|msg| {
-            matches!(msg, AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_))
-        });
+        let (nav_messages, mut normal_messages): (Vec<_>, Vec<_>) =
+            messages.into_iter().partition(|msg| {
+                matches!(
+                    msg,
+                    AppMessage::EnterSubmodule(_)
+                        | AppMessage::ExitSubmodule
+                        | AppMessage::ExitToDepth(_)
+                )
+            });
 
         // Handle ShowPullDialog and ShowPushDialog separately (need to access dialogs)
         normal_messages.retain(|msg| {
             if let AppMessage::ShowPullDialog(branch) = msg {
                 let repo = &repo_tab.repo;
-                let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                let default_remote = repo
+                    .default_remote()
+                    .unwrap_or_else(|_| "origin".to_string());
                 self.pull_dialog.show(branch, &default_remote);
                 false
             } else if let AppMessage::ShowPushDialog(branch) = msg {
                 let repo = &repo_tab.repo;
-                let default_remote = repo.default_remote().unwrap_or_else(|_| "origin".to_string());
+                let default_remote = repo
+                    .default_remote()
+                    .unwrap_or_else(|_| "origin".to_string());
                 self.push_dialog.show(branch, &default_remote);
                 false
             } else if matches!(msg, AppMessage::AiGenerateCommitMessage) {
                 // Inline AI generation (can't call method due to borrow conflict with repo_tab/view_state)
                 if self.ai_commit_receiver.is_some() {
-                    self.toast_manager.push("AI generation already in progress".to_string(), ToastSeverity::Info);
+                    self.toast_manager.push(
+                        "AI generation already in progress".to_string(),
+                        ToastSeverity::Info,
+                    );
                 } else if view_state.staging_well.staged_list.files.is_empty() {
-                    self.toast_manager.push("No staged files — stage changes first".to_string(), ToastSeverity::Info);
+                    self.toast_manager.push(
+                        "No staged files — stage changes first".to_string(),
+                        ToastSeverity::Info,
+                    );
                 } else {
                     let repo = &repo_tab.repo;
                     let staging_repo = view_state.worktree_state.staging_repo_or(repo);
                     match staging_repo.staged_diff_text(50_000) {
                         Ok(diff_text) if diff_text.trim().is_empty() => {
-                            self.toast_manager.push("Staged diff is empty".to_string(), ToastSeverity::Info);
+                            self.toast_manager
+                                .push("Staged diff is empty".to_string(), ToastSeverity::Info);
                         }
                         Ok(diff_text) => {
                             let branch = view_state.current_branch.clone();
@@ -1096,7 +1220,10 @@ impl App {
                             );
                         }
                         Err(e) => {
-                            self.toast_manager.push(format!("Failed to read staged diff: {}", e), ToastSeverity::Error);
+                            self.toast_manager.push(
+                                format!("Failed to read staged diff: {}", e),
+                                ToastSeverity::Error,
+                            );
                         }
                     }
                 }
@@ -1114,13 +1241,39 @@ impl App {
                     let show_orphans = self.config.show_orphaned_commits;
                     match msg {
                         AppMessage::EnterSubmodule(name) => {
-                            enter_submodule(&name, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
+                            enter_submodule(
+                                &name,
+                                repo_tab,
+                                view_state,
+                                &state.text_renderer,
+                                scale,
+                                &mut self.toast_manager,
+                                show_orphans,
+                                &self.proxy,
+                            );
                         }
                         AppMessage::ExitSubmodule => {
-                            exit_submodule(repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
+                            exit_submodule(
+                                repo_tab,
+                                view_state,
+                                &state.text_renderer,
+                                scale,
+                                &mut self.toast_manager,
+                                show_orphans,
+                                &self.proxy,
+                            );
                         }
                         AppMessage::ExitToDepth(depth) => {
-                            exit_to_depth(depth, repo_tab, view_state, &state.text_renderer, scale, &mut self.toast_manager, show_orphans, &self.proxy);
+                            exit_to_depth(
+                                depth,
+                                repo_tab,
+                                view_state,
+                                &state.text_renderer,
+                                scale,
+                                &mut self.toast_manager,
+                                show_orphans,
+                                &self.proxy,
+                            );
                         }
                         _ => unreachable!(),
                     }
@@ -1134,16 +1287,26 @@ impl App {
             return;
         }
 
-        let scale = self.state.as_ref().map(|s| s.scale_factor as f32).unwrap_or(1.0);
+        let scale = self
+            .state
+            .as_ref()
+            .map(|s| s.scale_factor as f32)
+            .unwrap_or(1.0);
 
         // Compute graph bounds for JumpToWorktreeBranch
         let graph_bounds = if let Some(ref state) = self.state {
             let extent = state.surface.extent();
             let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-            let tab_bar_height = if tab_count > 1 { TabBar::height(scale) } else { 0.0 };
+            let tab_bar_height = if tab_count > 1 {
+                TabBar::height(scale)
+            } else {
+                0.0
+            };
             let (_tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
             let layout = ScreenLayout::compute_with_ratios_and_shortcut(
-                main_bounds, 4.0, scale,
+                main_bounds,
+                4.0,
+                scale,
                 Some(self.sidebar_ratio),
                 Some(self.graph_ratio),
                 self.shortcut_bar_visible,
@@ -1153,7 +1316,10 @@ impl App {
             Rect::new(0.0, 0.0, 1920.0, 1080.0)
         };
 
-        let ctx = MessageContext { graph_bounds, show_orphaned_commits: self.config.show_orphaned_commits };
+        let ctx = MessageContext {
+            graph_bounds,
+            show_orphaned_commits: self.config.show_orphaned_commits,
+        };
 
         let repo = &repo_tab.repo;
 
@@ -1162,7 +1328,10 @@ impl App {
 
         // Resolve staging_repo via direct field access to avoid borrow conflict
         // (repo_cache is immutably borrowed, worktrees is mutably borrowed in msg_view_state)
-        let staging_repo: &GitRepo = view_state.worktree_state.selected_path.as_ref()
+        let staging_repo: &GitRepo = view_state
+            .worktree_state
+            .selected_path
+            .as_ref()
             .and_then(|p| view_state.worktree_state.repo_cache.get(p))
             .unwrap_or(repo);
         for msg in normal_messages {
@@ -1193,7 +1362,6 @@ impl App {
                 &ctx,
             );
         }
-
     }
 
     /// Re-launch async diff stats for any commits still missing stats.
@@ -1202,26 +1370,41 @@ impl App {
         if self.diff_stats_receiver.is_some() {
             return; // computation already in progress
         }
-        let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
         let repo = &repo_tab.repo;
-        let needs_stats: Vec<Oid> = repo_tab.commits.iter()
+        let needs_stats: Vec<Oid> = repo_tab
+            .commits
+            .iter()
             .filter(|c| !c.is_synthetic && c.insertions == 0 && c.deletions == 0)
             .map(|c| c.id)
             .collect();
         if !needs_stats.is_empty() {
-            self.diff_stats_receiver = Some(repo.compute_diff_stats_async(needs_stats, self.proxy.clone()));
+            self.diff_stats_receiver =
+                Some(repo.compute_diff_stats_async(needs_stats, self.proxy.clone()));
         }
     }
 
     fn poll_watcher(&mut self) {
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-        let Some(ref rx) = view_state.watcher_rx else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        let Some(ref rx) = view_state.watcher_rx else {
+            return;
+        };
 
         // Drain all pending signals, track the highest-priority kind
         let mut max_kind: Option<FsChangeKind> = None;
         while let Ok(kind) = rx.try_recv() {
             max_kind = Some(match max_kind {
-                Some(prev) => if kind.priority() > prev.priority() { kind } else { prev },
+                Some(prev) => {
+                    if kind.priority() > prev.priority() {
+                        kind
+                    } else {
+                        prev
+                    }
+                }
                 None => kind,
             });
         }
@@ -1238,8 +1421,16 @@ impl App {
                 for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
                     let _ = wt_repo.reopen();
                 }
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                if rx.is_some() { self.diff_stats_receiver = rx; }
+                let rx = refresh_repo_state(
+                    repo_tab,
+                    view_state,
+                    &mut self.toast_manager,
+                    self.config.show_orphaned_commits,
+                    &self.proxy,
+                );
+                if rx.is_some() {
+                    self.diff_stats_receiver = rx;
+                }
                 // Update stored fingerprint to avoid redundant periodic re-check
                 view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
             }
@@ -1250,8 +1441,16 @@ impl App {
                 for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
                     let _ = wt_repo.reopen();
                 }
-                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                if rx.is_some() { self.diff_stats_receiver = rx; }
+                let rx = refresh_repo_state(
+                    repo_tab,
+                    view_state,
+                    &mut self.toast_manager,
+                    self.config.show_orphaned_commits,
+                    &self.proxy,
+                );
+                if rx.is_some() {
+                    self.diff_stats_receiver = rx;
+                }
                 // Update watcher paths for new/removed worktrees
                 let common_dir = repo_tab.repo.common_dir().to_path_buf();
                 if let Some(ref mut w) = view_state.watcher {
@@ -1291,7 +1490,9 @@ impl App {
     fn poll_remote_ops(&mut self) {
         use std::sync::mpsc::TryRecvError;
 
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
         let now = Instant::now();
         const TIMEOUT_SECS: u64 = 60;
 
@@ -1312,8 +1513,16 @@ impl App {
                             format!("{} {}", $past_tense, remote),
                             ToastSeverity::Success,
                         );
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                        if rx.is_some() { self.diff_stats_receiver = rx; }
+                        let rx = refresh_repo_state(
+                            repo_tab,
+                            view_state,
+                            &mut self.toast_manager,
+                            self.config.show_orphaned_commits,
+                            &self.proxy,
+                        );
+                        if rx.is_some() {
+                            self.diff_stats_receiver = rx;
+                        }
                     }
                     AsyncOpPoll::Failed(msg) => {
                         self.toast_manager.push(msg, ToastSeverity::Error);
@@ -1332,12 +1541,30 @@ impl App {
                     }
                     AsyncOpPoll::Pending => {}
                 }
-            }
+            };
         }
 
-        handle_poll!("Fetch", "Fetched from", &mut view_state.fetch_receiver, &mut view_state.header_bar.fetching, 0);
-        handle_poll!("Pull", "Pulled from", &mut view_state.pull_receiver, &mut view_state.header_bar.pulling, 1);
-        handle_poll!("Push", "Pushed to", &mut view_state.push_receiver, &mut view_state.header_bar.pushing, 2);
+        handle_poll!(
+            "Fetch",
+            "Fetched from",
+            &mut view_state.fetch_receiver,
+            &mut view_state.header_bar.fetching,
+            0
+        );
+        handle_poll!(
+            "Pull",
+            "Pulled from",
+            &mut view_state.pull_receiver,
+            &mut view_state.header_bar.pulling,
+            1
+        );
+        handle_poll!(
+            "Push",
+            "Pushed to",
+            &mut view_state.push_receiver,
+            &mut view_state.header_bar.pushing,
+            2
+        );
 
         // Poll generic async ops (submodule/worktree operations)
         // This has unique post-success behavior (squash merge toast, worktree/stash refresh)
@@ -1349,7 +1576,8 @@ impl App {
                     view_state.generic_op_receiver = None;
                     view_state.showed_timeout_toast[3] = false;
                     if result.success {
-                        self.toast_manager.push(format!("{} complete", label), ToastSeverity::Success);
+                        self.toast_manager
+                            .push(format!("{} complete", label), ToastSeverity::Success);
                         // Squash merge doesn't auto-commit: show info toast
                         if label.starts_with("Squash merge") {
                             self.toast_manager.push(
@@ -1357,8 +1585,16 @@ impl App {
                                 ToastSeverity::Info,
                             );
                         }
-                        let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                        if rx.is_some() { self.diff_stats_receiver = rx; }
+                        let rx = refresh_repo_state(
+                            repo_tab,
+                            view_state,
+                            &mut self.toast_manager,
+                            self.config.show_orphaned_commits,
+                            &self.proxy,
+                        );
+                        if rx.is_some() {
+                            self.diff_stats_receiver = rx;
+                        }
                         // Also refresh worktrees/stashes
                         if let Ok(worktrees) = repo_tab.repo.worktrees() {
                             view_state.worktree_state.worktrees = worktrees;
@@ -1378,9 +1614,12 @@ impl App {
                     );
                 }
                 Err(TryRecvError::Empty) => {
-                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS && !view_state.showed_timeout_toast[3] {
+                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS
+                        && !view_state.showed_timeout_toast[3]
+                    {
                         view_state.showed_timeout_toast[3] = true;
-                        self.toast_manager.push(format!("{} still running...", label), ToastSeverity::Info);
+                        self.toast_manager
+                            .push(format!("{} still running...", label), ToastSeverity::Info);
                     }
                 }
             }
@@ -1399,24 +1638,36 @@ impl App {
                 self.ai_commit_receiver = None;
                 if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                     view_state.staging_well.ai_generating = false;
-                    view_state.staging_well.subject_input.set_text(&response.subject);
+                    view_state
+                        .staging_well
+                        .subject_input
+                        .set_text(&response.subject);
                     view_state.staging_well.body_area.set_text(&response.body);
                 }
-                self.toast_manager.push("Commit message generated".to_string(), ToastSeverity::Success);
+                self.toast_manager.push(
+                    "Commit message generated".to_string(),
+                    ToastSeverity::Success,
+                );
             }
             Ok(Err(err)) => {
                 self.ai_commit_receiver = None;
                 if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                     view_state.staging_well.ai_generating = false;
                 }
-                self.toast_manager.push(format!("AI generation failed: {}", err), ToastSeverity::Error);
+                self.toast_manager.push(
+                    format!("AI generation failed: {}", err),
+                    ToastSeverity::Error,
+                );
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.ai_commit_receiver = None;
                 if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                     view_state.staging_well.ai_generating = false;
                 }
-                self.toast_manager.push("AI generation failed: thread terminated".to_string(), ToastSeverity::Error);
+                self.toast_manager.push(
+                    "AI generation failed: thread terminated".to_string(),
+                    ToastSeverity::Error,
+                );
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 // Check for timeout (30s)
@@ -1425,7 +1676,8 @@ impl App {
                     if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                         view_state.staging_well.ai_generating = false;
                     }
-                    self.toast_manager.push("AI generation timed out".to_string(), ToastSeverity::Error);
+                    self.toast_manager
+                        .push("AI generation timed out".to_string(), ToastSeverity::Error);
                 }
             }
         }
@@ -1433,7 +1685,7 @@ impl App {
 
     /// Open a new repo and add it as a tab
     fn open_repo_tab(&mut self, path: PathBuf) {
-        match GitRepo::open(&path) {
+        match GitRepo::open(path) {
             Ok(repo) => {
                 let name = repo.repo_name();
                 self.tab_bar.add_tab(name.clone());
@@ -1449,12 +1701,24 @@ impl App {
 
                 if let Some(ref render_state) = self.state {
                     view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
-                    view_state.commit_graph_view.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
-                    view_state.commit_graph_view.time_spacing_strength = self.settings_dialog.time_spacing_strength;
+                    view_state.commit_graph_view.abbreviate_worktree_names =
+                        self.settings_dialog.abbreviate_worktree_names;
+                    view_state.commit_graph_view.time_spacing_strength =
+                        self.settings_dialog.time_spacing_strength;
                     view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
                     view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-                    let rx = init_tab_view(&mut repo_tab, &mut view_state, &render_state.text_renderer, render_state.scale_factor as f32, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                    if rx.is_some() { self.diff_stats_receiver = rx; }
+                    let rx = init_tab_view(
+                        &mut repo_tab,
+                        &mut view_state,
+                        &render_state.text_renderer,
+                        render_state.scale_factor as f32,
+                        &mut self.toast_manager,
+                        self.config.show_orphaned_commits,
+                        &self.proxy,
+                    );
+                    if rx.is_some() {
+                        self.diff_stats_receiver = rx;
+                    }
                 }
 
                 self.tabs.push((repo_tab, view_state));
@@ -1467,10 +1731,8 @@ impl App {
                 );
             }
             Err(e) => {
-                self.toast_manager.push(
-                    format!("Failed to open: {}", e),
-                    ToastSeverity::Error,
-                );
+                self.toast_manager
+                    .push(format!("Failed to open: {}", e), ToastSeverity::Error);
             }
         }
     }
@@ -1482,10 +1744,8 @@ impl App {
         let name = self.tabs[index].0.name.clone();
         self.tabs.remove(index);
         self.active_tab = self.tab_bar.remove_tab(index);
-        self.toast_manager.push(
-            format!("Closed {}", name),
-            ToastSeverity::Info,
-        );
+        self.toast_manager
+            .push(format!("Closed {}", name), ToastSeverity::Info);
         self.refresh_status();
     }
 
@@ -1506,10 +1766,10 @@ impl App {
             if let Some(action) = self.confirm_dialog.take_action() {
                 match action {
                     ConfirmDialogAction::Confirm => {
-                        if let Some(msg) = self.pending_confirm_action.take() {
-                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                view_state.pending_messages.push(msg);
-                            }
+                        if let Some(msg) = self.pending_confirm_action.take()
+                            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+                        {
+                            view_state.pending_messages.push(msg);
                         }
                     }
                     ConfirmDialogAction::Cancel => {
@@ -1523,26 +1783,35 @@ impl App {
         // Branch name dialog takes modal priority
         if self.branch_name_dialog.is_visible() {
             let is_tag = self.branch_name_dialog.title().contains("Tag");
-            self.branch_name_dialog.handle_event(input_event, screen_bounds);
+            self.branch_name_dialog
+                .handle_event(input_event, screen_bounds);
             if let Some(action) = self.branch_name_dialog.take_action() {
                 match action {
                     BranchNameDialogAction::Create(name, oid) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             if is_tag {
-                                view_state.pending_messages.push(AppMessage::CreateTag(name, oid));
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::CreateTag(name, oid));
                             } else {
-                                view_state.pending_messages.push(AppMessage::CreateBranch(name, oid));
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::CreateBranch(name, oid));
                             }
                         }
                     }
                     BranchNameDialogAction::CreateWorktree(name, source) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::CreateWorktree(name, source));
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::CreateWorktree(name, source));
                         }
                     }
                     BranchNameDialogAction::Rename(new_name, old_name) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::RenameBranch(old_name, new_name));
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::RenameBranch(old_name, new_name));
                         }
                     }
                     BranchNameDialogAction::Cancel => {}
@@ -1558,17 +1827,23 @@ impl App {
                 match action {
                     RemoteDialogAction::AddRemote(name, url) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::AddRemote(name, url));
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::AddRemote(name, url));
                         }
                     }
                     RemoteDialogAction::EditUrl(name, url) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::SetRemoteUrl(name, url));
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::SetRemoteUrl(name, url));
                         }
                     }
                     RemoteDialogAction::Rename(old_name, new_name) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::RenameRemote(old_name, new_name));
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::RenameRemote(old_name, new_name));
                         }
                     }
                     RemoteDialogAction::Cancel => {}
@@ -1582,13 +1857,19 @@ impl App {
             self.pull_dialog.handle_event(input_event, screen_bounds);
             if let Some(action) = self.pull_dialog.take_action() {
                 match action {
-                    PullDialogAction::Confirm { remote, branch, rebase } => {
+                    PullDialogAction::Confirm {
+                        remote,
+                        branch,
+                        rebase,
+                    } => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::PullBranchFrom {
-                                remote,
-                                branch,
-                                rebase,
-                            });
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::PullBranchFrom {
+                                    remote,
+                                    branch,
+                                    rebase,
+                                });
                         }
                     }
                     PullDialogAction::Cancel => {}
@@ -1602,7 +1883,12 @@ impl App {
             self.push_dialog.handle_event(input_event, screen_bounds);
             if let Some(action) = self.push_dialog.take_action() {
                 match action {
-                    PushDialogAction::Confirm { local_branch, remote, remote_branch, force } => {
+                    PushDialogAction::Confirm {
+                        local_branch,
+                        remote,
+                        remote_branch,
+                        force,
+                    } => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             view_state.pending_messages.push(AppMessage::PushBranchTo {
                                 local_branch,
@@ -1626,13 +1912,20 @@ impl App {
                     MergeDialogAction::Confirm(branch, strategy, message, target_dir) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             let msg = match strategy {
-                                MergeStrategy::Default => AppMessage::MergeBranch(branch, target_dir),
+                                MergeStrategy::Default => {
+                                    AppMessage::MergeBranch(branch, target_dir)
+                                }
                                 MergeStrategy::NoFastForward => {
-                                    let commit_msg = message.unwrap_or_else(|| format!("Merge branch '{}'", branch));
+                                    let commit_msg = message
+                                        .unwrap_or_else(|| format!("Merge branch '{}'", branch));
                                     AppMessage::MergeNoFf(branch, commit_msg, target_dir)
                                 }
-                                MergeStrategy::FastForwardOnly => AppMessage::MergeFfOnly(branch, target_dir),
-                                MergeStrategy::Squash => AppMessage::MergeSquash(branch, target_dir),
+                                MergeStrategy::FastForwardOnly => {
+                                    AppMessage::MergeFfOnly(branch, target_dir)
+                                }
+                                MergeStrategy::Squash => {
+                                    AppMessage::MergeSquash(branch, target_dir)
+                                }
                             };
                             view_state.pending_messages.push(msg);
                         }
@@ -1650,9 +1943,14 @@ impl App {
                 match action {
                     RebaseDialogAction::Confirm(branch, opts, target_dir) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(
-                                AppMessage::RebaseBranchWithOptions(branch, opts.autostash, opts.rebase_merges, target_dir)
-                            );
+                            view_state
+                                .pending_messages
+                                .push(AppMessage::RebaseBranchWithOptions(
+                                    branch,
+                                    opts.autostash,
+                                    opts.rebase_merges,
+                                    target_dir,
+                                ));
                         }
                     }
                     RebaseDialogAction::Cancel => {}
@@ -1663,7 +1961,8 @@ impl App {
 
         // Settings dialog takes priority (modal)
         if self.settings_dialog.is_visible() {
-            self.settings_dialog.handle_event(input_event, screen_bounds);
+            self.settings_dialog
+                .handle_event(input_event, screen_bounds);
             if let Some(action) = self.settings_dialog.take_action() {
                 match action {
                     SettingsDialogAction::Close => {
@@ -1672,33 +1971,48 @@ impl App {
                         let time_strength = self.settings_dialog.time_spacing_strength;
                         let fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
                         let ratchet_scroll = self.settings_dialog.ratchet_scroll;
-                        let orphans_changed = self.config.show_orphaned_commits != self.settings_dialog.show_orphaned_commits;
+                        let orphans_changed = self.config.show_orphaned_commits
+                            != self.settings_dialog.show_orphaned_commits;
                         if let Some(ref state) = self.state {
                             for (repo_tab, view_state) in &mut self.tabs {
                                 view_state.commit_graph_view.row_scale = row_scale;
-                                view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
+                                view_state.commit_graph_view.abbreviate_worktree_names =
+                                    abbreviate_wt;
                                 view_state.commit_graph_view.time_spacing_strength = time_strength;
                                 view_state.commit_graph_view.fast_scroll = fast_scroll;
                                 view_state.commit_graph_view.ratchet_scroll = ratchet_scroll;
-                                view_state.commit_graph_view.sync_metrics(&state.text_renderer);
-                                view_state.commit_graph_view.compute_row_offsets(&repo_tab.commits);
+                                view_state
+                                    .commit_graph_view
+                                    .sync_metrics(&state.text_renderer);
+                                view_state
+                                    .commit_graph_view
+                                    .compute_row_offsets(&repo_tab.commits);
                             }
                         }
                         self.config.avatars_enabled = self.settings_dialog.show_avatars;
                         self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
                         self.config.row_scale = self.settings_dialog.row_scale;
-                        self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
-                        self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
-                        self.config.show_orphaned_commits = self.settings_dialog.show_orphaned_commits;
+                        self.config.abbreviate_worktree_names =
+                            self.settings_dialog.abbreviate_worktree_names;
+                        self.config.time_spacing_strength =
+                            self.settings_dialog.time_spacing_strength;
+                        self.config.show_orphaned_commits =
+                            self.settings_dialog.show_orphaned_commits;
                         self.config.ratchet_scroll = self.settings_dialog.ratchet_scroll;
                         if let Err(e) = self.config.save() {
                             self.toast_manager.push(e, ToastSeverity::Error);
                         }
                         // Reload commits if orphan visibility changed
-                        if orphans_changed {
-                            if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                                self.diff_stats_receiver = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                            }
+                        if orphans_changed
+                            && let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
+                        {
+                            self.diff_stats_receiver = refresh_repo_state(
+                                repo_tab,
+                                view_state,
+                                &mut self.toast_manager,
+                                self.config.show_orphaned_commits,
+                                &self.proxy,
+                            );
                         }
                     }
                 }
@@ -1719,35 +2033,43 @@ impl App {
 
         // Context menu takes priority when visible (overlay)
         if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
-            && view_state.context_menu.is_visible() {
-                view_state.context_menu.handle_event(input_event, screen_bounds);
-                if let Some(action) = view_state.context_menu.take_action() {
-                    match action {
-                        MenuAction::Selected(action_id) => {
-                            handle_context_menu_action(
-                                &action_id,
-                                view_state,
-                                &mut self.toast_manager,
-                                &mut self.confirm_dialog,
-                                &mut self.branch_name_dialog,
-                                &mut self.remote_dialog,
-                                &mut self.merge_dialog,
-                                &mut self.rebase_dialog,
-                                &repo_tab.repo,
-                                &mut self.pending_confirm_action,
-                            );
-                        }
+            && view_state.context_menu.is_visible()
+        {
+            view_state
+                .context_menu
+                .handle_event(input_event, screen_bounds);
+            if let Some(action) = view_state.context_menu.take_action() {
+                match action {
+                    MenuAction::Selected(action_id) => {
+                        handle_context_menu_action(
+                            &action_id,
+                            view_state,
+                            &mut self.toast_manager,
+                            &mut self.confirm_dialog,
+                            &mut self.branch_name_dialog,
+                            &mut self.remote_dialog,
+                            &mut self.merge_dialog,
+                            &mut self.rebase_dialog,
+                            &repo_tab.repo,
+                            &mut self.pending_confirm_action,
+                        );
                     }
                 }
-                return true;
             }
+            return true;
+        }
 
         false
     }
 
     /// Handle divider drag events (ongoing drag and starting new drags).
     /// Returns true if the event was consumed.
-    fn handle_divider_drag(&mut self, input_event: &InputEvent, main_bounds: Rect, layout: &ScreenLayout) -> bool {
+    fn handle_divider_drag(
+        &mut self,
+        input_event: &InputEvent,
+        main_bounds: Rect,
+        layout: &ScreenLayout,
+    ) -> bool {
         // Handle ongoing drag (MouseMove / MouseUp) before anything else
         if self.divider_drag.is_some() {
             match input_event {
@@ -1759,7 +2081,8 @@ impl App {
                             self.sidebar_ratio = ratio.clamp(0.05, 0.30);
                         }
                         DividerDrag::GraphRight => {
-                            let sidebar_w = main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
+                            let sidebar_w =
+                                main_bounds.width * self.sidebar_ratio.clamp(0.05, 0.30);
                             let content_x = main_bounds.x + sidebar_w;
                             let content_w = main_bounds.width - sidebar_w;
                             if content_w > 0.0 {
@@ -1770,7 +2093,9 @@ impl App {
                         DividerDrag::StagingPreview => {
                             // Compute pill bar height to get content rect
                             if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
-                                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+                                let pill_bar_h = view_state
+                                    .staging_well
+                                    .pill_bar_height(&view_state.current_branch);
                                 let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
                                 if content_rect.height > 0.0 {
                                     let ratio = (*y - content_rect.y) / content_rect.height;
@@ -1793,11 +2118,11 @@ impl App {
                 }
                 InputEvent::MouseUp { .. } => {
                     self.divider_drag = None;
-                    if let Some(ref render_state) = self.state {
-                        if self.current_cursor != CursorIcon::Default {
-                            render_state.window.set_cursor(CursorIcon::Default);
-                            self.current_cursor = CursorIcon::Default;
-                        }
+                    if let Some(ref render_state) = self.state
+                        && self.current_cursor != CursorIcon::Default
+                    {
+                        render_state.window.set_cursor(CursorIcon::Default);
+                        self.current_cursor = CursorIcon::Default;
                     }
                     return true;
                 }
@@ -1806,7 +2131,13 @@ impl App {
         }
 
         // Start divider drag on MouseDown near divider edges (wide 8px hit zone)
-        if let InputEvent::MouseDown { button: input::MouseButton::Left, x, y, .. } = input_event {
+        if let InputEvent::MouseDown {
+            button: input::MouseButton::Left,
+            x,
+            y,
+            ..
+        } = input_event
+        {
             let hit_tolerance = 8.0;
 
             if *y > layout.shortcut_bar.bottom() {
@@ -1823,17 +2154,18 @@ impl App {
                 }
 
                 // Horizontal divider: staging | preview (within right panel, staging mode only)
-                if layout.right_panel.contains(*x, *y) {
-                    if let Some((_, view_state)) = self.tabs.get(self.active_tab) {
-                        if view_state.right_panel_mode == RightPanelMode::Staging {
-                            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
-                            let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                            let split_y = content_rect.y + content_rect.height * self.staging_preview_ratio;
-                            if (*y - split_y).abs() < hit_tolerance {
-                                self.divider_drag = Some(DividerDrag::StagingPreview);
-                                return true;
-                            }
-                        }
+                if layout.right_panel.contains(*x, *y)
+                    && let Some((_, view_state)) = self.tabs.get(self.active_tab)
+                    && view_state.right_panel_mode == RightPanelMode::Staging
+                {
+                    let pill_bar_h = view_state
+                        .staging_well
+                        .pill_bar_height(&view_state.current_branch);
+                    let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
+                    let split_y = content_rect.y + content_rect.height * self.staging_preview_ratio;
+                    if (*y - split_y).abs() < hit_tolerance {
+                        self.divider_drag = Some(DividerDrag::StagingPreview);
+                        return true;
                     }
                 }
             }
@@ -1879,29 +2211,30 @@ impl App {
             return true;
         }
         // Ctrl+S: stash push (only when staging text inputs are not focused)
-        if *key == Key::S && modifiers.only_ctrl() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                if !view_state.staging_well.has_text_focus() {
-                    view_state.pending_messages.push(AppMessage::StashPush);
-                    return true;
-                }
-            }
+        if *key == Key::S
+            && modifiers.only_ctrl()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+            && !view_state.staging_well.has_text_focus()
+        {
+            view_state.pending_messages.push(AppMessage::StashPush);
+            return true;
         }
         // Ctrl+Shift+S: stash pop
-        if *key == Key::S && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::StashPop);
-                return true;
-            }
+        if *key == Key::S
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+        {
+            view_state.pending_messages.push(AppMessage::StashPop);
+            return true;
         }
         // Ctrl+Shift+A: toggle amend mode
-        if *key == Key::A && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                if !view_state.staging_well.has_text_focus() {
-                    view_state.pending_messages.push(AppMessage::ToggleAmend);
-                    return true;
-                }
-            }
+        if *key == Key::A
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+            && !view_state.staging_well.has_text_focus()
+        {
+            view_state.pending_messages.push(AppMessage::ToggleAmend);
+            return true;
         }
         // F5: diagnostic reload
         if *key == Key::F5 && !modifiers.any() {
@@ -1922,60 +2255,78 @@ impl App {
                 Key::Num9 => Some(8),
                 _ => None,
             };
-            if let Some(idx) = wt_index {
-                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                    if view_state.staging_well.has_worktree_selector()
-                        && idx < view_state.staging_well.worktree_count()
-                    {
-                        view_state.switch_to_worktree(idx, &repo_tab.repo);
-                        return true;
-                    }
-                }
+            if let Some(idx) = wt_index
+                && let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
+                && view_state.staging_well.has_worktree_selector()
+                && idx < view_state.staging_well.worktree_count()
+            {
+                view_state.switch_to_worktree(idx, &repo_tab.repo);
+                return true;
             }
         }
         // Ctrl+Shift+F: Fetch
-        if *key == Key::F && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                view_state.pending_messages.push(AppMessage::Fetch(None));
-                return true;
-            }
+        if *key == Key::F
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+        {
+            view_state.pending_messages.push(AppMessage::Fetch(None));
+            return true;
         }
         // Ctrl+Shift+L: Pull
-        if *key == Key::L && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
-                return true;
-            }
+        if *key == Key::L
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+        {
+            let branch = view_state
+                .current_branch_opt()
+                .unwrap_or("HEAD")
+                .to_string();
+            view_state.pending_messages.push(AppMessage::Pull {
+                remote: None,
+                branch,
+            });
+            return true;
         }
         // Ctrl+Shift+P: Push
-        if *key == Key::P && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
-                return true;
-            }
+        if *key == Key::P
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+        {
+            let branch = view_state
+                .current_branch_opt()
+                .unwrap_or("HEAD")
+                .to_string();
+            view_state.pending_messages.push(AppMessage::Push {
+                remote: None,
+                branch,
+            });
+            return true;
         }
         // Ctrl+Shift+R: Pull --rebase
-        if *key == Key::R && modifiers.ctrl_shift() {
-            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
-                return true;
-            }
+        if *key == Key::R
+            && modifiers.ctrl_shift()
+            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+        {
+            let branch = view_state
+                .current_branch_opt()
+                .unwrap_or("HEAD")
+                .to_string();
+            view_state.pending_messages.push(AppMessage::PullRebase {
+                remote: None,
+                branch,
+            });
+            return true;
         }
         // Backtick (`): Open terminal at repo workdir
-        if *key == Key::Grave && !modifiers.any() {
-            if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                // Don't fire when a text input has focus
-                if !view_state.staging_well.has_text_focus()
-                    && !view_state.branch_sidebar.has_text_focus()
-                {
-                    let path = repo_tab.repo.git_command_dir();
-                    open_terminal_at(&path.to_string_lossy(), "repo", &mut self.toast_manager);
-                    return true;
-                }
-            }
+        if *key == Key::Grave
+            && !modifiers.any()
+            && let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
+            && !view_state.staging_well.has_text_focus()
+            && !view_state.branch_sidebar.has_text_focus()
+        {
+            let path = repo_tab.repo.git_command_dir();
+            open_terminal_at(&path.to_string_lossy(), "repo", &mut self.toast_manager);
+            return true;
         }
 
         false
@@ -1983,28 +2334,41 @@ impl App {
 
     /// Handle a sidebar action by dispatching to the appropriate pending message or dialog.
     fn handle_sidebar_action(&mut self, action: SidebarAction) {
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
 
         match action {
             SidebarAction::Checkout(name) => {
-                view_state.pending_messages.push(AppMessage::CheckoutBranch(name));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::CheckoutBranch(name));
             }
             SidebarAction::CheckoutRemote(remote, branch) => {
-                view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(remote, branch));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::CheckoutRemoteBranch(remote, branch));
             }
             SidebarAction::Delete(name) => {
-                self.confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", name));
+                self.confirm_dialog
+                    .show("Delete Branch", &format!("Delete local branch '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
             }
             SidebarAction::ApplyStash(index) => {
-                view_state.pending_messages.push(AppMessage::StashApply(index));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::StashApply(index));
             }
             SidebarAction::DropStash(index) => {
-                self.confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
+                self.confirm_dialog.show(
+                    "Drop Stash",
+                    &format!("Drop stash@{{{}}}? This cannot be undone.", index),
+                );
                 self.pending_confirm_action = Some(AppMessage::StashDrop(index));
             }
             SidebarAction::DeleteTag(name) => {
-                self.confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", name));
+                self.confirm_dialog
+                    .show("Delete Tag", &format!("Delete tag '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
             }
             SidebarAction::SwitchWorktree(wt_name) => {
@@ -2078,7 +2442,13 @@ fn poll_remote_op(
 /// Call this after any operation that changes branches, commits, or remote state.
 /// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
 /// async diff stats computation that should be stored in `App::diff_stats_receiver`.
-fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, show_orphaned_commits: bool, proxy: &EventLoopProxy<()>) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn refresh_repo_state(
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
+    proxy: &EventLoopProxy<()>,
+) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     let repo = &repo_tab.repo;
 
     // Refresh worktree state (list, cache, pruning — all in one call)
@@ -2091,7 +2461,10 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 
     // Resolve staging_repo via direct field access to avoid borrow conflict
     // (repo_cache is immutably borrowed here, worktrees is mutably borrowed in msg_view below)
-    let staging_repo: &GitRepo = view_state.worktree_state.selected_path.as_ref()
+    let staging_repo: &GitRepo = view_state
+        .worktree_state
+        .selected_path
+        .as_ref()
         .and_then(|p| view_state.worktree_state.repo_cache.get(p))
         .unwrap_or(repo);
 
@@ -2117,7 +2490,14 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
             submodule_focus: &mut view_state.submodule_focus,
             proxy: proxy.clone(),
         };
-        refresh_repo_state_core(repo, staging_repo, &mut repo_tab.commits, &mut msg_view, toast_manager, show_orphaned_commits);
+        refresh_repo_state_core(
+            repo,
+            staging_repo,
+            &mut repo_tab.commits,
+            &mut msg_view,
+            toast_manager,
+            show_orphaned_commits,
+        );
     }
 
     // Derive HEAD from worktree state (single clean call)
@@ -2127,7 +2507,9 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
     view_state.header_bar.operation_state_label = git::repo_state_label(staging_repo_state);
 
     // Spawn async diff stats computation (skip synthetic entries — no real git object)
-    let real_oids: Vec<Oid> = repo_tab.commits.iter()
+    let real_oids: Vec<Oid> = repo_tab
+        .commits
+        .iter()
         .filter(|c| !c.is_synthetic)
         .map(|c| c.id)
         .collect();
@@ -2139,7 +2521,15 @@ fn refresh_repo_state(repo_tab: &mut RepoTab, view_state: &mut TabViewState, toa
 }
 
 /// Initialize a tab's view state from its repo data
-fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_renderer: &TextRenderer, scale: f32, toast_manager: &mut ToastManager, show_orphaned_commits: bool, proxy: &EventLoopProxy<()>) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+fn init_tab_view(
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    text_renderer: &TextRenderer,
+    scale: f32,
+    toast_manager: &mut ToastManager,
+    show_orphaned_commits: bool,
+    proxy: &EventLoopProxy<()>,
+) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -2147,7 +2537,11 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Set initial repo path in header — use common_dir parent to show project path,
     // not a worktree-specific path.
-    let project_path = repo_tab.repo.common_dir().parent().unwrap_or(repo_tab.repo.common_dir());
+    let project_path = repo_tab
+        .repo
+        .common_dir()
+        .parent()
+        .unwrap_or(repo_tab.repo.common_dir());
     let repo_path_str = project_path.to_string_lossy().into_owned();
     let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
     view_state.header_bar.set_repo_path(&repo_path_str);
@@ -2157,7 +2551,13 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 
     // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
     // (refresh_repo_state handles all of these — no need to call them separately)
-    let rx = refresh_repo_state(repo_tab, view_state, toast_manager, show_orphaned_commits, proxy);
+    let rx = refresh_repo_state(
+        repo_tab,
+        view_state,
+        toast_manager,
+        show_orphaned_commits,
+        proxy,
+    );
 
     // Seed the ref fingerprint so the periodic check has a baseline
     view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
@@ -2169,17 +2569,30 @@ fn init_tab_view(repo_tab: &mut RepoTab, view_state: &mut TabViewState, text_ren
 }
 
 /// Start (or restart) a filesystem watcher for the given tab's repo.
-fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manager: &mut ToastManager, proxy: &EventLoopProxy<()>) {
+fn start_watcher(
+    repo_tab: &RepoTab,
+    view_state: &mut TabViewState,
+    toast_manager: &mut ToastManager,
+    proxy: &EventLoopProxy<()>,
+) {
     // Drop any existing watcher first
     view_state.watcher = None;
     view_state.watcher_rx = None;
 
     let repo = &repo_tab.repo;
-    let Some(workdir) = repo.workdir() else { return };
+    let Some(workdir) = repo.workdir() else {
+        return;
+    };
     let git_dir = repo.git_dir();
     let common_dir = repo.common_dir();
 
-    match RepoWatcher::new(workdir, git_dir, common_dir, &view_state.worktree_state.worktrees, proxy.clone()) {
+    match RepoWatcher::new(
+        workdir,
+        git_dir,
+        common_dir,
+        &view_state.worktree_state.worktrees,
+        proxy.clone(),
+    ) {
         Ok((watcher, rx)) => {
             view_state.watcher = Some(watcher);
             view_state.watcher_rx = Some(rx);
@@ -2195,6 +2608,7 @@ fn start_watcher(repo_tab: &RepoTab, view_state: &mut TabViewState, toast_manage
 
 /// Drill into a named submodule: saves parent state and swaps repo to the submodule.
 /// Returns true on success.
+#[allow(clippy::too_many_arguments)]
 fn enter_submodule(
     name: &str,
     repo_tab: &mut RepoTab,
@@ -2206,11 +2620,17 @@ fn enter_submodule(
     proxy: &EventLoopProxy<()>,
 ) -> bool {
     // Find the submodule info by name
-    let sm = view_state.staging_well.submodules.iter()
+    let sm = view_state
+        .staging_well
+        .submodules
+        .iter()
         .find(|s| s.name == name)
         .cloned();
     let Some(sm) = sm else {
-        toast_manager.push(format!("Submodule '{}' not found", name), ToastSeverity::Error);
+        toast_manager.push(
+            format!("Submodule '{}' not found", name),
+            ToastSeverity::Error,
+        );
         return false;
     };
 
@@ -2222,10 +2642,10 @@ fn enter_submodule(
             return false;
         }
     };
-    let sub_path = parent_workdir.join(&sm.path);
+    let sub_path = parent_workdir.join(sm.path);
 
     // Open the submodule as a repo
-    let sub_repo = match GitRepo::open(&sub_path) {
+    let sub_repo = match GitRepo::open(sub_path) {
         Ok(r) => r,
         Err(e) => {
             toast_manager.push(
@@ -2284,7 +2704,15 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy);
+    let _ = init_tab_view(
+        repo_tab,
+        view_state,
+        text_renderer,
+        scale,
+        toast_manager,
+        show_orphaned_commits,
+        proxy,
+    );
 
     true
 }
@@ -2327,10 +2755,20 @@ fn exit_submodule(
     repo_tab.repo = saved.repo;
     repo_tab.commits = saved.commits;
     repo_tab.name = saved.repo_name;
-    view_state.worktree_state.restore(saved.worktree_state, &repo_tab.repo);
+    view_state
+        .worktree_state
+        .restore(saved.worktree_state, &repo_tab.repo);
 
     // Re-init views with parent data
-    let _ = init_tab_view(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy);
+    let _ = init_tab_view(
+        repo_tab,
+        view_state,
+        text_renderer,
+        scale,
+        toast_manager,
+        show_orphaned_commits,
+        proxy,
+    );
 
     // Restore scroll/selection
     view_state.commit_graph_view.scroll_offset = scroll_offset;
@@ -2342,14 +2780,18 @@ fn exit_submodule(
     view_state.staging_well.set_submodules(parent_submodules);
 
     // If stack is now empty, clear focus entirely
-    let stack_empty = view_state.submodule_focus.as_ref()
+    let stack_empty = view_state
+        .submodule_focus
+        .as_ref()
         .map(|f| f.parent_stack.is_empty())
         .unwrap_or(true);
     if stack_empty {
         view_state.submodule_focus = None;
     } else if let Some(ref mut focus) = view_state.submodule_focus {
         // Update current_name to the parent that's now active
-        focus.current_name = focus.parent_stack.last()
+        focus.current_name = focus
+            .parent_stack
+            .last()
             .map(|s| s.submodule_name.clone())
             .unwrap_or_default();
     }
@@ -2358,6 +2800,7 @@ fn exit_submodule(
 }
 
 /// Pop multiple levels to reach the given depth (0 = root).
+#[allow(clippy::too_many_arguments)]
 fn exit_to_depth(
     depth: usize,
     repo_tab: &mut RepoTab,
@@ -2368,7 +2811,9 @@ fn exit_to_depth(
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
 ) {
-    let current_depth = view_state.submodule_focus.as_ref()
+    let current_depth = view_state
+        .submodule_focus
+        .as_ref()
         .map(|f| f.parent_stack.len())
         .unwrap_or(0);
     if depth >= current_depth {
@@ -2376,7 +2821,15 @@ fn exit_to_depth(
     }
     let pops = current_depth - depth;
     for _ in 0..pops {
-        if !exit_submodule(repo_tab, view_state, text_renderer, scale, toast_manager, show_orphaned_commits, proxy) {
+        if !exit_submodule(
+            repo_tab,
+            view_state,
+            text_renderer,
+            scale,
+            toast_manager,
+            show_orphaned_commits,
+            proxy,
+        ) {
             break;
         }
     }
@@ -2399,12 +2852,33 @@ fn open_terminal_at(dir: &str, label: &str, toast_manager: &mut ToastManager) {
     // Check $TERMINAL env var first, then try common terminal emulators
     let candidates: Vec<String> = if let Ok(term) = std::env::var("TERMINAL") {
         std::iter::once(term)
-            .chain(["kitty", "alacritty", "wezterm", "foot", "xterm", "gnome-terminal", "konsole"]
-                .iter().map(|s| s.to_string()))
+            .chain(
+                [
+                    "kitty",
+                    "alacritty",
+                    "wezterm",
+                    "foot",
+                    "xterm",
+                    "gnome-terminal",
+                    "konsole",
+                ]
+                .iter()
+                .map(|s| s.to_string()),
+            )
             .collect()
     } else {
-        ["kitty", "alacritty", "wezterm", "foot", "xterm", "gnome-terminal", "konsole"]
-            .iter().map(|s| s.to_string()).collect()
+        [
+            "kitty",
+            "alacritty",
+            "wezterm",
+            "foot",
+            "xterm",
+            "gnome-terminal",
+            "konsole",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
     };
 
     for terminal in &candidates {
@@ -2415,9 +2889,7 @@ fn open_terminal_at(dir: &str, label: &str, toast_manager: &mut ToastManager) {
                 .spawn()
         } else {
             // Most terminals accept --working-directory or use the cwd
-            Command::new(terminal)
-                .current_dir(dir)
-                .spawn()
+            Command::new(terminal).current_dir(dir).spawn()
         };
 
         match result {
@@ -2441,10 +2913,11 @@ fn open_terminal_at(dir: &str, label: &str, toast_manager: &mut ToastManager) {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none()
-            && let Err(e) = self.init_state(event_loop) {
-                eprintln!("Failed to initialize: {e:?}");
-                event_loop.exit();
-            }
+            && let Err(e) = self.init_state(event_loop)
+        {
+            eprintln!("Failed to initialize: {e:?}");
+            event_loop.exit();
+        }
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
@@ -2481,8 +2954,7 @@ impl ApplicationHandler for App {
                     if std::env::var_os("WHISPER_TEXT_DIAG").is_some() {
                         eprintln!(
                             "text_diag scale_change: rebuilding atlas from {:.2} -> {:.2}",
-                            atlas_build_scale,
-                            scale_factor
+                            atlas_build_scale, scale_factor
                         );
                     }
                     if let Err(e) = rebuild_text_renderers(state, scale_factor) {
@@ -2495,8 +2967,12 @@ impl ApplicationHandler for App {
                     state.bold_text_renderer.set_render_scale(scale_factor);
                 }
                 for (repo_tab, view_state) in &mut self.tabs {
-                    view_state.commit_graph_view.sync_metrics(&state.text_renderer);
-                    view_state.commit_graph_view.update_layout(&repo_tab.commits);
+                    view_state
+                        .commit_graph_view
+                        .sync_metrics(&state.text_renderer);
+                    view_state
+                        .commit_graph_view
+                        .update_layout(&repo_tab.commits);
                     view_state.branch_sidebar.sync_metrics(&state.text_renderer);
                     view_state.staging_well.set_scale(scale_factor as f32);
                 }
@@ -2521,11 +2997,11 @@ impl ApplicationHandler for App {
                 // Process any pending messages
                 self.process_messages();
                 // Check if staging well requested an immediate status refresh (e.g., worktree switch)
-                if let Some((_rt, vs)) = self.tabs.get_mut(self.active_tab) {
-                    if vs.staging_well.status_refresh_needed {
-                        self.status_dirty = true;
-                        vs.staging_well.status_refresh_needed = false;
-                    }
+                if let Some((_rt, vs)) = self.tabs.get_mut(self.active_tab)
+                    && vs.staging_well.status_refresh_needed
+                {
+                    self.status_dirty = true;
+                    vs.staging_well.status_refresh_needed = false;
                 }
                 // Refresh working directory status only when dirty or on a periodic timer
                 {
@@ -2556,8 +3032,16 @@ impl ApplicationHandler for App {
                                     let _ = wt_repo.reopen();
                                 }
                                 self.status_dirty = true;
-                                let rx = refresh_repo_state(repo_tab, view_state, &mut self.toast_manager, self.config.show_orphaned_commits, &self.proxy);
-                                if rx.is_some() { self.diff_stats_receiver = rx; }
+                                let rx = refresh_repo_state(
+                                    repo_tab,
+                                    view_state,
+                                    &mut self.toast_manager,
+                                    self.config.show_orphaned_commits,
+                                    &self.proxy,
+                                );
+                                if rx.is_some() {
+                                    self.diff_stats_receiver = rx;
+                                }
                             }
                         }
                     }
@@ -2695,14 +3179,30 @@ impl ApplicationHandler for App {
 impl App {
     /// Check if any text input is currently focused (for cursor blink scheduling).
     fn has_focused_text_input(&self) -> bool {
-        let Some((_, vs)) = self.tabs.get(self.active_tab) else { return false };
-        if vs.staging_well.subject_input.is_focused() { return true; }
-        if vs.staging_well.body_area.is_focused() { return true; }
-        if vs.branch_sidebar.has_text_focus() { return true; }
-        if vs.commit_graph_view.search_bar.is_active() { return true; }
-        if self.branch_name_dialog.is_visible() { return true; }
-        if self.remote_dialog.is_visible() { return true; }
-        if self.repo_dialog.is_visible() { return true; }
+        let Some((_, vs)) = self.tabs.get(self.active_tab) else {
+            return false;
+        };
+        if vs.staging_well.subject_input.is_focused() {
+            return true;
+        }
+        if vs.staging_well.body_area.is_focused() {
+            return true;
+        }
+        if vs.branch_sidebar.has_text_focus() {
+            return true;
+        }
+        if vs.commit_graph_view.search_bar.is_active() {
+            return true;
+        }
+        if self.branch_name_dialog.is_visible() {
+            return true;
+        }
+        if self.remote_dialog.is_visible() {
+            return true;
+        }
+        if self.repo_dialog.is_visible() {
+            return true;
+        }
         false
     }
 
@@ -2714,10 +3214,16 @@ impl App {
         let extent = state.surface.extent();
         let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
         let scale = state.scale_factor as f32;
-        let tab_bar_height = if self.tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
+        let tab_bar_height = if self.tabs.len() > 1 {
+            TabBar::height(scale)
+        } else {
+            0.0
+        };
         let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
         let layout = ScreenLayout::compute_with_ratios_and_shortcut(
-            main_bounds, 4.0, scale,
+            main_bounds,
+            4.0,
+            scale,
             Some(self.sidebar_ratio),
             Some(self.graph_ratio),
             self.shortcut_bar_visible,
@@ -2740,42 +3246,53 @@ impl App {
 
         // Route to tab bar (if visible)
         if self.tabs.len() > 1
-            && self.tab_bar.handle_event(input_event, tab_bar_bounds).is_consumed() {
-                if let Some(action) = self.tab_bar.take_action() {
-                    match action {
-                        TabAction::Select(idx) => self.switch_tab(idx),
-                        TabAction::Close(idx) => self.close_tab(idx),
-                        TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
-                    }
+            && self
+                .tab_bar
+                .handle_event(input_event, tab_bar_bounds)
+                .is_consumed()
+        {
+            if let Some(action) = self.tab_bar.take_action() {
+                match action {
+                    TabAction::Select(idx) => self.switch_tab(idx),
+                    TabAction::Close(idx) => self.close_tab(idx),
+                    TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
                 }
-                return;
             }
+            return;
+        }
 
         // Route to active tab's views
         let tab_count = self.tabs.len();
-        let Some((_repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
+        let Some((_repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
 
         // Handle per-tab global keys (except Tab, which is handled after panel routing)
         if let InputEvent::KeyDown { key, .. } = input_event
-            && key == &Key::Escape {
-                if view_state.right_panel_mode == RightPanelMode::Browse {
-                    view_state.right_panel_mode = RightPanelMode::Staging;
-                    view_state.commit_detail_view.clear();
-                    view_state.diff_view.clear();
-                    view_state.last_diff_commit = None;
-                } else if view_state.diff_view.has_content() {
-                    view_state.diff_view.clear();
-                    view_state.last_diff_commit = None;
-                } else if view_state.submodule_focus.is_some() {
-                    view_state.pending_messages.push(AppMessage::ExitSubmodule);
-                } else {
-                    event_loop.exit();
-                }
-                return;
+            && key == &Key::Escape
+        {
+            if view_state.right_panel_mode == RightPanelMode::Browse {
+                view_state.right_panel_mode = RightPanelMode::Staging;
+                view_state.commit_detail_view.clear();
+                view_state.diff_view.clear();
+                view_state.last_diff_commit = None;
+            } else if view_state.diff_view.has_content() {
+                view_state.diff_view.clear();
+                view_state.last_diff_commit = None;
+            } else if view_state.submodule_focus.is_some() {
+                view_state.pending_messages.push(AppMessage::ExitSubmodule);
+            } else {
+                event_loop.exit();
             }
+            return;
+        }
 
         // Route to branch sidebar
-        if view_state.branch_sidebar.handle_event(input_event, layout.sidebar).is_consumed() {
+        if view_state
+            .branch_sidebar
+            .handle_event(input_event, layout.sidebar)
+            .is_consumed()
+        {
             if matches!(input_event, InputEvent::MouseDown { .. }) {
                 view_state.focused_panel = FocusedPanel::Sidebar;
                 view_state.branch_sidebar.set_focused(true);
@@ -2788,8 +3305,14 @@ impl App {
 
         // Route to header bar
         let mut do_reload = false;
-        let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-        if view_state.header_bar.handle_event(input_event, layout.header).is_consumed() {
+        let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        if view_state
+            .header_bar
+            .handle_event(input_event, layout.header)
+            .is_consumed()
+        {
             if let Some(action) = view_state.header_bar.take_action() {
                 use crate::ui::widgets::HeaderAction;
                 match action {
@@ -2797,16 +3320,34 @@ impl App {
                         view_state.pending_messages.push(AppMessage::Fetch(None));
                     }
                     HeaderAction::Pull => {
-                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                        view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
+                        let branch = view_state
+                            .current_branch_opt()
+                            .unwrap_or("HEAD")
+                            .to_string();
+                        view_state.pending_messages.push(AppMessage::Pull {
+                            remote: None,
+                            branch,
+                        });
                     }
                     HeaderAction::PullRebase => {
-                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                        view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
+                        let branch = view_state
+                            .current_branch_opt()
+                            .unwrap_or("HEAD")
+                            .to_string();
+                        view_state.pending_messages.push(AppMessage::PullRebase {
+                            remote: None,
+                            branch,
+                        });
                     }
                     HeaderAction::Push => {
-                        let branch = view_state.current_branch_opt().unwrap_or("HEAD").to_string();
-                        view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
+                        let branch = view_state
+                            .current_branch_opt()
+                            .unwrap_or("HEAD")
+                            .to_string();
+                        view_state.pending_messages.push(AppMessage::Push {
+                            remote: None,
+                            branch,
+                        });
                     }
                     HeaderAction::Commit => {
                         view_state.focused_panel = FocusedPanel::RightPanel;
@@ -2823,7 +3364,9 @@ impl App {
                         self.settings_dialog.show();
                     }
                     HeaderAction::BreadcrumbNav(depth) => {
-                        view_state.pending_messages.push(AppMessage::ExitToDepth(depth));
+                        view_state
+                            .pending_messages
+                            .push(AppMessage::ExitToDepth(depth));
                     }
                     HeaderAction::BreadcrumbClose => {
                         view_state.pending_messages.push(AppMessage::ExitToDepth(0));
@@ -2844,7 +3387,9 @@ impl App {
 
         // Route events to right panel content (commit detail + diff view)
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+            let pill_bar_h = view_state
+                .staging_well
+                .pill_bar_height(&view_state.current_branch);
             let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
             // Route to commit detail view when in browse mode
@@ -2852,14 +3397,22 @@ impl App {
                 && view_state.commit_detail_view.has_content()
             {
                 let (detail_rect, _diff_rect) = content_rect.split_vertical(0.40);
-                if view_state.commit_detail_view.handle_event(input_event, detail_rect).is_consumed() {
+                if view_state
+                    .commit_detail_view
+                    .handle_event(input_event, detail_rect)
+                    .is_consumed()
+                {
                     if let Some(action) = view_state.commit_detail_view.take_action() {
                         match action {
                             CommitDetailAction::ViewFileDiff(oid, path) => {
-                                view_state.pending_messages.push(AppMessage::ViewCommitFileDiff(oid, path));
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::ViewCommitFileDiff(oid, path));
                             }
                             CommitDetailAction::OpenSubmodule(name) => {
-                                view_state.pending_messages.push(AppMessage::EnterSubmodule(name));
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::EnterSubmodule(name));
                             }
                         }
                     }
@@ -2881,7 +3434,8 @@ impl App {
                         body
                     }
                     RightPanelMode::Staging => {
-                        let (_staging_rect, diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
+                        let (_staging_rect, diff_rect) =
+                            content_rect.split_vertical(self.staging_preview_ratio);
                         let (_hdr, body) = diff_rect.take_top(header_h);
                         body
                     }
@@ -2890,21 +3444,30 @@ impl App {
                         body
                     }
                 };
-                if view_state.diff_view.handle_event(input_event, diff_bounds).is_consumed() {
+                if view_state
+                    .diff_view
+                    .handle_event(input_event, diff_bounds)
+                    .is_consumed()
+                {
                     if let Some(action) = view_state.diff_view.take_action() {
                         match action {
-                            DiffAction::StageHunk(path, hunk_idx) => {
-                                view_state.pending_messages.push(AppMessage::StageHunk(path, hunk_idx));
+                            DiffAction::Stage(path, hunk_idx) => {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::StageHunk(path, hunk_idx));
                             }
-                            DiffAction::UnstageHunk(path, hunk_idx) => {
-                                view_state.pending_messages.push(AppMessage::UnstageHunk(path, hunk_idx));
+                            DiffAction::Unstage(path, hunk_idx) => {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::UnstageHunk(path, hunk_idx));
                             }
-                            DiffAction::DiscardHunk(path, hunk_idx) => {
+                            DiffAction::Discard(path, hunk_idx) => {
                                 self.confirm_dialog.show(
                                     "Discard Hunk",
                                     "Discard this hunk? This cannot be undone.",
                                 );
-                                self.pending_confirm_action = Some(AppMessage::DiscardHunk(path, hunk_idx));
+                                self.pending_confirm_action =
+                                    Some(AppMessage::DiscardHunk(path, hunk_idx));
                             }
                         }
                     }
@@ -2914,37 +3477,59 @@ impl App {
         }
 
         // Right-click context menus
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else { return };
-        if let InputEvent::MouseDown { button: input::MouseButton::Right, x, y, .. } = input_event {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        if let InputEvent::MouseDown {
+            button: input::MouseButton::Right,
+            x,
+            y,
+            ..
+        } = input_event
+        {
             // Check which panel was right-clicked and show context menu
             if layout.graph.contains(*x, *y) {
                 if let Some((items, oid)) = view_state.commit_graph_view.context_menu_items_at(
-                    *x, *y, &repo_tab.commits, layout.graph,
+                    *x,
+                    *y,
+                    &repo_tab.commits,
+                    layout.graph,
                 ) {
                     view_state.context_menu_commit = Some(oid);
                     view_state.context_menu.show(items, *x, *y);
                     return;
                 }
             } else if layout.sidebar.contains(*x, *y) {
-                if let Some(items) = view_state.branch_sidebar.context_menu_items_at(*x, *y, layout.sidebar, &view_state.current_branch) {
+                if let Some(items) = view_state.branch_sidebar.context_menu_items_at(
+                    *x,
+                    *y,
+                    layout.sidebar,
+                    &view_state.current_branch,
+                ) {
                     view_state.context_menu.show(items, *x, *y);
                     return;
                 }
             } else if layout.right_panel.contains(*x, *y) {
                 // Check pill bar first
-                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+                let pill_bar_h = view_state
+                    .staging_well
+                    .pill_bar_height(&view_state.current_branch);
                 let (pill_rect, _) = layout.right_panel.take_top(pill_bar_h);
-                if pill_rect.contains(*x, *y) {
-                    if let Some(items) = view_state.staging_well.pill_context_menu_at(*x, *y) {
-                        view_state.context_menu.show(items, *x, *y);
-                        return;
-                    }
+                if pill_rect.contains(*x, *y)
+                    && let Some(items) = view_state.staging_well.pill_context_menu_at(*x, *y)
+                {
+                    view_state.context_menu.show(items, *x, *y);
+                    return;
                 }
                 // Then check staging file lists
                 if view_state.right_panel_mode == RightPanelMode::Staging {
                     let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
                     let (staging_rect, _) = content_rect.split_vertical(self.staging_preview_ratio);
-                    if let Some(items) = view_state.staging_well.context_menu_items_at(*x, *y, staging_rect) {
+                    if let Some(items) =
+                        view_state
+                            .staging_well
+                            .context_menu_items_at(*x, *y, staging_rect)
+                    {
                         view_state.context_menu.show(items, *x, *y);
                         return;
                     }
@@ -2966,20 +3551,27 @@ impl App {
                 view_state.branch_sidebar.set_focused(false);
             }
             if view_state.focused_panel != FocusedPanel::RightPanel
-                || view_state.right_panel_mode != RightPanelMode::Staging {
+                || view_state.right_panel_mode != RightPanelMode::Staging
+            {
                 view_state.staging_well.unfocus_all();
             }
         }
 
         // Handle worktree pill bar clicks (before content routing)
         if let InputEvent::MouseDown { .. } = input_event {
-            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+            let pill_bar_h = view_state
+                .staging_well
+                .pill_bar_height(&view_state.current_branch);
             let (pill_rect, _content_rect) = layout.right_panel.take_top(pill_bar_h);
-            if view_state.staging_well.handle_pill_event(input_event, pill_rect).is_consumed() {
-                if let Some(action) = view_state.staging_well.take_action() {
-                    if let StagingAction::SwitchWorktree(index) = action {
-                        view_state.switch_to_worktree(index, &repo_tab.repo);
-                    }
+            if view_state
+                .staging_well
+                .handle_pill_event(input_event, pill_rect)
+                .is_consumed()
+            {
+                if let Some(action) = view_state.staging_well.take_action()
+                    && let StagingAction::SwitchWorktree(index) = action
+                {
+                    view_state.switch_to_worktree(index, &repo_tab.repo);
                 }
                 return;
             }
@@ -2989,25 +3581,37 @@ impl App {
         if let InputEvent::Scroll { x, y, .. } = input_event {
             if layout.graph.contains(*x, *y) {
                 let prev_selected = view_state.commit_graph_view.selected_commit;
-                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph, view_state.head_oid);
+                let response = view_state.commit_graph_view.handle_event(
+                    input_event,
+                    &repo_tab.commits,
+                    layout.graph,
+                    view_state.head_oid,
+                );
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid) {
-                            if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
-                                // Synthetic row: switch to that worktree if named
-                                if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
-                                } else {
-                                    // Single-worktree: enter staging mode directly
-                                    view_state.right_panel_mode = RightPanelMode::Staging;
-                                    view_state.last_diff_commit = None;
-                                    view_state.commit_detail_view.clear();
-                                    view_state.diff_view.clear();
-                                }
-                            } else {
-                                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
-                            }
+                    && view_state.last_diff_commit != Some(oid)
+                {
+                    if let Some(synthetic) = repo_tab
+                        .commits
+                        .iter()
+                        .find(|c| c.id == oid && c.is_synthetic)
+                    {
+                        // Synthetic row: switch to that worktree if named
+                        if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
+                            view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
+                        } else {
+                            // Single-worktree: enter staging mode directly
+                            view_state.right_panel_mode = RightPanelMode::Staging;
+                            view_state.last_diff_commit = None;
+                            view_state.commit_detail_view.clear();
+                            view_state.diff_view.clear();
                         }
+                    } else {
+                        view_state
+                            .pending_messages
+                            .push(AppMessage::SelectedCommit(oid));
+                    }
+                }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
                     view_state.handle_graph_action(action, &repo_tab.repo);
                 }
@@ -3015,11 +3619,17 @@ impl App {
                     return;
                 }
             } else if layout.right_panel.contains(*x, *y)
-                && view_state.right_panel_mode == RightPanelMode::Staging {
-                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+                && view_state.right_panel_mode == RightPanelMode::Staging
+            {
+                let pill_bar_h = view_state
+                    .staging_well
+                    .pill_bar_height(&view_state.current_branch);
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
-                let response = view_state.staging_well.handle_event(input_event, staging_rect);
+                let (staging_rect, _diff_rect) =
+                    content_rect.split_vertical(self.staging_preview_ratio);
+                let response = view_state
+                    .staging_well
+                    .handle_event(input_event, staging_rect);
                 if let Some(action) = view_state.staging_well.take_action() {
                     view_state.handle_staging_action(action, &repo_tab.repo);
                 }
@@ -3037,24 +3647,36 @@ impl App {
         match view_state.focused_panel {
             FocusedPanel::Graph => {
                 let prev_selected = view_state.commit_graph_view.selected_commit;
-                let response = view_state.commit_graph_view.handle_event(input_event, &repo_tab.commits, layout.graph, view_state.head_oid);
+                let response = view_state.commit_graph_view.handle_event(
+                    input_event,
+                    &repo_tab.commits,
+                    layout.graph,
+                    view_state.head_oid,
+                );
                 if view_state.commit_graph_view.selected_commit != prev_selected
                     && let Some(oid) = view_state.commit_graph_view.selected_commit
-                        && view_state.last_diff_commit != Some(oid) {
-                            if let Some(synthetic) = repo_tab.commits.iter().find(|c| c.id == oid && c.is_synthetic) {
-                                if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
-                                    view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
-                                } else {
-                                    // Single-worktree: enter staging mode directly
-                                    view_state.right_panel_mode = RightPanelMode::Staging;
-                                    view_state.last_diff_commit = None;
-                                    view_state.commit_detail_view.clear();
-                                    view_state.diff_view.clear();
-                                }
-                            } else {
-                                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
-                            }
+                    && view_state.last_diff_commit != Some(oid)
+                {
+                    if let Some(synthetic) = repo_tab
+                        .commits
+                        .iter()
+                        .find(|c| c.id == oid && c.is_synthetic)
+                    {
+                        if let Some(wt_name) = synthetic.synthetic_wt_name.clone() {
+                            view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
+                        } else {
+                            // Single-worktree: enter staging mode directly
+                            view_state.right_panel_mode = RightPanelMode::Staging;
+                            view_state.last_diff_commit = None;
+                            view_state.commit_detail_view.clear();
+                            view_state.diff_view.clear();
                         }
+                    } else {
+                        view_state
+                            .pending_messages
+                            .push(AppMessage::SelectedCommit(oid));
+                    }
+                }
                 if let Some(action) = view_state.commit_graph_view.take_action() {
                     view_state.handle_graph_action(action, &repo_tab.repo);
                 }
@@ -3064,10 +3686,15 @@ impl App {
             }
             FocusedPanel::RightPanel => {
                 if view_state.right_panel_mode == RightPanelMode::Staging {
-                    let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+                    let pill_bar_h = view_state
+                        .staging_well
+                        .pill_bar_height(&view_state.current_branch);
                     let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                    let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
-                    let response = view_state.staging_well.handle_event(input_event, staging_rect);
+                    let (staging_rect, _diff_rect) =
+                        content_rect.split_vertical(self.staging_preview_ratio);
+                    let response = view_state
+                        .staging_well
+                        .handle_event(input_event, staging_rect);
 
                     if let Some(action) = view_state.staging_well.take_action() {
                         view_state.handle_staging_action(action, &repo_tab.repo);
@@ -3090,9 +3717,12 @@ impl App {
                 FocusedPanel::RightPanel => FocusedPanel::Sidebar,
                 FocusedPanel::Sidebar => FocusedPanel::Graph,
             };
-            view_state.branch_sidebar.set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
+            view_state
+                .branch_sidebar
+                .set_focused(view_state.focused_panel == FocusedPanel::Sidebar);
             if view_state.focused_panel != FocusedPanel::RightPanel
-                || view_state.right_panel_mode != RightPanelMode::Staging {
+                || view_state.right_panel_mode != RightPanelMode::Staging
+            {
                 view_state.staging_well.unfocus_all();
             }
             return;
@@ -3101,20 +3731,38 @@ impl App {
         // Update hover states
         if let InputEvent::MouseMove { x, y, .. } = input_event {
             view_state.header_bar.update_hover(*x, *y, layout.header);
-            view_state.branch_sidebar.update_hover(*x, *y, layout.sidebar);
+            view_state
+                .branch_sidebar
+                .update_hover(*x, *y, layout.sidebar);
             {
-                let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+                let pill_bar_h = view_state
+                    .staging_well
+                    .pill_bar_height(&view_state.current_branch);
                 let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                let (staging_rect, _diff_rect) = content_rect.split_vertical(self.staging_preview_ratio);
+                let (staging_rect, _diff_rect) =
+                    content_rect.split_vertical(self.staging_preview_ratio);
                 view_state.staging_well.update_hover(*x, *y, staging_rect);
             }
 
             if let Some(ref render_state) = self.state {
                 if tab_count > 1 {
-                    self.tab_bar.update_hover_with_renderer(*x, *y, tab_bar_bounds, &render_state.text_renderer);
+                    self.tab_bar.update_hover_with_renderer(
+                        *x,
+                        *y,
+                        tab_bar_bounds,
+                        &render_state.text_renderer,
+                    );
                 }
 
-                let cursor = determine_cursor(*x, *y, &layout, view_state, &self.tab_bar, tab_count, self.staging_preview_ratio);
+                let cursor = determine_cursor(
+                    *x,
+                    *y,
+                    &layout,
+                    view_state,
+                    &self.tab_bar,
+                    tab_count,
+                    self.staging_preview_ratio,
+                );
                 if self.current_cursor != cursor {
                     render_state.window.set_cursor(cursor);
                     self.current_cursor = cursor;
@@ -3157,7 +3805,9 @@ fn determine_cursor(
         if layout.right_panel.contains(x, y)
             && view_state.right_panel_mode == RightPanelMode::Staging
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+            let pill_bar_h = view_state
+                .staging_well
+                .pill_bar_height(&view_state.current_branch);
             let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
             let split_y = content_rect.y + content_rect.height * staging_preview_ratio;
             if (y - split_y).abs() < divider_hit {
@@ -3170,10 +3820,13 @@ fn determine_cursor(
 
     // Staging area text inputs (subject line, body area) - only in staging mode
     if layout.right_panel.contains(x, y) && view_state.right_panel_mode == RightPanelMode::Staging {
-        let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch); // scale already in pill_bar_height
+        let pill_bar_h = view_state
+            .staging_well
+            .pill_bar_height(&view_state.current_branch); // scale already in pill_bar_height
         let (_pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
         let (staging_rect, _diff_rect) = content_rect.split_vertical(staging_preview_ratio);
-        let (_, _, subject_bounds, body_bounds, _) = view_state.staging_well.compute_regions(staging_rect);
+        let (_, _, subject_bounds, body_bounds, _) =
+            view_state.staging_well.compute_regions(staging_rect);
         if subject_bounds.contains(x, y) || body_bounds.contains(x, y) {
             return CursorIcon::Text;
         }
@@ -3195,7 +3848,11 @@ fn determine_cursor(
     }
 
     // Sidebar filter bar (show text cursor when hovering the filter input area)
-    if layout.sidebar.contains(x, y) && view_state.branch_sidebar.is_over_filter_bar(x, y, layout.sidebar) {
+    if layout.sidebar.contains(x, y)
+        && view_state
+            .branch_sidebar
+            .is_over_filter_bar(x, y, layout.sidebar)
+    {
         return CursorIcon::Text;
     }
 
@@ -3260,21 +3917,32 @@ fn render_preview_header(
 ) -> Rect {
     let header_h = 28.0 * scale;
     let (header_rect, body_rect) = rect.take_top(header_h);
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &header_rect,
-        theme::SURFACE_RAISED.to_array(),
-    ));
+    output
+        .spline_vertices
+        .extend(crate::ui::widget::create_rect_vertices(
+            &header_rect,
+            theme::SURFACE_RAISED.to_array(),
+        ));
     let header_text_y = header_rect.y + (header_h - bold_text_renderer.line_height()) / 2.0;
     let header_text_x = header_rect.x + 12.0 * scale;
-    let color = if is_placeholder { theme::TEXT_MUTED } else { theme::TEXT_BRIGHT };
-    output.bold_text_vertices.extend(bold_text_renderer.layout_text(
-        title, header_text_x, header_text_y,
-        color.to_array(),
-    ));
+    let color = if is_placeholder {
+        theme::TEXT_MUTED
+    } else {
+        theme::TEXT_BRIGHT
+    };
+    output
+        .bold_text_vertices
+        .extend(bold_text_renderer.layout_text(
+            title,
+            header_text_x,
+            header_text_y,
+            color.to_array(),
+        ));
     body_rect
 }
 
 /// Handle a context menu action by dispatching to the appropriate AppMessage
+#[allow(clippy::too_many_arguments)]
 fn handle_context_menu_action(
     action_id: &str,
     view_state: &mut TabViewState,
@@ -3297,45 +3965,51 @@ fn handle_context_menu_action(
                 let sha = oid.to_string();
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&sha)) {
                     Ok(()) => {
-                        toast_manager.push(
-                            format!("Copied: {}", &sha[..7]),
-                            ToastSeverity::Success,
-                        );
+                        toast_manager
+                            .push(format!("Copied: {}", &sha[..7]), ToastSeverity::Success);
                     }
                     Err(e) => {
-                        toast_manager.push(
-                            format!("Clipboard error: {e}"),
-                            ToastSeverity::Error,
-                        );
+                        toast_manager.push(format!("Clipboard error: {e}"), ToastSeverity::Error);
                     }
                 }
             }
         }
         "view_details" => {
             if let Some(oid) = view_state.context_menu_commit {
-                view_state.pending_messages.push(AppMessage::SelectedCommit(oid));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::SelectedCommit(oid));
             }
         }
         "checkout" => {
             if param.is_empty() {
                 // Commit graph checkout: find the branch at the selected commit
                 if let Some(oid) = view_state.context_menu_commit
-                    && let Some(tip) = view_state.commit_graph_view.branch_tips.iter()
+                    && let Some(tip) = view_state
+                        .commit_graph_view
+                        .branch_tips
+                        .iter()
                         .find(|t| t.oid == oid && !t.is_remote)
-                    {
-                        view_state.pending_messages.push(AppMessage::CheckoutBranch(tip.name.clone()));
-                    }
+                {
+                    view_state
+                        .pending_messages
+                        .push(AppMessage::CheckoutBranch(tip.name.clone()));
+                }
             } else {
                 // Branch sidebar checkout
-                view_state.pending_messages.push(AppMessage::CheckoutBranch(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::CheckoutBranch(param.to_string()));
             }
         }
         "checkout_remote" => {
             if let Some((remote, branch)) = param.split_once('/') {
-                view_state.pending_messages.push(AppMessage::CheckoutRemoteBranch(
-                    remote.to_string(),
-                    branch.to_string(),
-                ));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::CheckoutRemoteBranch(
+                        remote.to_string(),
+                        branch.to_string(),
+                    ));
             }
         }
         "rename" => {
@@ -3345,97 +4019,162 @@ fn handle_context_menu_action(
         }
         "delete" => {
             if !param.is_empty() {
-                confirm_dialog.show("Delete Branch", &format!("Delete local branch '{}'?", param));
+                confirm_dialog.show(
+                    "Delete Branch",
+                    &format!("Delete local branch '{}'?", param),
+                );
                 *pending_confirm_action = Some(AppMessage::DeleteBranch(param.to_string()));
             }
         }
         "push" => {
             let branch = if param.is_empty() {
-                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
+                view_state
+                    .current_branch_opt()
+                    .unwrap_or("HEAD")
+                    .to_string()
             } else {
                 param.to_string()
             };
-            view_state.pending_messages.push(AppMessage::Push { remote: None, branch });
+            view_state.pending_messages.push(AppMessage::Push {
+                remote: None,
+                branch,
+            });
         }
         "push_to" => {
-            view_state.pending_messages.push(AppMessage::ShowPushDialog(param.to_string()));
+            view_state
+                .pending_messages
+                .push(AppMessage::ShowPushDialog(param.to_string()));
         }
         "pull" => {
             let branch = if param.is_empty() {
-                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
+                view_state
+                    .current_branch_opt()
+                    .unwrap_or("HEAD")
+                    .to_string()
             } else {
                 param.to_string()
             };
-            view_state.pending_messages.push(AppMessage::Pull { remote: None, branch });
+            view_state.pending_messages.push(AppMessage::Pull {
+                remote: None,
+                branch,
+            });
         }
         "pull_rebase" => {
             let branch = if param.is_empty() {
-                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
+                view_state
+                    .current_branch_opt()
+                    .unwrap_or("HEAD")
+                    .to_string()
             } else {
                 param.to_string()
             };
-            view_state.pending_messages.push(AppMessage::PullRebase { remote: None, branch });
+            view_state.pending_messages.push(AppMessage::PullRebase {
+                remote: None,
+                branch,
+            });
         }
         "pull_from_dialog" => {
-            view_state.pending_messages.push(AppMessage::ShowPullDialog(param.to_string()));
+            view_state
+                .pending_messages
+                .push(AppMessage::ShowPullDialog(param.to_string()));
         }
         "force_push" => {
             let branch = if param.is_empty() {
-                view_state.current_branch_opt().unwrap_or("HEAD").to_string()
+                view_state
+                    .current_branch_opt()
+                    .unwrap_or("HEAD")
+                    .to_string()
             } else {
                 param.to_string()
             };
-            confirm_dialog.show("Force Push", &format!("Force push '{}' with --force-with-lease? This may overwrite remote commits.", branch));
-            *pending_confirm_action = Some(AppMessage::PushForce { remote: None, branch });
+            confirm_dialog.show(
+                "Force Push",
+                &format!(
+                    "Force push '{}' with --force-with-lease? This may overwrite remote commits.",
+                    branch
+                ),
+            );
+            *pending_confirm_action = Some(AppMessage::PushForce {
+                remote: None,
+                branch,
+            });
         }
         "fetch_remote" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::Fetch(Some(param.to_string())));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::Fetch(Some(param.to_string())));
             }
         }
         // Staging actions
         "stage" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::StageFile(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::StageFile(param.to_string()));
             }
         }
         "unstage" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::UnstageFile(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::UnstageFile(param.to_string()));
             }
         }
         "view_diff" => {
             if !param.is_empty() {
-                let staged = view_state.staging_well.staged_list.files
-                    .iter().any(|f| f.path == param);
-                view_state.pending_messages.push(AppMessage::ViewDiff(param.to_string(), staged));
+                let staged = view_state
+                    .staging_well
+                    .staged_list
+                    .files
+                    .iter()
+                    .any(|f| f.path == param);
+                view_state
+                    .pending_messages
+                    .push(AppMessage::ViewDiff(param.to_string(), staged));
             }
         }
         "discard" => {
             if !param.is_empty() {
-                confirm_dialog.show("Discard Changes", &format!("Discard changes to '{}'? This cannot be undone.", param));
+                confirm_dialog.show(
+                    "Discard Changes",
+                    &format!("Discard changes to '{}'? This cannot be undone.", param),
+                );
                 *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
             }
         }
         "delete_submodule" => {
             if !param.is_empty() {
-                confirm_dialog.show("Delete Submodule", &format!("Remove submodule '{}'? This will deinit and remove it.", param));
+                confirm_dialog.show(
+                    "Delete Submodule",
+                    &format!(
+                        "Remove submodule '{}'? This will deinit and remove it.",
+                        param
+                    ),
+                );
                 *pending_confirm_action = Some(AppMessage::DeleteSubmodule(param.to_string()));
             }
         }
         "update_submodule" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::UpdateSubmodule(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::UpdateSubmodule(param.to_string()));
             }
         }
         "enter_submodule" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::EnterSubmodule(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::EnterSubmodule(param.to_string()));
             }
         }
         "open_submodule" => {
             if !param.is_empty() {
-                let path = view_state.staging_well.submodules.iter()
+                let path = view_state
+                    .staging_well
+                    .submodules
+                    .iter()
                     .find(|s| s.name == param)
                     .map(|s| s.path.clone());
                 if let Some(path) = path {
@@ -3450,7 +4189,10 @@ fn handle_context_menu_action(
         }
         "open_worktree" => {
             if !param.is_empty() {
-                let path = view_state.worktree_state.worktrees.iter()
+                let path = view_state
+                    .worktree_state
+                    .worktrees
+                    .iter()
                     .find(|w| w.name == param)
                     .map(|w| w.path.clone());
                 if let Some(path) = path {
@@ -3470,14 +4212,23 @@ fn handle_context_menu_action(
         }
         "jump_to_worktree" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::JumpToWorktreeBranch(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::JumpToWorktreeBranch(param.to_string()));
             }
         }
         "remove_worktree" => {
             if !param.is_empty() {
-                let is_dirty = view_state.worktree_state.worktrees.iter().any(|w| w.name == param && w.is_dirty);
+                let is_dirty = view_state
+                    .worktree_state
+                    .worktrees
+                    .iter()
+                    .any(|w| w.name == param && w.is_dirty);
                 let msg = if is_dirty {
-                    format!("Remove worktree '{}'? This worktree has uncommitted changes that will be lost.", param)
+                    format!(
+                        "Remove worktree '{}'? This worktree has uncommitted changes that will be lost.",
+                        param
+                    )
                 } else {
                     format!("Remove worktree '{}'?", param)
                 };
@@ -3522,7 +4273,10 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
-                confirm_dialog.show("Cherry-pick", &format!("Cherry-pick commit {} into '{}'?", short, branch));
+                confirm_dialog.show(
+                    "Cherry-pick",
+                    &format!("Cherry-pick commit {} into '{}'?", short, branch),
+                );
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
             }
         }
@@ -3531,7 +4285,10 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
-                confirm_dialog.show("Revert Commit", &format!("Create a revert of {} on '{}'?", short, branch));
+                confirm_dialog.show(
+                    "Revert Commit",
+                    &format!("Create a revert of {} on '{}'?", short, branch),
+                );
                 *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
             }
         }
@@ -3540,8 +4297,18 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
-                confirm_dialog.show("Reset (Soft)", &format!("Reset '{}' to {}? Changes will be kept staged.", branch, short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Soft, target_dir));
+                confirm_dialog.show(
+                    "Reset (Soft)",
+                    &format!(
+                        "Reset '{}' to {}? Changes will be kept staged.",
+                        branch, short
+                    ),
+                );
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(
+                    oid,
+                    git2::ResetType::Soft,
+                    target_dir,
+                ));
             }
         }
         "reset_mixed" => {
@@ -3549,8 +4316,18 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
-                confirm_dialog.show("Reset (Mixed)", &format!("Reset '{}' to {}? Changes will be kept unstaged.", branch, short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Mixed, target_dir));
+                confirm_dialog.show(
+                    "Reset (Mixed)",
+                    &format!(
+                        "Reset '{}' to {}? Changes will be kept unstaged.",
+                        branch, short
+                    ),
+                );
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(
+                    oid,
+                    git2::ResetType::Mixed,
+                    target_dir,
+                ));
             }
         }
         "reset_hard" => {
@@ -3559,7 +4336,11 @@ fn handle_context_menu_action(
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
-                *pending_confirm_action = Some(AppMessage::ResetToCommit(oid, git2::ResetType::Hard, target_dir));
+                *pending_confirm_action = Some(AppMessage::ResetToCommit(
+                    oid,
+                    git2::ResetType::Hard,
+                    target_dir,
+                ));
             }
         }
         "create_branch" => {
@@ -3603,17 +4384,24 @@ fn handle_context_menu_action(
         }
         "apply_stash" => {
             if let Ok(index) = param.parse::<usize>() {
-                view_state.pending_messages.push(AppMessage::StashApply(index));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::StashApply(index));
             }
         }
         "pop_stash" => {
             if let Ok(index) = param.parse::<usize>() {
-                view_state.pending_messages.push(AppMessage::StashPopIndex(index));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::StashPopIndex(index));
             }
         }
         "drop_stash" => {
             if let Ok(index) = param.parse::<usize>() {
-                confirm_dialog.show("Drop Stash", &format!("Drop stash@{{{}}}? This cannot be undone.", index));
+                confirm_dialog.show(
+                    "Drop Stash",
+                    &format!("Drop stash@{{{}}}? This cannot be undone.", index),
+                );
                 *pending_confirm_action = Some(AppMessage::StashDrop(index));
             }
         }
@@ -3625,8 +4413,7 @@ fn handle_context_menu_action(
         }
         "edit_remote_url" => {
             if !param.is_empty() {
-                let current_url = repo.remote_url(param)
-                    .unwrap_or_default();
+                let current_url = repo.remote_url(param).unwrap_or_default();
                 remote_dialog.show_edit_url(param, &current_url);
             }
         }
@@ -3674,34 +4461,52 @@ fn handle_context_menu_action(
             }
         }
         "delete_remote_branch" => {
-            if !param.is_empty() {
-                if let Some((remote, branch)) = param.split_once('/') {
-                    confirm_dialog.show("Delete Remote Branch", &format!("Delete branch '{}' from remote '{}'? This cannot be undone.", branch, remote));
-                    *pending_confirm_action = Some(AppMessage::DeleteRemoteBranch(remote.to_string(), branch.to_string()));
-                }
+            if !param.is_empty()
+                && let Some((remote, branch)) = param.split_once('/')
+            {
+                confirm_dialog.show(
+                    "Delete Remote Branch",
+                    &format!(
+                        "Delete branch '{}' from remote '{}'? This cannot be undone.",
+                        branch, remote
+                    ),
+                );
+                *pending_confirm_action = Some(AppMessage::DeleteRemoteBranch(
+                    remote.to_string(),
+                    branch.to_string(),
+                ));
             }
         }
         "checkout_in_wt" => {
             // Format: "checkout_in_wt:branch|wt_name" — from context menu
-            if !param.is_empty() {
-                if let Some((branch, wt_name)) = param.split_once('|') {
-                    if let Some(wt) = view_state.worktree_state.worktrees.iter().find(|w| w.name == wt_name) {
-                        view_state.pending_messages.push(AppMessage::CheckoutBranchInWorktree(
+            if !param.is_empty()
+                && let Some((branch, wt_name)) = param.split_once('|')
+            {
+                if let Some(wt) = view_state
+                    .worktree_state
+                    .worktrees
+                    .iter()
+                    .find(|w| w.name == wt_name)
+                {
+                    view_state
+                        .pending_messages
+                        .push(AppMessage::CheckoutBranchInWorktree(
                             branch.to_string(),
                             PathBuf::from(&wt.path),
                         ));
-                    } else {
-                        toast_manager.push(
-                            format!("Worktree '{}' not found", wt_name),
-                            ToastSeverity::Error,
-                        );
-                    }
+                } else {
+                    toast_manager.push(
+                        format!("Worktree '{}' not found", wt_name),
+                        ToastSeverity::Error,
+                    );
                 }
             }
         }
         "set_head" => {
             if !param.is_empty() {
-                view_state.pending_messages.push(AppMessage::SetHead(param.to_string()));
+                view_state
+                    .pending_messages
+                    .push(AppMessage::SetHead(param.to_string()));
             }
         }
         _ => {
@@ -3717,22 +4522,38 @@ fn handle_context_menu_action(
 
 /// Add panel backgrounds, borders, and visual chrome to the output.
 /// `mouse_pos` is used to highlight dividers on hover for drag affordance.
-fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bounds: &Rect, focused: FocusedPanel, mouse_pos: (f32, f32), staging_mode: bool, staging_preview_ratio: f32, pill_bar_h: f32) {
+#[allow(clippy::too_many_arguments)]
+fn add_panel_chrome(
+    output: &mut WidgetOutput,
+    layout: &ScreenLayout,
+    screen_bounds: &Rect,
+    focused: FocusedPanel,
+    mouse_pos: (f32, f32),
+    staging_mode: bool,
+    staging_preview_ratio: f32,
+    pill_bar_h: f32,
+) {
     // Panel backgrounds for depth separation
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.graph,
-        theme::PANEL_GRAPH.to_array(),
-    ));
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &layout.right_panel,
-        theme::PANEL_STAGING.to_array(),
-    ));
+    output
+        .spline_vertices
+        .extend(crate::ui::widget::create_rect_vertices(
+            &layout.graph,
+            theme::PANEL_GRAPH.to_array(),
+        ));
+    output
+        .spline_vertices
+        .extend(crate::ui::widget::create_rect_vertices(
+            &layout.right_panel,
+            theme::PANEL_STAGING.to_array(),
+        ));
 
     // Border below shortcut bar (full width of screen)
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(0.0, layout.shortcut_bar.bottom(), screen_bounds.width, 1.0),
-        theme::BORDER.to_array(),
-    ));
+    output
+        .spline_vertices
+        .extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(0.0, layout.shortcut_bar.bottom(), screen_bounds.width, 1.0),
+            theme::BORDER.to_array(),
+        ));
 
     // Divider hover detection: brighten divider when mouse is within 8px (matches drag hit zone)
     let (mx, my) = mouse_pos;
@@ -3748,28 +4569,56 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
     // Vertical divider: sidebar | graph
     // Visible 2px line at rest, wider 3px highlighted line on hover
     if sidebar_graph_hover {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 3.0, layout.sidebar.height),
-            theme::BORDER_LIGHT.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(
+                    layout.sidebar.right(),
+                    layout.sidebar.y,
+                    3.0,
+                    layout.sidebar.height,
+                ),
+                theme::BORDER_LIGHT.to_array(),
+            ));
     } else {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.sidebar.right(), layout.sidebar.y, 2.0, layout.sidebar.height),
-            theme::BORDER.with_alpha(0.50).to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(
+                    layout.sidebar.right(),
+                    layout.sidebar.y,
+                    2.0,
+                    layout.sidebar.height,
+                ),
+                theme::BORDER.with_alpha(0.50).to_array(),
+            ));
     }
 
     // Vertical divider: graph | right panel
     if graph_right_hover {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.graph.right(), layout.graph.y, 3.0, layout.graph.height),
-            theme::BORDER_LIGHT.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(
+                    layout.graph.right(),
+                    layout.graph.y,
+                    3.0,
+                    layout.graph.height,
+                ),
+                theme::BORDER_LIGHT.to_array(),
+            ));
     } else {
-        output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(layout.graph.right(), layout.graph.y, 2.0, layout.graph.height),
-            theme::BORDER.with_alpha(0.50).to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(
+                    layout.graph.right(),
+                    layout.graph.y,
+                    2.0,
+                    layout.graph.height,
+                ),
+                theme::BORDER.with_alpha(0.50).to_array(),
+            ));
     }
 
     // Horizontal divider: staging | preview (within right panel, staging mode only)
@@ -3777,19 +4626,28 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
         let split_y = content_rect.y + content_rect.height * staging_preview_ratio;
         let hit_tolerance = 8.0;
-        let staging_preview_hover = layout.right_panel.contains(mx, my)
-            && (my - split_y).abs() < hit_tolerance;
+        let staging_preview_hover =
+            layout.right_panel.contains(mx, my) && (my - split_y).abs() < hit_tolerance;
 
         if staging_preview_hover {
-            output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                &Rect::new(layout.right_panel.x, split_y - 1.0, layout.right_panel.width, 3.0),
-                theme::BORDER_LIGHT.to_array(),
-            ));
+            output
+                .spline_vertices
+                .extend(crate::ui::widget::create_rect_vertices(
+                    &Rect::new(
+                        layout.right_panel.x,
+                        split_y - 1.0,
+                        layout.right_panel.width,
+                        3.0,
+                    ),
+                    theme::BORDER_LIGHT.to_array(),
+                ));
         } else {
-            output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-                &Rect::new(layout.right_panel.x, split_y, layout.right_panel.width, 2.0),
-                theme::BORDER.with_alpha(0.50).to_array(),
-            ));
+            output
+                .spline_vertices
+                .extend(crate::ui::widget::create_rect_vertices(
+                    &Rect::new(layout.right_panel.x, split_y, layout.right_panel.width, 2.0),
+                    theme::BORDER.with_alpha(0.50).to_array(),
+                ));
         }
     }
 
@@ -3799,10 +4657,12 @@ fn add_panel_chrome(output: &mut WidgetOutput, layout: &ScreenLayout, screen_bou
         FocusedPanel::RightPanel => &layout.right_panel,
         FocusedPanel::Sidebar => &layout.sidebar,
     };
-    output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-        &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 3.0),
-        theme::ACCENT.with_alpha(0.6).to_array(),
-    ));
+    output
+        .spline_vertices
+        .extend(crate::ui::widget::create_rect_vertices(
+            &Rect::new(focused_rect.x, focused_rect.y, focused_rect.width, 3.0),
+            theme::ACCENT.with_alpha(0.6).to_array(),
+        ));
 }
 
 /// Build the UI vertices for the active tab.
@@ -3840,10 +4700,16 @@ fn build_ui_output(
     let scale = scale_factor as f32;
 
     // Tab bar takes space at top when multiple tabs
-    let tab_bar_height = if tabs.len() > 1 { TabBar::height(scale) } else { 0.0 };
+    let tab_bar_height = if tabs.len() > 1 {
+        TabBar::height(scale)
+    } else {
+        0.0
+    };
     let (tab_bar_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
     let layout = ScreenLayout::compute_with_ratios_and_shortcut(
-        main_bounds, 4.0, scale,
+        main_bounds,
+        4.0,
+        scale,
         Some(sidebar_ratio),
         Some(graph_ratio),
         shortcut_bar_visible,
@@ -3855,22 +4721,45 @@ fn build_ui_output(
     let mut overlay_output = WidgetOutput::new();
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
-    let focused = tabs.get(active_tab).map(|(_, vs)| vs.focused_panel).unwrap_or_default();
-    let staging_mode = tabs.get(active_tab)
+    let focused = tabs
+        .get(active_tab)
+        .map(|(_, vs)| vs.focused_panel)
+        .unwrap_or_default();
+    let staging_mode = tabs
+        .get(active_tab)
         .map(|(_, vs)| vs.right_panel_mode == RightPanelMode::Staging)
         .unwrap_or(false);
-    let pill_bar_h = tabs.get(active_tab)
+    let pill_bar_h = tabs
+        .get(active_tab)
         .map(|(_, vs)| vs.staging_well.pill_bar_height(&vs.current_branch))
         .unwrap_or(0.0);
-    add_panel_chrome(&mut graph_output, &layout, &main_bounds, focused, mouse_pos, staging_mode, staging_preview_ratio, pill_bar_h);
+    add_panel_chrome(
+        &mut graph_output,
+        &layout,
+        &main_bounds,
+        focused,
+        mouse_pos,
+        staging_mode,
+        staging_preview_ratio,
+        pill_bar_h,
+    );
 
     // Active tab views
     if let Some((repo_tab, view_state)) = tabs.get_mut(active_tab) {
         // Commit graph (graph layer - renders first)
-        let spline_vertices = view_state.commit_graph_view.layout_splines(text_renderer, &repo_tab.commits, layout.graph, view_state.head_oid);
+        let spline_vertices = view_state.commit_graph_view.layout_splines(
+            text_renderer,
+            &repo_tab.commits,
+            layout.graph,
+            view_state.head_oid,
+        );
         let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
-            text_renderer, &repo_tab.commits, layout.graph,
-            avatar_cache, avatar_renderer, view_state.head_oid,
+            text_renderer,
+            &repo_tab.commits,
+            layout.graph,
+            avatar_cache,
+            avatar_renderer,
+            view_state.head_oid,
             &view_state.worktree_state.worktrees,
         );
         graph_output.spline_vertices.extend(spline_vertices);
@@ -3900,7 +4789,9 @@ fn build_ui_output(
                         break;
                     }
                 }
-                for (badge_bounds, hidden_labels) in &view_state.commit_graph_view.overflow_pill_tooltips {
+                for (badge_bounds, hidden_labels) in
+                    &view_state.commit_graph_view.overflow_pill_tooltips
+                {
                     if badge_bounds.contains(mx, my) {
                         tooltip.offer(*badge_bounds, hidden_labels, mx, my);
                         break;
@@ -3908,90 +4799,178 @@ fn build_ui_output(
                 }
             }
             // Header bar truncated buttons
-            view_state.header_bar.report_tooltip(tooltip, mx, my, layout.header);
+            view_state
+                .header_bar
+                .report_tooltip(tooltip, mx, my, layout.header);
         }
         tooltip.end_frame();
 
         // Opaque header backdrop to prevent graph bleed-through between tab bar and header
-        let header_backdrop_h = layout.header.height + if shortcut_bar_visible { layout.shortcut_bar.height } else { 0.0 };
-        chrome_output.spline_vertices.extend(crate::ui::widget::create_rect_vertices(
-            &Rect::new(main_bounds.x, main_bounds.y, main_bounds.width, header_backdrop_h),
-            theme::SURFACE_RAISED.to_array(),
-        ));
+        let header_backdrop_h = layout.header.height
+            + if shortcut_bar_visible {
+                layout.shortcut_bar.height
+            } else {
+                0.0
+            };
+        chrome_output
+            .spline_vertices
+            .extend(crate::ui::widget::create_rect_vertices(
+                &Rect::new(
+                    main_bounds.x,
+                    main_bounds.y,
+                    main_bounds.width,
+                    header_backdrop_h,
+                ),
+                theme::SURFACE_RAISED.to_array(),
+            ));
 
         // Header bar (chrome layer - on top of graph)
-        chrome_output.extend(view_state.header_bar.layout_with_bold(text_renderer, bold_text_renderer, layout.header, elapsed));
+        chrome_output.extend(view_state.header_bar.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            layout.header,
+            elapsed,
+        ));
 
         // Shortcut bar (chrome layer - on top of graph) - only when visible
         if shortcut_bar_visible {
-            chrome_output.extend(view_state.shortcut_bar.layout(text_renderer, layout.shortcut_bar));
+            chrome_output.extend(
+                view_state
+                    .shortcut_bar
+                    .layout(text_renderer, layout.shortcut_bar),
+            );
         }
 
         // Branch sidebar (chrome layer)
-        chrome_output.extend(view_state.branch_sidebar.layout(text_renderer, bold_text_renderer, layout.sidebar, &view_state.current_branch));
+        chrome_output.extend(view_state.branch_sidebar.layout(
+            text_renderer,
+            bold_text_renderer,
+            layout.sidebar,
+            &view_state.current_branch,
+        ));
 
         // Right panel (chrome layer) - worktree pills + mode-dependent content
         {
-            let pill_bar_h = view_state.staging_well.pill_bar_height(&view_state.current_branch);
+            let pill_bar_h = view_state
+                .staging_well
+                .pill_bar_height(&view_state.current_branch);
             let (pill_rect, content_rect) = layout.right_panel.take_top(pill_bar_h);
 
             // Worktree pill bar (visible when there are worktree contexts)
             if pill_bar_h > 0.0 {
-                chrome_output.extend(view_state.staging_well.layout_worktree_pills(text_renderer, pill_rect, &view_state.current_branch, &view_state.worktree_state.worktrees));
+                chrome_output.extend(view_state.staging_well.layout_worktree_pills(
+                    text_renderer,
+                    pill_rect,
+                    &view_state.current_branch,
+                    &view_state.worktree_state.worktrees,
+                ));
             }
 
             match view_state.right_panel_mode {
                 RightPanelMode::Staging => {
                     // Upper: staging well, Lower: diff view with header
-                    let (staging_rect, diff_rect) = content_rect.split_vertical(staging_preview_ratio);
-                    chrome_output.extend(view_state.staging_well.layout(text_renderer, staging_rect));
+                    let (staging_rect, diff_rect) =
+                        content_rect.split_vertical(staging_preview_ratio);
+                    chrome_output
+                        .extend(view_state.staging_well.layout(text_renderer, staging_rect));
 
                     let has_diff = view_state.diff_view.has_content();
-                    let title = if has_diff { view_state.diff_view.title() } else { "Preview" };
-                    let diff_body_rect = render_preview_header(&mut chrome_output, diff_rect, title, !has_diff, scale, bold_text_renderer);
+                    let title = if has_diff {
+                        view_state.diff_view.title()
+                    } else {
+                        "Preview"
+                    };
+                    let diff_body_rect = render_preview_header(
+                        &mut chrome_output,
+                        diff_rect,
+                        title,
+                        !has_diff,
+                        scale,
+                        bold_text_renderer,
+                    );
 
                     if has_diff {
-                        chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
+                        chrome_output
+                            .extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                     } else {
                         let msg = "Select a file to preview its diff";
                         let msg_w = text_renderer.measure_text(msg);
                         let line_h = text_renderer.line_height();
                         let cx = diff_body_rect.x + (diff_body_rect.width - msg_w) / 2.0;
                         let cy = diff_body_rect.y + (diff_body_rect.height - line_h) / 2.0;
-                        chrome_output.text_vertices.extend(text_renderer.layout_text(
-                            msg, cx, cy,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
+                        chrome_output
+                            .text_vertices
+                            .extend(text_renderer.layout_text(
+                                msg,
+                                cx,
+                                cy,
+                                theme::TEXT_MUTED.to_array(),
+                            ));
                     }
                 }
                 RightPanelMode::Browse => {
                     // Upper: commit detail, Lower: diff view with header
                     if view_state.commit_detail_view.has_content() {
                         let (detail_rect, diff_rect) = content_rect.split_vertical(0.40);
-                        chrome_output.extend(view_state.commit_detail_view.layout(text_renderer, detail_rect));
+                        chrome_output.extend(
+                            view_state
+                                .commit_detail_view
+                                .layout(text_renderer, detail_rect),
+                        );
 
                         let has_diff = view_state.diff_view.has_content();
-                        let title = if has_diff { view_state.diff_view.title() } else { "Diff" };
-                        let diff_body_rect = render_preview_header(&mut chrome_output, diff_rect, title, !has_diff, scale, bold_text_renderer);
+                        let title = if has_diff {
+                            view_state.diff_view.title()
+                        } else {
+                            "Diff"
+                        };
+                        let diff_body_rect = render_preview_header(
+                            &mut chrome_output,
+                            diff_rect,
+                            title,
+                            !has_diff,
+                            scale,
+                            bold_text_renderer,
+                        );
 
                         if has_diff {
-                            chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
+                            chrome_output
+                                .extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                         }
                     } else if view_state.diff_view.has_content() {
                         let title = view_state.diff_view.title();
-                        let diff_body_rect = render_preview_header(&mut chrome_output, content_rect, title, false, scale, bold_text_renderer);
-                        chrome_output.extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
+                        let diff_body_rect = render_preview_header(
+                            &mut chrome_output,
+                            content_rect,
+                            title,
+                            false,
+                            scale,
+                            bold_text_renderer,
+                        );
+                        chrome_output
+                            .extend(view_state.diff_view.layout(text_renderer, diff_body_rect));
                     } else {
-                        let body_rect = render_preview_header(&mut chrome_output, content_rect, "Preview", true, scale, bold_text_renderer);
+                        let body_rect = render_preview_header(
+                            &mut chrome_output,
+                            content_rect,
+                            "Preview",
+                            true,
+                            scale,
+                            bold_text_renderer,
+                        );
                         let msg = "Select a commit to browse";
                         let msg_w = text_renderer.measure_text(msg);
                         let line_h = text_renderer.line_height();
                         let cx = body_rect.x + (body_rect.width - msg_w) / 2.0;
                         let cy = body_rect.y + (body_rect.height - line_h) / 2.0;
-                        chrome_output.text_vertices.extend(text_renderer.layout_text(
-                            msg, cx, cy,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
+                        chrome_output
+                            .text_vertices
+                            .extend(text_renderer.layout_text(
+                                msg,
+                                cx,
+                                cy,
+                                theme::TEXT_MUTED.to_array(),
+                            ));
                     }
                 }
             }
@@ -4003,12 +4982,12 @@ fn build_ui_output(
         chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
     }
 
-
     // Context menu overlay (overlay layer - on top of all panels)
     if let Some((_, view_state)) = tabs.get_mut(active_tab)
-        && view_state.context_menu.is_visible() {
-            overlay_output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
-        }
+        && view_state.context_menu.is_visible()
+    {
+        overlay_output.extend(view_state.context_menu.layout(text_renderer, screen_bounds));
+    }
 
     // Toast notifications (overlay layer - on top of context menus)
     overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds, scale));
@@ -4018,46 +4997,82 @@ fn build_ui_output(
 
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        overlay_output.extend(repo_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(repo_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Settings dialog (overlay layer - on top of everything)
     if settings_dialog.is_visible() {
-        overlay_output.extend(settings_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(settings_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
-        overlay_output.extend(confirm_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(confirm_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Branch name dialog (overlay layer - on top of everything)
     if branch_name_dialog.is_visible() {
-        overlay_output.extend(branch_name_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(branch_name_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Remote dialog (overlay layer - on top of everything)
     if remote_dialog.is_visible() {
-        overlay_output.extend(remote_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(remote_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Pull dialog (overlay layer - on top of everything)
     if pull_dialog.is_visible() {
-        overlay_output.extend(pull_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(pull_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     if push_dialog.is_visible() {
-        overlay_output.extend(push_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(push_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Merge dialog (overlay layer - on top of everything)
     if merge_dialog.is_visible() {
-        overlay_output.extend(merge_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(merge_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     // Rebase dialog (overlay layer - on top of everything)
     if rebase_dialog.is_visible() {
-        overlay_output.extend(rebase_dialog.layout_with_bold(text_renderer, bold_text_renderer, screen_bounds));
+        overlay_output.extend(rebase_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
     }
 
     (graph_output, chrome_output, overlay_output)
@@ -4065,23 +5080,33 @@ fn build_ui_output(
 
 fn draw_frame(app: &mut App) -> Result<()> {
     let state = app.state.as_mut().unwrap();
-    state.previous_frame_end.as_mut().unwrap().cleanup_finished();
+    state
+        .previous_frame_end
+        .as_mut()
+        .unwrap()
+        .cleanup_finished();
 
     // Recreate swapchain if needed
     if state.surface.needs_recreate {
-        state.surface.recreate(&state.ctx, state.window.inner_size())?;
+        state
+            .surface
+            .recreate(&state.ctx, state.window.inner_size())?;
     }
 
     // Acquire next image
-    let (image_index, suboptimal, acquire_future) =
-        match acquire_next_image(state.surface.swapchain.clone(), None).map_err(Validated::unwrap) {
-            Ok(r) => r,
-            Err(VulkanError::OutOfDate) => {
-                state.surface.needs_recreate = true;
-                return Ok(());
-            }
-            Err(e) => anyhow::bail!("Failed to acquire next image: {e:?}"),
-        };
+    let (image_index, suboptimal, acquire_future) = match acquire_next_image(
+        state.surface.swapchain.clone(),
+        None,
+    )
+    .map_err(Validated::unwrap)
+    {
+        Ok(r) => r,
+        Err(VulkanError::OutOfDate) => {
+            state.surface.needs_recreate = true;
+            return Ok(());
+        }
+        Err(e) => anyhow::bail!("Failed to acquire next image: {e:?}"),
+    };
 
     if suboptimal {
         state.surface.needs_recreate = true;
@@ -4093,27 +5118,35 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let elapsed = app.app_start.elapsed().as_secs_f32();
     if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
         // Set generic op label from receiver (for spinner indicator in header)
-        view_state.header_bar.generic_op_label = view_state.generic_op_receiver
-            .as_ref()
-            .map(|(_, label, _)| {
-                let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
-                let dots: String = ".".repeat(dot_count);
-                format!("{}{}", label, dots)
-            });
+        view_state.header_bar.generic_op_label =
+            view_state
+                .generic_op_receiver
+                .as_ref()
+                .map(|(_, label, _)| {
+                    let dot_count = ((elapsed * 2.5) as usize % 3) + 1;
+                    let dots: String = ".".repeat(dot_count);
+                    format!("{}{}", label, dots)
+                });
         let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
-        view_state.header_bar.update_button_state(elapsed, branch_opt.as_deref(), &state.bold_text_renderer);
+        view_state.header_bar.update_button_state(
+            elapsed,
+            branch_opt.as_deref(),
+            &state.bold_text_renderer,
+        );
         view_state.staging_well.update_button_state(elapsed);
         view_state.staging_well.update_cursors(now);
         view_state.commit_graph_view.search_bar.update_cursor(now);
         view_state.branch_sidebar.update_filter_cursor(now);
-        view_state.shortcut_bar.set_context(match view_state.focused_panel {
-            FocusedPanel::Graph => ShortcutContext::Graph,
-            FocusedPanel::RightPanel => match view_state.right_panel_mode {
-                RightPanelMode::Staging => ShortcutContext::Staging,
-                RightPanelMode::Browse => ShortcutContext::Graph,
-            },
-            FocusedPanel::Sidebar => ShortcutContext::Sidebar,
-        });
+        view_state
+            .shortcut_bar
+            .set_context(match view_state.focused_panel {
+                FocusedPanel::Graph => ShortcutContext::Graph,
+                FocusedPanel::RightPanel => match view_state.right_panel_mode {
+                    RightPanelMode::Staging => ShortcutContext::Staging,
+                    RightPanelMode::Browse => ShortcutContext::Graph,
+                },
+                FocusedPanel::Sidebar => ShortcutContext::Sidebar,
+            });
         view_state.shortcut_bar.show_new_tab_hint = single_tab;
 
         // Sync breadcrumb data from submodule focus state
@@ -4123,7 +5156,9 @@ fn draw_frame(app: &mut App) -> Result<()> {
             for (i, s) in focus.parent_stack.iter().enumerate() {
                 if i == 0 {
                     // First segment: show abbreviated repo path for the root repo
-                    let root_path = s.repo.workdir()
+                    let root_path = s
+                        .repo
+                        .workdir()
                         .or_else(|| Some(s.repo.git_dir()))
                         .map(|p| p.to_string_lossy().into_owned())
                         .unwrap_or_else(|| s.repo_name.clone());
@@ -4148,16 +5183,26 @@ fn draw_frame(app: &mut App) -> Result<()> {
         // (needs approximate header bounds — compute from extent)
         let extent = state.surface.extent();
         let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
-        let tab_bar_height = if single_tab { 0.0 } else { TabBar::height(state.scale_factor as f32) };
+        let tab_bar_height = if single_tab {
+            0.0
+        } else {
+            TabBar::height(state.scale_factor as f32)
+        };
         let (_tb_bounds, main_bounds) = screen_bounds.take_top(tab_bar_height);
         let approx_layout = ScreenLayout::compute_with_ratios_and_shortcut(
-            main_bounds, 4.0, state.scale_factor as f32,
+            main_bounds,
+            4.0,
+            state.scale_factor as f32,
             Some(app.sidebar_ratio),
             Some(app.graph_ratio),
             app.shortcut_bar_visible,
         );
-        view_state.header_bar.update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
-        view_state.header_bar.update_abort_bounds(&state.text_renderer, approx_layout.header);
+        view_state
+            .header_bar
+            .update_breadcrumb_bounds(&state.text_renderer, approx_layout.header);
+        view_state
+            .header_bar
+            .update_abort_bounds(&state.text_renderer, approx_layout.header);
     }
 
     // Update toast manager and tooltip
@@ -4178,11 +5223,29 @@ fn draw_frame(app: &mut App) -> Result<()> {
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
-        &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
-        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
-        &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
+        &mut app.tabs,
+        app.active_tab,
+        &app.tab_bar,
+        &mut app.toast_manager,
+        &mut app.tooltip,
+        &app.repo_dialog,
+        &app.settings_dialog,
+        &app.confirm_dialog,
+        &app.branch_name_dialog,
+        &app.remote_dialog,
+        &app.merge_dialog,
+        &app.rebase_dialog,
+        &app.pull_dialog,
+        &app.push_dialog,
+        &state.text_renderer,
+        &state.bold_text_renderer,
+        scale_factor,
+        extent,
+        &mut state.avatar_cache,
+        &state.avatar_renderer,
+        sidebar_ratio,
+        graph_ratio,
+        app.staging_preview_ratio,
         app.shortcut_bar_visible,
         mouse_pos,
         elapsed,
@@ -4205,14 +5268,21 @@ fn draw_frame(app: &mut App) -> Result<()> {
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
 
-        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
-        let upload_future = state.previous_frame_end.take().unwrap()
+        let upload_cb = upload_builder
+            .build()
+            .context("Failed to build upload command buffer")?;
+        let upload_future = state
+            .previous_frame_end
+            .take()
+            .unwrap()
             .then_execute(state.ctx.queue.clone(), upload_cb)
             .context("Failed to execute upload")?
             .then_signal_fence_and_flush()
             .map_err(Validated::unwrap)
             .context("Failed to flush upload")?;
-        upload_future.wait(None).context("Failed to wait for upload")?;
+        upload_future
+            .wait(None)
+            .context("Failed to wait for upload")?;
         state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
     }
 
@@ -4227,7 +5297,10 @@ fn draw_frame(app: &mut App) -> Result<()> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(clear_color_for_format(state.surface.image_format()).into()), None],
+                clear_values: vec![
+                    Some(clear_color_for_format(state.surface.image_format()).into()),
+                    None,
+                ],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -4310,38 +5383,76 @@ fn render_output_to_builder(
     viewport: Viewport,
 ) -> Result<()> {
     if !output.spline_vertices.is_empty() {
-        let spline_buffer = state.spline_renderer.create_vertex_buffer(output.spline_vertices)?;
-        state.spline_renderer.draw(builder, spline_buffer, viewport.clone())?;
+        let spline_buffer = state
+            .spline_renderer
+            .create_vertex_buffer(output.spline_vertices)?;
+        state
+            .spline_renderer
+            .draw(builder, spline_buffer, viewport.clone())?;
     }
     if !output.avatar_vertices.is_empty() {
-        let avatar_buffer = state.avatar_renderer.create_vertex_buffer(output.avatar_vertices)?;
-        state.avatar_renderer.draw(builder, avatar_buffer, viewport.clone())?;
+        let avatar_buffer = state
+            .avatar_renderer
+            .create_vertex_buffer(output.avatar_vertices)?;
+        state
+            .avatar_renderer
+            .draw(builder, avatar_buffer, viewport.clone())?;
     }
     if !output.text_vertices.is_empty() {
-        let vertex_buffer = state.text_renderer.create_vertex_buffer(output.text_vertices)?;
-        state.text_renderer.draw(builder, vertex_buffer, viewport.clone())?;
+        let vertex_buffer = state
+            .text_renderer
+            .create_vertex_buffer(output.text_vertices)?;
+        state
+            .text_renderer
+            .draw(builder, vertex_buffer, viewport.clone())?;
     }
     if !output.bold_text_vertices.is_empty() {
-        let bold_buffer = state.bold_text_renderer.create_vertex_buffer(output.bold_text_vertices)?;
-        state.bold_text_renderer.draw(builder, bold_buffer, viewport)?;
+        let bold_buffer = state
+            .bold_text_renderer
+            .create_vertex_buffer(output.bold_text_vertices)?;
+        state
+            .bold_text_renderer
+            .draw(builder, bold_buffer, viewport)?;
     }
     Ok(())
 }
 
 fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let state = app.state.as_mut().unwrap();
-    state.previous_frame_end.as_mut().unwrap().cleanup_finished();
+    state
+        .previous_frame_end
+        .as_mut()
+        .unwrap()
+        .cleanup_finished();
 
     let extent = state.surface.extent();
     let scale_factor = state.scale_factor;
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
-        &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
-        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
-        &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
+        &mut app.tabs,
+        app.active_tab,
+        &app.tab_bar,
+        &mut app.toast_manager,
+        &mut app.tooltip,
+        &app.repo_dialog,
+        &app.settings_dialog,
+        &app.confirm_dialog,
+        &app.branch_name_dialog,
+        &app.remote_dialog,
+        &app.merge_dialog,
+        &app.rebase_dialog,
+        &app.pull_dialog,
+        &app.push_dialog,
+        &state.text_renderer,
+        &state.bold_text_renderer,
+        scale_factor,
+        extent,
+        &mut state.avatar_cache,
+        &state.avatar_renderer,
+        sidebar_ratio,
+        graph_ratio,
+        app.staging_preview_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for screenshots
         elapsed,
@@ -4365,21 +5476,29 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
 
-        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
-        let upload_future = state.previous_frame_end.take().unwrap()
+        let upload_cb = upload_builder
+            .build()
+            .context("Failed to build upload command buffer")?;
+        let upload_future = state
+            .previous_frame_end
+            .take()
+            .unwrap()
             .then_execute(state.ctx.queue.clone(), upload_cb)
             .context("Failed to execute upload")?
             .then_signal_fence_and_flush()
             .map_err(Validated::unwrap)
             .context("Failed to flush upload")?;
-        upload_future.wait(None).context("Failed to wait for upload")?;
+        upload_future
+            .wait(None)
+            .context("Failed to wait for upload")?;
         state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
     }
 
     // Acquire image
-    let (image_index, _, acquire_future) = acquire_next_image(state.surface.swapchain.clone(), None)
-        .map_err(Validated::unwrap)
-        .context("Failed to acquire image")?;
+    let (image_index, _, acquire_future) =
+        acquire_next_image(state.surface.swapchain.clone(), None)
+            .map_err(Validated::unwrap)
+            .context("Failed to acquire image")?;
 
     let mut builder = AutoCommandBufferBuilder::primary(
         state.ctx.command_buffer_allocator.clone(),
@@ -4391,7 +5510,10 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     builder
         .begin_render_pass(
             RenderPassBeginInfo {
-                clear_values: vec![Some(clear_color_for_format(state.surface.image_format()).into()), None],
+                clear_values: vec![
+                    Some(clear_color_for_format(state.surface.image_format()).into()),
+                    None,
+                ],
                 ..RenderPassBeginInfo::framebuffer(
                     state.surface.framebuffers[image_index as usize].clone(),
                 )
@@ -4440,7 +5562,11 @@ fn capture_screenshot_offscreen(
     height: u32,
 ) -> Result<image::RgbaImage> {
     let state = app.state.as_mut().unwrap();
-    state.previous_frame_end.as_mut().unwrap().cleanup_finished();
+    state
+        .previous_frame_end
+        .as_mut()
+        .unwrap()
+        .cleanup_finished();
 
     let offscreen = OffscreenTarget::new(
         &state.ctx,
@@ -4455,11 +5581,29 @@ fn capture_screenshot_offscreen(
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
     let (graph_output, chrome_output, overlay_output) = build_ui_output(
-        &mut app.tabs, app.active_tab, &app.tab_bar,
-        &mut app.toast_manager, &mut app.tooltip, &app.repo_dialog, &app.settings_dialog, &app.confirm_dialog, &app.branch_name_dialog, &app.remote_dialog, &app.merge_dialog, &app.rebase_dialog, &app.pull_dialog, &app.push_dialog,
-        &state.text_renderer, &state.bold_text_renderer, scale_factor, extent,
-        &mut state.avatar_cache, &state.avatar_renderer,
-        sidebar_ratio, graph_ratio, app.staging_preview_ratio,
+        &mut app.tabs,
+        app.active_tab,
+        &app.tab_bar,
+        &mut app.toast_manager,
+        &mut app.tooltip,
+        &app.repo_dialog,
+        &app.settings_dialog,
+        &app.confirm_dialog,
+        &app.branch_name_dialog,
+        &app.remote_dialog,
+        &app.merge_dialog,
+        &app.rebase_dialog,
+        &app.pull_dialog,
+        &app.push_dialog,
+        &state.text_renderer,
+        &state.bold_text_renderer,
+        scale_factor,
+        extent,
+        &mut state.avatar_cache,
+        &state.avatar_renderer,
+        sidebar_ratio,
+        graph_ratio,
+        app.staging_preview_ratio,
         app.shortcut_bar_visible,
         (0.0, 0.0), // No mouse interaction for offscreen screenshots
         elapsed,
@@ -4483,14 +5627,21 @@ fn capture_screenshot_offscreen(
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
 
-        let upload_cb = upload_builder.build().context("Failed to build upload command buffer")?;
-        let upload_future = state.previous_frame_end.take().unwrap()
+        let upload_cb = upload_builder
+            .build()
+            .context("Failed to build upload command buffer")?;
+        let upload_future = state
+            .previous_frame_end
+            .take()
+            .unwrap()
             .then_execute(state.ctx.queue.clone(), upload_cb)
             .context("Failed to execute upload")?
             .then_signal_fence_and_flush()
             .map_err(Validated::unwrap)
             .context("Failed to flush upload")?;
-        upload_future.wait(None).context("Failed to wait for upload")?;
+        upload_future
+            .wait(None)
+            .context("Failed to wait for upload")?;
         state.previous_frame_end = Some(sync::now(state.ctx.device.clone()).boxed());
     }
 
@@ -4546,7 +5697,9 @@ fn capture_screenshot_offscreen(
 
 /// Apply a UI state for screenshot capture (e.g., showing dialogs, search bar, context menus).
 fn apply_screenshot_state(app: &mut App) {
-    let Some(ref state_str) = app.cli_args.screenshot_state else { return };
+    let Some(ref state_str) = app.cli_args.screenshot_state else {
+        return;
+    };
 
     match state_str.as_str() {
         "open-dialog" => {
@@ -4581,16 +5734,23 @@ fn apply_screenshot_state(app: &mut App) {
                 if let Ok(info) = repo.full_commit_info(oid) {
                     let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
                     let sm_entries = repo.submodules_at_commit(oid).unwrap_or_default();
-                    view_state.commit_detail_view.set_commit(info, diff_files.clone(), sm_entries);
+                    view_state
+                        .commit_detail_view
+                        .set_commit(info, diff_files.clone(), sm_entries);
                     if let Some(first_file) = diff_files.first() {
                         let title = first_file.path.clone();
-                        view_state.diff_view.set_diff(vec![first_file.clone()], title);
+                        view_state
+                            .diff_view
+                            .set_diff(vec![first_file.clone()], title);
                     }
                 }
             }
         }
         "confirm-dialog" => {
-            app.confirm_dialog.show("Delete Branch", "Delete branch 'feature'? This cannot be undone.");
+            app.confirm_dialog.show(
+                "Delete Branch",
+                "Delete branch 'feature'? This cannot be undone.",
+            );
         }
         "merge-dialog" => {
             app.merge_dialog.show("feature", "main", 2);
@@ -4608,7 +5768,10 @@ fn apply_screenshot_state(app: &mut App) {
             app.settings_dialog.show();
         }
         other => {
-            eprintln!("Unknown screenshot state: '{}'. Valid states: open-dialog, search, context-menu, commit-detail, confirm-dialog, merge-dialog, rebase-dialog, pull-dialog, push-dialog, settings-dialog", other);
+            eprintln!(
+                "Unknown screenshot state: '{}'. Valid states: open-dialog, search, context-menu, commit-detail, confirm-dialog, merge-dialog, rebase-dialog, pull-dialog, push-dialog, settings-dialog",
+                other
+            );
         }
     }
 }

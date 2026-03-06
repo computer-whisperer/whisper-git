@@ -571,29 +571,27 @@ impl Widget for TextArea {
                     }
                     Key::C if modifiers.only_ctrl() => {
                         // Copy selected text to clipboard
-                        if let Some(text) = self.selected_text() {
-                            if !text.is_empty() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    let _ = clipboard.set_text(text);
-                                }
-                            }
+                        if let Some(text) = self.selected_text()
+                            && !text.is_empty()
+                            && let Ok(mut clipboard) = arboard::Clipboard::new()
+                        {
+                            let _ = clipboard.set_text(text);
                         }
                         return EventResponse::Consumed;
                     }
                     Key::V if modifiers.only_ctrl() => {
                         // Paste from clipboard (preserve newlines for multi-line)
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(pasted) = clipboard.get_text() {
-                                if !pasted.is_empty() {
-                                    self.delete_selection();
-                                    // Insert pasted text, handling newlines
-                                    for c in pasted.chars() {
-                                        if c == '\n' || c == '\r' {
-                                            self.insert_newline();
-                                        } else if !c.is_control() {
-                                            self.insert_char(c);
-                                        }
-                                    }
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(pasted) = clipboard.get_text()
+                            && !pasted.is_empty()
+                        {
+                            self.delete_selection();
+                            // Insert pasted text, handling newlines
+                            for c in pasted.chars() {
+                                if c == '\n' || c == '\r' {
+                                    self.insert_newline();
+                                } else if !c.is_control() {
+                                    self.insert_char(c);
                                 }
                             }
                         }
@@ -606,12 +604,11 @@ impl Widget for TextArea {
                     }
                     Key::X if modifiers.only_ctrl() => {
                         // Cut selected text to clipboard
-                        if let Some(text) = self.selected_text() {
-                            if !text.is_empty() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    let _ = clipboard.set_text(text);
-                                }
-                            }
+                        if let Some(text) = self.selected_text()
+                            && !text.is_empty()
+                            && let Ok(mut clipboard) = arboard::Clipboard::new()
+                        {
+                            let _ = clipboard.set_text(text);
                         }
                         self.delete_selection();
                         self.cursor_visible = true;

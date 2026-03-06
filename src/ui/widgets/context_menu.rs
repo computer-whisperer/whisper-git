@@ -1,7 +1,10 @@
 //! Context menu widget - right-click popup overlay
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widget::{
+    WidgetOutput, create_rect_outline_vertices, create_rect_vertices, create_rounded_rect_vertices,
+    theme,
+};
 use crate::ui::{Rect, TextRenderer};
 
 /// A single item in the context menu
@@ -139,8 +142,16 @@ impl ContextMenu {
         let start = match from {
             Some(idx) => {
                 if forward {
-                    if idx + 1 < self.items.len() { idx + 1 } else { idx }
-                } else if idx > 0 { idx - 1 } else { idx }
+                    if idx + 1 < self.items.len() {
+                        idx + 1
+                    } else {
+                        idx
+                    }
+                } else if idx > 0 {
+                    idx - 1
+                } else {
+                    idx
+                }
             }
             None => 0,
         };
@@ -178,7 +189,11 @@ impl ContextMenu {
     fn item_index_at_y(&self, rel_y: f32) -> Option<usize> {
         let mut y = 2.0; // top padding
         for (i, item) in self.items.iter().enumerate() {
-            let h = if item.is_separator { self.item_height / 2.0 } else { self.item_height };
+            let h = if item.is_separator {
+                self.item_height / 2.0
+            } else {
+                self.item_height
+            };
             if rel_y >= y && rel_y < y + h {
                 if item.is_separator {
                     return None;
@@ -208,7 +223,12 @@ impl ContextMenu {
                 }
                 EventResponse::Consumed
             }
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if bounds.contains(*x, *y) {
                     let rel_y = *y - bounds.y;
                     if let Some(idx) = self.item_index_at_y(rel_y) {
@@ -222,26 +242,41 @@ impl ContextMenu {
                 }
                 EventResponse::Consumed
             }
-            InputEvent::MouseDown { button: MouseButton::Right, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Right,
+                ..
+            } => {
                 // Another right-click while menu is open -> close
                 self.hide();
                 EventResponse::Consumed
             }
-            InputEvent::KeyDown { key: Key::Escape, .. } => {
+            InputEvent::KeyDown {
+                key: Key::Escape, ..
+            } => {
                 self.hide();
                 EventResponse::Consumed
             }
-            InputEvent::KeyDown { key: Key::J | Key::Down, .. } => {
+            InputEvent::KeyDown {
+                key: Key::J | Key::Down,
+                ..
+            } => {
                 self.hovered_index = self.next_selectable(self.hovered_index, true);
                 EventResponse::Consumed
             }
-            InputEvent::KeyDown { key: Key::K | Key::Up, .. } => {
+            InputEvent::KeyDown {
+                key: Key::K | Key::Up,
+                ..
+            } => {
                 self.hovered_index = self.next_selectable(self.hovered_index, false);
                 EventResponse::Consumed
             }
-            InputEvent::KeyDown { key: Key::Enter | Key::Space, .. } => {
+            InputEvent::KeyDown {
+                key: Key::Enter | Key::Space,
+                ..
+            } => {
                 if let Some(idx) = self.hovered_index
-                    && idx < self.items.len() && !self.items[idx].is_separator
+                    && idx < self.items.len()
+                    && !self.items[idx].is_separator
                 {
                     let action_id = self.items[idx].action_id.clone();
                     self.pending_action = Some(MenuAction::Selected(action_id));
@@ -250,9 +285,7 @@ impl ContextMenu {
                 EventResponse::Consumed
             }
             // Consume all other events while visible (prevent interaction with widgets behind)
-            InputEvent::MouseUp { .. } | InputEvent::Scroll { .. } => {
-                EventResponse::Consumed
-            }
+            InputEvent::MouseUp { .. } | InputEvent::Scroll { .. } => EventResponse::Consumed,
             _ => EventResponse::Ignored,
         }
     }
@@ -276,7 +309,9 @@ impl ContextMenu {
                 continue;
             }
             let label_width = text_renderer.measure_text(&item.label);
-            let shortcut_width = item.shortcut.as_ref()
+            let shortcut_width = item
+                .shortcut
+                .as_ref()
                 .map(|s| text_renderer.measure_text(s) + 24.0)
                 .unwrap_or(0.0);
             let total = label_width + shortcut_width + 32.0; // padding
@@ -332,12 +367,7 @@ impl ContextMenu {
                 continue;
             }
 
-            let item_rect = Rect::new(
-                bounds.x + 1.0,
-                item_y,
-                bounds.width - 2.0,
-                self.item_height,
-            );
+            let item_rect = Rect::new(bounds.x + 1.0, item_y, bounds.width - 2.0, self.item_height);
 
             // Hover highlight
             if self.hovered_index == Some(idx) {

@@ -392,29 +392,29 @@ impl Widget for TextInput {
                                 (self.cursor, sel_start)
                             };
                             let selected = &self.text[begin..end];
-                            if !selected.is_empty() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    let _ = clipboard.set_text(selected);
-                                }
+                            if !selected.is_empty()
+                                && let Ok(mut clipboard) = arboard::Clipboard::new()
+                            {
+                                let _ = clipboard.set_text(selected);
                             }
                         }
                         return EventResponse::Consumed;
                     }
                     Key::V if modifiers.only_ctrl() => {
                         // Paste from clipboard (strip newlines for single-line input)
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(pasted) = clipboard.get_text() {
-                                // Strip newlines/carriage returns for single-line input
-                                let clean: String = pasted
-                                    .chars()
-                                    .filter(|c| *c != '\n' && *c != '\r')
-                                    .collect();
-                                if !clean.is_empty() {
-                                    self.delete_selection();
-                                    self.text.insert_str(self.cursor, &clean);
-                                    self.cursor += clean.len();
-                                    self.modified = true;
-                                }
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(pasted) = clipboard.get_text()
+                        {
+                            // Strip newlines/carriage returns for single-line input
+                            let clean: String = pasted
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r')
+                                .collect();
+                            if !clean.is_empty() {
+                                self.delete_selection();
+                                self.text.insert_str(self.cursor, &clean);
+                                self.cursor += clean.len();
+                                self.modified = true;
                             }
                         }
                         self.cursor_visible = true;
@@ -430,10 +430,10 @@ impl Widget for TextInput {
                                 (self.cursor, sel_start)
                             };
                             let selected = &self.text[begin..end];
-                            if !selected.is_empty() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    let _ = clipboard.set_text(selected);
-                                }
+                            if !selected.is_empty()
+                                && let Ok(mut clipboard) = arboard::Clipboard::new()
+                            {
+                                let _ = clipboard.set_text(selected);
                             }
                         }
                         self.delete_selection();

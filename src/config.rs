@@ -26,9 +26,15 @@ pub struct Config {
     pub ai_provider: String,
 }
 
-fn default_true() -> bool { true }
-fn default_one() -> f32 { 1.0 }
-fn default_ai_provider() -> String { "claude-cli".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_one() -> f32 {
+    1.0
+}
+fn default_ai_provider() -> String {
+    "claude-cli".to_string()
+}
 
 /// Maximum number of recent repos to remember
 const MAX_RECENT_REPOS: usize = 10;
@@ -52,7 +58,9 @@ impl Default for Config {
 
 impl Config {
     fn config_dir() -> Option<PathBuf> {
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config").join("whisper-git"))
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".config").join("whisper-git"))
     }
 
     fn config_path() -> Option<PathBuf> {
@@ -70,16 +78,14 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let dir = Self::config_dir()
-            .ok_or_else(|| "Could not determine config directory".to_string())?;
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("Failed to create config dir: {e}"))?;
-        let path = Self::config_path()
-            .ok_or_else(|| "Could not determine config path".to_string())?;
+        let dir =
+            Self::config_dir().ok_or_else(|| "Could not determine config directory".to_string())?;
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config dir: {e}"))?;
+        let path =
+            Self::config_path().ok_or_else(|| "Could not determine config path".to_string())?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {e}"))?;
-        fs::write(&path, json)
-            .map_err(|e| format!("Failed to save config: {e}"))?;
+        fs::write(&path, json).map_err(|e| format!("Failed to save config: {e}"))?;
         Ok(())
     }
 

@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -55,7 +55,12 @@ impl ConfirmDialog {
         self.pending_action.take()
     }
 
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -105,7 +110,12 @@ impl ConfirmDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
@@ -174,7 +184,11 @@ impl Widget for ConfirmDialog {
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(ConfirmDialogAction::Cancel);
                 self.hide();
@@ -183,12 +197,18 @@ impl Widget for ConfirmDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
-            && !dialog.contains(*x, *y) {
-                self.pending_action = Some(ConfirmDialogAction::Cancel);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && !dialog.contains(*x, *y)
+        {
+            self.pending_action = Some(ConfirmDialogAction::Cancel);
+            self.hide();
+            return EventResponse::Consumed;
+        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed

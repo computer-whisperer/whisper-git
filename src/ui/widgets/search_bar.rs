@@ -1,7 +1,7 @@
 //! Search bar widget - text input with search icon and clear button
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
-use crate::ui::widget::{create_rect_vertices, create_rect_outline_vertices, theme, WidgetOutput};
+use crate::ui::widget::{WidgetOutput, create_rect_outline_vertices, create_rect_vertices, theme};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions produced by the search bar
@@ -139,7 +139,11 @@ impl SearchBar {
         }
 
         match event {
-            InputEvent::KeyDown { key, modifiers, text } => {
+            InputEvent::KeyDown {
+                key,
+                modifiers,
+                text,
+            } => {
                 match key {
                     Key::Escape => {
                         self.deactivate();
@@ -158,7 +162,8 @@ impl SearchBar {
                         if self.cursor > 0 {
                             self.cursor -= 1;
                             self.query.remove(self.cursor);
-                            self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
+                            self.pending_action =
+                                Some(SearchAction::QueryChanged(self.query.clone()));
                         }
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
@@ -167,7 +172,8 @@ impl SearchBar {
                     Key::Delete => {
                         if self.cursor < self.query.len() {
                             self.query.remove(self.cursor);
-                            self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
+                            self.pending_action =
+                                Some(SearchAction::QueryChanged(self.query.clone()));
                         }
                         self.cursor_visible = true;
                         self.last_blink = std::time::Instant::now();
@@ -196,16 +202,18 @@ impl SearchBar {
                     }
                     Key::V if modifiers.only_ctrl() => {
                         // Paste from clipboard (strip newlines for search bar)
-                        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                            if let Ok(pasted) = clipboard.get_text() {
-                                let clean: String = pasted.chars()
-                                    .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
-                                    .collect();
-                                if !clean.is_empty() {
-                                    self.query.insert_str(self.cursor, &clean);
-                                    self.cursor += clean.len();
-                                    self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
-                                }
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(pasted) = clipboard.get_text()
+                        {
+                            let clean: String = pasted
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r' && !c.is_control())
+                                .collect();
+                            if !clean.is_empty() {
+                                self.query.insert_str(self.cursor, &clean);
+                                self.cursor += clean.len();
+                                self.pending_action =
+                                    Some(SearchAction::QueryChanged(self.query.clone()));
                             }
                         }
                         self.cursor_visible = true;
@@ -224,7 +232,8 @@ impl SearchBar {
                             self.inserted_from_key = true;
                             self.cursor_visible = true;
                             self.last_blink = std::time::Instant::now();
-                            self.pending_action = Some(SearchAction::QueryChanged(self.query.clone()));
+                            self.pending_action =
+                                Some(SearchAction::QueryChanged(self.query.clone()));
                             return EventResponse::Consumed;
                         }
                     }
@@ -250,15 +259,16 @@ impl SearchBar {
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if bounds.contains(*x, *y) {
                     // Check if clicking the clear button (right edge)
-                    let clear_rect = Rect::new(
-                        bounds.right() - 24.0,
-                        bounds.y,
-                        24.0,
-                        bounds.height,
-                    );
+                    let clear_rect =
+                        Rect::new(bounds.right() - 24.0, bounds.y, 24.0, bounds.height);
                     if clear_rect.contains(*x, *y) && !self.query.is_empty() {
                         self.query.clear();
                         self.cursor = 0;
@@ -333,10 +343,9 @@ impl SearchBar {
         if self.cursor_visible {
             let cursor_x = text_x + text_renderer.measure_text(&self.query[..self.cursor]);
             let cursor_rect = Rect::new(cursor_x, bounds.y + 4.0, 2.0, bounds.height - 8.0);
-            output.spline_vertices.extend(create_rect_vertices(
-                &cursor_rect,
-                theme::ACCENT.to_array(),
-            ));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(&cursor_rect, theme::ACCENT.to_array()));
         }
 
         // Match count on the right
@@ -382,4 +391,3 @@ impl Default for SearchBar {
         Self::new()
     }
 }
-

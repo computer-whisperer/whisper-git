@@ -1,7 +1,10 @@
 //! Keyboard shortcut status bar - shows context-sensitive shortcuts for the focused panel
 
+use crate::ui::widget::{
+    WidgetOutput, create_rect_vertices, create_rounded_rect_outline_vertices,
+    create_rounded_rect_vertices, theme,
+};
 use crate::ui::{Rect, TextRenderer};
-use crate::ui::widget::{WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, create_rounded_rect_outline_vertices, theme};
 
 /// Which panel shortcuts to display
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +46,9 @@ impl ShortcutBar {
 
         // Subtle background - slightly different from main panels
         let bg_color = theme::SURFACE.to_array();
-        output.spline_vertices.extend(create_rect_vertices(&bounds, bg_color));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, bg_color));
 
         // Bottom border
         output.spline_vertices.extend(create_rect_vertices(
@@ -80,8 +85,19 @@ impl ShortcutBar {
                 key_w + pill_pad_h * 2.0,
                 scaled_lh + pill_pad_v * 2.0,
             );
-            output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(&pill_rect, pill_outline, pill_radius, 1.0));
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                pill_bg,
+                pill_radius,
+            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &pill_rect,
+                    pill_outline,
+                    pill_radius,
+                    1.0,
+                ));
 
             // Key label text inside pill
             output.text_vertices.extend(
@@ -93,9 +109,15 @@ impl ShortcutBar {
             x += char_w;
 
             // Action description
-            output.text_vertices.extend(
-                text_renderer.layout_text_scaled(hint.action, x, text_y, action_color, text_scale),
-            );
+            output
+                .text_vertices
+                .extend(text_renderer.layout_text_scaled(
+                    hint.action,
+                    x,
+                    text_y,
+                    action_color,
+                    text_scale,
+                ));
             x += text_renderer.measure_text_scaled(hint.action, text_scale);
         }
 
@@ -115,16 +137,39 @@ impl ShortcutBar {
                 key_w + pill_pad_h * 2.0,
                 scaled_lh + pill_pad_v * 2.0,
             );
-            output.spline_vertices.extend(create_rounded_rect_vertices(&pill_rect, pill_bg, pill_radius));
-            output.spline_vertices.extend(create_rounded_rect_outline_vertices(&pill_rect, pill_outline, pill_radius, 1.0));
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &pill_rect,
+                pill_bg,
+                pill_radius,
+            ));
+            output
+                .spline_vertices
+                .extend(create_rounded_rect_outline_vertices(
+                    &pill_rect,
+                    pill_outline,
+                    pill_radius,
+                    1.0,
+                ));
 
-            output.text_vertices.extend(
-                text_renderer.layout_text_scaled(hint_key, hint_x, text_y, theme::TEXT.to_array(), text_scale),
-            );
+            output
+                .text_vertices
+                .extend(text_renderer.layout_text_scaled(
+                    hint_key,
+                    hint_x,
+                    text_y,
+                    theme::TEXT.to_array(),
+                    text_scale,
+                ));
             let action_x = hint_x + key_w + pill_pad_h + char_w;
-            output.text_vertices.extend(
-                text_renderer.layout_text_scaled(hint_action, action_x, text_y, theme::TEXT_MUTED.to_array(), text_scale),
-            );
+            output
+                .text_vertices
+                .extend(text_renderer.layout_text_scaled(
+                    hint_action,
+                    action_x,
+                    text_y,
+                    theme::TEXT_MUTED.to_array(),
+                    text_scale,
+                ));
         }
 
         output
@@ -133,29 +178,77 @@ impl ShortcutBar {
     fn hints_for_context(&self) -> Vec<ShortcutHint> {
         let mut hints = match self.context {
             ShortcutContext::Graph => vec![
-                ShortcutHint { key: "j/k", action: "Navigate" },
-                ShortcutHint { key: "Enter", action: "Select" },
-                ShortcutHint { key: "Ctrl+F", action: "Search" },
-                ShortcutHint { key: "/", action: "Filter" },
-                ShortcutHint { key: "Tab", action: "Next Panel" },
+                ShortcutHint {
+                    key: "j/k",
+                    action: "Navigate",
+                },
+                ShortcutHint {
+                    key: "Enter",
+                    action: "Select",
+                },
+                ShortcutHint {
+                    key: "Ctrl+F",
+                    action: "Search",
+                },
+                ShortcutHint {
+                    key: "/",
+                    action: "Filter",
+                },
+                ShortcutHint {
+                    key: "Tab",
+                    action: "Next Panel",
+                },
             ],
             ShortcutContext::Staging => vec![
-                ShortcutHint { key: "Tab", action: "Cycle Fields" },
-                ShortcutHint { key: "Ctrl+Enter", action: "Commit" },
-                ShortcutHint { key: "Tab", action: "Next Panel" },
+                ShortcutHint {
+                    key: "Tab",
+                    action: "Cycle Fields",
+                },
+                ShortcutHint {
+                    key: "Ctrl+Enter",
+                    action: "Commit",
+                },
+                ShortcutHint {
+                    key: "Tab",
+                    action: "Next Panel",
+                },
             ],
             ShortcutContext::Sidebar => vec![
-                ShortcutHint { key: "j/k", action: "Navigate" },
-                ShortcutHint { key: "Enter", action: "Checkout" },
-                ShortcutHint { key: "d", action: "Delete" },
-                ShortcutHint { key: "Tab", action: "Next Panel" },
+                ShortcutHint {
+                    key: "j/k",
+                    action: "Navigate",
+                },
+                ShortcutHint {
+                    key: "Enter",
+                    action: "Checkout",
+                },
+                ShortcutHint {
+                    key: "d",
+                    action: "Delete",
+                },
+                ShortcutHint {
+                    key: "Tab",
+                    action: "Next Panel",
+                },
             ],
         };
         // Global git operation shortcuts shown in all contexts
-        hints.push(ShortcutHint { key: "C-S-F", action: "Fetch" });
-        hints.push(ShortcutHint { key: "C-S-L", action: "Pull" });
-        hints.push(ShortcutHint { key: "C-S-P", action: "Push" });
-        hints.push(ShortcutHint { key: "`", action: "Terminal" });
+        hints.push(ShortcutHint {
+            key: "C-S-F",
+            action: "Fetch",
+        });
+        hints.push(ShortcutHint {
+            key: "C-S-L",
+            action: "Pull",
+        });
+        hints.push(ShortcutHint {
+            key: "C-S-P",
+            action: "Push",
+        });
+        hints.push(ShortcutHint {
+            key: "`",
+            action: "Terminal",
+        });
         hints
     }
 }

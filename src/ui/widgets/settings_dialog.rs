@@ -2,7 +2,8 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_vertices, create_rect_outline_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_outline_vertices,
+    create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
 use crate::ui::{Rect, TextRenderer};
@@ -70,13 +71,7 @@ impl SettingsDialog {
     }
 
     /// Compute toggle option bounds for a setting row (2 options)
-    fn toggle_bounds(
-        &self,
-        dialog: &Rect,
-        row_y: f32,
-        row_h: f32,
-        scale: f32,
-    ) -> (Rect, Rect) {
+    fn toggle_bounds(&self, dialog: &Rect, row_y: f32, row_h: f32, scale: f32) -> (Rect, Rect) {
         let padding = 16.0 * scale;
         let option_w = 70.0 * scale;
         let gap = 8.0 * scale;
@@ -100,7 +95,12 @@ impl SettingsDialog {
         let right_edge = dialog.right() - padding;
         let r3 = Rect::new(right_edge - option_w, row_y, option_w, row_h);
         let r2 = Rect::new(right_edge - option_w * 2.0 - gap, row_y, option_w, row_h);
-        let r1 = Rect::new(right_edge - option_w * 3.0 - gap * 2.0, row_y, option_w, row_h);
+        let r1 = Rect::new(
+            right_edge - option_w * 3.0 - gap * 2.0,
+            row_y,
+            option_w,
+            row_h,
+        );
         (r1, r2, r3)
     }
 }
@@ -132,7 +132,8 @@ impl Widget for SettingsDialog {
         let (sp_normal, sp_fast) = self.toggle_bounds(&dialog, row2_y, line_h, scale);
         let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
         let (wt_short, wt_full) = self.toggle_bounds(&dialog, row4_y, line_h, scale);
-        let (ts_low, ts_normal, ts_high) = self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
+        let (ts_low, ts_normal, ts_high) =
+            self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
         let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
 
@@ -152,7 +153,13 @@ impl Widget for SettingsDialog {
         }
 
         // Handle clicks on toggle options
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             // Avatar toggles
             if av_on.contains(*x, *y) {
                 self.show_avatars = true;
@@ -223,7 +230,11 @@ impl Widget for SettingsDialog {
         }
 
         // Route to close button
-        if self.close_button.handle_event(event, close_bounds).is_consumed() {
+        if self
+            .close_button
+            .handle_event(event, close_bounds)
+            .is_consumed()
+        {
             if self.close_button.was_clicked() {
                 self.pending_action = Some(SettingsDialogAction::Close);
                 self.hide();
@@ -232,7 +243,12 @@ impl Widget for SettingsDialog {
         }
 
         // Click outside dialog dismisses
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
             && !dialog.contains(*x, *y)
         {
             self.pending_action = Some(SettingsDialogAction::Close);
@@ -250,7 +266,12 @@ impl Widget for SettingsDialog {
 }
 
 impl SettingsDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -304,12 +325,23 @@ impl SettingsDialog {
 
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
         self.render_toggle_option(&mut output, text_renderer, &av_on, "ON", self.show_avatars);
-        self.render_toggle_option(&mut output, text_renderer, &av_off, "OFF", !self.show_avatars);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &av_off,
+            "OFF",
+            !self.show_avatars,
+        );
 
         // Separator
         let sep1_y = row1_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep1_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep1_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -323,13 +355,30 @@ impl SettingsDialog {
         ));
 
         let (sp_normal, sp_fast) = self.toggle_bounds(&dialog, row2_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &sp_normal, "Normal", self.scroll_speed < 1.5);
-        self.render_toggle_option(&mut output, text_renderer, &sp_fast, "Fast", self.scroll_speed >= 1.5);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &sp_normal,
+            "Normal",
+            self.scroll_speed < 1.5,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &sp_fast,
+            "Fast",
+            self.scroll_speed >= 1.5,
+        );
 
         // Separator
         let sep2_y = row2_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep2_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep2_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -343,13 +392,30 @@ impl SettingsDialog {
         ));
 
         let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &rs_normal, "Normal", self.row_scale < 1.5);
-        self.render_toggle_option(&mut output, text_renderer, &rs_large, "Large", self.row_scale >= 1.5);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &rs_normal,
+            "Normal",
+            self.row_scale < 1.5,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &rs_large,
+            "Large",
+            self.row_scale >= 1.5,
+        );
 
         // Separator
         let sep3_y = row3_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep3_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep3_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -363,13 +429,30 @@ impl SettingsDialog {
         ));
 
         let (wt_short, wt_full) = self.toggle_bounds(&dialog, row4_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &wt_short, "Short", self.abbreviate_worktree_names);
-        self.render_toggle_option(&mut output, text_renderer, &wt_full, "Full", !self.abbreviate_worktree_names);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &wt_short,
+            "Short",
+            self.abbreviate_worktree_names,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &wt_full,
+            "Full",
+            !self.abbreviate_worktree_names,
+        );
 
         // Separator
         let sep4_y = row4_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep4_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep4_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -382,15 +465,39 @@ impl SettingsDialog {
             theme::TEXT.to_array(),
         ));
 
-        let (ts_low, ts_normal, ts_high) = self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &ts_low, "Low", self.time_spacing_strength < 0.5);
-        self.render_toggle_option(&mut output, text_renderer, &ts_normal, "Normal", self.time_spacing_strength >= 0.5 && self.time_spacing_strength < 1.5);
-        self.render_toggle_option(&mut output, text_renderer, &ts_high, "High", self.time_spacing_strength >= 1.5);
+        let (ts_low, ts_normal, ts_high) =
+            self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &ts_low,
+            "Low",
+            self.time_spacing_strength < 0.5,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &ts_normal,
+            "Normal",
+            self.time_spacing_strength >= 0.5 && self.time_spacing_strength < 1.5,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &ts_high,
+            "High",
+            self.time_spacing_strength >= 1.5,
+        );
 
         // Separator
         let sep5_y = row5_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep5_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep5_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -404,13 +511,30 @@ impl SettingsDialog {
         ));
 
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &oc_on, "ON", self.show_orphaned_commits);
-        self.render_toggle_option(&mut output, text_renderer, &oc_off, "OFF", !self.show_orphaned_commits);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &oc_on,
+            "ON",
+            self.show_orphaned_commits,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &oc_off,
+            "OFF",
+            !self.show_orphaned_commits,
+        );
 
         // Separator
         let sep6_y = row6_y + line_h + 5.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep6_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                sep6_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.to_array(),
         ));
 
@@ -424,8 +548,20 @@ impl SettingsDialog {
         ));
 
         let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &gs_snap, "Snap", self.ratchet_scroll);
-        self.render_toggle_option(&mut output, text_renderer, &gs_smooth, "Smooth", !self.ratchet_scroll);
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &gs_snap,
+            "Snap",
+            self.ratchet_scroll,
+        );
+        self.render_toggle_option(
+            &mut output,
+            text_renderer,
+            &gs_smooth,
+            "Smooth",
+            !self.ratchet_scroll,
+        );
 
         // Close button at bottom
         let button_y = dialog.bottom() - padding - line_h;
@@ -435,7 +571,12 @@ impl SettingsDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
@@ -474,7 +615,9 @@ impl SettingsDialog {
             theme::SURFACE_RAISED.to_array()
         };
         let toggle_radius = (rect.height * 0.15).min(4.0);
-        output.spline_vertices.extend(create_rounded_rect_vertices(rect, bg_color, toggle_radius));
+        output
+            .spline_vertices
+            .extend(create_rounded_rect_vertices(rect, bg_color, toggle_radius));
 
         // Border
         let border_color = if is_active {
@@ -482,7 +625,9 @@ impl SettingsDialog {
         } else {
             theme::BORDER.to_array()
         };
-        output.spline_vertices.extend(create_rect_outline_vertices(rect, border_color, 1.0));
+        output
+            .spline_vertices
+            .extend(create_rect_outline_vertices(rect, border_color, 1.0));
 
         // Label text (centered)
         let text_width = text_renderer.measure_text(label);
@@ -493,11 +638,8 @@ impl SettingsDialog {
         } else {
             theme::TEXT_MUTED.to_array()
         };
-        output.text_vertices.extend(text_renderer.layout_text(
-            label,
-            text_x,
-            text_y,
-            text_color,
-        ));
+        output
+            .text_vertices
+            .extend(text_renderer.layout_text(label, text_x, text_y, text_color));
     }
 }

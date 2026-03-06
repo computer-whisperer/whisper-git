@@ -58,7 +58,6 @@ impl MouseState {
             self.pressed.remove(&button);
         }
     }
-
 }
 
 impl Default for MouseState {

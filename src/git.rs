@@ -4,9 +4,9 @@
 //! and synthetic commit entries for visualizing dirty worktrees in the commit graph.
 
 use anyhow::{Context, Result};
-use git2::{Diff, Repository, RepositoryState, Commit, Oid, Status, StatusOptions};
-use std::collections::{HashMap, HashSet};
+use git2::{Commit, Diff, Oid, Repository, RepositoryState, Status, StatusOptions};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -63,10 +63,10 @@ pub fn ref_fingerprint(git_dir: &Path) -> u64 {
     };
     let mut hasher = DefaultHasher::new();
     // Hash HEAD target
-    if let Ok(head) = repo.head() {
-        if let Some(oid) = head.target() {
-            oid.as_bytes().hash(&mut hasher);
-        }
+    if let Ok(head) = repo.head()
+        && let Some(oid) = head.target()
+    {
+        oid.as_bytes().hash(&mut hasher);
     }
     // Hash sorted local branch tip OIDs
     if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
@@ -91,24 +91,30 @@ fn newest_mtime_in_dir(dir: &str) -> Option<i64> {
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if name == ".git" { continue; }
+        if name == ".git" {
+            continue;
+        }
         if let Ok(meta) = entry.metadata() {
             if let Ok(modified) = meta.modified() {
-                let ts = modified.duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default().as_secs() as i64;
+                let ts = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
                 newest = Some(newest.map_or(ts, |n: i64| n.max(ts)));
             }
             // One level deep for directories
-            if meta.is_dir() {
-                if let Ok(sub_entries) = fs::read_dir(entry.path()) {
-                    for sub in sub_entries.flatten() {
-                        if let Ok(sub_meta) = sub.metadata() {
-                            if let Ok(modified) = sub_meta.modified() {
-                                let ts = modified.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default().as_secs() as i64;
-                                newest = Some(newest.map_or(ts, |n: i64| n.max(ts)));
-                            }
-                        }
+            if meta.is_dir()
+                && let Ok(sub_entries) = fs::read_dir(entry.path())
+            {
+                for sub in sub_entries.flatten() {
+                    if let Ok(sub_meta) = sub.metadata()
+                        && let Ok(modified) = sub_meta.modified()
+                    {
+                        let ts = modified
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        newest = Some(newest.map_or(ts, |n: i64| n.max(ts)));
                     }
                 }
             }
@@ -130,31 +136,35 @@ pub fn create_synthetic_entries(
 
     if worktrees.is_empty() {
         // Single-worktree fallback: use working_dir_status if dirty
-        if let Some(head) = head_oid {
-            if let Ok(status) = repo.status() {
-                let count = status.total_files();
-                if count > 0 {
-                    // Find parent commit time
-                    let parent_time = commits.iter()
-                        .find(|c| c.id == head)
-                        .map(|c| c.time)
-                        .unwrap_or(0);
-                    let workdir = repo.workdir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let (ins, del) = repo.working_tree_diff_stats();
-                    let mut entry = CommitInfo::synthetic_for_working_dir(head, count, &workdir, parent_time);
-                    entry.insertions = ins;
-                    entry.deletions = del;
-                    synthetics.push(entry);
-                }
+        if let Some(head) = head_oid
+            && let Ok(status) = repo.status()
+        {
+            let count = status.total_files();
+            if count > 0 {
+                // Find parent commit time
+                let parent_time = commits
+                    .iter()
+                    .find(|c| c.id == head)
+                    .map(|c| c.time)
+                    .unwrap_or(0);
+                let workdir = repo
+                    .workdir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let (ins, del) = repo.working_tree_diff_stats();
+                let mut entry =
+                    CommitInfo::synthetic_for_working_dir(head, count, &workdir, parent_time);
+                entry.insertions = ins;
+                entry.deletions = del;
+                synthetics.push(entry);
             }
         }
     } else {
         for wt in worktrees {
             if wt.is_dirty {
                 // Find parent commit time
-                let parent_time = wt.head_oid
+                let parent_time = wt
+                    .head_oid
                     .and_then(|oid| commits.iter().find(|c| c.id == oid))
                     .map(|c| c.time)
                     .unwrap_or(0);
@@ -179,7 +189,8 @@ pub fn create_synthetic_entries(
 /// synthetic is inserted at the position where its time >= the next commit's time.
 pub fn insert_synthetics_sorted(commits: &mut Vec<CommitInfo>, synthetics: Vec<CommitInfo>) {
     for synthetic in synthetics {
-        let pos = commits.iter()
+        let pos = commits
+            .iter()
             .position(|c| c.time <= synthetic.time)
             .unwrap_or(commits.len());
         commits.insert(pos, synthetic);
@@ -222,14 +233,19 @@ impl CommitInfo {
                 let mut lines = msg.lines();
                 lines.next(); // skip summary
                 let body_lines: Vec<&str> = lines.collect();
-                let excerpt = body_lines.iter()
+                let excerpt = body_lines
+                    .iter()
                     .map(|l| l.trim())
                     .find(|l| !l.is_empty())
                     .map(|l| l.to_string());
                 let full = {
                     let text: String = body_lines.join("\n");
                     let trimmed = text.trim();
-                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    }
                 };
                 (excerpt, full)
             }
@@ -287,7 +303,10 @@ impl CommitInfo {
         let summary = if wt.dirty_file_count == 1 {
             format!("Uncommitted changes ({}): 1 file", wt.name)
         } else {
-            format!("Uncommitted changes ({}): {} files", wt.name, wt.dirty_file_count)
+            format!(
+                "Uncommitted changes ({}): {} files",
+                wt.name, wt.dirty_file_count
+            )
         };
 
         Some(Self {
@@ -313,7 +332,12 @@ impl CommitInfo {
     /// (single-worktree fallback when no linked worktrees exist).
     /// The timestamp is the most recently modified file in the workdir, bounded
     /// to no earlier than the parent commit's timestamp.
-    pub fn synthetic_for_working_dir(head_oid: Oid, dirty_count: usize, workdir: &str, parent_time: i64) -> Self {
+    pub fn synthetic_for_working_dir(
+        head_oid: Oid,
+        dirty_count: usize,
+        workdir: &str,
+        parent_time: i64,
+    ) -> Self {
         let mut bytes = [0u8; 20];
         bytes[0] = 0xFF;
         bytes[1] = 0xFD; // distinct prefix from worktree variant
@@ -401,7 +425,9 @@ impl GitRepo {
 
     /// Clean up an in-progress operation (abort merge, cherry-pick, etc.)
     pub fn cleanup_state(&self) -> Result<()> {
-        self.repo.cleanup_state().context("Failed to clean up repository state")?;
+        self.repo
+            .cleanup_state()
+            .context("Failed to clean up repository state")?;
         Ok(())
     }
 
@@ -435,22 +461,20 @@ impl GitRepo {
         let mut ins = 0usize;
         let mut del = 0usize;
         // Staged: HEAD-to-index
-        if let Ok(head_ref) = self.repo.head() {
-            if let Ok(head_tree) = head_ref.peel_to_tree() {
-                if let Ok(diff) = self.repo.diff_tree_to_index(Some(&head_tree), None, None) {
-                    if let Ok(stats) = diff.stats() {
-                        ins += stats.insertions();
-                        del += stats.deletions();
-                    }
-                }
-            }
+        if let Ok(head_ref) = self.repo.head()
+            && let Ok(head_tree) = head_ref.peel_to_tree()
+            && let Ok(diff) = self.repo.diff_tree_to_index(Some(&head_tree), None, None)
+            && let Ok(stats) = diff.stats()
+        {
+            ins += stats.insertions();
+            del += stats.deletions();
         }
         // Unstaged: index-to-workdir
-        if let Ok(diff) = self.repo.diff_index_to_workdir(None, None) {
-            if let Ok(stats) = diff.stats() {
-                ins += stats.insertions();
-                del += stats.deletions();
-            }
+        if let Ok(diff) = self.repo.diff_index_to_workdir(None, None)
+            && let Ok(stats) = diff.stats()
+        {
+            ins += stats.insertions();
+            del += stats.deletions();
         }
         (ins, del)
     }
@@ -460,16 +484,17 @@ impl GitRepo {
     pub fn staged_diff_text(&self, max_bytes: usize) -> Result<String> {
         let head = self.repo.head().context("Failed to get HEAD")?;
         let head_tree = head.peel_to_tree().context("Failed to get HEAD tree")?;
-        let diff = self.repo.diff_tree_to_index(
-            Some(&head_tree),
-            Some(&self.repo.index()?),
-            None,
-        ).context("Failed to compute staged diff")?;
+        let diff = self
+            .repo
+            .diff_tree_to_index(Some(&head_tree), Some(&self.repo.index()?), None)
+            .context("Failed to compute staged diff")?;
 
         let mut buf = String::new();
         let mut truncated = false;
         diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-            if truncated { return true; }
+            if truncated {
+                return true;
+            }
             let origin = line.origin();
             if origin == '+' || origin == '-' || origin == ' ' {
                 buf.push(origin);
@@ -483,7 +508,8 @@ impl GitRepo {
                 buf.push_str("\n... [diff truncated]");
             }
             true
-        }).context("Failed to print diff")?;
+        })
+        .context("Failed to print diff")?;
 
         Ok(buf)
     }
@@ -496,9 +522,10 @@ impl GitRepo {
         for branch in self.repo.branches(None)? {
             if let Ok((branch, _)) = branch
                 && let Ok(reference) = branch.get().resolve()
-                    && let Some(oid) = reference.target() {
-                        let _ = revwalk.push(oid);
-                    }
+                && let Some(oid) = reference.target()
+            {
+                let _ = revwalk.push(oid);
+            }
         }
 
         // Sort topologically for better graph layout
@@ -553,16 +580,18 @@ impl GitRepo {
         }
         // Include tag targets (peeled to commit)
         let _ = self.repo.tag_foreach(|oid, _| {
-            if let Ok(obj) = self.repo.find_object(oid, None) {
-                if let Ok(commit) = obj.peel_to_commit() {
-                    tip_oids.push(commit.id());
-                }
+            if let Ok(obj) = self.repo.find_object(oid, None)
+                && let Ok(commit) = obj.peel_to_commit()
+            {
+                tip_oids.push(commit.id());
             }
             true
         });
 
         for refname in &refnames {
-            let Ok(reflog) = self.repo.reflog(refname) else { continue };
+            let Ok(reflog) = self.repo.reflog(refname) else {
+                continue;
+            };
             for i in 0..reflog.len() {
                 let Some(entry) = reflog.get(i) else { continue };
                 let msg = entry.message().unwrap_or("").to_string();
@@ -581,11 +610,13 @@ impl GitRepo {
         candidates.retain(|(oid, _)| {
             // If the commit doesn't exist anymore, keep it — the CommitInfo step
             // below will skip it via find_commit().
-            let Ok(_) = self.repo.find_commit(*oid) else { return true };
+            let Ok(_) = self.repo.find_commit(*oid) else {
+                return true;
+            };
             // If ANY tip is a descendant of this commit, it's reachable
-            !tip_oids.iter().any(|tip| {
-                self.repo.graph_descendant_of(*tip, *oid).unwrap_or(false)
-            })
+            !tip_oids
+                .iter()
+                .any(|tip| self.repo.graph_descendant_of(*tip, *oid).unwrap_or(false))
         });
 
         // Validate each candidate still exists (not GC'd) and build CommitInfo
@@ -593,7 +624,9 @@ impl GitRepo {
         let mut orphan_oids: HashSet<Oid> = HashSet::new();
 
         for (oid, label) in &candidates {
-            let Ok(commit) = self.repo.find_commit(*oid) else { continue };
+            let Ok(commit) = self.repo.find_commit(*oid) else {
+                continue;
+            };
             let mut info = CommitInfo::from_commit(&commit);
             info.is_orphaned = true;
             info.orphan_source = Some(label.clone());
@@ -602,17 +635,28 @@ impl GitRepo {
         }
 
         // Chain walk: for each discovered orphan, walk parents up to depth 10
-        let mut parent_queue: Vec<(Oid, u8, String)> = orphans.iter()
-            .flat_map(|o| o.parent_ids.iter().map(move |&pid| (pid, 1u8, o.short_id.clone())))
+        let mut parent_queue: Vec<(Oid, u8, String)> = orphans
+            .iter()
+            .flat_map(|o| {
+                o.parent_ids
+                    .iter()
+                    .map(move |&pid| (pid, 1u8, o.short_id.clone()))
+            })
             .collect();
 
         while let Some((pid, depth, source_sha)) = parent_queue.pop() {
-            if depth > 10 || known_oids.contains(&pid) || orphan_oids.contains(&pid) || pid == zero {
+            if depth > 10 || known_oids.contains(&pid) || orphan_oids.contains(&pid) || pid == zero
+            {
                 continue;
             }
-            let Ok(commit) = self.repo.find_commit(pid) else { continue };
+            let Ok(commit) = self.repo.find_commit(pid) else {
+                continue;
+            };
             // Skip if reachable from any branch tip (connects back to main graph)
-            if tip_oids.iter().any(|tip| self.repo.graph_descendant_of(*tip, pid).unwrap_or(false)) {
+            if tip_oids
+                .iter()
+                .any(|tip| self.repo.graph_descendant_of(*tip, pid).unwrap_or(false))
+            {
                 continue;
             }
             let mut info = CommitInfo::from_commit(&commit);
@@ -651,7 +695,11 @@ impl GitRepo {
 
     /// Spawn a background thread to compute diff stats for a list of commit OIDs.
     /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
-    pub fn compute_diff_stats_async(&self, oids: Vec<Oid>, proxy: EventLoopProxy<()>) -> Receiver<Vec<(Oid, usize, usize)>> {
+    pub fn compute_diff_stats_async(
+        &self,
+        oids: Vec<Oid>,
+        proxy: EventLoopProxy<()>,
+    ) -> Receiver<Vec<(Oid, usize, usize)>> {
         crate::crash_log::breadcrumb(format!("diff_stats_async: {} commits", oids.len()));
         let repo_path = self.repo.path().to_path_buf();
         let (tx, rx) = mpsc::channel();
@@ -663,10 +711,14 @@ impl GitRepo {
             };
             let mut results = Vec::with_capacity(oids.len());
             for oid in oids {
-                let Ok(commit) = repo.find_commit(oid) else { continue };
+                let Ok(commit) = repo.find_commit(oid) else {
+                    continue;
+                };
                 let (ins, del) = if let Ok(tree) = commit.tree() {
                     let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-                    if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                    if let Ok(diff) =
+                        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+                    {
                         if let Ok(stats) = diff.stats() {
                             (stats.insertions(), stats.deletions())
                         } else {
@@ -727,9 +779,10 @@ impl GitRepo {
                 if let Ok(branches) = self.repo.branches(Some(git2::BranchType::Local)) {
                     for branch in branches {
                         if let Ok((branch, _)) = branch
-                            && let Ok(Some(name)) = branch.name() {
-                                return Ok(name.to_string());
-                            }
+                            && let Ok(Some(name)) = branch.name()
+                        {
+                            return Ok(name.to_string());
+                        }
                     }
                 }
                 Ok("HEAD".to_string())
@@ -740,16 +793,18 @@ impl GitRepo {
     /// Get the head commit OID (falls back to first local branch tip for bare repos)
     pub fn head_oid(&self) -> Result<Oid> {
         if let Ok(head) = self.repo.head()
-            && let Some(oid) = head.target() {
-                return Ok(oid);
-            }
+            && let Some(oid) = head.target()
+        {
+            return Ok(oid);
+        }
         // Fallback: first local branch tip
         for branch in self.repo.branches(Some(git2::BranchType::Local))? {
             if let Ok((branch, _)) = branch
                 && let Ok(reference) = branch.get().resolve()
-                    && let Some(oid) = reference.target() {
-                        return Ok(oid);
-                    }
+                && let Some(oid) = reference.target()
+            {
+                return Ok(oid);
+            }
         }
         anyhow::bail!("No HEAD or branch tips found")
     }
@@ -762,16 +817,26 @@ impl GitRepo {
             return result;
         };
         for branch_result in branches {
-            let Ok((branch, _)) = branch_result else { continue };
-            let Ok(Some(name)) = branch.name() else { continue };
+            let Ok((branch, _)) = branch_result else {
+                continue;
+            };
+            let Ok(Some(name)) = branch.name() else {
+                continue;
+            };
             let name = name.to_string();
-            let Ok(upstream) = branch.upstream() else { continue };
-            let Some(local_oid) = branch.get().resolve().ok().and_then(|r| r.target()) else { continue };
-            let Some(upstream_oid) = upstream.get().resolve().ok().and_then(|r| r.target()) else { continue };
-            if let Ok((ahead, behind)) = self.repo.graph_ahead_behind(local_oid, upstream_oid) {
-                if ahead > 0 || behind > 0 {
-                    result.insert(name, (ahead, behind));
-                }
+            let Ok(upstream) = branch.upstream() else {
+                continue;
+            };
+            let Some(local_oid) = branch.get().resolve().ok().and_then(|r| r.target()) else {
+                continue;
+            };
+            let Some(upstream_oid) = upstream.get().resolve().ok().and_then(|r| r.target()) else {
+                continue;
+            };
+            if let Ok((ahead, behind)) = self.repo.graph_ahead_behind(local_oid, upstream_oid)
+                && (ahead > 0 || behind > 0)
+            {
+                result.insert(name, (ahead, behind));
             }
         }
         result
@@ -783,10 +848,11 @@ impl GitRepo {
             return Ok(WorkingDirStatus::default());
         }
         let mut opts = StatusOptions::new();
-        opts.include_untracked(true)
-            .recurse_untracked_dirs(true);
+        opts.include_untracked(true).recurse_untracked_dirs(true);
 
-        let statuses = self.repo.statuses(Some(&mut opts))
+        let statuses = self
+            .repo
+            .statuses(Some(&mut opts))
             .context("Failed to get status")?;
 
         let mut staged = Vec::new();
@@ -841,7 +907,12 @@ impl GitRepo {
             }
         }
 
-        Ok(WorkingDirStatus { staged, unstaged, untracked, conflicted })
+        Ok(WorkingDirStatus {
+            staged,
+            unstaged,
+            untracked,
+            conflicted,
+        })
     }
 
     /// Stage a file.
@@ -854,16 +925,19 @@ impl GitRepo {
         let mut index = self.repo.index().context("Failed to get index")?;
 
         // Check if the file exists on disk to determine correct index operation
-        let full_path = self.workdir()
-            .map(|wd| wd.join(path));
-        let exists_on_disk = full_path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        let full_path = self.workdir().map(|wd| wd.join(path));
+        let exists_on_disk = full_path.as_ref().is_some_and(|p| p.exists());
 
         if exists_on_disk {
             // File exists: add it (works for new + modified + typechange)
-            index.add_path(Path::new(path)).context("Failed to stage file")?;
+            index
+                .add_path(Path::new(path))
+                .context("Failed to stage file")?;
         } else {
             // File was deleted from disk: remove from index to stage the deletion
-            index.remove_path(Path::new(path)).context("Failed to stage deleted file")?;
+            index
+                .remove_path(Path::new(path))
+                .context("Failed to stage deleted file")?;
         }
         index.write().context("Failed to write index")?;
         Ok(())
@@ -878,13 +952,17 @@ impl GitRepo {
         self.ensure_not_bare()?;
 
         // Check file status to determine if this is a newly added file
-        let file_status = self.repo.status_file(Path::new(path))
+        let file_status = self
+            .repo
+            .status_file(Path::new(path))
             .unwrap_or(Status::empty());
 
         if file_status.contains(Status::INDEX_NEW) {
             // Newly added file: no HEAD version exists, so remove from index
             let mut index = self.repo.index().context("Failed to get index")?;
-            index.remove_path(Path::new(path)).context("Failed to unstage new file")?;
+            index
+                .remove_path(Path::new(path))
+                .context("Failed to unstage new file")?;
             index.write().context("Failed to write index")?;
         } else {
             // File exists in HEAD: reset index entry to HEAD version
@@ -903,22 +981,21 @@ impl GitRepo {
         self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
         let tree_oid = index.write_tree().context("Failed to write tree")?;
-        let tree = self.repo.find_tree(tree_oid).context("Failed to find tree")?;
+        let tree = self
+            .repo
+            .find_tree(tree_oid)
+            .context("Failed to find tree")?;
 
         let head = self.repo.head().context("Failed to get HEAD")?;
-        let parent_commit = head.peel_to_commit().context("Failed to get parent commit")?;
+        let parent_commit = head
+            .peel_to_commit()
+            .context("Failed to get parent commit")?;
 
         let sig = self.repo.signature().context("Failed to get signature")?;
 
-        let commit_oid = self.repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                message,
-                &tree,
-                &[&parent_commit],
-            )
+        let commit_oid = self
+            .repo
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])
             .context("Failed to create commit")?;
 
         Ok(commit_oid)
@@ -935,17 +1012,19 @@ impl GitRepo {
             };
             let mut found = None;
             for name in wt_names.iter().flatten() {
-                if let Ok(wt) = self.repo.find_worktree(name) {
-                    if let Ok(r) = Repository::open(wt.path()) {
-                        if r.workdir().map(|w| w.join(".gitmodules").exists()).unwrap_or(false) {
-                            found = Some(r);
-                            break;
-                        }
-                    }
+                if let Ok(wt) = self.repo.find_worktree(name)
+                    && let Ok(r) = Repository::open(wt.path())
+                    && r.workdir().is_some_and(|w| w.join(".gitmodules").exists())
+                {
+                    found = Some(r);
+                    break;
                 }
             }
             match found {
-                Some(r) => { wt_repo_holder = r; &wt_repo_holder }
+                Some(r) => {
+                    wt_repo_holder = r;
+                    &wt_repo_holder
+                }
                 None => return Ok(Vec::new()),
             }
         } else {
@@ -968,10 +1047,7 @@ impl GitRepo {
                     .and_then(|h| h.shorthand().map(|s| s.to_string()))
                     .unwrap_or_else(|| "detached".to_string());
 
-                let is_dirty = sub_repo
-                    .statuses(None)
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false);
+                let is_dirty = sub_repo.statuses(None).is_ok_and(|s| !s.is_empty());
 
                 (branch, is_dirty)
             } else {
@@ -997,12 +1073,14 @@ impl GitRepo {
         let mut infos = Vec::new();
         for name in worktrees.iter() {
             if let Some(name) = name
-                && let Ok(wt) = self.repo.find_worktree(name) {
-                    let wt_path = wt.path();
-                    let path = wt_path.to_string_lossy().to_string();
+                && let Ok(wt) = self.repo.find_worktree(name)
+            {
+                let wt_path = wt.path();
+                let path = wt_path.to_string_lossy().to_string();
 
-                    // Try to get branch info, HEAD oid, and dirty status
-                    let (branch, head_oid, is_dirty, dirty_file_count) = if let Ok(wt_repo) = Repository::open(wt_path) {
+                // Try to get branch info, HEAD oid, and dirty status
+                let (branch, head_oid, is_dirty, dirty_file_count) =
+                    if let Ok(wt_repo) = Repository::open(wt_path) {
                         let head_ref = wt_repo.head().ok();
                         let branch = head_ref
                             .as_ref()
@@ -1013,7 +1091,8 @@ impl GitRepo {
                         let (is_dirty, dirty_file_count) = wt_repo
                             .statuses(None)
                             .map(|statuses| {
-                                let count = statuses.iter()
+                                let count = statuses
+                                    .iter()
                                     .filter(|entry| !entry.status().intersects(Status::IGNORED))
                                     .count();
                                 (count > 0, count)
@@ -1025,15 +1104,15 @@ impl GitRepo {
                         ("unknown".to_string(), None, false, 0)
                     };
 
-                    infos.push(WorktreeInfo {
-                        name: name.to_string(),
-                        path,
-                        branch,
-                        head_oid,
-                        is_dirty,
-                        dirty_file_count,
-                    });
-                }
+                infos.push(WorktreeInfo {
+                    name: name.to_string(),
+                    path,
+                    branch,
+                    head_oid,
+                    is_dirty,
+                    dirty_file_count,
+                });
+            }
         }
 
         Ok(infos)
@@ -1047,26 +1126,29 @@ impl GitRepo {
         for branch in self.repo.branches(None)? {
             if let Ok((branch, branch_type)) = branch
                 && let Ok(reference) = branch.get().resolve()
-                    && let Some(oid) = reference.target() {
-                        let name = branch.name().ok().flatten().unwrap_or("").to_string();
-                        let is_remote = branch_type == git2::BranchType::Remote;
-                        let is_head = head_oid == Some(oid);
+                && let Some(oid) = reference.target()
+            {
+                let name = branch.name().ok().flatten().unwrap_or("").to_string();
+                let is_remote = branch_type == git2::BranchType::Remote;
+                let is_head = head_oid == Some(oid);
 
-                        let upstream = if !is_remote {
-                            branch.upstream().ok()
-                                .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()))
-                        } else {
-                            None
-                        };
+                let upstream = if !is_remote {
+                    branch
+                        .upstream()
+                        .ok()
+                        .and_then(|u| u.name().ok().flatten().map(|s| s.to_string()))
+                } else {
+                    None
+                };
 
-                        tips.push(BranchTip {
-                            name,
-                            oid,
-                            is_remote,
-                            is_head,
-                            upstream,
-                        });
-                    }
+                tips.push(BranchTip {
+                    name,
+                    oid,
+                    is_remote,
+                    is_head,
+                    upstream,
+                });
+            }
         }
 
         Ok(tips)
@@ -1075,7 +1157,8 @@ impl GitRepo {
     /// Returns the list of configured remote names (from git config, not refs)
     pub fn remote_names(&self) -> Vec<String> {
         match self.repo.remotes() {
-            Ok(remotes) => remotes.iter()
+            Ok(remotes) => remotes
+                .iter()
                 .filter_map(|r| r.map(|s| s.to_string()))
                 .collect(),
             Err(_) => Vec::new(),
@@ -1092,7 +1175,8 @@ impl GitRepo {
                 .to_string();
 
             // Resolve to the commit (tags can point to tag objects)
-            let commit_oid = self.repo
+            let commit_oid = self
+                .repo
                 .find_object(oid, None)
                 .ok()
                 .and_then(|obj| obj.peel_to_commit().ok())
@@ -1111,7 +1195,9 @@ impl GitRepo {
 
     /// Get the diff for a commit compared to its first parent
     pub fn diff_for_commit(&self, oid: Oid) -> Result<Vec<DiffFile>> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .context("Failed to find commit")?;
         let tree = commit.tree().context("Failed to get commit tree")?;
 
@@ -1122,11 +1208,10 @@ impl GitRepo {
             None
         };
 
-        let diff = self.repo.diff_tree_to_tree(
-            parent_tree.as_ref(),
-            Some(&tree),
-            None,
-        ).context("Failed to compute diff")?;
+        let diff = self
+            .repo
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+            .context("Failed to compute diff")?;
 
         Self::parse_diff(&diff)
     }
@@ -1212,7 +1297,8 @@ impl GitRepo {
         let new_bytes = new.as_bytes();
 
         // Find common prefix length
-        let prefix_len = old_bytes.iter()
+        let prefix_len = old_bytes
+            .iter()
             .zip(new_bytes.iter())
             .take_while(|(a, b)| a == b)
             .count();
@@ -1220,7 +1306,9 @@ impl GitRepo {
         // Find common suffix length (not overlapping with prefix)
         let old_remaining = old_bytes.len() - prefix_len;
         let new_remaining = new_bytes.len() - prefix_len;
-        let suffix_len = old_bytes[prefix_len..].iter().rev()
+        let suffix_len = old_bytes[prefix_len..]
+            .iter()
+            .rev()
             .zip(new_bytes[prefix_len..].iter().rev())
             .take_while(|(a, b)| a == b)
             .count()
@@ -1274,13 +1362,18 @@ impl GitRepo {
         let mut files: Vec<DiffFile> = Vec::new();
 
         diff.print(git2::DiffFormat::Patch, |delta, hunk, line| {
-            let path = delta.new_file().path()
+            let path = delta
+                .new_file()
+                .path()
                 .or_else(|| delta.old_file().path())
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_default();
 
             // Create a new file entry if the path changed
-            let need_new_file = files.last().map(|f: &DiffFile| f.path != path).unwrap_or(true);
+            let need_new_file = files
+                .last()
+                .map(|f: &DiffFile| f.path != path)
+                .unwrap_or(true);
             if need_new_file {
                 files.push(DiffFile {
                     path,
@@ -1297,9 +1390,9 @@ impl GitRepo {
                 'F' | 'H' => {
                     // File header or hunk header
                     if origin == 'H' {
-                        let header = hunk.map(|h| {
-                            String::from_utf8_lossy(h.header()).trim_end().to_string()
-                        }).unwrap_or_default();
+                        let header = hunk
+                            .map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
+                            .unwrap_or_default();
                         file.hunks.push(DiffHunk {
                             header,
                             lines: Vec::new(),
@@ -1351,9 +1444,22 @@ pub struct DiffFile {
 impl DiffFile {
     /// Build a DiffFile from a path and hunks, computing addition/deletion counts.
     pub fn from_hunks(path: String, hunks: Vec<DiffHunk>) -> Self {
-        let additions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '+').count();
-        let deletions = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.origin == '-').count();
-        Self { path, hunks, additions, deletions }
+        let additions = hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.origin == '+')
+            .count();
+        let deletions = hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.origin == '-')
+            .count();
+        Self {
+            path,
+            hunks,
+            additions,
+            deletions,
+        }
     }
 }
 
@@ -1438,7 +1544,6 @@ impl FileStatusKind {
             FileStatusKind::TypeChange
         }
     }
-
 }
 
 /// Submodule information
@@ -1448,7 +1553,7 @@ pub struct SubmoduleInfo {
     pub path: String,
     pub branch: String,
     pub is_dirty: bool,
-    pub head_oid: Option<Oid>,     // what parent's HEAD pins (sm.head_id())
+    pub head_oid: Option<Oid>, // what parent's HEAD pins (sm.head_id())
 }
 
 /// Per-commit submodule entry: what a commit tree pins for each submodule.
@@ -1549,7 +1654,7 @@ impl GitRepo {
 
     /// Check if any remotes are configured.
     pub fn has_remotes(&self) -> bool {
-        self.repo.remotes().map_or(false, |r| !r.is_empty())
+        self.repo.remotes().is_ok_and(|r| !r.is_empty())
     }
 
     /// Find the default remote name (usually "origin")
@@ -1557,41 +1662,52 @@ impl GitRepo {
         // Try to find the upstream remote for the current branch
         if let Ok(head) = self.repo.head()
             && let Some(name) = head.shorthand()
-                && let Ok(branch) = self.repo.find_branch(name, git2::BranchType::Local)
-                    && let Ok(upstream) = branch.upstream()
-                        && let Ok(Some(upstream_name)) = upstream.name() {
-                            // upstream name is like "origin/main", extract remote part
-                            if let Some(remote) = upstream_name.split('/').next() {
-                                return Ok(remote.to_string());
-                            }
-                        }
+            && let Ok(branch) = self.repo.find_branch(name, git2::BranchType::Local)
+            && let Ok(upstream) = branch.upstream()
+            && let Ok(Some(upstream_name)) = upstream.name()
+        {
+            // upstream name is like "origin/main", extract remote part
+            if let Some(remote) = upstream_name.split('/').next() {
+                return Ok(remote.to_string());
+            }
+        }
         // Fallback: try "origin"
         if self.repo.find_remote("origin").is_ok() {
             return Ok("origin".to_string());
         }
         // Fallback: first remote
         let remotes = self.repo.remotes().context("No remotes configured")?;
-        remotes.get(0)
+        remotes
+            .get(0)
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow::anyhow!("No remotes configured"))
     }
 
     /// Checkout a local branch by name
     pub fn checkout_branch(&self, name: &str) -> Result<()> {
-        let branch = self.repo.find_branch(name, git2::BranchType::Local)
+        let branch = self
+            .repo
+            .find_branch(name, git2::BranchType::Local)
             .with_context(|| format!("Branch '{}' not found", name))?;
-        let reference = branch.get().resolve()
+        let reference = branch
+            .get()
+            .resolve()
             .context("Failed to resolve branch reference")?;
-        let commit = reference.peel_to_commit()
+        let commit = reference
+            .peel_to_commit()
             .context("Failed to peel to commit")?;
         let tree = commit.tree().context("Failed to get tree")?;
 
-        self.repo.checkout_tree(tree.as_object(), Some(
-            git2::build::CheckoutBuilder::new().safe()
-        )).context("Failed to checkout tree")?;
+        self.repo
+            .checkout_tree(
+                tree.as_object(),
+                Some(git2::build::CheckoutBuilder::new().safe()),
+            )
+            .context("Failed to checkout tree")?;
 
         let refname = format!("refs/heads/{}", name);
-        self.repo.set_head(&refname)
+        self.repo
+            .set_head(&refname)
             .with_context(|| format!("Failed to set HEAD to {}", name))?;
 
         Ok(())
@@ -1600,31 +1716,45 @@ impl GitRepo {
     /// Checkout a remote branch, creating a local tracking branch
     pub fn checkout_remote_branch(&self, remote: &str, branch: &str) -> Result<()> {
         // Check if local branch already exists
-        if self.repo.find_branch(branch, git2::BranchType::Local).is_ok() {
+        if self
+            .repo
+            .find_branch(branch, git2::BranchType::Local)
+            .is_ok()
+        {
             // Just checkout the existing local branch
             return self.checkout_branch(branch);
         }
 
         // Find the remote branch
         let remote_branch_name = format!("{}/{}", remote, branch);
-        let remote_ref = self.repo.find_branch(&remote_branch_name, git2::BranchType::Remote)
+        let remote_ref = self
+            .repo
+            .find_branch(&remote_branch_name, git2::BranchType::Remote)
             .with_context(|| format!("Remote branch '{}' not found", remote_branch_name))?;
-        let commit = remote_ref.get().peel_to_commit()
+        let commit = remote_ref
+            .get()
+            .peel_to_commit()
             .context("Failed to peel remote branch to commit")?;
 
         // Create local tracking branch
-        let mut local_branch = self.repo.branch(branch, &commit, false)
+        let mut local_branch = self
+            .repo
+            .branch(branch, &commit, false)
             .with_context(|| format!("Failed to create local branch '{}'", branch))?;
 
         // Set upstream
-        local_branch.set_upstream(Some(&remote_branch_name))
+        local_branch
+            .set_upstream(Some(&remote_branch_name))
             .context("Failed to set upstream")?;
 
         // Checkout
         let tree = commit.tree().context("Failed to get tree")?;
-        self.repo.checkout_tree(tree.as_object(), Some(
-            git2::build::CheckoutBuilder::new().safe()
-        )).context("Failed to checkout tree")?;
+        self.repo
+            .checkout_tree(
+                tree.as_object(),
+                Some(git2::build::CheckoutBuilder::new().safe()),
+            )
+            .context("Failed to checkout tree")?;
 
         let refname = format!("refs/heads/{}", branch);
         self.repo.set_head(&refname)?;
@@ -1638,9 +1768,11 @@ impl GitRepo {
     pub fn set_head_to(&self, branch_name: &str) -> Result<()> {
         let refname = format!("refs/heads/{}", branch_name);
         // Verify the branch exists
-        self.repo.find_branch(branch_name, git2::BranchType::Local)
+        self.repo
+            .find_branch(branch_name, git2::BranchType::Local)
             .with_context(|| format!("Branch '{}' not found", branch_name))?;
-        self.repo.set_head(&refname)
+        self.repo
+            .set_head(&refname)
             .with_context(|| format!("Failed to set HEAD to '{}'", branch_name))?;
         Ok(())
     }
@@ -1648,61 +1780,77 @@ impl GitRepo {
     /// Delete a local branch (refuses to delete the current branch or one checked out in a worktree)
     pub fn delete_branch(&self, name: &str) -> Result<()> {
         // Check if this branch is the current branch (handle bare-repo failures gracefully)
-        if let Ok(current) = self.current_branch() {
-            if current == name {
-                anyhow::bail!("Cannot delete the currently checked-out branch");
-            }
+        if let Ok(current) = self.current_branch()
+            && current == name
+        {
+            anyhow::bail!("Cannot delete the currently checked-out branch");
         }
-        let mut branch = self.repo.find_branch(name, git2::BranchType::Local)
+        let mut branch = self
+            .repo
+            .find_branch(name, git2::BranchType::Local)
             .with_context(|| format!("Branch '{}' not found", name))?;
         // Check if the branch is checked out in any worktree
         if branch.is_head() {
             anyhow::bail!("Cannot delete the currently checked-out branch");
         }
-        branch.delete()
+        branch
+            .delete()
             .with_context(|| format!("Failed to delete branch '{}'", name))?;
         Ok(())
     }
 
     /// Rename a local branch
     pub fn rename_branch(&self, old_name: &str, new_name: &str, force: bool) -> Result<()> {
-        let mut branch = self.repo.find_branch(old_name, git2::BranchType::Local)
+        let mut branch = self
+            .repo
+            .find_branch(old_name, git2::BranchType::Local)
             .with_context(|| format!("Branch '{}' not found", old_name))?;
-        branch.rename(new_name, force)
+        branch
+            .rename(new_name, force)
             .with_context(|| format!("Failed to rename branch '{}' to '{}'", old_name, new_name))?;
         Ok(())
     }
 
     /// Reset HEAD to a given commit
     pub fn reset_to_commit(&self, oid: Oid, mode: git2::ResetType) -> Result<()> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .with_context(|| format!("Failed to find commit {}", oid))?;
-        self.repo.reset(commit.as_object(), mode, None)
+        self.repo
+            .reset(commit.as_object(), mode, None)
             .with_context(|| format!("Failed to reset to {}", oid))?;
         Ok(())
     }
 
     /// Create a new branch at a given commit OID
     pub fn create_branch_at(&self, name: &str, oid: Oid) -> Result<()> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .with_context(|| format!("Failed to find commit {}", oid))?;
-        self.repo.branch(name, &commit, false)
+        self.repo
+            .branch(name, &commit, false)
             .with_context(|| format!("Failed to create branch '{}' at {}", name, oid))?;
         Ok(())
     }
 
     /// Create a lightweight tag at a given commit OID
     pub fn create_tag(&self, name: &str, oid: Oid) -> Result<()> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .with_context(|| format!("Failed to find commit {}", oid))?;
-        self.repo.tag_lightweight(name, commit.as_object(), false)
+        self.repo
+            .tag_lightweight(name, commit.as_object(), false)
             .with_context(|| format!("Failed to create tag '{}' at {}", name, oid))?;
         Ok(())
     }
 
     /// Delete a tag by name
     pub fn delete_tag(&self, name: &str) -> Result<()> {
-        self.repo.tag_delete(name)
+        self.repo
+            .tag_delete(name)
             .with_context(|| format!("Failed to delete tag '{}'", name))?;
         Ok(())
     }
@@ -1722,16 +1870,27 @@ impl GitRepo {
             _ => return Vec::new(),
         };
         let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout.lines().enumerate().filter_map(|(i, line)| {
-            let parts: Vec<&str> = line.splitn(3, '\0').collect();
-            if parts.len() >= 2 {
-                let message = parts[1].to_string();
-                let time = parts.get(2).and_then(|t| t.parse::<i64>().ok()).unwrap_or(0);
-                Some(StashEntry { index: i, message, time })
-            } else {
-                None
-            }
-        }).collect()
+        stdout
+            .lines()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                let parts: Vec<&str> = line.splitn(3, '\0').collect();
+                if parts.len() >= 2 {
+                    let message = parts[1].to_string();
+                    let time = parts
+                        .get(2)
+                        .and_then(|t| t.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    Some(StashEntry {
+                        index: i,
+                        message,
+                        time,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Amend the last commit with the current index and a new message
@@ -1741,16 +1900,21 @@ impl GitRepo {
         let head_commit = head.peel_to_commit().context("Failed to get HEAD commit")?;
         let mut index = self.repo.index().context("Failed to get index")?;
         let tree_oid = index.write_tree().context("Failed to write tree")?;
-        let tree = self.repo.find_tree(tree_oid).context("Failed to find tree")?;
+        let tree = self
+            .repo
+            .find_tree(tree_oid)
+            .context("Failed to find tree")?;
 
-        let oid = head_commit.amend(
-            Some("HEAD"),
-            None,  // keep author
-            None,  // keep committer
-            None,  // keep encoding
-            Some(message),
-            Some(&tree),
-        ).context("Failed to amend commit")?;
+        let oid = head_commit
+            .amend(
+                Some("HEAD"),
+                None, // keep author
+                None, // keep committer
+                None, // keep encoding
+                Some(message),
+                Some(&tree),
+            )
+            .context("Failed to amend commit")?;
 
         Ok(oid)
     }
@@ -1774,7 +1938,9 @@ impl GitRepo {
     /// - New (untracked): delete the file from disk
     pub fn discard_file(&self, path: &str) -> Result<()> {
         // Check file status to determine correct discard action
-        let file_status = self.repo.status_file(Path::new(path))
+        let file_status = self
+            .repo
+            .status_file(Path::new(path))
             .unwrap_or(Status::empty());
 
         if file_status.contains(Status::WT_NEW) {
@@ -1794,7 +1960,8 @@ impl GitRepo {
             // Modified, deleted, typechange: restore from index/HEAD
             let mut checkout_builder = git2::build::CheckoutBuilder::new();
             checkout_builder.path(path).force();
-            self.repo.checkout_head(Some(&mut checkout_builder))
+            self.repo
+                .checkout_head(Some(&mut checkout_builder))
                 .with_context(|| format!("Failed to discard changes in {}", path))?;
             Ok(())
         }
@@ -1802,12 +1969,15 @@ impl GitRepo {
 
     /// Get full commit information for the detail panel
     pub fn full_commit_info(&self, oid: Oid) -> Result<FullCommitInfo> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .with_context(|| format!("Failed to find commit {}", oid))?;
 
         let author = commit.author();
 
-        let parent_short_ids: Vec<String> = commit.parent_ids()
+        let parent_short_ids: Vec<String> = commit
+            .parent_ids()
             .map(|id| id.to_string().get(..7).unwrap_or("").to_string())
             .collect();
 
@@ -1828,7 +1998,9 @@ impl GitRepo {
     /// of submodule pointers). Parses `.gitmodules` blob from the same tree for
     /// name→path mapping. Compares against parent commit's tree to detect changes.
     pub fn submodules_at_commit(&self, oid: Oid) -> Result<Vec<CommitSubmoduleEntry>> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .context("Failed to find commit")?;
         let tree = commit.tree().context("Failed to get commit tree")?;
 
@@ -1880,10 +2052,10 @@ impl GitRepo {
     fn collect_submodule_pins(tree: &git2::Tree) -> HashMap<String, Oid> {
         let mut pins = HashMap::new();
         for entry in tree.iter() {
-            if entry.kind() == Some(git2::ObjectType::Commit) {
-                if let Some(name) = entry.name() {
-                    pins.insert(name.to_string(), entry.id());
-                }
+            if entry.kind() == Some(git2::ObjectType::Commit)
+                && let Some(name) = entry.name()
+            {
+                pins.insert(name.to_string(), entry.id());
             }
         }
         pins
@@ -1936,7 +2108,9 @@ impl GitRepo {
 
     /// Get diff for a specific file in a commit
     pub fn diff_file_in_commit(&self, oid: Oid, file_path: &str) -> Result<Vec<DiffFile>> {
-        let commit = self.repo.find_commit(oid)
+        let commit = self
+            .repo
+            .find_commit(oid)
             .context("Failed to find commit")?;
         let tree = commit.tree().context("Failed to get commit tree")?;
 
@@ -1950,11 +2124,10 @@ impl GitRepo {
         let mut opts = git2::DiffOptions::new();
         opts.pathspec(file_path);
 
-        let diff = self.repo.diff_tree_to_tree(
-            parent_tree.as_ref(),
-            Some(&tree),
-            Some(&mut opts),
-        ).context("Failed to compute diff")?;
+        let diff = self
+            .repo
+            .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut opts))
+            .context("Failed to compute diff")?;
 
         Self::parse_diff(&diff)
     }
@@ -1974,11 +2147,17 @@ impl GitRepo {
     /// applied in reverse (unstage); when false it stages the hunk.
     fn apply_hunk_patch(&self, file_path: &str, hunk_index: usize, reverse: bool) -> Result<()> {
         let hunks = self.diff_working_file(file_path, reverse)?;
-        let hunk = hunks.get(hunk_index)
-            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
+        let hunk = hunks.get(hunk_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Hunk index {} out of range (file has {} hunks)",
+                hunk_index,
+                hunks.len()
+            )
+        })?;
 
         let patch = Self::build_hunk_patch(file_path, file_path, hunk);
-        let workdir = self.workdir()
+        let workdir = self
+            .workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
 
         let mut args = vec!["apply", "--cached"];
@@ -2001,7 +2180,12 @@ impl GitRepo {
                 }
                 child.wait_with_output()
             })
-            .with_context(|| format!("Failed to run git apply{}", if reverse { " --reverse" } else { "" }))?;
+            .with_context(|| {
+                format!(
+                    "Failed to run git apply{}",
+                    if reverse { " --reverse" } else { "" }
+                )
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2015,11 +2199,17 @@ impl GitRepo {
     /// directly to the working directory (no --cached).
     pub fn discard_hunk(&self, file_path: &str, hunk_index: usize) -> Result<()> {
         let hunks = self.diff_working_file(file_path, false)?;
-        let hunk = hunks.get(hunk_index)
-            .ok_or_else(|| anyhow::anyhow!("Hunk index {} out of range (file has {} hunks)", hunk_index, hunks.len()))?;
+        let hunk = hunks.get(hunk_index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Hunk index {} out of range (file has {} hunks)",
+                hunk_index,
+                hunks.len()
+            )
+        })?;
 
         let patch = Self::build_hunk_patch(file_path, file_path, hunk);
-        let workdir = self.workdir()
+        let workdir = self
+            .workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
 
         let output = std::process::Command::new("git")
@@ -2068,36 +2258,40 @@ impl GitRepo {
 
     /// Get the URL of a named remote.
     pub fn remote_url(&self, name: &str) -> Option<String> {
-        self.repo.find_remote(name)
+        self.repo
+            .find_remote(name)
             .ok()
             .and_then(|r| r.url().map(|u| u.to_string()))
     }
 
     /// Check whether a remote is missing its fetch refspec.
     pub fn remote_missing_fetch_refspec(&self, name: &str) -> bool {
-        self.repo.find_remote(name)
-            .ok()
-            .map(|r| r.fetch_refspecs().map(|s| s.len() == 0).unwrap_or(false))
-            .unwrap_or(false)
+        self.repo
+            .find_remote(name)
+            .is_ok_and(|r| r.fetch_refspecs().is_ok_and(|s| s.is_empty()))
     }
 
     /// Add a new remote with the given name and URL.
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
-        self.repo.remote(name, url)
+        self.repo
+            .remote(name, url)
             .with_context(|| format!("Failed to add remote '{}' with url '{}'", name, url))?;
         Ok(())
     }
 
     /// Delete a remote by name.
     pub fn delete_remote(&self, name: &str) -> Result<()> {
-        self.repo.remote_delete(name)
+        self.repo
+            .remote_delete(name)
             .with_context(|| format!("Failed to delete remote '{}'", name))?;
         Ok(())
     }
 
     /// Rename a remote.
     pub fn rename_remote(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let problems = self.repo.remote_rename(old_name, new_name)
+        let problems = self
+            .repo
+            .remote_rename(old_name, new_name)
             .with_context(|| format!("Failed to rename remote '{}' to '{}'", old_name, new_name))?;
         if !problems.is_empty() {
             let msgs: Vec<&str> = problems.iter().flatten().collect();
@@ -2110,14 +2304,20 @@ impl GitRepo {
 
     /// Change the URL of an existing remote.
     pub fn set_remote_url(&self, name: &str, url: &str) -> Result<()> {
-        self.repo.remote_set_url(name, url)
+        self.repo
+            .remote_set_url(name, url)
             .with_context(|| format!("Failed to set URL for remote '{}'", name))?;
         Ok(())
     }
 }
 
 /// Spawn a background thread to run a git CLI command and send the result over a channel.
-fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+fn run_git_async(
+    args: Vec<String>,
+    workdir: PathBuf,
+    op_name: &str,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
     crate::crash_log::breadcrumb(format!("git_async: {op_name} args={args:?}"));
     let op_name = op_name.to_string();
     let (tx, rx) = mpsc::channel();
@@ -2137,7 +2337,10 @@ fn run_git_async(args: Vec<String>, workdir: PathBuf, op_name: &str, proxy: Even
                 error: format!("Failed to run git {}: {}", op_name, e),
             },
         };
-        crate::crash_log::breadcrumb(format!("git_async done: {op_name} success={}", op_result.success));
+        crate::crash_log::breadcrumb(format!(
+            "git_async done: {op_name} success={}",
+            op_result.success
+        ));
         let _ = tx.send(op_result);
         let _ = proxy.send_event(());
     });
@@ -2238,11 +2441,19 @@ define_async_git_op! {
 
 /// Spawn a background thread to rebase with options (--autostash, --rebase-merges)
 pub fn rebase_with_options_async(
-    workdir: PathBuf, branch: String, autostash: bool, rebase_merges: bool, proxy: EventLoopProxy<()>,
+    workdir: PathBuf,
+    branch: String,
+    autostash: bool,
+    rebase_merges: bool,
+    proxy: EventLoopProxy<()>,
 ) -> Receiver<RemoteOpResult> {
     let mut args: Vec<String> = vec!["rebase".into()];
-    if autostash { args.push("--autostash".into()); }
-    if rebase_merges { args.push("--rebase-merges".into()); }
+    if autostash {
+        args.push("--autostash".into());
+    }
+    if rebase_merges {
+        args.push("--rebase-merges".into());
+    }
     args.push(branch);
     run_git_async(args, workdir, "rebase", proxy)
 }
@@ -2266,22 +2477,61 @@ define_async_git_op! {
 }
 
 /// Spawn a background thread to apply a stash entry (without removing it)
-pub fn stash_apply_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "apply".into(), format!("stash@{{{}}}", index)], workdir, "stash apply", proxy)
+pub fn stash_apply_async(
+    workdir: PathBuf,
+    index: usize,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    run_git_async(
+        vec![
+            "stash".into(),
+            "apply".into(),
+            format!("stash@{{{}}}", index),
+        ],
+        workdir,
+        "stash apply",
+        proxy,
+    )
 }
 
 /// Spawn a background thread to drop a stash entry
-pub fn stash_drop_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "drop".into(), format!("stash@{{{}}}", index)], workdir, "stash drop", proxy)
+pub fn stash_drop_async(
+    workdir: PathBuf,
+    index: usize,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    run_git_async(
+        vec![
+            "stash".into(),
+            "drop".into(),
+            format!("stash@{{{}}}", index),
+        ],
+        workdir,
+        "stash drop",
+        proxy,
+    )
 }
 
 /// Spawn a background thread to pop a stash entry by index
-pub fn stash_pop_index_async(workdir: PathBuf, index: usize, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
-    run_git_async(vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)], workdir, "stash pop", proxy)
+pub fn stash_pop_index_async(
+    workdir: PathBuf,
+    index: usize,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    run_git_async(
+        vec!["stash".into(), "pop".into(), format!("stash@{{{}}}", index)],
+        workdir,
+        "stash pop",
+        proxy,
+    )
 }
 
 /// Spawn a background thread to remove a submodule (deinit + rm)
-pub fn remove_submodule_async(workdir: PathBuf, name: String, proxy: EventLoopProxy<()>) -> Receiver<RemoteOpResult> {
+pub fn remove_submodule_async(
+    workdir: PathBuf,
+    name: String,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         // Step 1: deinit
@@ -2333,20 +2583,40 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
     let lower = stderr.to_lowercase();
     let is_rejected = lower.contains("rejected") || lower.contains("non-fast-forward");
 
-    let friendly = if lower.contains("terminal prompts disabled") || lower.contains("could not read username") {
-        format!("{} failed: Authentication required. Configure SSH keys or a credential helper.", op)
+    let friendly = if lower.contains("terminal prompts disabled")
+        || lower.contains("could not read username")
+    {
+        format!(
+            "{} failed: Authentication required. Configure SSH keys or a credential helper.",
+            op
+        )
     } else if lower.contains("permission denied") {
-        format!("{} failed: Permission denied. Check your SSH key or access token.", op)
+        format!(
+            "{} failed: Permission denied. Check your SSH key or access token.",
+            op
+        )
     } else if lower.contains("could not read password") {
-        format!("{} failed: Password required. Set up a credential helper (git config credential.helper cache).", op)
+        format!(
+            "{} failed: Password required. Set up a credential helper (git config credential.helper cache).",
+            op
+        )
     } else if lower.contains("host key verification failed") {
-        format!("{} failed: SSH host key not trusted. Run ssh-keyscan to add the host.", op)
+        format!(
+            "{} failed: SSH host key not trusted. Run ssh-keyscan to add the host.",
+            op
+        )
     } else if lower.contains("repository not found") || lower.contains("404") {
         format!("{} failed: Repository not found. Check the remote URL.", op)
     } else if lower.contains("connection refused") || lower.contains("could not resolve") {
-        format!("{} failed: Cannot connect to remote. Check your network and remote URL.", op)
+        format!(
+            "{} failed: Cannot connect to remote. Check your network and remote URL.",
+            op
+        )
     } else if is_rejected {
-        format!("{} rejected: Remote has new commits. Pull first, or use Force Push.", op)
+        format!(
+            "{} rejected: Remote has new commits. Pull first, or use Force Push.",
+            op
+        )
     } else {
         // Show up to 3 lines of the error for context
         let error_summary: String = stderr.lines().take(3).collect::<Vec<_>>().join("\n");

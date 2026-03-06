@@ -71,7 +71,6 @@ impl InputEvent {
             _ => None,
         }
     }
-
 }
 
 /// Response from handling an input event
@@ -123,7 +122,9 @@ impl InputState {
                 // This handles keyboard layouts correctly without a manual mapping table.
                 let text = if let winit::keyboard::Key::Character(s) = &event.logical_key {
                     Some(s.to_string())
-                } else if event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) {
+                } else if event.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+                {
                     Some(" ".to_string())
                 } else {
                     None
@@ -149,10 +150,7 @@ impl InputState {
                 let x = position.x as f32;
                 let y = position.y as f32;
                 self.mouse.update_position(x, y);
-                Some(InputEvent::MouseMove {
-                    x,
-                    y,
-                })
+                Some(InputEvent::MouseMove { x, y })
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
@@ -186,9 +184,7 @@ impl InputState {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         (*x * SCROLL_PIXELS_PER_LINE, *y * SCROLL_PIXELS_PER_LINE)
                     }
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
-                        (pos.x as f32, pos.y as f32)
-                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
                 let (x, y) = self.mouse.position();
                 Some(InputEvent::Scroll {
@@ -203,9 +199,7 @@ impl InputState {
             WindowEvent::Ime(ime) => {
                 use winit::event::Ime;
                 match ime {
-                    Ime::Commit(text) => {
-                        Some(InputEvent::TextInput(text.clone()))
-                    }
+                    Ime::Commit(text) => Some(InputEvent::TextInput(text.clone())),
                     _ => None,
                 }
             }

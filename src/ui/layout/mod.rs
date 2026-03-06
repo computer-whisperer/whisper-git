@@ -15,11 +15,21 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn from_size(width: f32, height: f32) -> Self {
-        Self { x: 0.0, y: 0.0, width, height }
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+        }
     }
 
     pub fn right(&self) -> f32 {

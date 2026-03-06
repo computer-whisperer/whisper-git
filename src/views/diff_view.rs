@@ -2,39 +2,39 @@
 
 use crate::git::DiffFile;
 use crate::input::{EventResponse, InputEvent};
-use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
+use crate::ui::widget::{WidgetOutput, create_rect_vertices, theme};
 use crate::ui::{Color, Rect, TextRenderer};
 
 /// Colors for diff rendering
 mod diff_colors {
     use crate::ui::Color;
 
-    pub const ADDITION_TEXT: Color = Color::rgba(0.298, 0.686, 0.314, 1.0);      // #4CAF50
-    pub const ADDITION_BG: Color = Color::rgba(0.0, 0.235, 0.0, 0.3);            // dark green
-    pub const ADDITION_HIGHLIGHT_BG: Color = Color::rgba(0.1, 0.4, 0.1, 0.55);   // brighter green
-    pub const DELETION_TEXT: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);       // #EF5350
-    pub const DELETION_BG: Color = Color::rgba(0.235, 0.0, 0.0, 0.3);            // dark red
-    pub const DELETION_HIGHLIGHT_BG: Color = Color::rgba(0.45, 0.08, 0.08, 0.55);// brighter red
-    pub const HUNK_HEADER: Color = Color::rgba(0.671, 0.396, 0.859, 1.0);        // purple
-    pub const FILE_HEADER_BG: Color = Color::rgba(0.180, 0.180, 0.180, 1.0);     // raised surface
-    pub const LINE_NUMBER: Color = Color::rgba(0.400, 0.400, 0.400, 1.0);        // muted
-    pub const STAGE_BUTTON_BG: Color = Color::rgba(0.180, 0.180, 0.220, 1.0);    // subtle blue-gray
+    pub const ADDITION_TEXT: Color = Color::rgba(0.298, 0.686, 0.314, 1.0); // #4CAF50
+    pub const ADDITION_BG: Color = Color::rgba(0.0, 0.235, 0.0, 0.3); // dark green
+    pub const ADDITION_HIGHLIGHT_BG: Color = Color::rgba(0.1, 0.4, 0.1, 0.55); // brighter green
+    pub const DELETION_TEXT: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350
+    pub const DELETION_BG: Color = Color::rgba(0.235, 0.0, 0.0, 0.3); // dark red
+    pub const DELETION_HIGHLIGHT_BG: Color = Color::rgba(0.45, 0.08, 0.08, 0.55); // brighter red
+    pub const HUNK_HEADER: Color = Color::rgba(0.671, 0.396, 0.859, 1.0); // purple
+    pub const FILE_HEADER_BG: Color = Color::rgba(0.180, 0.180, 0.180, 1.0); // raised surface
+    pub const LINE_NUMBER: Color = Color::rgba(0.400, 0.400, 0.400, 1.0); // muted
+    pub const STAGE_BUTTON_BG: Color = Color::rgba(0.180, 0.180, 0.220, 1.0); // subtle blue-gray
     pub const STAGE_BUTTON_HOVER: Color = Color::rgba(0.220, 0.220, 0.280, 1.0); // brighter on hover
-    pub const STAGE_BUTTON_TEXT: Color = Color::rgba(0.671, 0.396, 0.859, 1.0);  // purple like hunk headers
-    pub const DISCARD_BUTTON_BG: Color = Color::rgba(0.280, 0.120, 0.120, 1.0);    // dark red
+    pub const STAGE_BUTTON_TEXT: Color = Color::rgba(0.671, 0.396, 0.859, 1.0); // purple like hunk headers
+    pub const DISCARD_BUTTON_BG: Color = Color::rgba(0.280, 0.120, 0.120, 1.0); // dark red
     pub const DISCARD_BUTTON_HOVER: Color = Color::rgba(0.360, 0.140, 0.140, 1.0); // brighter red on hover
-    pub const DISCARD_BUTTON_TEXT: Color = Color::rgba(0.937, 0.325, 0.314, 1.0);  // red text
+    pub const DISCARD_BUTTON_TEXT: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // red text
 }
 
 /// Action emitted by the diff view
 #[derive(Clone, Debug)]
 pub enum DiffAction {
     /// Stage a specific hunk (file_path, hunk_index)
-    StageHunk(String, usize),
+    Stage(String, usize),
     /// Unstage a specific hunk (file_path, hunk_index)
-    UnstageHunk(String, usize),
+    Unstage(String, usize),
     /// Discard a specific hunk from the working tree (file_path, hunk_index)
-    DiscardHunk(String, usize),
+    Discard(String, usize),
 }
 
 /// View for displaying diffs
@@ -148,7 +148,14 @@ impl DiffView {
     /// Handle input events
     pub fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
-            InputEvent::Scroll { delta_x, delta_y, x, y, modifiers, .. } => {
+            InputEvent::Scroll {
+                delta_x,
+                delta_y,
+                x,
+                y,
+                modifiers,
+                ..
+            } => {
                 if bounds.contains(*x, *y) {
                     if modifiers.shift {
                         // Shift+Scroll = horizontal scroll
@@ -178,24 +185,26 @@ impl DiffView {
                 // Check if a discard hunk button was clicked
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
                     if btn_rect.contains(*x, *y)
-                        && let Some(file) = self.diff_files.get(file_idx) {
-                            let path = file.path.clone();
-                            self.pending_action = Some(DiffAction::DiscardHunk(path, hunk_idx));
-                            return EventResponse::Consumed;
-                        }
+                        && let Some(file) = self.diff_files.get(file_idx)
+                    {
+                        let path = file.path.clone();
+                        self.pending_action = Some(DiffAction::Discard(path, hunk_idx));
+                        return EventResponse::Consumed;
+                    }
                 }
                 // Check if a hunk stage button was clicked
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
                     if btn_rect.contains(*x, *y)
-                        && let Some(file) = self.diff_files.get(file_idx) {
-                            let path = file.path.clone();
-                            if self.showing_staged {
-                                self.pending_action = Some(DiffAction::UnstageHunk(path, hunk_idx));
-                            } else {
-                                self.pending_action = Some(DiffAction::StageHunk(path, hunk_idx));
-                            }
-                            return EventResponse::Consumed;
+                        && let Some(file) = self.diff_files.get(file_idx)
+                    {
+                        let path = file.path.clone();
+                        if self.showing_staged {
+                            self.pending_action = Some(DiffAction::Unstage(path, hunk_idx));
+                        } else {
+                            self.pending_action = Some(DiffAction::Stage(path, hunk_idx));
                         }
+                        return EventResponse::Consumed;
+                    }
                 }
                 EventResponse::Ignored
             }
@@ -241,26 +250,25 @@ impl DiffView {
                     }
                     // j / Down: scroll down one line
                     Key::J | Key::Down if !modifiers.any() => {
-                        self.scroll_offset = (self.scroll_offset + self.last_line_height)
-                            .min(max_scroll);
+                        self.scroll_offset =
+                            (self.scroll_offset + self.last_line_height).min(max_scroll);
                         EventResponse::Consumed
                     }
                     // k / Up: scroll up one line
                     Key::K | Key::Up if !modifiers.any() => {
-                        self.scroll_offset = (self.scroll_offset - self.last_line_height)
-                            .max(0.0);
+                        self.scroll_offset = (self.scroll_offset - self.last_line_height).max(0.0);
                         EventResponse::Consumed
                     }
                     // PageDown: scroll down one page
                     Key::PageDown if !modifiers.any() => {
-                        self.scroll_offset = (self.scroll_offset + self.viewport_height * 0.9)
-                            .min(max_scroll);
+                        self.scroll_offset =
+                            (self.scroll_offset + self.viewport_height * 0.9).min(max_scroll);
                         EventResponse::Consumed
                     }
                     // PageUp: scroll up one page
                     Key::PageUp if !modifiers.any() => {
-                        self.scroll_offset = (self.scroll_offset - self.viewport_height * 0.9)
-                            .max(0.0);
+                        self.scroll_offset =
+                            (self.scroll_offset - self.viewport_height * 0.9).max(0.0);
                         EventResponse::Consumed
                     }
                     // Home: jump to start
@@ -363,10 +371,9 @@ impl DiffView {
         self.hunk_y_offsets.clear();
 
         // Background
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
         let padding = 8.0;
         let line_height = text_renderer.line_height();
@@ -406,12 +413,7 @@ impl DiffView {
             // File header
             let header_height = line_height + 4.0;
             if y + header_height > visible_top && y < visible_bottom {
-                let header_rect = Rect::new(
-                    bounds.x + 2.0,
-                    y,
-                    bounds.width - 4.0,
-                    header_height,
-                );
+                let header_rect = Rect::new(bounds.x + 2.0, y, bounds.width - 4.0, header_height);
                 output.spline_vertices.extend(create_rect_vertices(
                     &header_rect,
                     diff_colors::FILE_HEADER_BG.to_array(),
@@ -477,10 +479,9 @@ impl DiffView {
                         } else {
                             diff_colors::STAGE_BUTTON_BG
                         };
-                        output.spline_vertices.extend(create_rect_vertices(
-                            &btn_rect,
-                            bg.to_array(),
-                        ));
+                        output
+                            .spline_vertices
+                            .extend(create_rect_vertices(&btn_rect, bg.to_array()));
                         output.text_vertices.extend(text_renderer.layout_text(
                             btn_label,
                             btn_x + 6.0,
@@ -497,16 +498,16 @@ impl DiffView {
                             let discard_x = btn_x - discard_w - 6.0;
                             let discard_rect = Rect::new(discard_x, btn_y, discard_w, btn_h);
 
-                            let is_discard_hovered = self.hovered_discard_button == Some((file_idx, hunk_idx));
+                            let is_discard_hovered =
+                                self.hovered_discard_button == Some((file_idx, hunk_idx));
                             let discard_bg = if is_discard_hovered {
                                 diff_colors::DISCARD_BUTTON_HOVER
                             } else {
                                 diff_colors::DISCARD_BUTTON_BG
                             };
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &discard_rect,
-                                discard_bg.to_array(),
-                            ));
+                            output
+                                .spline_vertices
+                                .extend(create_rect_vertices(&discard_rect, discard_bg.to_array()));
                             output.text_vertices.extend(text_renderer.layout_text(
                                 discard_label,
                                 discard_x + 6.0,
@@ -514,7 +515,8 @@ impl DiffView {
                                 diff_colors::DISCARD_BUTTON_TEXT.to_array(),
                             ));
 
-                            self.discard_button_bounds.push((file_idx, hunk_idx, discard_rect));
+                            self.discard_button_bounds
+                                .push((file_idx, hunk_idx, discard_rect));
                         }
                     }
                 }
@@ -532,16 +534,11 @@ impl DiffView {
 
                         // Background highlight for additions/deletions
                         if let Some(bg) = bg_color {
-                            let line_rect = Rect::new(
-                                bounds.x + 2.0,
-                                y,
-                                bounds.width - 4.0,
-                                line_height,
-                            );
-                            output.spline_vertices.extend(create_rect_vertices(
-                                &line_rect,
-                                bg.to_array(),
-                            ));
+                            let line_rect =
+                                Rect::new(bounds.x + 2.0, y, bounds.width - 4.0, line_height);
+                            output
+                                .spline_vertices
+                                .extend(create_rect_vertices(&line_rect, bg.to_array()));
                         }
 
                         // Word-level highlight backgrounds
@@ -558,11 +555,15 @@ impl DiffView {
                                 }
                                 let end = end.min(content_trimmed.len());
                                 // Skip if offsets aren't on char boundaries (multi-byte UTF-8 safety)
-                                if !content_trimmed.is_char_boundary(start) || !content_trimmed.is_char_boundary(end) {
+                                if !content_trimmed.is_char_boundary(start)
+                                    || !content_trimmed.is_char_boundary(end)
+                                {
                                     continue;
                                 }
                                 // Measure actual text widths for proportional font
-                                let hl_x = content_x + text_renderer.measure_text(&content_trimmed[..start]) - self.h_scroll_offset;
+                                let hl_x = content_x
+                                    + text_renderer.measure_text(&content_trimmed[..start])
+                                    - self.h_scroll_offset;
                                 let hl_w = text_renderer.measure_text(&content_trimmed[start..end]);
                                 if hl_x + hl_w > bounds.x && hl_x < bounds.right() {
                                     let hl_rect = Rect::new(hl_x, y, hl_w, line_height);
@@ -613,7 +614,8 @@ impl DiffView {
                         let content = line.content.trim_end_matches('\n');
                         let text_x = content_x - self.h_scroll_offset;
                         let text_width = text_renderer.measure_text(content);
-                        max_text_width = max_text_width.max(text_width + gutter_width + padding * 2.0);
+                        max_text_width =
+                            max_text_width.max(text_width + gutter_width + padding * 2.0);
 
                         // Only render if some of the text is visible
                         if text_x + text_width > bounds.x && text_x < bounds.right() {

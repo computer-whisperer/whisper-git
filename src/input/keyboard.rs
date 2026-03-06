@@ -51,27 +51,81 @@ impl Modifiers {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     // Letters
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
 
     // Numbers
-    Num0, Num1, Num2, Num3, Num4,
-    Num5, Num6, Num7, Num8, Num9,
+    Num0,
+    Num1,
+    Num2,
+    Num3,
+    Num4,
+    Num5,
+    Num6,
+    Num7,
+    Num8,
+    Num9,
 
     // Function keys
-    F1, F2, F3, F4, F5, F6,
-    F7, F8, F9, F10, F11, F12,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
 
     // Navigation
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
 
     // Editing
-    Backspace, Delete, Insert,
-    Enter, Tab,
+    Backspace,
+    Delete,
+    Insert,
+    Enter,
+    Tab,
 
     // Modifiers (for display purposes)
-    Shift, Ctrl, Alt, Super,
+    Shift,
+    Ctrl,
+    Alt,
+    Super,
 
     // Special
     Escape,
@@ -96,10 +150,7 @@ pub enum Key {
 
 impl Key {
     /// Convert from winit key codes
-    pub fn from_winit(
-        physical: &PhysicalKey,
-        _logical: &winit::keyboard::Key,
-    ) -> Self {
+    pub fn from_winit(physical: &PhysicalKey, _logical: &winit::keyboard::Key) -> Self {
         match physical {
             PhysicalKey::Code(code) => match code {
                 // Letters
@@ -206,17 +257,56 @@ impl Key {
     pub fn is_printable(&self) -> bool {
         matches!(
             self,
-            Key::A | Key::B | Key::C | Key::D | Key::E | Key::F | Key::G | Key::H |
-            Key::I | Key::J | Key::K | Key::L | Key::M | Key::N | Key::O | Key::P |
-            Key::Q | Key::R | Key::S | Key::T | Key::U | Key::V | Key::W | Key::X |
-            Key::Y | Key::Z | Key::Num0 | Key::Num1 | Key::Num2 | Key::Num3 |
-            Key::Num4 | Key::Num5 | Key::Num6 | Key::Num7 | Key::Num8 | Key::Num9 |
-            Key::Space | Key::Minus | Key::Equals | Key::LeftBracket | Key::RightBracket |
-            Key::Backslash | Key::Semicolon | Key::Quote | Key::Comma | Key::Period |
-            Key::Slash | Key::Grave
+            Key::A
+                | Key::B
+                | Key::C
+                | Key::D
+                | Key::E
+                | Key::F
+                | Key::G
+                | Key::H
+                | Key::I
+                | Key::J
+                | Key::K
+                | Key::L
+                | Key::M
+                | Key::N
+                | Key::O
+                | Key::P
+                | Key::Q
+                | Key::R
+                | Key::S
+                | Key::T
+                | Key::U
+                | Key::V
+                | Key::W
+                | Key::X
+                | Key::Y
+                | Key::Z
+                | Key::Num0
+                | Key::Num1
+                | Key::Num2
+                | Key::Num3
+                | Key::Num4
+                | Key::Num5
+                | Key::Num6
+                | Key::Num7
+                | Key::Num8
+                | Key::Num9
+                | Key::Space
+                | Key::Minus
+                | Key::Equals
+                | Key::LeftBracket
+                | Key::RightBracket
+                | Key::Backslash
+                | Key::Semicolon
+                | Key::Quote
+                | Key::Comma
+                | Key::Period
+                | Key::Slash
+                | Key::Grave
         )
     }
-
 }
 
 /// Tracks which keys are currently pressed
@@ -238,7 +328,6 @@ impl KeyState {
             self.pressed.remove(&key);
         }
     }
-
 }
 
 impl Default for KeyState {

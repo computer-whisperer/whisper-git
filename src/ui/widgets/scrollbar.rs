@@ -1,8 +1,8 @@
 //! Scrollbar widget - vertical scrollbar with track, thumb, and drag support
 
 use crate::input::{EventResponse, InputEvent, MouseButton};
-use crate::ui::widget::{create_rect_vertices, theme, WidgetOutput};
 use crate::ui::Rect;
+use crate::ui::widget::{WidgetOutput, create_rect_vertices, theme};
 
 /// Actions produced by the scrollbar
 #[derive(Clone, Debug)]
@@ -107,7 +107,12 @@ impl Scrollbar {
         }
 
         match event {
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if bounds.contains(*x, *y) {
                     let thumb = self.thumb_rect(&bounds);
                     if thumb.contains(*x, *y) {
@@ -120,13 +125,17 @@ impl Scrollbar {
                         let target_y = *y - thumb_height / 2.0;
                         let new_offset = self.y_to_scroll_offset(target_y, &bounds);
                         self.pending_action = Some(ScrollAction::ScrollTo(
-                            new_offset as f32 / self.total_items.saturating_sub(self.visible_items).max(1) as f32,
+                            new_offset as f32
+                                / self.total_items.saturating_sub(self.visible_items).max(1) as f32,
                         ));
                     }
                     return EventResponse::Consumed;
                 }
             }
-            InputEvent::MouseUp { button: MouseButton::Left, .. } => {
+            InputEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => {
                 if self.dragging {
                     self.dragging = false;
                     return EventResponse::Consumed;
@@ -165,10 +174,9 @@ impl Scrollbar {
         // Track background (only when actively interacting)
         if active {
             let track_color = theme::SURFACE.with_alpha(0.5);
-            output.spline_vertices.extend(create_rect_vertices(
-                &bounds,
-                track_color.to_array(),
-            ));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(&bounds, track_color.to_array()));
         }
 
         // Thumb - always visible at 30% alpha, brighter on hover/drag
@@ -188,10 +196,9 @@ impl Scrollbar {
             thumb.width - 2.0,
             thumb.height - 2.0,
         );
-        output.spline_vertices.extend(create_rect_vertices(
-            &thumb_inset,
-            thumb_color.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&thumb_inset, thumb_color.to_array()));
 
         output
     }

@@ -1,9 +1,7 @@
 //! Tab bar widget - horizontal tabs for switching between open repositories
 
 use crate::input::{EventResponse, InputEvent, MouseButton};
-use crate::ui::widget::{
-    create_rect_vertices, theme, Widget, WidgetOutput,
-};
+use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, theme};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions emitted by the tab bar
@@ -121,11 +119,21 @@ impl TabBar {
         }
 
         let new_rect = Rect::new(x + 4.0 * scale, bounds.y, new_button_width, bounds.height);
-        CachedBounds { tab_rects, close_rects, new_rect }
+        CachedBounds {
+            tab_rects,
+            close_rects,
+            new_rect,
+        }
     }
 
     /// Update hover state and cache bounds (call before layout in the frame loop)
-    pub fn update_hover_with_renderer(&mut self, x: f32, y: f32, bounds: Rect, text_renderer: &TextRenderer) {
+    pub fn update_hover_with_renderer(
+        &mut self,
+        x: f32,
+        y: f32,
+        bounds: Rect,
+        text_renderer: &TextRenderer,
+    ) {
         let cached = self.compute_bounds(bounds, text_renderer);
         self.update_hover_from_cached(x, y, bounds, &cached);
         self.cached = Some(cached);
@@ -167,7 +175,12 @@ impl TabBar {
 impl Widget for TabBar {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         match event {
-            InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } => {
                 if !bounds.contains(*x, *y) {
                     return EventResponse::Ignored;
                 }
@@ -195,7 +208,12 @@ impl Widget for TabBar {
                 }
                 EventResponse::Consumed // clicked in tab bar area
             }
-            InputEvent::MouseDown { button: MouseButton::Middle, x, y, .. } => {
+            InputEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+                ..
+            } => {
                 if !bounds.contains(*x, *y) {
                     return EventResponse::Ignored;
                 }
@@ -220,7 +238,11 @@ impl Widget for TabBar {
             let tab_rects = cached.tab_rects.clone();
             let close_rects = cached.close_rects.clone();
             let new_rect = cached.new_rect;
-            let temp = CachedBounds { tab_rects, close_rects, new_rect };
+            let temp = CachedBounds {
+                tab_rects,
+                close_rects,
+                new_rect,
+            };
             self.update_hover_from_cached(x, y, bounds, &temp);
         }
     }
@@ -233,15 +255,19 @@ impl Widget for TabBar {
         }
 
         // Background
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE.to_array(),
-        ));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
         let cached = self.compute_bounds(bounds, text_renderer);
         let line_height = text_renderer.line_height();
 
-        for (i, (tab_rect, close_rect)) in cached.tab_rects.iter().zip(cached.close_rects.iter()).enumerate() {
+        for (i, (tab_rect, close_rect)) in cached
+            .tab_rects
+            .iter()
+            .zip(cached.close_rects.iter())
+            .enumerate()
+        {
             let is_active = i == self.active;
             let is_hovered = self.hovered_tab == Some(i);
             let is_close_hovered = self.hovered_close == Some(i);
@@ -254,20 +280,17 @@ impl Widget for TabBar {
             } else {
                 theme::SURFACE
             };
-            output.spline_vertices.extend(create_rect_vertices(tab_rect, bg.to_array()));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(tab_rect, bg.to_array()));
 
             // Active tab accent line at bottom
             if is_active {
-                let accent_rect = Rect::new(
-                    tab_rect.x,
-                    tab_rect.bottom() - 2.0,
-                    tab_rect.width,
-                    2.0,
-                );
-                output.spline_vertices.extend(create_rect_vertices(
-                    &accent_rect,
-                    theme::ACCENT.to_array(),
-                ));
+                let accent_rect =
+                    Rect::new(tab_rect.x, tab_rect.bottom() - 2.0, tab_rect.width, 2.0);
+                output
+                    .spline_vertices
+                    .extend(create_rect_vertices(&accent_rect, theme::ACCENT.to_array()));
             }
 
             // Tab name
@@ -319,13 +342,16 @@ impl Widget for TabBar {
         } else {
             theme::SURFACE
         };
-        output.spline_vertices.extend(create_rect_vertices(&cached.new_rect, new_bg.to_array()));
+        output
+            .spline_vertices
+            .extend(create_rect_vertices(&cached.new_rect, new_bg.to_array()));
         let plus_color = if self.hovered_new {
             theme::TEXT_BRIGHT
         } else {
             theme::TEXT_MUTED
         };
-        let plus_x = cached.new_rect.x + (cached.new_rect.width - text_renderer.measure_text("+")) / 2.0;
+        let plus_x =
+            cached.new_rect.x + (cached.new_rect.width - text_renderer.measure_text("+")) / 2.0;
         let plus_y = cached.new_rect.y + (cached.new_rect.height - line_height) / 2.0;
         output.text_vertices.extend(text_renderer.layout_text(
             "+",

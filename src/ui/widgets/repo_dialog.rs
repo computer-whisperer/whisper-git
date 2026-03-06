@@ -6,8 +6,8 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, create_rounded_rect_vertices, theme, Widget,
-    WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -225,12 +225,7 @@ impl Widget for RepoDialog {
         );
 
         // Browse button bounds (right of input)
-        let browse_bounds = Rect::new(
-            input_bounds.right() + browse_gap,
-            input_y,
-            browse_w,
-            line_h,
-        );
+        let browse_bounds = Rect::new(input_bounds.right() + browse_gap, input_y, browse_w, line_h);
 
         // Button bounds at bottom
         let button_y = dialog.bottom() - padding - line_h;
@@ -270,7 +265,13 @@ impl Widget for RepoDialog {
         }
 
         // Handle click on recent items
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             let recent_bounds = self.recent_item_bounds(dialog, scale);
             for (i, rb) in recent_bounds.iter().enumerate() {
                 if rb.contains(*x, *y) {
@@ -281,13 +282,21 @@ impl Widget for RepoDialog {
         }
 
         // Route to text input
-        if self.path_input.handle_event(event, input_bounds).is_consumed() {
+        if self
+            .path_input
+            .handle_event(event, input_bounds)
+            .is_consumed()
+        {
             self.error_message = None; // Clear error on edit
             return EventResponse::Consumed;
         }
 
         // Route to browse button
-        if self.browse_button.handle_event(event, browse_bounds).is_consumed() {
+        if self
+            .browse_button
+            .handle_event(event, browse_bounds)
+            .is_consumed()
+        {
             if self.browse_button.was_clicked() {
                 self.open_native_picker();
             }
@@ -295,14 +304,22 @@ impl Widget for RepoDialog {
         }
 
         // Route to action buttons
-        if self.open_button.handle_event(event, open_bounds).is_consumed() {
+        if self
+            .open_button
+            .handle_event(event, open_bounds)
+            .is_consumed()
+        {
             if self.open_button.was_clicked() {
                 self.try_open();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(RepoDialogAction::Cancel);
                 self.hide();
@@ -311,12 +328,18 @@ impl Widget for RepoDialog {
         }
 
         // Click outside dialog dismisses
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
-            && !dialog.contains(*x, *y) {
-                self.pending_action = Some(RepoDialogAction::Cancel);
-                self.hide();
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && !dialog.contains(*x, *y)
+        {
+            self.pending_action = Some(RepoDialogAction::Cancel);
+            self.hide();
+            return EventResponse::Consumed;
+        }
 
         // Consume all events while dialog is visible (modal)
         EventResponse::Consumed
@@ -328,7 +351,12 @@ impl Widget for RepoDialog {
 }
 
 impl RepoDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -373,12 +401,7 @@ impl RepoDialog {
         output.extend(self.path_input.layout(text_renderer, input_bounds));
 
         // Browse button
-        let browse_bounds = Rect::new(
-            input_bounds.right() + browse_gap,
-            input_y,
-            browse_w,
-            line_h,
-        );
+        let browse_bounds = Rect::new(input_bounds.right() + browse_gap, input_y, browse_w, line_h);
         output.extend(self.browse_button.layout(text_renderer, browse_bounds));
 
         // Error message (below input)
@@ -467,7 +490,12 @@ impl RepoDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 

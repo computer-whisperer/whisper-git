@@ -2,7 +2,7 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    create_dialog_backdrop, create_rect_vertices, theme, Widget, WidgetOutput,
+    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Color, Rect, TextRenderer};
@@ -24,7 +24,12 @@ pub enum MergeStrategy {
 #[derive(Clone, Debug)]
 pub enum MergeDialogAction {
     /// Confirm merge with (branch, strategy, optional commit message, target worktree dir)
-    Confirm(String, MergeStrategy, Option<String>, Option<std::path::PathBuf>),
+    Confirm(
+        String,
+        MergeStrategy,
+        Option<String>,
+        Option<std::path::PathBuf>,
+    ),
     /// User cancelled
     Cancel,
 }
@@ -79,7 +84,13 @@ impl MergeDialog {
     }
 
     /// Show the dialog with an explicit target worktree directory.
-    pub fn show_with_target(&mut self, branch_name: &str, current_branch: &str, uncommitted: usize, target_dir: Option<std::path::PathBuf>) {
+    pub fn show_with_target(
+        &mut self,
+        branch_name: &str,
+        current_branch: &str,
+        uncommitted: usize,
+        target_dir: Option<std::path::PathBuf>,
+    ) {
         self.visible = true;
         self.branch_name = branch_name.to_string();
         self.current_branch = current_branch.to_string();
@@ -123,7 +134,10 @@ impl MergeDialog {
 
     /// Whether the commit message input should be shown
     fn show_message_input(&self) -> bool {
-        matches!(self.strategy, MergeStrategy::NoFastForward | MergeStrategy::Squash)
+        matches!(
+            self.strategy,
+            MergeStrategy::NoFastForward | MergeStrategy::Squash
+        )
     }
 
     fn try_confirm(&mut self) {
@@ -162,8 +176,14 @@ impl MergeDialog {
     fn strategy_items() -> &'static [(MergeStrategy, &'static str)] {
         &[
             (MergeStrategy::Default, "Default (fast-forward if possible)"),
-            (MergeStrategy::NoFastForward, "Create merge commit (--no-ff)"),
-            (MergeStrategy::FastForwardOnly, "Fast-forward only (--ff-only)"),
+            (
+                MergeStrategy::NoFastForward,
+                "Create merge commit (--no-ff)",
+            ),
+            (
+                MergeStrategy::FastForwardOnly,
+                "Fast-forward only (--ff-only)",
+            ),
             (MergeStrategy::Squash, "Squash commits (--squash)"),
         ]
     }
@@ -200,7 +220,13 @@ impl Widget for MergeDialog {
         }
 
         // Radio button click detection
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+        {
             let radio_start_y = dialog.y + 60.0 * scale;
             let items = Self::strategy_items();
             for (i, (strategy, _label)) in items.iter().enumerate() {
@@ -234,7 +260,13 @@ impl Widget for MergeDialog {
             let input_bounds = Rect::new(dialog.x + padding, input_y, input_w, line_h);
 
             // Click-to-focus
-            if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event {
+            if let InputEvent::MouseDown {
+                button: MouseButton::Left,
+                x,
+                y,
+                ..
+            } = event
+            {
                 if input_bounds.contains(*x, *y) {
                     self.message_input.set_focused(true);
                 } else {
@@ -242,7 +274,11 @@ impl Widget for MergeDialog {
                 }
             }
 
-            if self.message_input.handle_event(event, input_bounds).is_consumed() {
+            if self
+                .message_input
+                .handle_event(event, input_bounds)
+                .is_consumed()
+            {
                 return EventResponse::Consumed;
             }
         }
@@ -256,14 +292,22 @@ impl Widget for MergeDialog {
         let merge_bounds = Rect::new(merge_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        if self.merge_button.handle_event(event, merge_bounds).is_consumed() {
+        if self
+            .merge_button
+            .handle_event(event, merge_bounds)
+            .is_consumed()
+        {
             if self.merge_button.was_clicked() {
                 self.try_confirm();
             }
             return EventResponse::Consumed;
         }
 
-        if self.cancel_button.handle_event(event, cancel_bounds).is_consumed() {
+        if self
+            .cancel_button
+            .handle_event(event, cancel_bounds)
+            .is_consumed()
+        {
             if self.cancel_button.was_clicked() {
                 self.pending_action = Some(MergeDialogAction::Cancel);
                 self.hide();
@@ -272,7 +316,12 @@ impl Widget for MergeDialog {
         }
 
         // Click outside dialog dismisses (cancel)
-        if let InputEvent::MouseDown { button: MouseButton::Left, x, y, .. } = event
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
             && !dialog.contains(*x, *y)
         {
             self.pending_action = Some(MergeDialogAction::Cancel);
@@ -290,7 +339,12 @@ impl Widget for MergeDialog {
 }
 
 impl MergeDialog {
-    pub fn layout_with_bold(&self, text_renderer: &TextRenderer, bold_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_with_bold(
+        &self,
+        text_renderer: &TextRenderer,
+        bold_renderer: &TextRenderer,
+        bounds: Rect,
+    ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -412,7 +466,11 @@ impl MergeDialog {
 
             // Label text
             let text_x = radio_cx + radio_r + 8.0 * scale;
-            let text_color = if selected { theme::TEXT_BRIGHT } else { theme::TEXT };
+            let text_color = if selected {
+                theme::TEXT_BRIGHT
+            } else {
+                theme::TEXT
+            };
             output.text_vertices.extend(text_renderer.layout_text(
                 label,
                 text_x,
@@ -461,7 +519,12 @@ impl MergeDialog {
         // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, btn_sep_y, dialog.width - padding * 2.0, 1.0),
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
