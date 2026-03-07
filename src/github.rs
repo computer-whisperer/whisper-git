@@ -24,9 +24,7 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
     // SSH: git@github.com:owner/repo.git
     if let Some(path) = url.strip_prefix("git@github.com:") {
         let path = path.strip_suffix(".git").unwrap_or(path);
-        let mut parts = path.splitn(2, '/');
-        let owner = parts.next()?;
-        let repo = parts.next()?;
+        let (owner, repo) = path.split_once('/')?;
         if !owner.is_empty() && !repo.is_empty() {
             return Some((owner.to_string(), repo.to_string()));
         }
@@ -37,9 +35,7 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("http://github.com/"))?;
     let path = path.strip_suffix(".git").unwrap_or(path);
-    let mut parts = path.splitn(2, '/');
-    let owner = parts.next()?;
-    let repo = parts.next()?;
+    let (owner, repo) = path.split_once('/')?;
     // Strip any trailing path segments (e.g. .git/info/...)
     let repo = repo.split('/').next()?;
     if !owner.is_empty() && !repo.is_empty() {
@@ -262,8 +258,7 @@ mod tests {
 
     #[test]
     fn parse_https_url() {
-        let (owner, repo) =
-            parse_github_remote("https://github.com/user/project.git").unwrap();
+        let (owner, repo) = parse_github_remote("https://github.com/user/project.git").unwrap();
         assert_eq!(owner, "user");
         assert_eq!(repo, "project");
     }
@@ -315,9 +310,7 @@ mod tests {
 
     #[test]
     fn ci_status_pending() {
-        let runs = vec![
-            make_run(1, "CI", "in_progress", None),
-        ];
+        let runs = vec![make_run(1, "CI", "in_progress", None)];
         let status = CiStatus::from_runs(&runs);
         assert_eq!(status.state, CiState::Pending);
     }

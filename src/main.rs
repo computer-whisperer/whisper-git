@@ -1533,12 +1533,7 @@ impl App {
                             self.diff_stats_receiver = rx;
                         }
                         // Refresh CI status after remote ops
-                        trigger_ci_fetch(
-                            github_token.as_deref(),
-                            repo_tab,
-                            view_state,
-                            &proxy,
-                        );
+                        trigger_ci_fetch(github_token.as_deref(), repo_tab, view_state, &proxy);
                     }
                     AsyncOpPoll::Failed(msg) => {
                         self.toast_manager.push(msg, ToastSeverity::Error);
@@ -1583,11 +1578,11 @@ impl App {
         );
 
         // Poll CI status receiver
-        if let Some(ref rx) = view_state.ci_receiver {
-            if let Ok(status) = rx.try_recv() {
-                view_state.ci_status = Some(status);
-                view_state.ci_receiver = None;
-            }
+        if let Some(ref rx) = view_state.ci_receiver
+            && let Ok(status) = rx.try_recv()
+        {
+            view_state.ci_status = Some(status);
+            view_state.ci_receiver = None;
         }
 
         // Poll generic async ops (submodule/worktree operations)
@@ -3426,6 +3421,9 @@ impl App {
                     HeaderAction::Reload => {
                         do_reload = true;
                     }
+                    HeaderAction::OpenCiDetails(url) => {
+                        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                    }
                 }
             }
             if do_reload {
@@ -5253,6 +5251,9 @@ fn draw_frame(app: &mut App) -> Result<()> {
         view_state
             .header_bar
             .update_abort_bounds(&state.text_renderer, approx_layout.header);
+        view_state
+            .header_bar
+            .update_ci_bounds(&state.text_renderer, approx_layout.header);
     }
 
     // Update toast manager and tooltip

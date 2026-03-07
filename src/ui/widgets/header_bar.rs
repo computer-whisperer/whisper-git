@@ -29,6 +29,8 @@ pub enum HeaderAction {
     AbortOperation,
     /// Diagnostic reload: re-read all repo data and report deltas
     Reload,
+    /// Open CI details URL in the default browser
+    OpenCiDetails(String),
 }
 
 /// Header bar widget displaying repo path, breadcrumbs, and action buttons.
@@ -82,6 +84,10 @@ pub struct HeaderBar {
     push_label_width: f32,
     /// Current CI status from GitHub Actions (None = not fetched / not a GitHub repo)
     pub ci_status: Option<CiStatus>,
+    /// Cached bounds for the CI status indicator (for click hit testing)
+    ci_indicator_bounds: Option<Rect>,
+    /// Whether the CI indicator is currently hovered
+    ci_hovered: bool,
 }
 
 impl HeaderBar {
@@ -112,6 +118,8 @@ impl HeaderBar {
             pull_label_width: 0.0,
             push_label_width: 0.0,
             ci_status: None,
+            ci_indicator_bounds: None,
+            ci_hovered: false,
         }
     }
 
@@ -278,6 +286,42 @@ impl HeaderBar {
         self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
     }
 
+    /// Pre-compute CI indicator bounds (call from the pre-draw phase with text_renderer access).
+    pub fn update_ci_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
+        if self.operation_state_label.is_some()
+            || self.generic_op_label.is_some()
+            || self
+                .ci_status
+                .as_ref()
+                .is_none_or(|ci| ci.state == CiState::None)
+        {
+            self.ci_indicator_bounds = None;
+            return;
+        }
+        let ci = self.ci_status.as_ref().unwrap();
+        let scale = (bounds.height / 32.0).max(1.0);
+        let line_height = text_renderer.line_height();
+
+        // Replicate the after_path_x computation from layout_with_bold
+        let after_path_x = if self.breadcrumb_segments.is_empty() {
+            let path_w = text_renderer.measure_text(&self.repo_path);
+            bounds.x + 16.0 + path_w
+        } else if let Some(last_bound) = self.breadcrumb_segment_bounds.last() {
+            last_bound.right() + 8.0 + 28.0 * scale + 8.0
+        } else {
+            bounds.x + 16.0
+        };
+
+        let indicator_x = after_path_x + 12.0;
+        let dot_radius = 4.0 * scale;
+        let label_x = indicator_x + dot_radius * 2.0 + 6.0 * scale;
+        let label_w = text_renderer.measure_text(&ci.summary);
+        let total_w = (label_x - indicator_x) + label_w;
+        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+
+        self.ci_indicator_bounds = Some(Rect::new(indicator_x, text_y, total_w, line_height));
+    }
+
     /// Returns true if any interactive element in the header is currently hovered
     /// (buttons, breadcrumb links, close button, abort button).
     pub fn is_any_interactive_hovered(&self) -> bool {
@@ -291,6 +335,7 @@ impl HeaderBar {
             || self.close_button.is_hovered()
             || self.abort_button.is_hovered()
             || self.breadcrumb_hovered.is_some()
+            || self.ci_hovered
     }
 
     /// Compute button bounds within the header (scale-aware).
@@ -520,8 +565,8 @@ impl HeaderBar {
             let dot_cy = bounds.y + bounds.height / 2.0;
 
             let dot_color = match ci.state {
-                CiState::Success => [0.34, 0.80, 0.44, 1.0], // green
-                CiState::Failure => [0.90, 0.30, 0.30, 1.0], // red
+                CiState::Success => [0.34, 0.80, 0.44, 1.0],  // green
+                CiState::Failure => [0.90, 0.30, 0.30, 1.0],  // red
                 CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
                 CiState::None => unreachable!(),
             };
@@ -668,6 +713,17 @@ impl Widget for HeaderBar {
             help_bounds,
             settings_bounds,
         ) = self.button_bounds(bounds);
+
+        // Handle CI indicator click
+        if let InputEvent::MouseDown { x, y, .. } = event
+            && let Some(ci_bounds) = self.ci_indicator_bounds
+            && ci_bounds.contains(*x, *y)
+            && let Some(ref ci) = self.ci_status
+            && let Some(ref url) = ci.url
+        {
+            self.pending_action = Some(HeaderAction::OpenCiDetails(url.clone()));
+            return EventResponse::Consumed;
+        }
 
         // Handle breadcrumb close button and segment clicks
         if !self.breadcrumb_segments.is_empty() {
@@ -826,6 +882,10 @@ impl Widget for HeaderBar {
         if let Some(abort_bounds) = self.abort_button_bounds {
             self.abort_button.update_hover(x, y, abort_bounds);
         }
+
+        // CI indicator hover
+        self.ci_hovered = self.ci_indicator_bounds.is_some_and(|b| b.contains(x, y))
+            && self.ci_status.as_ref().is_some_and(|ci| ci.url.is_some());
 
         // Breadcrumb hover tracking
         if !self.breadcrumb_segments.is_empty() {
