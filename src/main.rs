@@ -59,8 +59,8 @@ use crate::ui::widgets::{
     TabAction, TabBar, ToastManager, ToastSeverity, Tooltip,
 };
 use crate::ui::{
-    AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget,
-    WidgetOutput,
+    AvatarCache, AvatarRenderer, IconRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer,
+    Widget, WidgetOutput,
 };
 use crate::views::{
     BranchSidebar, CommitDetailAction, CommitDetailView, CommitGraphView, DiffAction, DiffView,
@@ -572,6 +572,7 @@ struct RenderState {
     spline_renderer: SplineRenderer,
     avatar_renderer: AvatarRenderer,
     avatar_cache: AvatarCache,
+    icon_renderer: IconRenderer,
     previous_frame_end: Option<Box<dyn GpuFuture>>,
     frame_count: u32,
     scale_factor: f64,
@@ -824,6 +825,11 @@ impl App {
             AvatarRenderer::new(ctx.memory_allocator.clone(), render_pass.clone())
                 .context("Failed to create avatar renderer")?;
 
+        let mut icon_renderer =
+            IconRenderer::new(ctx.memory_allocator.clone(), render_pass.clone())
+                .context("Failed to create icon renderer")?;
+        crate::ui::icon::register_builtin_icons(&mut icon_renderer);
+
         // Submit font atlas upload
         let upload_buffer = upload_builder
             .build()
@@ -875,6 +881,7 @@ impl App {
             spline_renderer,
             avatar_renderer,
             avatar_cache: AvatarCache::new(self.proxy.clone()),
+            icon_renderer,
             previous_frame_end,
             frame_count: 0,
             scale_factor: window_scale,
@@ -4832,6 +4839,7 @@ fn build_ui_output(
     extent: [u32; 2],
     avatar_cache: &mut AvatarCache,
     avatar_renderer: &AvatarRenderer,
+    icon_renderer: &IconRenderer,
     sidebar_ratio: f32,
     graph_ratio: f32,
     staging_preview_ratio: f32,
@@ -4991,6 +4999,7 @@ fn build_ui_output(
             bold_text_renderer,
             layout.sidebar,
             &view_state.current_branch,
+            Some(icon_renderer),
         ));
 
         // Right panel (chrome layer) - worktree pills + mode-dependent content
@@ -5401,6 +5410,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         extent,
         &mut state.avatar_cache,
         &state.avatar_renderer,
+        &state.icon_renderer,
         sidebar_ratio,
         graph_ratio,
         app.staging_preview_ratio,
@@ -5415,8 +5425,8 @@ fn draw_frame(app: &mut App) -> Result<()> {
         depth_range: 0.0..=1.0,
     };
 
-    // Upload avatar atlas in a separate command buffer if dirty
-    if state.avatar_renderer.needs_upload() {
+    // Upload avatar/icon atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() || state.icon_renderer.needs_upload() {
         let mut upload_builder = AutoCommandBufferBuilder::primary(
             state.ctx.command_buffer_allocator.clone(),
             state.ctx.queue.queue_family_index(),
@@ -5425,6 +5435,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         .context("Failed to create upload command buffer")?;
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+        state.icon_renderer.upload_atlas(&mut upload_builder)?;
 
         let upload_cb = upload_builder
             .build()
@@ -5556,6 +5567,14 @@ fn render_output_to_builder(
             .avatar_renderer
             .draw(builder, avatar_buffer, viewport.clone())?;
     }
+    if !output.icon_vertices.is_empty() {
+        let icon_buffer = state
+            .icon_renderer
+            .create_vertex_buffer(output.icon_vertices)?;
+        state
+            .icon_renderer
+            .draw(builder, icon_buffer, viewport.clone())?;
+    }
     if !output.text_vertices.is_empty() {
         let vertex_buffer = state
             .text_renderer
@@ -5609,6 +5628,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         extent,
         &mut state.avatar_cache,
         &state.avatar_renderer,
+        &state.icon_renderer,
         sidebar_ratio,
         graph_ratio,
         app.staging_preview_ratio,
@@ -5624,8 +5644,8 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         depth_range: 0.0..=1.0,
     };
 
-    // Upload avatar atlas in a separate command buffer if dirty
-    if state.avatar_renderer.needs_upload() {
+    // Upload avatar/icon atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() || state.icon_renderer.needs_upload() {
         let mut upload_builder = AutoCommandBufferBuilder::primary(
             state.ctx.command_buffer_allocator.clone(),
             state.ctx.queue.queue_family_index(),
@@ -5634,6 +5654,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         .context("Failed to create upload command buffer")?;
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+        state.icon_renderer.upload_atlas(&mut upload_builder)?;
 
         let upload_cb = upload_builder
             .build()
@@ -5761,6 +5782,7 @@ fn capture_screenshot_offscreen(
         extent,
         &mut state.avatar_cache,
         &state.avatar_renderer,
+        &state.icon_renderer,
         sidebar_ratio,
         graph_ratio,
         app.staging_preview_ratio,
@@ -5776,8 +5798,8 @@ fn capture_screenshot_offscreen(
         depth_range: 0.0..=1.0,
     };
 
-    // Upload avatar atlas in a separate command buffer if dirty
-    if state.avatar_renderer.needs_upload() {
+    // Upload avatar/icon atlas in a separate command buffer if dirty
+    if state.avatar_renderer.needs_upload() || state.icon_renderer.needs_upload() {
         let mut upload_builder = AutoCommandBufferBuilder::primary(
             state.ctx.command_buffer_allocator.clone(),
             state.ctx.queue.queue_family_index(),
@@ -5786,6 +5808,7 @@ fn capture_screenshot_offscreen(
         .context("Failed to create upload command buffer")?;
 
         state.avatar_renderer.upload_atlas(&mut upload_builder)?;
+        state.icon_renderer.upload_atlas(&mut upload_builder)?;
 
         let upload_cb = upload_builder
             .build()

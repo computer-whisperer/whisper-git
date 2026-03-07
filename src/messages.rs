@@ -1781,11 +1781,16 @@ pub fn refresh_repo_state(
     view_state.commit_graph_view.tags = tags.clone();
     let remote_names = repo.remote_names();
     let is_bare = repo.is_effectively_bare();
+    let remote_urls: std::collections::HashMap<String, String> = remote_names
+        .iter()
+        .filter_map(|name| repo.remote_url(name).map(|url| (name.clone(), url)))
+        .collect();
 
     view_state.branch_sidebar.set_branch_data(
         &branch_tips,
         &tags,
         &remote_names,
+        &remote_urls,
         &worktrees,
         is_bare,
     );

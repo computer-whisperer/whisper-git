@@ -110,6 +110,8 @@ pub struct BranchSidebar {
     worktree_count: usize,
     /// Worktree paths indexed by name (for checkout_in_wt action)
     worktree_paths: HashMap<String, String>,
+    /// Remote names that are GitHub remotes (for icon display)
+    github_remotes: HashSet<String>,
     /// Filter query text for searching branches/tags/stashes
     filter_query: String,
     /// Cursor position in the filter query
@@ -197,6 +199,7 @@ impl BranchSidebar {
             is_bare_repo: false,
             worktree_count: 0,
             worktree_paths: HashMap::new(),
+            github_remotes: HashSet::new(),
             filter_query: String::new(),
             filter_cursor: 0,
             filter_focused: false,
@@ -297,15 +300,25 @@ impl BranchSidebar {
         fb.contains(x, y)
     }
 
-    /// Populate from branch tips and tags from the git repo
+    /// Populate from branch tips and tags from the git repo.
+    /// `remote_urls` maps remote name → URL (for detecting GitHub remotes).
     pub fn set_branch_data(
         &mut self,
         branch_tips: &[BranchTip],
         tags: &[TagInfo],
         all_remote_names: &[String],
+        remote_urls: &HashMap<String, String>,
         worktrees: &[WorktreeInfo],
         is_bare: bool,
     ) {
+        // Determine which remotes are GitHub-hosted
+        self.github_remotes.clear();
+        for (name, url) in remote_urls {
+            if crate::github::parse_github_remote(url).is_some() {
+                self.github_remotes.insert(name.clone());
+            }
+        }
+
         // Separate local and remote branches
         self.local_branches.clear();
         self.remote_branches.clear();
@@ -1531,6 +1544,7 @@ impl BranchSidebar {
         filtered_remotes: &[(String, Vec<String>)],
         y: f32,
         item_idx: usize,
+        icon_renderer: Option<&crate::ui::icon::IconRenderer>,
     ) -> (f32, usize) {
         let mut y = y;
         let mut item_idx = item_idx;
@@ -1578,12 +1592,46 @@ impl BranchSidebar {
                         theme::TEXT_MUTED.with_alpha(0.6).to_array(),
                     ));
                     let chevron_w = chevron_size + 4.0;
-                    let remote_label = format!("\u{2601} {}", remote_name); // ☁ icon
+                    let text_x = params.inner.x + params.indent + chevron_w;
+
+                    // GitHub icon for GitHub remotes, cloud for others
+                    let github_tc = if self.github_remotes.contains(remote_name) {
+                        icon_renderer.and_then(|ir| ir.get_tex_coords(crate::ui::icon::ICON_GITHUB))
+                    } else {
+                        None
+                    };
+
+                    let name_x = if let Some(tc) = github_tc {
+                        let icon_size = params.line_height * 0.7;
+                        let icon_y = y + (params.line_height - icon_size) * 0.5;
+                        output.icon_vertices.extend(crate::ui::icon::icon_quad(
+                            text_x,
+                            icon_y,
+                            icon_size,
+                            icon_size,
+                            tc,
+                            remote_color,
+                        ));
+                        text_x + icon_size + 3.0
+                    } else {
+                        let prefix = "\u{2601} ";
+                        let prefix_w = params.text_renderer.measure_text(prefix);
+                        output
+                            .text_vertices
+                            .extend(params.text_renderer.layout_text(
+                                prefix,
+                                text_x,
+                                y + 2.0,
+                                remote_color,
+                            ));
+                        text_x + prefix_w
+                    };
+
                     output
                         .text_vertices
                         .extend(params.text_renderer.layout_text(
-                            &remote_label,
-                            params.inner.x + params.indent + chevron_w,
+                            remote_name,
+                            name_x,
                             y + 2.0,
                             remote_color,
                         ));
@@ -1910,6 +1958,7 @@ impl BranchSidebar {
         bold_renderer: &TextRenderer,
         bounds: Rect,
         current_branch: &str,
+        icon_renderer: Option<&crate::ui::icon::IconRenderer>,
     ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         self.last_bounds = Some(bounds);
@@ -1974,6 +2023,7 @@ impl BranchSidebar {
                 &data.remotes,
                 y,
                 item_idx,
+                icon_renderer,
             );
             y += section_gap;
         }

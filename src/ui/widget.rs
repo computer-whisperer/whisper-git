@@ -40,6 +40,8 @@ pub struct WidgetOutput {
     pub bold_text_vertices: Vec<TextVertex>,
     /// Vertices for avatar rendering (separate texture atlas)
     pub avatar_vertices: Vec<TextVertex>,
+    /// Vertices for icon rendering (separate texture atlas)
+    pub icon_vertices: Vec<TextVertex>,
 }
 
 impl WidgetOutput {
@@ -49,6 +51,7 @@ impl WidgetOutput {
             text_vertices: Vec::new(),
             bold_text_vertices: Vec::new(),
             avatar_vertices: Vec::new(),
+            icon_vertices: Vec::new(),
         }
     }
 
@@ -57,6 +60,7 @@ impl WidgetOutput {
         self.text_vertices.extend(other.text_vertices);
         self.bold_text_vertices.extend(other.bold_text_vertices);
         self.avatar_vertices.extend(other.avatar_vertices);
+        self.icon_vertices.extend(other.icon_vertices);
     }
 }
 
