@@ -2,6 +2,7 @@
 
 mod branch_name_dialog;
 mod button;
+mod clone_dialog;
 pub mod confirm_dialog;
 pub mod context_menu;
 pub mod file_list;
@@ -24,6 +25,7 @@ mod tooltip;
 
 pub use branch_name_dialog::{BranchNameDialog, BranchNameDialogAction};
 pub use button::Button;
+pub use clone_dialog::{CloneDialog, CloneDialogAction};
 pub use confirm_dialog::{ConfirmDialog, ConfirmDialogAction};
 pub use context_menu::{ContextMenu, MenuAction, MenuItem};
 pub use file_list::{FileList, FileListAction};

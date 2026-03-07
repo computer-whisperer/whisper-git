@@ -126,6 +126,61 @@ impl GitHubClient {
     }
 }
 
+// --- Repository listing ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RepoInfo {
+    pub full_name: String,
+    pub clone_url: String,
+    pub ssh_url: String,
+    pub private: bool,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub fork: bool,
+    pub updated_at: Option<String>,
+}
+
+impl GitHubClient {
+    /// List repositories accessible to the authenticated user, sorted by most recently pushed.
+    /// Fetches up to `max_pages` pages of 100 repos each.
+    pub fn list_repos(&self, max_pages: u32) -> Result<Vec<RepoInfo>> {
+        let mut all = Vec::new();
+        for page in 1..=max_pages {
+            let path = format!("/user/repos?sort=pushed&direction=desc&per_page=100&page={page}");
+            let resp = self.get(&path)?;
+            let repos: Vec<RepoInfo> = resp.into_json().context("Failed to parse repo list")?;
+            let done = repos.len() < 100;
+            all.extend(repos);
+            if done {
+                break;
+            }
+        }
+        Ok(all)
+    }
+}
+
+/// Fetch the authenticated user's repo list asynchronously.
+/// Returns None if no token is provided.
+pub fn fetch_repo_list_async(
+    token: &str,
+    proxy: EventLoopProxy<()>,
+) -> Option<Receiver<Result<Vec<RepoInfo>>>> {
+    if token.is_empty() {
+        return None;
+    }
+    let token = token.to_string();
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let client = GitHubClient::new(token);
+        let result = client.list_repos(3); // up to 300 repos
+        let _ = tx.send(result);
+        let _ = proxy.send_event(());
+    });
+
+    Some(rx)
+}
+
 // --- CI status summary ---
 
 /// Summarized CI status for display in the UI.

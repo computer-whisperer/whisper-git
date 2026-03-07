@@ -51,11 +51,12 @@ use crate::messages::{
 use crate::renderer::{OffscreenTarget, SurfaceManager, VulkanContext, capture_to_buffer};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{
-    BranchNameDialog, BranchNameDialogAction, ConfirmDialog, ConfirmDialogAction, ContextMenu,
-    HeaderBar, MenuAction, MenuItem, MergeDialog, MergeDialogAction, MergeStrategy, PullDialog,
-    PullDialogAction, PushDialog, PushDialogAction, RebaseDialog, RebaseDialogAction, RemoteDialog,
-    RemoteDialogAction, RepoDialog, RepoDialogAction, SettingsDialog, SettingsDialogAction,
-    ShortcutBar, ShortcutContext, TabAction, TabBar, ToastManager, ToastSeverity, Tooltip,
+    BranchNameDialog, BranchNameDialogAction, CloneDialog, CloneDialogAction, ConfirmDialog,
+    ConfirmDialogAction, ContextMenu, HeaderBar, MenuAction, MenuItem, MergeDialog,
+    MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction,
+    RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog,
+    RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext,
+    TabAction, TabBar, ToastManager, ToastSeverity, Tooltip,
 };
 use crate::ui::{
     AvatarCache, AvatarRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer, Widget,
@@ -514,6 +515,7 @@ struct App {
     active_tab: usize,
     tab_bar: TabBar,
     repo_dialog: RepoDialog,
+    clone_dialog: CloneDialog,
     settings_dialog: SettingsDialog,
     confirm_dialog: ConfirmDialog,
     branch_name_dialog: BranchNameDialog,
@@ -556,6 +558,8 @@ struct App {
     last_frame_time: Instant,
     /// Timestamp of the last periodic ref fingerprint check
     last_ref_check: Instant,
+    /// Receiver for async git clone operation (success = destination path)
+    clone_receiver: Option<(Receiver<Result<PathBuf, String>>, Instant)>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -676,6 +680,7 @@ impl App {
             active_tab: 0,
             tab_bar,
             repo_dialog: RepoDialog::new(),
+            clone_dialog: CloneDialog::new(),
             settings_dialog,
             confirm_dialog: ConfirmDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
@@ -703,6 +708,7 @@ impl App {
             proxy,
             last_frame_time: Instant::now(),
             last_ref_check: Instant::now(),
+            clone_receiver: None,
         })
     }
 
@@ -877,6 +883,7 @@ impl App {
 
         // Set event loop proxy for file picker wake-up
         self.repo_dialog.set_proxy(self.proxy.clone());
+        self.clone_dialog.set_proxy(self.proxy.clone());
 
         // Initial status refresh for active tab
         self.refresh_status();
@@ -1703,6 +1710,40 @@ impl App {
     }
 
     /// Open a new repo and add it as a tab
+    fn start_clone(&mut self, url: String, dest: PathBuf) {
+        if self.clone_receiver.is_some() {
+            self.toast_manager.push(
+                "A clone is already in progress".to_string(),
+                ToastSeverity::Info,
+            );
+            return;
+        }
+        let dest_display = dest.display().to_string();
+        self.toast_manager.push(
+            format!("Cloning into {}...", dest_display),
+            ToastSeverity::Info,
+        );
+        let (tx, rx) = std::sync::mpsc::channel::<Result<PathBuf, String>>();
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = std::process::Command::new("git")
+                .args(["clone", &url, &dest.to_string_lossy()])
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output();
+            let clone_result = match result {
+                Ok(output) if output.status.success() => Ok(dest),
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                    Err(stderr)
+                }
+                Err(e) => Err(format!("Failed to run git clone: {e}")),
+            };
+            let _ = tx.send(clone_result);
+            let _ = proxy.send_event(());
+        });
+        self.clone_receiver = Some((rx, Instant::now()));
+    }
+
     fn open_repo_tab(&mut self, path: PathBuf) {
         match GitRepo::open(path) {
             Ok(repo) => {
@@ -2051,6 +2092,12 @@ impl App {
             return true;
         }
 
+        // Clone dialog (modal)
+        if self.clone_dialog.is_visible() {
+            self.clone_dialog.handle_event(input_event, screen_bounds);
+            return true;
+        }
+
         // Toast click-to-dismiss (overlay, before context menu)
         if self.toast_manager.handle_event(input_event, screen_bounds) {
             return true;
@@ -2209,6 +2256,11 @@ impl App {
         // Ctrl+O: open repo
         if *key == Key::O && modifiers.only_ctrl() {
             self.repo_dialog.show_with_recent(&self.config.recent_repos);
+            return true;
+        }
+        // Ctrl+Shift+O: clone repo
+        if *key == Key::O && modifiers.ctrl && modifiers.shift && !modifiers.alt {
+            self.clone_dialog.show(self.config.github_token.as_deref());
             return true;
         }
         // Ctrl+W: close tab
@@ -3105,6 +3157,49 @@ impl ApplicationHandler for App {
                             self.open_repo_tab(path);
                         }
                         RepoDialogAction::Cancel => {}
+                    }
+                }
+
+                // Poll clone dialog
+                self.clone_dialog.poll();
+
+                if let Some(action) = self.clone_dialog.take_action() {
+                    match action {
+                        CloneDialogAction::Clone { url, dest } => {
+                            self.start_clone(url, dest);
+                        }
+                        CloneDialogAction::Cancel => {}
+                    }
+                }
+
+                // Poll clone receiver
+                if let Some((ref rx, _started)) = self.clone_receiver {
+                    match rx.try_recv() {
+                        Ok(Ok(dest)) => {
+                            self.clone_receiver = None;
+                            let dest_str = dest.to_string_lossy().to_string();
+                            self.toast_manager
+                                .push(format!("Cloned into {}", dest_str), ToastSeverity::Success);
+                            if let Err(e) = self.config.add_recent_repo(&dest_str) {
+                                self.toast_manager.push(e, ToastSeverity::Error);
+                            }
+                            self.open_repo_tab(dest);
+                        }
+                        Ok(Err(err)) => {
+                            self.clone_receiver = None;
+                            self.toast_manager.push(
+                                format!("Clone failed: {}", err.trim()),
+                                ToastSeverity::Error,
+                            );
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.clone_receiver = None;
+                            self.toast_manager.push(
+                                "Clone failed: background thread terminated".to_string(),
+                                ToastSeverity::Error,
+                            );
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
                     }
                 }
 
@@ -4722,6 +4817,7 @@ fn build_ui_output(
     toast_manager: &mut ToastManager,
     tooltip: &mut Tooltip,
     repo_dialog: &RepoDialog,
+    clone_dialog: &CloneDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
     branch_name_dialog: &BranchNameDialog,
@@ -4817,6 +4913,7 @@ fn build_ui_output(
         // Offer tooltips for truncated commit subjects (uses current frame's data).
         // Suppress when any dialog or context menu is open.
         let any_modal_open = repo_dialog.is_visible()
+            || clone_dialog.is_visible()
             || settings_dialog.is_visible()
             || confirm_dialog.is_visible()
             || branch_name_dialog.is_visible()
@@ -5045,6 +5142,15 @@ fn build_ui_output(
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
         overlay_output.extend(repo_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
+    }
+
+    // Clone dialog (overlay layer)
+    if clone_dialog.is_visible() {
+        overlay_output.extend(clone_dialog.layout_with_bold(
             text_renderer,
             bold_text_renderer,
             screen_bounds,
@@ -5280,6 +5386,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &mut app.toast_manager,
         &mut app.tooltip,
         &app.repo_dialog,
+        &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
         &app.branch_name_dialog,
@@ -5487,6 +5594,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &mut app.toast_manager,
         &mut app.tooltip,
         &app.repo_dialog,
+        &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
         &app.branch_name_dialog,
@@ -5638,6 +5746,7 @@ fn capture_screenshot_offscreen(
         &mut app.toast_manager,
         &mut app.tooltip,
         &app.repo_dialog,
+        &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
         &app.branch_name_dialog,
