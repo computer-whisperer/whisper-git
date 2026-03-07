@@ -48,6 +48,7 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
 // --- Actions workflow run status ---
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct WorkflowRun {
     pub id: u64,
     pub name: String,
@@ -66,6 +67,7 @@ struct WorkflowRunsResponse {
 // --- Repository creation ---
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct CreatedRepo {
     pub full_name: String,
     pub clone_url: String,
@@ -87,6 +89,7 @@ impl GitHubClient {
             .context("GitHub API request failed")
     }
 
+    #[allow(dead_code)]
     fn post(&self, path: &str, body: &serde_json::Value) -> Result<ureq::Response> {
         ureq::post(&format!("{API_BASE}{path}"))
             .set("Authorization", &format!("Bearer {}", self.token))
@@ -115,6 +118,7 @@ impl GitHubClient {
     }
 
     /// Create a new repository under the authenticated user's account.
+    #[allow(dead_code)]
     pub fn create_repo(&self, name: &str, private: bool) -> Result<CreatedRepo> {
         let body = serde_json::json!({
             "name": name,
@@ -129,6 +133,7 @@ impl GitHubClient {
 // --- Repository listing ---
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct RepoInfo {
     pub full_name: String,
     pub clone_url: String,

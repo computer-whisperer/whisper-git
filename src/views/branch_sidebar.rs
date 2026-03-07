@@ -1536,6 +1536,7 @@ impl BranchSidebar {
     }
 
     /// Layout the REMOTE branches section. Returns (new_y, new_item_idx).
+    #[allow(clippy::too_many_arguments)]
     fn layout_remote_section(
         &self,
         params: &LayoutParams,
