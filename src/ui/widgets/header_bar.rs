@@ -1,5 +1,6 @@
 //! Header bar widget - repo path, breadcrumbs, action buttons
 
+use crate::github::{CiState, CiStatus};
 use crate::input::{EventResponse, InputEvent};
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
@@ -79,6 +80,8 @@ pub struct HeaderBar {
     pull_label_width: f32,
     /// Pre-computed width needed for push button label (including padding)
     push_label_width: f32,
+    /// Current CI status from GitHub Actions (None = not fetched / not a GitHub repo)
+    pub ci_status: Option<CiStatus>,
 }
 
 impl HeaderBar {
@@ -108,6 +111,7 @@ impl HeaderBar {
             reload_button: Button::new("Reload").ghost(),
             pull_label_width: 0.0,
             push_label_width: 0.0,
+            ci_status: None,
         }
     }
 
@@ -498,6 +502,45 @@ impl HeaderBar {
             let label_x = indicator_x + spinner_radius * 2.0 + 6.0 * scale;
             output.bold_text_vertices.extend(bold_renderer.layout_text(
                 op_label,
+                label_x,
+                text_y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+        }
+
+        // CI status indicator (colored dot + summary text)
+        if self.operation_state_label.is_none()
+            && self.generic_op_label.is_none()
+            && let Some(ref ci) = self.ci_status
+            && ci.state != CiState::None
+        {
+            let indicator_x = after_path_x + 12.0;
+            let dot_radius = 4.0 * scale;
+            let dot_cx = indicator_x + dot_radius;
+            let dot_cy = bounds.y + bounds.height / 2.0;
+
+            let dot_color = match ci.state {
+                CiState::Success => [0.34, 0.80, 0.44, 1.0], // green
+                CiState::Failure => [0.90, 0.30, 0.30, 1.0], // red
+                CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
+                CiState::None => unreachable!(),
+            };
+
+            // Draw filled circle as a short full arc
+            output.spline_vertices.extend(create_arc_vertices(
+                dot_cx,
+                dot_cy,
+                dot_radius * 0.5,
+                dot_radius * 0.5,
+                0.0,
+                std::f32::consts::TAU,
+                dot_color,
+            ));
+
+            // Summary text
+            let label_x = indicator_x + dot_radius * 2.0 + 6.0 * scale;
+            output.text_vertices.extend(text_renderer.layout_text(
+                &ci.summary,
                 label_x,
                 text_y,
                 theme::TEXT_MUTED.to_array(),

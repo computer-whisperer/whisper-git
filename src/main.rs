@@ -318,6 +318,10 @@ struct TabViewState {
     /// Fingerprint of HEAD + local branch tip OIDs for periodic ref reconciliation.
     /// Compared every 5s to detect external ref changes missed by the watcher.
     ref_fingerprint: u64,
+    /// Receiver for async GitHub CI status fetch
+    ci_receiver: Option<Receiver<github::CiStatus>>,
+    /// Most recent CI status for this tab's repo
+    ci_status: Option<github::CiStatus>,
 }
 
 impl TabViewState {
@@ -461,6 +465,8 @@ impl TabViewState {
             current_branch: String::new(),
             head_oid: None,
             ref_fingerprint: 0,
+            ci_receiver: None,
+            ci_status: None,
         }
     }
 }
@@ -1491,6 +1497,8 @@ impl App {
     fn poll_remote_ops(&mut self) {
         use std::sync::mpsc::TryRecvError;
 
+        let github_token = self.config.github_token.clone();
+        let proxy = self.proxy.clone();
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
             return;
         };
@@ -1524,6 +1532,13 @@ impl App {
                         if rx.is_some() {
                             self.diff_stats_receiver = rx;
                         }
+                        // Refresh CI status after remote ops
+                        trigger_ci_fetch(
+                            github_token.as_deref(),
+                            repo_tab,
+                            view_state,
+                            &proxy,
+                        );
                     }
                     AsyncOpPoll::Failed(msg) => {
                         self.toast_manager.push(msg, ToastSeverity::Error);
@@ -1566,6 +1581,14 @@ impl App {
             &mut view_state.header_bar.pushing,
             2
         );
+
+        // Poll CI status receiver
+        if let Some(ref rx) = view_state.ci_receiver {
+            if let Ok(status) = rx.try_recv() {
+                view_state.ci_status = Some(status);
+                view_state.ci_receiver = None;
+            }
+        }
 
         // Poll generic async ops (submodule/worktree operations)
         // This has unique post-success behavior (squash merge toast, worktree/stash refresh)
@@ -1722,6 +1745,12 @@ impl App {
                     }
                 }
 
+                trigger_ci_fetch(
+                    self.config.github_token.as_deref(),
+                    &repo_tab,
+                    &mut view_state,
+                    &self.proxy,
+                );
                 self.tabs.push((repo_tab, view_state));
                 let new_idx = self.tabs.len() - 1;
                 self.active_tab = new_idx;
@@ -2396,6 +2425,25 @@ enum AsyncOpPoll {
 /// Poll a remote operation receiver (fetch/pull/push) and return what happened.
 /// On completion or disconnect, clears the receiver, header flag, and timeout flag.
 /// On timeout, sets the timeout flag.
+/// Trigger an async CI status fetch for the given tab, if a GitHub token is configured
+/// and the origin remote is a GitHub URL.
+fn trigger_ci_fetch(
+    token: Option<&str>,
+    repo_tab: &RepoTab,
+    view_state: &mut TabViewState,
+    proxy: &EventLoopProxy<()>,
+) {
+    if let Some(token) = token
+        && !token.is_empty()
+        && let Some(url) = repo_tab.repo.remote_url("origin")
+    {
+        let branch = view_state.current_branch_opt().map(|s| s.to_string());
+        if let Some(rx) = github::fetch_ci_status_async(token, &url, branch, proxy.clone()) {
+            view_state.ci_receiver = Some(rx);
+        }
+    }
+}
+
 fn poll_remote_op(
     receiver: &mut Option<(Receiver<RemoteOpResult>, Instant, String)>,
     header_flag: &mut bool,
@@ -5128,6 +5176,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
                     let dots: String = ".".repeat(dot_count);
                     format!("{}{}", label, dots)
                 });
+        view_state.header_bar.ci_status = view_state.ci_status.clone();
         let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
         view_state.header_bar.update_button_state(
             elapsed,

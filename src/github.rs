@@ -5,6 +5,8 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::sync::mpsc::{self, Receiver};
+use winit::event_loop::EventLoopProxy;
 
 const API_BASE: &str = "https://api.github.com";
 
@@ -128,6 +130,125 @@ impl GitHubClient {
     }
 }
 
+// --- CI status summary ---
+
+/// Summarized CI status for display in the UI.
+#[derive(Debug, Clone)]
+pub struct CiStatus {
+    /// Overall status: success, failure, pending, or no runs
+    pub state: CiState,
+    /// Human-readable summary (e.g. "CI passed" or "2/3 checks passed")
+    pub summary: String,
+    /// URL to open in browser for details
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiState {
+    Success,
+    Failure,
+    Pending,
+    None,
+}
+
+impl CiStatus {
+    /// Summarize workflow runs into a single CI status.
+    fn from_runs(runs: &[WorkflowRun]) -> Self {
+        if runs.is_empty() {
+            return Self {
+                state: CiState::None,
+                summary: "No CI runs".into(),
+                url: None,
+            };
+        }
+
+        // Deduplicate: keep only the latest run per workflow name
+        let mut latest: std::collections::HashMap<&str, &WorkflowRun> =
+            std::collections::HashMap::new();
+        for run in runs {
+            latest
+                .entry(run.name.as_str())
+                .and_modify(|existing| {
+                    if run.id > existing.id {
+                        *existing = run;
+                    }
+                })
+                .or_insert(run);
+        }
+
+        let total = latest.len();
+        let mut passed = 0;
+        let mut failed = 0;
+        let mut pending = 0;
+        let mut first_url = None;
+
+        for run in latest.values() {
+            if first_url.is_none() {
+                first_url = Some(run.html_url.clone());
+            }
+            match run.conclusion.as_deref() {
+                Some("success") => passed += 1,
+                Some("failure" | "timed_out" | "cancelled") => {
+                    failed += 1;
+                    // Prefer linking to the failed run
+                    first_url = Some(run.html_url.clone());
+                }
+                _ if run.status == "completed" => passed += 1,
+                _ => pending += 1,
+            }
+        }
+
+        let (state, summary) = if failed > 0 {
+            (CiState::Failure, format!("{passed}/{total} checks passed"))
+        } else if pending > 0 {
+            (CiState::Pending, format!("{pending} check(s) in progress"))
+        } else {
+            let s = if total == 1 {
+                "CI passed".into()
+            } else {
+                format!("All {total} checks passed")
+            };
+            (CiState::Success, s)
+        };
+
+        Self {
+            state,
+            summary,
+            url: first_url,
+        }
+    }
+}
+
+/// Fetch CI status for a GitHub repo asynchronously.
+/// Returns a receiver that will produce a CiStatus once the API call completes.
+/// Returns None if the origin remote isn't a GitHub URL or no token is configured.
+pub fn fetch_ci_status_async(
+    token: &str,
+    origin_url: &str,
+    branch: Option<String>,
+    proxy: EventLoopProxy<()>,
+) -> Option<Receiver<CiStatus>> {
+    let (owner, repo) = parse_github_remote(origin_url)?;
+    let token = token.to_string();
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::spawn(move || {
+        let client = GitHubClient::new(token);
+        let status = match client.workflow_runs(&owner, &repo, branch.as_deref(), 10) {
+            Ok(runs) => CiStatus::from_runs(&runs),
+            Err(e) => CiStatus {
+                state: CiState::None,
+                summary: format!("CI fetch failed: {e}"),
+                url: None,
+            },
+        };
+        let _ = tx.send(status);
+        let _ = proxy.send_event(());
+    });
+
+    Some(rx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +278,63 @@ mod tests {
     #[test]
     fn parse_non_github() {
         assert!(parse_github_remote("https://gitlab.com/user/project").is_none());
+    }
+
+    fn make_run(id: u64, name: &str, status: &str, conclusion: Option<&str>) -> WorkflowRun {
+        WorkflowRun {
+            id,
+            name: name.to_string(),
+            head_branch: "main".to_string(),
+            head_sha: "abc123".to_string(),
+            status: status.to_string(),
+            conclusion: conclusion.map(|s| s.to_string()),
+            html_url: format!("https://github.com/test/repo/actions/runs/{id}"),
+        }
+    }
+
+    #[test]
+    fn ci_status_all_passed() {
+        let runs = vec![
+            make_run(1, "CI", "completed", Some("success")),
+            make_run(2, "Lint", "completed", Some("success")),
+        ];
+        let status = CiStatus::from_runs(&runs);
+        assert_eq!(status.state, CiState::Success);
+    }
+
+    #[test]
+    fn ci_status_one_failed() {
+        let runs = vec![
+            make_run(1, "CI", "completed", Some("success")),
+            make_run(2, "Lint", "completed", Some("failure")),
+        ];
+        let status = CiStatus::from_runs(&runs);
+        assert_eq!(status.state, CiState::Failure);
+        assert!(status.summary.contains("1/2"));
+    }
+
+    #[test]
+    fn ci_status_pending() {
+        let runs = vec![
+            make_run(1, "CI", "in_progress", None),
+        ];
+        let status = CiStatus::from_runs(&runs);
+        assert_eq!(status.state, CiState::Pending);
+    }
+
+    #[test]
+    fn ci_status_empty() {
+        let status = CiStatus::from_runs(&[]);
+        assert_eq!(status.state, CiState::None);
+    }
+
+    #[test]
+    fn ci_status_deduplicates_by_name() {
+        let runs = vec![
+            make_run(1, "CI", "completed", Some("failure")),
+            make_run(2, "CI", "completed", Some("success")), // newer run replaces old
+        ];
+        let status = CiStatus::from_runs(&runs);
+        assert_eq!(status.state, CiState::Success);
     }
 }
