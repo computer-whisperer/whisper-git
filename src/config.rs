@@ -24,6 +24,8 @@ pub struct Config {
     pub ratchet_scroll: bool,
     #[serde(default = "default_ai_provider")]
     pub ai_provider: String,
+    #[serde(default)]
+    pub github_token: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -52,6 +54,7 @@ impl Default for Config {
             show_orphaned_commits: true,
             ratchet_scroll: true,
             ai_provider: default_ai_provider(),
+            github_token: None,
         }
     }
 }

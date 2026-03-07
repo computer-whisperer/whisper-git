@@ -7,6 +7,7 @@ mod ai;
 mod config;
 mod crash_log;
 mod git;
+mod github;
 mod input;
 mod messages;
 mod renderer;
