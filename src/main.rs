@@ -42,7 +42,10 @@ use winit::{
 use git2::Oid;
 
 use crate::config::Config;
-use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo, WorktreeInfo};
+use crate::git::{
+    BranchTip, CommitInfo, GitRepo, RemoteOpResult, StashEntry, SubmoduleInfo, TagInfo,
+    WorkingDirStatus, WorktreeInfo,
+};
 use crate::input::{InputEvent, InputState, Key};
 use crate::messages::{
     AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode,
@@ -323,6 +326,12 @@ struct TabViewState {
     ci_receiver: Option<Receiver<github::CiStatus>>,
     /// Most recent CI status for this tab's repo
     ci_status: Option<github::CiStatus>,
+    /// When CI status was last fetched (for periodic polling)
+    last_ci_fetch: Instant,
+    /// When the last push completed (enables fast CI polling for 5 min)
+    last_push_time: Option<Instant>,
+    /// Branch that the current CI status corresponds to (detect branch switches)
+    ci_branch: String,
 }
 
 impl TabViewState {
@@ -468,6 +477,9 @@ impl TabViewState {
             ref_fingerprint: 0,
             ci_receiver: None,
             ci_status: None,
+            last_ci_fetch: Instant::now(),
+            last_push_time: None,
+            ci_branch: String::new(),
         }
     }
 }
@@ -560,6 +572,10 @@ struct App {
     last_ref_check: Instant,
     /// Receiver for async git clone operation (success = destination path)
     clone_receiver: Option<(Receiver<Result<PathBuf, String>>, Instant)>,
+    /// Receiver for async status refresh (background thread)
+    status_receiver: Option<Receiver<StatusResult>>,
+    /// Receiver for async repo state refresh (background thread)
+    repo_state_receiver: Option<Receiver<RepoStateResult>>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -710,6 +726,8 @@ impl App {
             last_frame_time: Instant::now(),
             last_ref_check: Instant::now(),
             clone_receiver: None,
+            status_receiver: None,
+            repo_state_receiver: None,
         })
     }
 
@@ -858,7 +876,7 @@ impl App {
             view_state.commit_graph_view.time_spacing_strength = time_strength;
             view_state.commit_graph_view.fast_scroll = fast_scroll;
             view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-            let rx = init_tab_view(
+            self.repo_state_receiver = Some(init_tab_view(
                 repo_tab,
                 view_state,
                 &text_renderer,
@@ -866,10 +884,7 @@ impl App {
                 &mut self.toast_manager,
                 self.config.show_orphaned_commits,
                 &self.proxy,
-            );
-            if rx.is_some() {
-                self.diff_stats_receiver = rx;
-            }
+            ));
         }
 
         self.state = Some(RenderState {
@@ -915,69 +930,104 @@ impl App {
     }
 
     fn refresh_status(&mut self) {
-        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+        if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
             let repo = &repo_tab.repo;
+            let repo_git_dir = repo.git_dir().to_path_buf();
+            let is_bare = repo.is_effectively_bare();
 
-            // Active worktree status for staging well
-            // Compute status and repo_state before mutable borrow of staging_well
-            let (wt_status, wt_repo_state) = {
-                let staging_repo = view_state.worktree_state.staging_repo_or(repo);
-                (staging_repo.status().ok(), staging_repo.repo_state())
-            };
-            if let Some(status) = wt_status {
-                view_state.staging_well.update_status(&status);
+            // Determine staging repo git dir (worktree-specific or same as main)
+            let staging_git_dir = view_state
+                .worktree_state
+                .staging_repo()
+                .map(|r| r.git_dir().to_path_buf());
+
+            let worktree_paths: Vec<String> = view_state
+                .worktree_state
+                .worktrees
+                .iter()
+                .map(|wt| wt.path.clone())
+                .collect();
+
+            self.status_receiver = Some(spawn_status_refresh(
+                repo_git_dir,
+                staging_git_dir,
+                worktree_paths,
+                is_bare,
+                self.proxy.clone(),
+            ));
+        }
+    }
+
+    fn poll_status(&mut self) {
+        let rx = match self.status_receiver {
+            Some(ref rx) => rx,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.status_receiver = None;
+                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    apply_status_result(result, repo_tab, view_state);
+                }
             }
-
-            // Pass repo state to staging well (for conflict banner)
-            view_state.staging_well.repo_state_label = crate::git::repo_state_label(wt_repo_state);
-
-            // Main worktree status for graph + header (always from main repo)
-            if let Ok(status) = repo.status() {
-                view_state.commit_graph_view.working_dir_status = Some(status.clone());
-                view_state.header_bar.has_staged = !status.staged.is_empty();
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status_receiver = None;
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
 
-            // Refresh dirty flags for all worktrees
-            let mut dirty_changed = false;
-            for wt in &mut view_state.worktree_state.worktrees {
-                if let Ok(wt_repo) = git2::Repository::open(&wt.path) {
-                    let (dirty, count) = wt_repo
-                        .statuses(None)
-                        .map(|statuses| {
-                            let c = statuses
-                                .iter()
-                                .filter(|e| !e.status().intersects(git2::Status::IGNORED))
-                                .count();
-                            (c > 0, c)
-                        })
-                        .unwrap_or((false, 0));
-                    if wt.is_dirty != dirty || wt.dirty_file_count != count {
-                        dirty_changed = true;
+    /// Spawn an async repo state refresh for the active tab.
+    fn trigger_repo_state_refresh(&mut self) {
+        if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
+            let repo_git_dir = repo_tab.repo.git_dir().to_path_buf();
+            let staging_git_dir = view_state
+                .worktree_state
+                .staging_repo()
+                .map(|r| r.git_dir().to_path_buf());
+
+            self.repo_state_receiver = Some(spawn_repo_state_refresh(
+                repo_git_dir,
+                staging_git_dir,
+                self.config.show_orphaned_commits,
+                self.proxy.clone(),
+            ));
+        }
+    }
+
+    fn poll_repo_state(&mut self) {
+        let rx = match self.repo_state_receiver {
+            Some(ref rx) => rx,
+            None => return,
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.repo_state_receiver = None;
+                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    let rx = apply_repo_state_result(
+                        result,
+                        repo_tab,
+                        view_state,
+                        &mut self.toast_manager,
+                        &self.proxy,
+                    );
+                    if rx.is_some() {
+                        self.diff_stats_receiver = rx;
                     }
-                    wt.is_dirty = dirty;
-                    wt.dirty_file_count = count;
+                    // Update watcher paths in case worktree structure changed
+                    let common_dir = repo_tab.repo.common_dir().to_path_buf();
+                    if let Some(ref mut w) = view_state.watcher {
+                        w.update_worktree_watches(
+                            &view_state.worktree_state.worktrees,
+                            &common_dir,
+                        );
+                    }
                 }
             }
-            // Sync dirty flags to commit graph view + staging well
-            if dirty_changed {
-                view_state
-                    .staging_well
-                    .set_worktrees(&view_state.worktree_state.worktrees);
-                // Regenerate synthetic entries to add/remove "uncommitted changes" rows
-                let synthetics = git::create_synthetic_entries(
-                    repo,
-                    &view_state.worktree_state.worktrees,
-                    &repo_tab.commits,
-                );
-                // Remove old synthetics, insert new ones
-                repo_tab.commits.retain(|c| !c.is_synthetic);
-                if !synthetics.is_empty() {
-                    git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
-                }
-                view_state
-                    .commit_graph_view
-                    .update_layout(&repo_tab.commits);
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.repo_state_receiver = None;
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -1256,13 +1306,14 @@ impl App {
 
         // Handle submodule navigation first (needs text_renderer from self.state)
         if !nav_messages.is_empty() {
+            let mut nav_rx: Option<Receiver<RepoStateResult>> = None;
             if let Some(ref state) = self.state {
                 let scale = state.scale_factor as f32;
                 for msg in nav_messages {
                     let show_orphans = self.config.show_orphaned_commits;
                     match msg {
                         AppMessage::EnterSubmodule(name) => {
-                            enter_submodule(
+                            if let Some(rx) = enter_submodule(
                                 &name,
                                 repo_tab,
                                 view_state,
@@ -1271,10 +1322,12 @@ impl App {
                                 &mut self.toast_manager,
                                 show_orphans,
                                 &self.proxy,
-                            );
+                            ) {
+                                nav_rx = Some(rx);
+                            }
                         }
                         AppMessage::ExitSubmodule => {
-                            exit_submodule(
+                            if let Some(rx) = exit_submodule(
                                 repo_tab,
                                 view_state,
                                 &state.text_renderer,
@@ -1282,10 +1335,12 @@ impl App {
                                 &mut self.toast_manager,
                                 show_orphans,
                                 &self.proxy,
-                            );
+                            ) {
+                                nav_rx = Some(rx);
+                            }
                         }
                         AppMessage::ExitToDepth(depth) => {
-                            exit_to_depth(
+                            if let Some(rx) = exit_to_depth(
                                 depth,
                                 repo_tab,
                                 view_state,
@@ -1294,11 +1349,16 @@ impl App {
                                 &mut self.toast_manager,
                                 show_orphans,
                                 &self.proxy,
-                            );
+                            ) {
+                                nav_rx = Some(rx);
+                            }
                         }
                         _ => unreachable!(),
                     }
                 }
+            }
+            if nav_rx.is_some() {
+                self.repo_state_receiver = nav_rx;
             }
             // Mark status dirty after submodule navigation to refresh staging well
             self.status_dirty = true;
@@ -1442,18 +1502,7 @@ impl App {
                 for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
                     let _ = wt_repo.reopen();
                 }
-                let rx = refresh_repo_state(
-                    repo_tab,
-                    view_state,
-                    &mut self.toast_manager,
-                    self.config.show_orphaned_commits,
-                    &self.proxy,
-                );
-                if rx.is_some() {
-                    self.diff_stats_receiver = rx;
-                }
-                // Update stored fingerprint to avoid redundant periodic re-check
-                view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
+                self.trigger_repo_state_refresh();
             }
             Some(FsChangeKind::WorktreeStructure) => {
                 self.status_dirty = true;
@@ -1462,23 +1511,8 @@ impl App {
                 for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
                     let _ = wt_repo.reopen();
                 }
-                let rx = refresh_repo_state(
-                    repo_tab,
-                    view_state,
-                    &mut self.toast_manager,
-                    self.config.show_orphaned_commits,
-                    &self.proxy,
-                );
-                if rx.is_some() {
-                    self.diff_stats_receiver = rx;
-                }
-                // Update watcher paths for new/removed worktrees
-                let common_dir = repo_tab.repo.common_dir().to_path_buf();
-                if let Some(ref mut w) = view_state.watcher {
-                    w.update_worktree_watches(&view_state.worktree_state.worktrees, &common_dir);
-                }
-                // Update stored fingerprint to avoid redundant periodic re-check
-                view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
+                self.trigger_repo_state_refresh();
+                // Note: watcher path updates will happen when poll_repo_state applies results
             }
             None => {}
         }
@@ -1519,8 +1553,10 @@ impl App {
         let now = Instant::now();
         const TIMEOUT_SECS: u64 = 60;
 
+        let mut needs_repo_refresh = false;
+
         // Helper: handle the result of polling a fetch/pull/push op.
-        // On success, shows a toast and refreshes repo state.
+        // On success, shows a toast and sets needs_repo_refresh flag.
         macro_rules! handle_poll {
             ($op_name:expr, $past_tense:expr, $receiver:expr, $header_flag:expr, $timeout_idx:expr) => {
                 match poll_remote_op(
@@ -1536,16 +1572,7 @@ impl App {
                             format!("{} {}", $past_tense, remote),
                             ToastSeverity::Success,
                         );
-                        let rx = refresh_repo_state(
-                            repo_tab,
-                            view_state,
-                            &mut self.toast_manager,
-                            self.config.show_orphaned_commits,
-                            &self.proxy,
-                        );
-                        if rx.is_some() {
-                            self.diff_stats_receiver = rx;
-                        }
+                        needs_repo_refresh = true;
                         // Refresh CI status after remote ops
                         trigger_ci_fetch(github_token.as_deref(), repo_tab, view_state, &proxy);
                     }
@@ -1583,6 +1610,7 @@ impl App {
             &mut view_state.header_bar.pulling,
             1
         );
+        let was_pushing = view_state.header_bar.pushing;
         handle_poll!(
             "Push",
             "Pushed to",
@@ -1590,6 +1618,9 @@ impl App {
             &mut view_state.header_bar.pushing,
             2
         );
+        if was_pushing && !view_state.header_bar.pushing {
+            view_state.last_push_time = Some(Instant::now());
+        }
 
         // Poll CI status receiver
         if let Some(ref rx) = view_state.ci_receiver
@@ -1618,21 +1649,7 @@ impl App {
                                 ToastSeverity::Info,
                             );
                         }
-                        let rx = refresh_repo_state(
-                            repo_tab,
-                            view_state,
-                            &mut self.toast_manager,
-                            self.config.show_orphaned_commits,
-                            &self.proxy,
-                        );
-                        if rx.is_some() {
-                            self.diff_stats_receiver = rx;
-                        }
-                        // Also refresh worktrees/stashes
-                        if let Ok(worktrees) = repo_tab.repo.worktrees() {
-                            view_state.worktree_state.worktrees = worktrees;
-                        }
-                        view_state.branch_sidebar.stashes = repo_tab.repo.stash_list();
+                        needs_repo_refresh = true;
                     } else {
                         let (msg, _) = git::classify_git_error(&label, &result.error);
                         self.toast_manager.push(msg, ToastSeverity::Error);
@@ -1656,6 +1673,11 @@ impl App {
                     }
                 }
             }
+        }
+
+        if needs_repo_refresh {
+            self.trigger_repo_state_refresh();
+            self.status_dirty = true;
         }
     }
 
@@ -1774,7 +1796,7 @@ impl App {
                         self.settings_dialog.time_spacing_strength;
                     view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
                     view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-                    let rx = init_tab_view(
+                    self.repo_state_receiver = Some(init_tab_view(
                         &mut repo_tab,
                         &mut view_state,
                         &render_state.text_renderer,
@@ -1782,10 +1804,7 @@ impl App {
                         &mut self.toast_manager,
                         self.config.show_orphaned_commits,
                         &self.proxy,
-                    );
-                    if rx.is_some() {
-                        self.diff_stats_receiver = rx;
-                    }
+                    ));
                 }
 
                 trigger_ci_fetch(
@@ -2076,16 +2095,8 @@ impl App {
                             self.toast_manager.push(e, ToastSeverity::Error);
                         }
                         // Reload commits if orphan visibility changed
-                        if orphans_changed
-                            && let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
-                        {
-                            self.diff_stats_receiver = refresh_repo_state(
-                                repo_tab,
-                                view_state,
-                                &mut self.toast_manager,
-                                self.config.show_orphaned_commits,
-                                &self.proxy,
-                            );
+                        if orphans_changed {
+                            self.trigger_repo_state_refresh();
                         }
                     }
                 }
@@ -2492,8 +2503,11 @@ fn trigger_ci_fetch(
         && let Some(url) = repo_tab.repo.remote_url("origin")
     {
         let branch = view_state.current_branch_opt().map(|s| s.to_string());
-        if let Some(rx) = github::fetch_ci_status_async(token, &url, branch, proxy.clone()) {
+        if let Some(rx) = github::fetch_ci_status_async(token, &url, branch.clone(), proxy.clone())
+        {
             view_state.ci_receiver = Some(rx);
+            view_state.last_ci_fetch = Instant::now();
+            view_state.ci_branch = branch.unwrap_or_default();
         }
     }
 }
@@ -2623,6 +2637,441 @@ fn refresh_repo_state(
     }
 }
 
+// ============================================================================
+// Async status refresh
+// ============================================================================
+
+/// Result of a background status refresh.
+struct StatusResult {
+    /// Main repo working directory status (for graph + header)
+    main_status: Option<WorkingDirStatus>,
+    /// Staging repo (worktree) status (for staging well)
+    staging_status: Option<WorkingDirStatus>,
+    /// Staging repo state (merge/rebase in progress, etc.)
+    staging_repo_state: git2::RepositoryState,
+    /// Per-worktree dirty flags: (path, is_dirty, dirty_file_count)
+    worktree_dirty: Vec<(String, bool, usize)>,
+}
+
+/// Spawn a background thread to compute working directory status.
+fn spawn_status_refresh(
+    repo_git_dir: PathBuf,
+    staging_git_dir: Option<PathBuf>,
+    worktree_paths: Vec<String>,
+    is_bare: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<StatusResult> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let main_status = if !is_bare {
+            git2::Repository::open(&repo_git_dir).ok().and_then(|repo| {
+                let mut opts = git2::StatusOptions::new();
+                opts.include_untracked(true).recurse_untracked_dirs(true);
+                let statuses = repo.statuses(Some(&mut opts)).ok()?;
+                Some(crate::git::working_dir_status_from_statuses(&statuses))
+            })
+        } else {
+            Some(WorkingDirStatus::default())
+        };
+
+        let (staging_status, staging_repo_state) = match staging_git_dir
+            .as_ref()
+            .and_then(|dir| git2::Repository::open(dir).ok())
+        {
+            Some(repo) => {
+                let state = repo.state();
+                let status = if !is_bare {
+                    let mut opts = git2::StatusOptions::new();
+                    opts.include_untracked(true).recurse_untracked_dirs(true);
+                    repo.statuses(Some(&mut opts))
+                        .ok()
+                        .map(|s| crate::git::working_dir_status_from_statuses(&s))
+                } else {
+                    Some(WorkingDirStatus::default())
+                };
+                (status, state)
+            }
+            None => (None, git2::RepositoryState::Clean),
+        };
+
+        let worktree_dirty: Vec<(String, bool, usize)> = worktree_paths
+            .into_iter()
+            .filter_map(|path| {
+                let repo = git2::Repository::open(&path).ok()?;
+                let (dirty, count) = repo
+                    .statuses(None)
+                    .map(|statuses| {
+                        let c = statuses
+                            .iter()
+                            .filter(|e| !e.status().intersects(git2::Status::IGNORED))
+                            .count();
+                        (c > 0, c)
+                    })
+                    .unwrap_or((false, 0));
+                Some((path, dirty, count))
+            })
+            .collect();
+
+        let _ = tx.send(StatusResult {
+            main_status,
+            staging_status,
+            staging_repo_state,
+            worktree_dirty,
+        });
+        let _ = proxy.send_event(());
+    });
+    rx
+}
+
+/// Apply a completed status result to the UI state.
+fn apply_status_result(
+    result: StatusResult,
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+) {
+    if let Some(status) = result.staging_status {
+        view_state.staging_well.update_status(&status);
+    }
+    view_state.staging_well.repo_state_label =
+        crate::git::repo_state_label(result.staging_repo_state);
+
+    if let Some(status) = result.main_status {
+        view_state.header_bar.has_staged = !status.staged.is_empty();
+        view_state.commit_graph_view.working_dir_status = Some(status);
+    }
+
+    let mut dirty_changed = false;
+    for (path, dirty, count) in &result.worktree_dirty {
+        if let Some(wt) = view_state
+            .worktree_state
+            .worktrees
+            .iter_mut()
+            .find(|w| &w.path == path)
+        {
+            if wt.is_dirty != *dirty || wt.dirty_file_count != *count {
+                dirty_changed = true;
+            }
+            wt.is_dirty = *dirty;
+            wt.dirty_file_count = *count;
+        }
+    }
+
+    if dirty_changed {
+        view_state
+            .staging_well
+            .set_worktrees(&view_state.worktree_state.worktrees);
+        let repo = &repo_tab.repo;
+        let synthetics = git::create_synthetic_entries(
+            repo,
+            &view_state.worktree_state.worktrees,
+            &repo_tab.commits,
+        );
+        repo_tab.commits.retain(|c| !c.is_synthetic);
+        if !synthetics.is_empty() {
+            git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
+        }
+        view_state
+            .commit_graph_view
+            .update_layout(&repo_tab.commits);
+    }
+}
+
+// ============================================================================
+// Async repo state refresh
+// ============================================================================
+
+/// Result of a background repo state refresh.
+struct RepoStateResult {
+    commits: Vec<CommitInfo>,
+    branch_tips: Vec<BranchTip>,
+    tags: Vec<TagInfo>,
+    current_branch: String,
+    head_oid: Option<Oid>,
+    worktrees: Vec<WorktreeInfo>,
+    remote_names: Vec<String>,
+    remote_urls: HashMap<String, String>,
+    is_bare: bool,
+    submodules: Vec<SubmoduleInfo>,
+    stashes: Vec<StashEntry>,
+    ahead_behind: HashMap<String, (usize, usize)>,
+    staging_repo_state: git2::RepositoryState,
+    ref_fingerprint: u64,
+    /// OIDs for which diff stats should be computed
+    real_oids: Vec<Oid>,
+    errors: Vec<String>,
+}
+
+/// Spawn a background thread to compute the full repo state refresh.
+fn spawn_repo_state_refresh(
+    repo_git_dir: PathBuf,
+    staging_git_dir: Option<PathBuf>,
+    show_orphaned_commits: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RepoStateResult> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut errors = Vec::new();
+
+        let repo = match GitRepo::open(&repo_git_dir) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("Failed to open repo: {e}"));
+                let _ = tx.send(RepoStateResult {
+                    commits: Vec::new(),
+                    branch_tips: Vec::new(),
+                    tags: Vec::new(),
+                    current_branch: String::new(),
+                    head_oid: None,
+                    worktrees: Vec::new(),
+                    remote_names: Vec::new(),
+                    remote_urls: HashMap::new(),
+                    is_bare: false,
+                    submodules: Vec::new(),
+                    stashes: Vec::new(),
+                    ahead_behind: HashMap::new(),
+                    staging_repo_state: git2::RepositoryState::Clean,
+                    ref_fingerprint: 0,
+                    real_oids: Vec::new(),
+                    errors,
+                });
+                let _ = proxy.send_event(());
+                return;
+            }
+        };
+
+        let staging_repo = staging_git_dir
+            .as_ref()
+            .and_then(|dir| GitRepo::open(dir).ok());
+        let staging = staging_repo.as_ref().unwrap_or(&repo);
+
+        // Commits
+        let graph_result = if show_orphaned_commits {
+            repo.commit_graph_with_orphans(MAX_COMMITS)
+        } else {
+            repo.commit_graph(MAX_COMMITS)
+        };
+        let mut commits = match graph_result {
+            Ok(c) => c,
+            Err(e) => {
+                errors.push(format!("Failed to load commits: {e}"));
+                Vec::new()
+            }
+        };
+
+        // Branches
+        let mut branch_tips = repo.branch_tips().unwrap_or_else(|e| {
+            errors.push(format!("Failed to load branches: {e}"));
+            Vec::new()
+        });
+        let tags = repo.tags().unwrap_or_else(|e| {
+            errors.push(format!("Failed to load tags: {e}"));
+            Vec::new()
+        });
+        let current_branch = staging.current_branch().unwrap_or_else(|e| {
+            errors.push(format!("Failed to get current branch: {e}"));
+            String::new()
+        });
+        let head_oid = staging.head_oid().ok();
+
+        // Fix is_head based on staging context
+        for tip in &mut branch_tips {
+            tip.is_head = tip.name == current_branch && !tip.is_remote;
+        }
+
+        // Worktrees
+        let worktrees = repo.worktrees().unwrap_or_else(|e| {
+            errors.push(format!("Failed to load worktrees: {e}"));
+            Vec::new()
+        });
+
+        // Synthetic entries
+        let synthetics = git::create_synthetic_entries(&repo, &worktrees, &commits);
+        if !synthetics.is_empty() {
+            git::insert_synthetics_sorted(&mut commits, synthetics);
+        }
+
+        // Remotes
+        let remote_names = repo.remote_names();
+        let is_bare = repo.is_effectively_bare();
+        let remote_urls: HashMap<String, String> = remote_names
+            .iter()
+            .filter_map(|name| repo.remote_url(name).map(|url| (name.clone(), url)))
+            .collect();
+
+        // Submodules
+        let submodules = repo.submodules().unwrap_or_else(|e| {
+            errors.push(format!("Failed to load submodules: {e}"));
+            Vec::new()
+        });
+
+        // Stashes
+        let stashes = repo.stash_list();
+
+        // Ahead/behind for all branches
+        let ahead_behind = repo.all_branches_ahead_behind();
+
+        // Staging repo state
+        let staging_repo_state = staging.repo_state();
+
+        // Ref fingerprint
+        let ref_fingerprint = git::ref_fingerprint(repo.git_dir());
+
+        // Collect real OIDs for diff stats
+        let real_oids: Vec<Oid> = commits
+            .iter()
+            .filter(|c| !c.is_synthetic)
+            .map(|c| c.id)
+            .collect();
+
+        let _ = tx.send(RepoStateResult {
+            commits,
+            branch_tips,
+            tags,
+            current_branch,
+            head_oid,
+            worktrees,
+            remote_names,
+            remote_urls,
+            is_bare,
+            submodules,
+            stashes,
+            ahead_behind,
+            staging_repo_state,
+            ref_fingerprint,
+            real_oids,
+            errors,
+        });
+        let _ = proxy.send_event(());
+    });
+    rx
+}
+
+/// Apply a completed repo state result to the UI.
+/// Returns a diff stats receiver if OIDs are available.
+fn apply_repo_state_result(
+    result: RepoStateResult,
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+    toast_manager: &mut ToastManager,
+    proxy: &EventLoopProxy<()>,
+) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+    // Report errors as toasts
+    for err in &result.errors {
+        toast_manager.push(err.clone(), ToastSeverity::Error);
+    }
+
+    // Preserve existing diff stats so they don't flicker away during refresh
+    let prev_stats: HashMap<Oid, (usize, usize)> = repo_tab
+        .commits
+        .iter()
+        .filter(|c| c.insertions > 0 || c.deletions > 0)
+        .map(|c| (c.id, (c.insertions, c.deletions)))
+        .collect();
+
+    repo_tab.commits = result.commits;
+
+    // Restore cached diff stats
+    for commit in repo_tab.commits.iter_mut() {
+        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+            commit.insertions = ins;
+            commit.deletions = del;
+        }
+    }
+
+    // Update views
+    view_state
+        .commit_graph_view
+        .update_layout(&repo_tab.commits);
+    view_state.commit_graph_view.branch_tips = result.branch_tips;
+    view_state.commit_graph_view.tags = result.tags.clone();
+
+    view_state.branch_sidebar.set_branch_data(
+        &view_state.commit_graph_view.branch_tips,
+        &result.tags,
+        &result.remote_names,
+        &result.remote_urls,
+        &result.worktrees,
+        result.is_bare,
+    );
+    view_state.staging_well.set_worktrees(&result.worktrees);
+
+    // Update worktree state
+    view_state.worktree_state.worktrees = result.worktrees;
+    // Open repos for any new worktrees in the cache
+    for wt in &view_state.worktree_state.worktrees {
+        let path = PathBuf::from(&wt.path);
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            view_state.worktree_state.repo_cache.entry(path)
+            && let Ok(wt_repo) = GitRepo::open(entry.key())
+        {
+            entry.insert(wt_repo);
+        }
+    }
+    // Prune stale cache entries
+    let valid: HashSet<PathBuf> = view_state
+        .worktree_state
+        .worktrees
+        .iter()
+        .map(|wt| PathBuf::from(&wt.path))
+        .collect();
+    view_state
+        .worktree_state
+        .repo_cache
+        .retain(|p, _| valid.contains(p));
+
+    view_state.staging_well.set_submodules(result.submodules);
+
+    // Sibling submodules for lateral navigation
+    if let Some(focus) = view_state.submodule_focus.as_ref() {
+        if let Some(parent) = focus.parent_stack.last() {
+            view_state
+                .staging_well
+                .set_sibling_submodules(parent.parent_submodules.clone());
+        }
+    } else {
+        view_state.staging_well.sibling_submodules.clear();
+    }
+
+    view_state.branch_sidebar.stashes = result.stashes;
+    view_state
+        .branch_sidebar
+        .update_ahead_behind(result.ahead_behind);
+
+    // Header
+    let project_path = repo_tab
+        .repo
+        .common_dir()
+        .parent()
+        .unwrap_or(repo_tab.repo.common_dir());
+    let repo_path_str = project_path.to_string_lossy().into_owned();
+    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
+    view_state.header_bar.set_repo_path(&repo_path_str);
+
+    // Operation state
+    view_state.header_bar.operation_state_label = git::repo_state_label(result.staging_repo_state);
+
+    // Derive HEAD from worktree state
+    view_state.current_branch = result.current_branch;
+    view_state.head_oid = result.head_oid;
+    for tip in &mut view_state.commit_graph_view.branch_tips {
+        tip.is_head = !tip.is_remote && tip.name == view_state.current_branch;
+    }
+
+    // Update ref fingerprint
+    view_state.ref_fingerprint = result.ref_fingerprint;
+
+    // Spawn async diff stats
+    if !result.real_oids.is_empty() {
+        Some(
+            repo_tab
+                .repo
+                .compute_diff_stats_async(result.real_oids, proxy.clone()),
+        )
+    } else {
+        None
+    }
+}
+
 /// Initialize a tab's view state from its repo data
 fn init_tab_view(
     repo_tab: &mut RepoTab,
@@ -2632,7 +3081,7 @@ fn init_tab_view(
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
-) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+) -> Receiver<RepoStateResult> {
     // Sync view metrics to the current text renderer scale
     view_state.commit_graph_view.sync_metrics(text_renderer);
     view_state.branch_sidebar.sync_metrics(text_renderer);
@@ -2652,18 +3101,9 @@ fn init_tab_view(
     // No worktree is auto-selected at init. The user picks one via the staging well selector.
     // worktree_state.selected_path stays None until explicitly set.
 
-    // Refresh commits, branches, tags, head, status, submodules, worktrees, stashes
-    // (refresh_repo_state handles all of these — no need to call them separately)
-    let rx = refresh_repo_state(
-        repo_tab,
-        view_state,
-        toast_manager,
-        show_orphaned_commits,
-        proxy,
-    );
-
-    // Seed the ref fingerprint so the periodic check has a baseline
-    view_state.ref_fingerprint = git::ref_fingerprint(repo_tab.repo.git_dir());
+    // Spawn async repo state refresh
+    let repo_git_dir = repo_tab.repo.git_dir().to_path_buf();
+    let rx = spawn_repo_state_refresh(repo_git_dir, None, show_orphaned_commits, proxy.clone());
 
     // Start filesystem watcher for auto-refresh
     start_watcher(repo_tab, view_state, toast_manager, proxy);
@@ -2721,7 +3161,7 @@ fn enter_submodule(
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
-) -> bool {
+) -> Option<Receiver<RepoStateResult>> {
     // Find the submodule info by name
     let sm = view_state
         .staging_well
@@ -2734,7 +3174,7 @@ fn enter_submodule(
             format!("Submodule '{}' not found", name),
             ToastSeverity::Error,
         );
-        return false;
+        return None;
     };
 
     // Resolve submodule path relative to the active worktree's workdir
@@ -2742,7 +3182,7 @@ fn enter_submodule(
         Some(path) => path,
         None => {
             toast_manager.push("No active worktree".to_string(), ToastSeverity::Error);
-            return false;
+            return None;
         }
     };
     let sub_path = parent_workdir.join(sm.path);
@@ -2755,7 +3195,7 @@ fn enter_submodule(
                 format!("Cannot open submodule '{}': {}", name, e),
                 ToastSeverity::Error,
             );
-            return false;
+            return None;
         }
     };
 
@@ -2807,7 +3247,7 @@ fn enter_submodule(
     }
 
     // Re-init views with the submodule data
-    let _ = init_tab_view(
+    let rx = init_tab_view(
         repo_tab,
         view_state,
         text_renderer,
@@ -2817,11 +3257,11 @@ fn enter_submodule(
         proxy,
     );
 
-    true
+    Some(rx)
 }
 
 /// Pop one level from the submodule focus stack, restoring parent state.
-/// Returns true if we popped successfully.
+/// Returns a receiver for the async repo state refresh, or None on failure.
 fn exit_submodule(
     repo_tab: &mut RepoTab,
     view_state: &mut TabViewState,
@@ -2830,17 +3270,11 @@ fn exit_submodule(
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
-) -> bool {
+) -> Option<Receiver<RepoStateResult>> {
     // Pop saved state from the focus stack (release borrow before init_tab_view)
     let saved = {
-        let focus = match &mut view_state.submodule_focus {
-            Some(f) => f,
-            None => return false,
-        };
-        match focus.parent_stack.pop() {
-            Some(s) => s,
-            None => return false,
-        }
+        let focus = view_state.submodule_focus.as_mut()?;
+        focus.parent_stack.pop()?
     };
 
     // Clear diff/detail
@@ -2863,7 +3297,7 @@ fn exit_submodule(
         .restore(saved.worktree_state, &repo_tab.repo);
 
     // Re-init views with parent data
-    let _ = init_tab_view(
+    let rx = init_tab_view(
         repo_tab,
         view_state,
         text_renderer,
@@ -2899,7 +3333,7 @@ fn exit_submodule(
             .unwrap_or_default();
     }
 
-    true
+    Some(rx)
 }
 
 /// Pop multiple levels to reach the given depth (0 = root).
@@ -2913,18 +3347,19 @@ fn exit_to_depth(
     toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
-) {
+) -> Option<Receiver<RepoStateResult>> {
     let current_depth = view_state
         .submodule_focus
         .as_ref()
         .map(|f| f.parent_stack.len())
         .unwrap_or(0);
     if depth >= current_depth {
-        return;
+        return None;
     }
     let pops = current_depth - depth;
+    let mut last_rx = None;
     for _ in 0..pops {
-        if !exit_submodule(
+        match exit_submodule(
             repo_tab,
             view_state,
             text_renderer,
@@ -2933,9 +3368,11 @@ fn exit_to_depth(
             show_orphaned_commits,
             proxy,
         ) {
-            break;
+            Some(rx) => last_rx = Some(rx),
+            None => break,
         }
     }
+    last_rx
 }
 
 /// Try to open a terminal emulator at the given directory path.
@@ -3091,6 +3528,10 @@ impl ApplicationHandler for App {
                 self.poll_diff_stats();
                 // Re-launch diff stats if the previous receiver was orphaned
                 self.ensure_diff_stats();
+                // Poll background status refresh
+                self.poll_status();
+                // Poll background repo state refresh
+                self.poll_repo_state();
                 // Poll filesystem watcher for external changes
                 self.poll_watcher();
                 // Poll background remote operations
@@ -3135,17 +3576,42 @@ impl ApplicationHandler for App {
                                     let _ = wt_repo.reopen();
                                 }
                                 self.status_dirty = true;
-                                let rx = refresh_repo_state(
-                                    repo_tab,
-                                    view_state,
-                                    &mut self.toast_manager,
-                                    self.config.show_orphaned_commits,
-                                    &self.proxy,
-                                );
-                                if rx.is_some() {
-                                    self.diff_stats_receiver = rx;
-                                }
+                                self.trigger_repo_state_refresh();
                             }
+                        }
+                    }
+                }
+
+                // Periodic CI status polling
+                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    let now = Instant::now();
+                    // Skip if a fetch is already in flight
+                    if view_state.ci_receiver.is_none() {
+                        let branch_changed = view_state
+                            .current_branch_opt()
+                            .is_some_and(|b| b != view_state.ci_branch);
+
+                        // Determine poll interval:
+                        // - 15s if CI is pending or within 5 min of a push
+                        // - 5 min otherwise
+                        let fast_poll = view_state
+                            .ci_status
+                            .as_ref()
+                            .is_some_and(|s| s.state == github::CiState::Pending)
+                            || view_state
+                                .last_push_time
+                                .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+                        let interval = if fast_poll { 15 } else { 300 };
+                        let elapsed_since_fetch =
+                            now.duration_since(view_state.last_ci_fetch).as_secs();
+
+                        if branch_changed || elapsed_since_fetch >= interval {
+                            trigger_ci_fetch(
+                                self.config.github_token.as_deref(),
+                                repo_tab,
+                                view_state,
+                                &self.proxy,
+                            );
                         }
                     }
                 }
@@ -3306,6 +3772,26 @@ impl ApplicationHandler for App {
 
         // 5. Periodic ref reconciliation timer (5s)
         merge(self.last_ref_check + Duration::from_secs(5));
+
+        // 6. CI status polling timer
+        if let Some((_, vs)) = self.tabs.get(self.active_tab)
+            && vs.ci_receiver.is_none()
+            && self
+                .config
+                .github_token
+                .as_ref()
+                .is_some_and(|t| !t.is_empty())
+        {
+            let fast_poll = vs
+                .ci_status
+                .as_ref()
+                .is_some_and(|s| s.state == github::CiState::Pending)
+                || vs
+                    .last_push_time
+                    .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+            let interval = if fast_poll { 15 } else { 300 };
+            merge(vs.last_ci_fetch + Duration::from_secs(interval));
+        }
 
         match next_wake {
             Some(t) if t <= now => {

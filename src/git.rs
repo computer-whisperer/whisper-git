@@ -855,64 +855,7 @@ impl GitRepo {
             .statuses(Some(&mut opts))
             .context("Failed to get status")?;
 
-        let mut staged = Vec::new();
-        let mut unstaged = Vec::new();
-        let mut untracked = Vec::new();
-        let mut conflicted = Vec::new();
-
-        for entry in statuses.iter() {
-            let path = entry.path().unwrap_or("").to_string();
-            let status = entry.status();
-
-            // Check for conflicted files first (merge/rebase conflicts)
-            if status.contains(Status::CONFLICTED) {
-                conflicted.push(FileStatus {
-                    path,
-                    status: FileStatusKind::Conflicted,
-                });
-                continue;
-            }
-
-            // Check for staged changes
-            if status.intersects(
-                Status::INDEX_NEW
-                    | Status::INDEX_MODIFIED
-                    | Status::INDEX_DELETED
-                    | Status::INDEX_RENAMED
-                    | Status::INDEX_TYPECHANGE,
-            ) {
-                staged.push(FileStatus {
-                    path: path.clone(),
-                    status: FileStatusKind::from_index_status(status),
-                });
-            }
-
-            // Check for working-tree changes
-            if status.contains(Status::WT_NEW) {
-                // Untracked files go to their own section
-                untracked.push(FileStatus {
-                    path,
-                    status: FileStatusKind::New,
-                });
-            } else if status.intersects(
-                Status::WT_MODIFIED
-                    | Status::WT_DELETED
-                    | Status::WT_RENAMED
-                    | Status::WT_TYPECHANGE,
-            ) {
-                unstaged.push(FileStatus {
-                    path,
-                    status: FileStatusKind::from_wt_status(status),
-                });
-            }
-        }
-
-        Ok(WorkingDirStatus {
-            staged,
-            unstaged,
-            untracked,
-            conflicted,
-        })
+        Ok(working_dir_status_from_statuses(&statuses))
     }
 
     /// Stage a file.
@@ -1543,6 +1486,62 @@ impl FileStatusKind {
         } else {
             FileStatusKind::TypeChange
         }
+    }
+}
+
+/// Build a `WorkingDirStatus` from raw `git2::Statuses`.
+/// Extracted as a free function so background threads can use it without a `GitRepo`.
+pub fn working_dir_status_from_statuses(statuses: &git2::Statuses<'_>) -> WorkingDirStatus {
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    let mut untracked = Vec::new();
+    let mut conflicted = Vec::new();
+
+    for entry in statuses.iter() {
+        let path = entry.path().unwrap_or("").to_string();
+        let status = entry.status();
+
+        if status.contains(Status::CONFLICTED) {
+            conflicted.push(FileStatus {
+                path,
+                status: FileStatusKind::Conflicted,
+            });
+            continue;
+        }
+
+        if status.intersects(
+            Status::INDEX_NEW
+                | Status::INDEX_MODIFIED
+                | Status::INDEX_DELETED
+                | Status::INDEX_RENAMED
+                | Status::INDEX_TYPECHANGE,
+        ) {
+            staged.push(FileStatus {
+                path: path.clone(),
+                status: FileStatusKind::from_index_status(status),
+            });
+        }
+
+        if status.contains(Status::WT_NEW) {
+            untracked.push(FileStatus {
+                path,
+                status: FileStatusKind::New,
+            });
+        } else if status.intersects(
+            Status::WT_MODIFIED | Status::WT_DELETED | Status::WT_RENAMED | Status::WT_TYPECHANGE,
+        ) {
+            unstaged.push(FileStatus {
+                path,
+                status: FileStatusKind::from_wt_status(status),
+            });
+        }
+    }
+
+    WorkingDirStatus {
+        staged,
+        unstaged,
+        untracked,
+        conflicted,
     }
 }
 
