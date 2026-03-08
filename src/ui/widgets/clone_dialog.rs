@@ -9,7 +9,7 @@ use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
     Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
-    create_rounded_rect_vertices, theme,
+    create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
 use crate::ui::{Rect, TextRenderer};
@@ -21,6 +21,7 @@ pub enum CloneDialogAction {
     Clone {
         url: String,
         dest: PathBuf,
+        bare: bool,
     },
     Cancel,
 }
@@ -38,6 +39,8 @@ pub struct CloneDialog {
     /// Channel receiver for async native folder picker
     picker_rx: Option<Receiver<String>>,
     proxy: Option<EventLoopProxy<()>>,
+    /// Whether to clone as a bare repository
+    bare: bool,
 
     // GitHub repo list
     /// Full list of repos from GitHub API
@@ -72,6 +75,7 @@ impl CloneDialog {
             pending_action: None,
             picker_rx: None,
             proxy: None,
+            bare: false,
             github_repos: Vec::new(),
             filtered_indices: Vec::new(),
             scroll_offset: 0.0,
@@ -92,6 +96,7 @@ impl CloneDialog {
         self.url_input.set_focused(true);
         self.dest_input.set_focused(false);
         self.error_message = None;
+        self.bare = false;
         self.hovered_item = -1;
         self.scroll_offset = 0.0;
         self.filtered_indices.clear();
@@ -215,20 +220,30 @@ impl CloneDialog {
             .unwrap_or("repo")
             .strip_suffix(".git")
             .unwrap_or(url.rsplit('/').next().unwrap_or("repo"));
+        // Bare repos conventionally use a .git suffix on the directory name
+        let dir_name = if self.bare {
+            format!("{repo_name}.git")
+        } else {
+            repo_name.to_string()
+        };
         let dest_base = if let Some(rest) = dest_base.strip_prefix('~') {
             let home = std::env::var("HOME").unwrap_or_default();
             format!("{home}{rest}")
         } else {
             dest_base
         };
-        let dest = PathBuf::from(&dest_base).join(repo_name);
+        let dest = PathBuf::from(&dest_base).join(dir_name);
 
         if dest.exists() {
             self.error_message = Some(format!("Directory already exists: {}", dest.display()));
             return;
         }
 
-        self.pending_action = Some(CloneDialogAction::Clone { url, dest });
+        self.pending_action = Some(CloneDialogAction::Clone {
+            url,
+            dest,
+            bare: self.bare,
+        });
         self.hide();
     }
 
@@ -270,8 +285,9 @@ impl CloneDialog {
         } else {
             0.0
         };
+        let checkbox_h = 24.0 * scale; // space for bare checkbox row
         let dialog_w = (500.0 * scale).min(screen.width * 0.85);
-        let dialog_h = ((240.0 * scale) + list_h).min(screen.height * 0.85);
+        let dialog_h = ((240.0 * scale) + checkbox_h + list_h).min(screen.height * 0.85);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
@@ -283,7 +299,9 @@ impl CloneDialog {
         let line_h = 32.0 * scale;
         let url_y = dialog.y + 44.0 * scale;
         let dest_y = url_y + line_h + 8.0 * scale;
-        let list_top = dest_y + line_h + 12.0 * scale;
+        let checkbox_y = dest_y + line_h + 8.0 * scale;
+        let checkbox_h = 16.0 * scale;
+        let list_top = checkbox_y + checkbox_h + 12.0 * scale;
         let button_area = padding + line_h + 8.0 * scale;
         let list_bottom = dialog.bottom() - button_area - 4.0 * scale;
         let list_h = (list_bottom - list_top).max(0.0);
@@ -327,6 +345,12 @@ impl Widget for CloneDialog {
             line_h,
         );
         let browse_bounds = Rect::new(dest_bounds.right() + browse_gap, dest_y, browse_w, line_h);
+
+        // Bare checkbox bounds (between dest input and repo list)
+        let checkbox_y = dest_y + line_h + 8.0 * scale;
+        let checkbox_size = 16.0 * scale;
+        let checkbox_bounds =
+            Rect::new(dialog.x + padding, checkbox_y, checkbox_size, checkbox_size);
 
         // Button bounds at bottom
         let button_y = dialog.bottom() - padding - line_h;
@@ -429,6 +453,19 @@ impl Widget for CloneDialog {
             if self.browse_button.was_clicked() {
                 self.open_folder_picker();
             }
+            return EventResponse::Consumed;
+        }
+
+        // Bare checkbox
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
+            && checkbox_bounds.contains(*x, *y)
+        {
+            self.bare = !self.bare;
             return EventResponse::Consumed;
         }
 
@@ -550,6 +587,47 @@ impl CloneDialog {
                 theme::STATUS_DIRTY.to_array(),
             ));
         }
+
+        // Bare checkbox
+        let checkbox_y = dest_y + line_h + 8.0 * scale;
+        let checkbox_size = 16.0 * scale;
+        let checkbox_x = dialog.x + padding;
+        let checkbox_rect = Rect::new(checkbox_x, checkbox_y, checkbox_size, checkbox_size);
+        let cb_r = 3.0 * scale;
+        let border_color = if self.bare {
+            theme::ACCENT.to_array()
+        } else {
+            theme::BORDER.to_array()
+        };
+        output
+            .spline_vertices
+            .extend(create_rounded_rect_outline_vertices(
+                &checkbox_rect,
+                border_color,
+                cb_r,
+                1.0 * scale,
+            ));
+        if self.bare {
+            let check_padding = 3.0 * scale;
+            let check_rect = Rect::new(
+                checkbox_x + check_padding,
+                checkbox_y + check_padding,
+                checkbox_size - check_padding * 2.0,
+                checkbox_size - check_padding * 2.0,
+            );
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &check_rect,
+                theme::ACCENT.to_array(),
+                cb_r - 1.0,
+            ));
+        }
+        let checkbox_label_x = checkbox_x + checkbox_size + 8.0 * scale;
+        output.text_vertices.extend(text_renderer.layout_text(
+            "Clone as bare repository (--bare)",
+            checkbox_label_x,
+            checkbox_y,
+            theme::TEXT.to_array(),
+        ));
 
         // GitHub repo list
         let list_area = self.list_area(dialog, scale);

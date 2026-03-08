@@ -1739,7 +1739,7 @@ impl App {
     }
 
     /// Open a new repo and add it as a tab
-    fn start_clone(&mut self, url: String, dest: PathBuf) {
+    fn start_clone(&mut self, url: String, dest: PathBuf, bare: bool) {
         if self.clone_receiver.is_some() {
             self.toast_manager.push(
                 "A clone is already in progress".to_string(),
@@ -1748,15 +1748,23 @@ impl App {
             return;
         }
         let dest_display = dest.display().to_string();
+        let label = if bare { "Bare cloning" } else { "Cloning" };
         self.toast_manager.push(
-            format!("Cloning into {}...", dest_display),
+            format!("{label} into {dest_display}..."),
             ToastSeverity::Info,
         );
         let (tx, rx) = std::sync::mpsc::channel::<Result<PathBuf, String>>();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
+            let mut args = vec!["clone"];
+            if bare {
+                args.push("--bare");
+            }
+            args.push(&url);
+            let dest_str = dest.to_string_lossy().to_string();
+            args.push(&dest_str);
             let result = std::process::Command::new("git")
-                .args(["clone", &url, &dest.to_string_lossy()])
+                .args(&args)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .output();
             let clone_result = match result {
@@ -3638,8 +3646,8 @@ impl ApplicationHandler for App {
 
                 if let Some(action) = self.clone_dialog.take_action() {
                     match action {
-                        CloneDialogAction::Clone { url, dest } => {
-                            self.start_clone(url, dest);
+                        CloneDialogAction::Clone { url, dest, bare } => {
+                            self.start_clone(url, dest, bare);
                         }
                         CloneDialogAction::Cancel => {}
                     }
