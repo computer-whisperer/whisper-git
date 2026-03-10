@@ -49,7 +49,7 @@ use crate::git::{
 use crate::input::{InputEvent, InputState, Key};
 use crate::messages::{
     AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode,
-    compute_reload_deltas, handle_app_message, refresh_repo_state as refresh_repo_state_core,
+    compute_reload_deltas, handle_app_message,
 };
 use crate::renderer::{OffscreenTarget, SurfaceManager, VulkanContext, capture_to_buffer};
 use crate::ui::widget::theme;
@@ -576,6 +576,9 @@ struct App {
     status_receiver: Option<Receiver<StatusResult>>,
     /// Receiver for async repo state refresh (background thread)
     repo_state_receiver: Option<Receiver<RepoStateResult>>,
+    /// "Before" snapshot for async diagnostic reload (F5). When Some, a diagnostic
+    /// reload is in progress; finalized when both repo state and status results arrive.
+    diagnostic_before: Option<RepoStateSnapshot>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -728,6 +731,7 @@ impl App {
             clone_receiver: None,
             status_receiver: None,
             repo_state_receiver: None,
+            diagnostic_before: None,
         })
     }
 
@@ -1031,7 +1035,9 @@ impl App {
         }
     }
 
-    /// Diagnostic reload: capture current UI state, do a full re-read, and report deltas.
+    /// Diagnostic reload: capture current UI state, kick off async re-read.
+    /// The "after" snapshot and delta report are produced when the background
+    /// results arrive (see `finalize_diagnostic_reload`).
     fn do_diagnostic_reload(&mut self) {
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
             return;
@@ -1064,36 +1070,33 @@ impl App {
             )
         };
 
-        // 2. Full reload (reopen to bypass libgit2 cache, then refresh)
+        // 2. Reopen repos to bypass libgit2 cache
         let _ = repo_tab.repo.reopen();
         for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
             let _ = wt_repo.reopen();
         }
-        refresh_repo_state(
-            repo_tab,
-            view_state,
-            &mut self.toast_manager,
-            self.config.show_orphaned_commits,
-            &self.proxy,
-        );
-        // Also refresh file status (staged/unstaged/conflicted)
-        {
-            let repo = &repo_tab.repo;
-            let (wt_status, wt_repo_state) = {
-                let staging_repo = view_state.worktree_state.staging_repo_or(repo);
-                (staging_repo.status().ok(), staging_repo.repo_state())
-            };
-            if let Some(status) = wt_status {
-                view_state.staging_well.update_status(&status);
-            }
-            view_state.staging_well.repo_state_label = crate::git::repo_state_label(wt_repo_state);
-            if let Ok(status) = repo.status() {
-                view_state.commit_graph_view.working_dir_status = Some(status.clone());
 
-            }
+        // 3. Store "before" snapshot and kick off async refresh
+        self.diagnostic_before = Some(before);
+        self.trigger_repo_state_refresh();
+        self.status_dirty = true;
+    }
+
+    /// Finalize a diagnostic reload once both repo state and status results have
+    /// been applied. Captures the "after" snapshot, computes deltas, writes report.
+    fn finalize_diagnostic_reload(&mut self) {
+        // Only finalize when both async results have been consumed
+        if self.repo_state_receiver.is_some() || self.status_receiver.is_some() {
+            return;
         }
+        let Some(before) = self.diagnostic_before.take() else {
+            return;
+        };
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
 
-        // 3. Capture "after" snapshot
+        // Capture "after" snapshot
         let after = {
             let msg_view = MessageViewState {
                 commit_graph_view: &mut view_state.commit_graph_view,
@@ -1120,7 +1123,7 @@ impl App {
             )
         };
 
-        // 4. Compare and write report to file
+        // Compare and write report to file
         let deltas = compute_reload_deltas(&before, &after);
         let report_dir = std::env::var("HOME")
             .map(|h| {
@@ -2564,86 +2567,6 @@ fn poll_remote_op(
 }
 
 /// Refresh commits, branch tips, tags, and header info from the repo.
-/// Call this after any operation that changes branches, commits, or remote state.
-/// Refreshes commits, branches, tags, header, etc. Returns an optional receiver for
-/// async diff stats computation that should be stored in `App::diff_stats_receiver`.
-fn refresh_repo_state(
-    repo_tab: &mut RepoTab,
-    view_state: &mut TabViewState,
-    toast_manager: &mut ToastManager,
-    show_orphaned_commits: bool,
-    proxy: &EventLoopProxy<()>,
-) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
-    let repo = &repo_tab.repo;
-
-    // Refresh worktree state (list, cache, pruning — all in one call)
-    view_state.worktree_state.refresh(repo);
-
-    // Sync staging well's selected worktree path into worktree_state
-    if let Some(path) = view_state.staging_well.active_worktree_path() {
-        view_state.worktree_state.select(path);
-    }
-
-    // Resolve staging_repo via direct field access to avoid borrow conflict
-    // (repo_cache is immutably borrowed here, worktrees is mutably borrowed in msg_view below)
-    let staging_repo: &GitRepo = view_state
-        .worktree_state
-        .selected_path
-        .as_ref()
-        .and_then(|p| view_state.worktree_state.repo_cache.get(p))
-        .unwrap_or(repo);
-
-    // Capture staging_repo state early to avoid borrow conflicts with msg_view.
-    let staging_repo_state = staging_repo.repo_state();
-
-    // Delegate core refresh logic to the shared implementation in messages.rs
-    {
-        let mut msg_view = MessageViewState {
-            commit_graph_view: &mut view_state.commit_graph_view,
-            staging_well: &mut view_state.staging_well,
-            diff_view: &mut view_state.diff_view,
-            commit_detail_view: &mut view_state.commit_detail_view,
-            branch_sidebar: &mut view_state.branch_sidebar,
-            header_bar: &mut view_state.header_bar,
-            last_diff_commit: &mut view_state.last_diff_commit,
-            fetch_receiver: &mut view_state.fetch_receiver,
-            pull_receiver: &mut view_state.pull_receiver,
-            push_receiver: &mut view_state.push_receiver,
-            generic_op_receiver: &mut view_state.generic_op_receiver,
-            right_panel_mode: &mut view_state.right_panel_mode,
-            worktrees: &mut view_state.worktree_state.worktrees,
-            submodule_focus: &mut view_state.submodule_focus,
-            proxy: proxy.clone(),
-        };
-        refresh_repo_state_core(
-            repo,
-            staging_repo,
-            &mut repo_tab.commits,
-            &mut msg_view,
-            toast_manager,
-            show_orphaned_commits,
-        );
-    }
-
-    // Derive HEAD from worktree state (single clean call)
-    view_state.sync_worktree_derived_state(repo);
-
-    // Update operation state (merge/rebase/cherry-pick in progress)
-    view_state.header_bar.operation_state_label = git::repo_state_label(staging_repo_state);
-
-    // Spawn async diff stats computation (skip synthetic entries — no real git object)
-    let real_oids: Vec<Oid> = repo_tab
-        .commits
-        .iter()
-        .filter(|c| !c.is_synthetic)
-        .map(|c| c.id)
-        .collect();
-    if !real_oids.is_empty() {
-        Some(repo.compute_diff_stats_async(real_oids, proxy.clone()))
-    } else {
-        None
-    }
-}
 
 // ============================================================================
 // Async status refresh
@@ -2659,6 +2582,15 @@ struct StatusResult {
     staging_repo_state: git2::RepositoryState,
     /// Per-worktree dirty flags: (path, is_dirty, dirty_file_count)
     worktree_dirty: Vec<(String, bool, usize)>,
+    /// Pre-computed diff stats for the main repo working tree (insertions, deletions).
+    /// Computed in the background thread to avoid blocking the main thread.
+    main_diff_stats: Option<(usize, usize)>,
+    /// Pre-computed diff stats for each dirty worktree: (path, insertions, deletions)
+    worktree_diff_stats: Vec<(String, usize, usize)>,
+    /// HEAD OID of the main repo (for synthetic entry parent linkage)
+    head_oid: Option<Oid>,
+    /// Workdir path of the main repo
+    workdir: Option<String>,
 }
 
 /// Spawn a background thread to compute working directory status.
@@ -2671,8 +2603,10 @@ fn spawn_status_refresh(
 ) -> Receiver<StatusResult> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let main_repo = git2::Repository::open(&repo_git_dir).ok();
+
         let main_status = if !is_bare {
-            git2::Repository::open(&repo_git_dir).ok().and_then(|repo| {
+            main_repo.as_ref().and_then(|repo| {
                 let mut opts = git2::StatusOptions::new();
                 opts.include_untracked(true).recurse_untracked_dirs(true);
                 let statuses = repo.statuses(Some(&mut opts)).ok()?;
@@ -2720,11 +2654,42 @@ fn spawn_status_refresh(
             })
             .collect();
 
+        // Pre-compute diff stats for synthetic entries (expensive git operations
+        // that must not run on the main thread to avoid Wayland disconnects).
+        let (head_oid, workdir, main_diff_stats) = match main_repo.as_ref() {
+            Some(repo) => {
+                let head = repo.head().ok().and_then(|r| r.target());
+                let wd = repo.workdir().map(|p| p.to_string_lossy().to_string());
+                let has_dirty_files = main_status.as_ref().is_some_and(|s| s.total_files() > 0);
+                let stats = if has_dirty_files {
+                    Some(crate::git::GitRepo::diff_stats_raw(repo))
+                } else {
+                    None
+                };
+                (head, wd, stats)
+            }
+            None => (None, None, None),
+        };
+
+        let worktree_diff_stats: Vec<(String, usize, usize)> = worktree_dirty
+            .iter()
+            .filter(|(_, dirty, _)| *dirty)
+            .filter_map(|(path, _, _)| {
+                let repo = git2::Repository::open(path).ok()?;
+                let (ins, del) = crate::git::GitRepo::diff_stats_raw(&repo);
+                Some((path.clone(), ins, del))
+            })
+            .collect();
+
         let _ = tx.send(StatusResult {
             main_status,
             staging_status,
             staging_repo_state,
             worktree_dirty,
+            main_diff_stats,
+            worktree_diff_stats,
+            head_oid,
+            workdir,
         });
         let _ = proxy.send_event(());
     });
@@ -2743,6 +2708,7 @@ fn apply_status_result(
     view_state.staging_well.repo_state_label =
         crate::git::repo_state_label(result.staging_repo_state);
 
+    let main_dirty_count = result.main_status.as_ref().map(|s| s.total_files()).unwrap_or(0);
     if let Some(status) = result.main_status {
         view_state.commit_graph_view.working_dir_status = Some(status);
     }
@@ -2767,13 +2733,56 @@ fn apply_status_result(
         view_state
             .staging_well
             .set_worktrees(&view_state.worktree_state.worktrees);
-        let repo = &repo_tab.repo;
-        let synthetics = git::create_synthetic_entries(
-            repo,
-            &view_state.worktree_state.worktrees,
-            &repo_tab.commits,
-        );
+
+        // Build synthetic entries from pre-computed background data (no git calls here).
         repo_tab.commits.retain(|c| !c.is_synthetic);
+        let mut synthetics = Vec::new();
+
+        if view_state.worktree_state.worktrees.is_empty() {
+            // Single-worktree: use main repo diff stats
+            if let (Some(head), Some(wd)) = (result.head_oid, &result.workdir) {
+                if main_dirty_count > 0 {
+                    let count = main_dirty_count;
+                    let parent_time = repo_tab
+                        .commits
+                        .iter()
+                        .find(|c| c.id == head)
+                        .map(|c| c.time)
+                        .unwrap_or(0);
+                    let mut entry =
+                        CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
+                    if let Some((ins, del)) = result.main_diff_stats {
+                        entry.insertions = ins;
+                        entry.deletions = del;
+                    }
+                    synthetics.push(entry);
+                }
+            }
+        } else {
+            // Multi-worktree: use per-worktree diff stats
+            for wt in &view_state.worktree_state.worktrees {
+                if wt.is_dirty {
+                    let parent_time = wt
+                        .head_oid
+                        .and_then(|oid| repo_tab.commits.iter().find(|c| c.id == oid))
+                        .map(|c| c.time)
+                        .unwrap_or(0);
+                    if let Some(mut synthetic) = CommitInfo::synthetic_for_worktree(wt, parent_time)
+                    {
+                        if let Some((_, ins, del)) = result
+                            .worktree_diff_stats
+                            .iter()
+                            .find(|(p, _, _)| *p == wt.path)
+                        {
+                            synthetic.insertions = *ins;
+                            synthetic.deletions = *del;
+                        }
+                        synthetics.push(synthetic);
+                    }
+                }
+            }
+        }
+
         if !synthetics.is_empty() {
             git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
         }
@@ -3545,6 +3554,10 @@ impl ApplicationHandler for App {
                 self.poll_remote_ops();
                 // Poll AI commit message generation
                 self.poll_ai_commit();
+                // Finalize diagnostic reload if both async results have arrived
+                if self.diagnostic_before.is_some() {
+                    self.finalize_diagnostic_reload();
+                }
                 // Process any pending messages
                 self.process_messages();
                 // Check if staging well requested an immediate status refresh (e.g., worktree switch)

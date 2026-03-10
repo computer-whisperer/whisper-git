@@ -458,19 +458,25 @@ impl GitRepo {
         if self.is_effectively_bare() {
             return (0, 0);
         }
+        Self::diff_stats_raw(&self.repo)
+    }
+
+    /// Compute diff stats from a raw `git2::Repository` reference.
+    /// Usable from background threads that open their own repo handle.
+    pub fn diff_stats_raw(repo: &git2::Repository) -> (usize, usize) {
         let mut ins = 0usize;
         let mut del = 0usize;
         // Staged: HEAD-to-index
-        if let Ok(head_ref) = self.repo.head()
+        if let Ok(head_ref) = repo.head()
             && let Ok(head_tree) = head_ref.peel_to_tree()
-            && let Ok(diff) = self.repo.diff_tree_to_index(Some(&head_tree), None, None)
+            && let Ok(diff) = repo.diff_tree_to_index(Some(&head_tree), None, None)
             && let Ok(stats) = diff.stats()
         {
             ins += stats.insertions();
             del += stats.deletions();
         }
         // Unstaged: index-to-workdir
-        if let Ok(diff) = self.repo.diff_index_to_workdir(None, None)
+        if let Ok(diff) = repo.diff_index_to_workdir(None, None)
             && let Ok(stats) = diff.stats()
         {
             ins += stats.insertions();
