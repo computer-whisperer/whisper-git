@@ -324,11 +324,17 @@ impl TextRenderer {
             }
         }
 
-        // First pass: calculate atlas size (including SDF padding)
-        let mut total_width = 0u32;
-        let mut max_height = 0u32;
+        // First pass: measure all glyphs (including SDF padding)
         // Extra gap between glyph cells to reduce cross-glyph bleeding when minified.
         let padding = (2 * sdf_spread + 2).max(4);
+
+        struct GlyphSize {
+            cell_w: u32,
+            cell_h: u32,
+        }
+        let mut glyph_sizes: Vec<(char, GlyphSize)> = Vec::with_capacity(chars.len());
+        let mut max_cell_h = 0u32;
+        let mut total_area = 0u64;
 
         for &c in &chars {
             let metrics = match glyph_fonts.get(&c).copied() {
@@ -336,30 +342,74 @@ impl TextRenderer {
                 Some(GlyphFont::Fallback) => fallback_font.metrics(c, font_size_px),
                 None => continue,
             };
-            if metrics.width > 0 && metrics.height > 0 {
+            let (cell_w, cell_h) = if metrics.width > 0 && metrics.height > 0 {
                 let sdf_w = metrics.width as u32 + 2 * sdf_spread;
                 let sdf_h = metrics.height as u32 + 2 * sdf_spread;
-                total_width += sdf_w + padding;
-                max_height = max_height.max(sdf_h + padding);
+                (sdf_w + padding, sdf_h + padding)
             } else {
-                total_width += (metrics.advance_width as u32).max(8) + padding;
-            }
+                ((metrics.advance_width as u32).max(8) + padding, padding)
+            };
+            total_area += cell_w as u64 * cell_h.max(1) as u64;
+            max_cell_h = max_cell_h.max(cell_h);
+            glyph_sizes.push((c, GlyphSize { cell_w, cell_h }));
         }
 
-        let atlas_width = total_width.next_power_of_two().max(256);
-        let atlas_height = max_height.next_power_of_two().max(64);
+        // Query device max image extent so we stay within GPU limits.
+        let max_extent = device.physical_device().properties().max_image_dimension2_d;
+
+        // Target a roughly square atlas, clamped to GPU limits.
+        let target_width = ((total_area as f64).sqrt() as u32)
+            .next_power_of_two()
+            .max(256)
+            .min(max_extent);
+
+        // Row-pack glyphs to compute the needed height at this width.
+        let mut atlas_width = target_width;
+        let (atlas_height, row_assignments) = loop {
+            let mut x = 0u32;
+            let mut y = 0u32;
+            let mut row_h = 0u32;
+            let mut assignments = Vec::with_capacity(glyph_sizes.len());
+            for (_, gs) in &glyph_sizes {
+                if x + gs.cell_w > atlas_width && x > 0 {
+                    // Wrap to next row
+                    y += row_h;
+                    x = 0;
+                    row_h = 0;
+                }
+                assignments.push((x, y));
+                row_h = row_h.max(gs.cell_h);
+                x += gs.cell_w;
+            }
+            let total_h = (y + row_h).next_power_of_two().max(64);
+            if total_h <= max_extent {
+                break (total_h, assignments);
+            }
+            // Height too tall — widen the atlas and retry
+            atlas_width = (atlas_width * 2).min(max_extent);
+            if atlas_width == max_extent && total_h > max_extent {
+                // Can't fit; proceed with clamped values (will fail at image creation)
+                break (total_h.min(max_extent), assignments);
+            }
+        };
 
         // Create atlas pixel data (SDF: 128 = edge, >128 = inside, <128 = outside)
-        let mut atlas_data = vec![0u8; (atlas_width * atlas_height) as usize];
+        let mut atlas_data = vec![0u8; (atlas_width as usize) * (atlas_height as usize)];
         let mut glyphs = HashMap::new();
-        let mut x_offset = 0u32;
+        let mut glyph_idx = 0usize;
 
         for &c in &chars {
-            let (metrics, bitmap) = match glyph_fonts.get(&c).copied() {
-                Some(GlyphFont::Primary) => font.rasterize(c, font_size_px),
-                Some(GlyphFont::Fallback) => fallback_font.rasterize(c, font_size_px),
+            let slot = match glyph_fonts.get(&c).copied() {
+                Some(s) => s,
                 None => continue,
             };
+            let (metrics, bitmap) = match slot {
+                GlyphFont::Primary => font.rasterize(c, font_size_px),
+                GlyphFont::Fallback => fallback_font.rasterize(c, font_size_px),
+            };
+
+            let (gx, gy) = row_assignments[glyph_idx];
+            glyph_idx += 1;
 
             if metrics.width > 0 && metrics.height > 0 {
                 let cov_w = metrics.width;
@@ -369,11 +419,11 @@ impl TextRenderer {
                 let (sdf_bitmap, sdf_w, sdf_h) =
                     coverage_to_sdf(&bitmap, cov_w, cov_h, sdf_spread as usize);
 
-                // Copy SDF into atlas
+                // Copy SDF into atlas at (gx, gy)
                 for row in 0..sdf_h {
                     for col in 0..sdf_w {
-                        let px = x_offset + col as u32;
-                        let py = row as u32;
+                        let px = gx + col as u32;
+                        let py = gy + row as u32;
                         if px < atlas_width && py < atlas_height {
                             atlas_data[(py * atlas_width + px) as usize] =
                                 sdf_bitmap[row * sdf_w + col];
@@ -389,8 +439,8 @@ impl TextRenderer {
                     GlyphInfo {
                         // Inset UVs by half a texel to keep bilinear filtering from
                         // sampling adjacent glyph cells at atlas boundaries.
-                        tex_x: (x_offset as f32 + 0.5) / atlas_width as f32,
-                        tex_y: 0.5 / atlas_height as f32,
+                        tex_x: (gx as f32 + 0.5) / atlas_width as f32,
+                        tex_y: (gy as f32 + 0.5) / atlas_height as f32,
                         tex_w: (sdf_w as f32 - 1.0).max(0.0) / atlas_width as f32,
                         tex_h: (sdf_h as f32 - 1.0).max(0.0) / atlas_height as f32,
                         width: sdf_w as f32,
@@ -400,8 +450,6 @@ impl TextRenderer {
                         advance: metrics.advance_width,
                     },
                 );
-
-                x_offset += sdf_w as u32 + padding;
             } else {
                 glyphs.insert(
                     c,
