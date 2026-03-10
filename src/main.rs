@@ -1089,7 +1089,7 @@ impl App {
             view_state.staging_well.repo_state_label = crate::git::repo_state_label(wt_repo_state);
             if let Ok(status) = repo.status() {
                 view_state.commit_graph_view.working_dir_status = Some(status.clone());
-                view_state.header_bar.has_staged = !status.staged.is_empty();
+
             }
         }
 
@@ -2744,7 +2744,6 @@ fn apply_status_result(
         crate::git::repo_state_label(result.staging_repo_state);
 
     if let Some(status) = result.main_status {
-        view_state.header_bar.has_staged = !status.staged.is_empty();
         view_state.commit_graph_view.working_dir_status = Some(status);
     }
 
@@ -3988,10 +3987,6 @@ impl App {
                             remote: None,
                             branch,
                         });
-                    }
-                    HeaderAction::Commit => {
-                        view_state.focused_panel = FocusedPanel::RightPanel;
-                        view_state.right_panel_mode = RightPanelMode::Staging;
                     }
                     HeaderAction::Help => {
                         self.shortcut_bar_visible = !self.shortcut_bar_visible;

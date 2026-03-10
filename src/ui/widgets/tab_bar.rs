@@ -284,13 +284,13 @@ impl Widget for TabBar {
                 .spline_vertices
                 .extend(create_rect_vertices(tab_rect, bg.to_array()));
 
-            // Active tab accent line at bottom
+            // Active tab accent line at bottom (orange action color)
             if is_active {
                 let accent_rect =
                     Rect::new(tab_rect.x, tab_rect.bottom() - 2.0, tab_rect.width, 2.0);
                 output
                     .spline_vertices
-                    .extend(create_rect_vertices(&accent_rect, theme::ACCENT.to_array()));
+                    .extend(create_rect_vertices(&accent_rect, theme::ACTION.to_array()));
             }
 
             // Tab name

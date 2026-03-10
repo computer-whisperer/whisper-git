@@ -16,10 +16,10 @@ mod diff_colors {
     pub const DELETION_BG: Color = Color::rgba(0.235, 0.0, 0.0, 0.3); // dark red
     pub const DELETION_HIGHLIGHT_BG: Color = Color::rgba(0.45, 0.08, 0.08, 0.55); // brighter red
     pub const HUNK_HEADER: Color = Color::rgba(0.671, 0.396, 0.859, 1.0); // purple
-    pub const FILE_HEADER_BG: Color = Color::rgba(0.180, 0.180, 0.180, 1.0); // raised surface
-    pub const LINE_NUMBER: Color = Color::rgba(0.400, 0.400, 0.400, 1.0); // muted
-    pub const STAGE_BUTTON_BG: Color = Color::rgba(0.180, 0.180, 0.220, 1.0); // subtle blue-gray
-    pub const STAGE_BUTTON_HOVER: Color = Color::rgba(0.220, 0.220, 0.280, 1.0); // brighter on hover
+    pub const FILE_HEADER_BG: Color = Color::rgba(0.129, 0.129, 0.145, 1.0); // raised surface
+    pub const LINE_NUMBER: Color = Color::rgba(0.330, 0.330, 0.360, 1.0); // muted
+    pub const STAGE_BUTTON_BG: Color = Color::rgba(0.145, 0.145, 0.165, 1.0); // neutral grey
+    pub const STAGE_BUTTON_HOVER: Color = Color::rgba(0.190, 0.190, 0.216, 1.0); // brighter on hover
     pub const STAGE_BUTTON_TEXT: Color = Color::rgba(0.671, 0.396, 0.859, 1.0); // purple like hunk headers
     pub const DISCARD_BUTTON_BG: Color = Color::rgba(0.280, 0.120, 0.120, 1.0); // dark red
     pub const DISCARD_BUTTON_HOVER: Color = Color::rgba(0.360, 0.140, 0.140, 1.0); // brighter red on hover

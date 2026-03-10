@@ -470,11 +470,11 @@ impl StagingWell {
                 self.commit_btn.pressed_background = crate::ui::Color::rgba(0.85, 0.50, 0.0, 1.0);
             } else {
                 self.commit_btn.label = format!("Commit ({})", staged_count);
-                self.commit_btn.background = theme::ACCENT;
-                self.commit_btn.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
-                self.commit_btn.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
+                self.commit_btn.background = theme::ACTION;
+                self.commit_btn.hover_background = crate::ui::Color::rgba(1.0, 0.65, 0.22, 1.0);
+                self.commit_btn.pressed_background = crate::ui::Color::rgba(0.85, 0.48, 0.06, 1.0);
             }
-            self.commit_btn.text_color = theme::TEXT_BRIGHT;
+            self.commit_btn.text_color = crate::ui::Color::rgba(0.10, 0.08, 0.04, 1.0);
             self.commit_btn.border_color = None;
         } else {
             self.commit_btn.label = if self.amend_mode {

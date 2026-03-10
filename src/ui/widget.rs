@@ -485,56 +485,59 @@ pub fn create_dialog_backdrop(
     corner_radius
 }
 
-/// Theme colors - Dark blue-gray palette
+/// Theme colors - Neutral grey + blue + orange palette
 pub mod theme {
     use crate::ui::Color;
 
     // Layout constants
     pub const SCROLLBAR_WIDTH: f32 = 8.0;
 
-    // Dark blue-gray palette
-    pub const BACKGROUND: Color = Color::rgba(0.102, 0.118, 0.141, 1.0); // #1a1e24 - dark blue-gray
-    pub const SURFACE: Color = Color::rgba(0.133, 0.149, 0.173, 1.0); // #222630 - panels
-    pub const SURFACE_RAISED: Color = Color::rgba(0.165, 0.188, 0.251, 1.0); // #2a3040 - elevated elements
-    pub const SURFACE_HOVER: Color = Color::rgba(0.200, 0.224, 0.290, 1.0); // #33394a - hover states
-    pub const BORDER: Color = Color::rgba(0.227, 0.227, 0.251, 1.0); // #3a3a40 - subtle borders
-    pub const BORDER_LIGHT: Color = Color::rgba(0.282, 0.282, 0.306, 1.0); // #48484e - emphasized borders
-    pub const TEXT: Color = Color::rgba(0.878, 0.878, 0.878, 1.0); // #e0e0e0 - primary text
-    pub const TEXT_BRIGHT: Color = Color::rgba(0.940, 0.940, 0.940, 1.0); // #f0f0f0 - emphasized text
-    pub const TEXT_MUTED: Color = Color::rgba(0.635, 0.635, 0.635, 1.0); // #a2a2a2 - secondary text (brightened for contrast)
+    // Neutral grey base — deep dark
+    pub const BACKGROUND: Color = Color::rgba(0.071, 0.071, 0.078, 1.0); // #121214
+    pub const SURFACE: Color = Color::rgba(0.094, 0.094, 0.106, 1.0); // #18181b
+    pub const SURFACE_RAISED: Color = Color::rgba(0.129, 0.129, 0.145, 1.0); // #212125
+    pub const SURFACE_HOVER: Color = Color::rgba(0.176, 0.176, 0.196, 1.0); // #2d2d32
+    pub const BORDER: Color = Color::rgba(0.200, 0.200, 0.220, 1.0); // #333338
+    pub const BORDER_LIGHT: Color = Color::rgba(0.271, 0.271, 0.298, 1.0); // #45454c
+    pub const TEXT: Color = Color::rgba(0.835, 0.835, 0.855, 1.0); // #d5d5da
+    pub const TEXT_BRIGHT: Color = Color::rgba(0.933, 0.933, 0.945, 1.0); // #eeeeF1
+    pub const TEXT_MUTED: Color = Color::rgba(0.580, 0.580, 0.608, 1.0); // #94949b
 
-    // Status colors - slightly desaturated for dark theme
+    // Status colors - vibrant functional colors
     pub const STATUS_CLEAN: Color = Color::rgba(0.298, 0.686, 0.314, 1.0); // #4CAF50 (Green)
     pub const STATUS_BEHIND: Color = Color::rgba(1.000, 0.596, 0.000, 1.0); // #FF9800 (Orange)
     pub const STATUS_DIRTY: Color = Color::rgba(0.937, 0.325, 0.314, 1.0); // #EF5350 (Red)
-    pub const STATUS_AHEAD: Color = Color::rgba(0.259, 0.647, 0.961, 1.0); // #42A5F5 (Blue)
+    pub const STATUS_AHEAD: Color = Color::rgba(0.357, 0.659, 0.961, 1.0); // #5BA8F5 (Blue)
 
-    // Branch colors - vibrant but balanced
+    // Branch colors
     pub const BRANCH_RELEASE: Color = Color::rgba(1.000, 0.596, 0.000, 1.0); // #FF9800 (Orange)
-    pub const BRANCH_REMOTE: Color = Color::rgba(0.620, 0.620, 0.620, 1.0); // #9e9e9e (Gray)
+    pub const BRANCH_REMOTE: Color = Color::rgba(0.580, 0.580, 0.608, 1.0); // #94949b (Grey)
 
-    // Accent color for selections and focus
-    pub const ACCENT: Color = Color::rgba(0.259, 0.647, 0.961, 1.0); // #42A5F5 (Blue)
-    pub const ACCENT_MUTED: Color = Color::rgba(0.259, 0.647, 0.961, 0.4); // Blue at 40% opacity
+    // Blue accent for selections and focus
+    pub const ACCENT: Color = Color::rgba(0.357, 0.659, 0.961, 1.0); // #5BA8F5 (Blue)
+    pub const ACCENT_MUTED: Color = Color::rgba(0.357, 0.659, 0.961, 0.4); // Blue at 40% opacity
 
-    // Panel depth - dark blue-gray hierarchy
-    pub const PANEL_SIDEBAR: Color = Color::rgba(0.075, 0.090, 0.110, 1.0); // #131720 - sidebar (darkest)
-    pub const PANEL_GRAPH: Color = Color::rgba(0.102, 0.118, 0.141, 1.0); // #1a1e24 - graph (base)
-    pub const PANEL_STAGING: Color = Color::rgba(0.122, 0.141, 0.188, 1.0); // #1f2430 - staging (slightly lighter)
+    // Warm orange accent for primary actions (commit, active tab)
+    pub const ACTION: Color = Color::rgba(1.0, 0.584, 0.110, 1.0); // #FF951C
+
+    // Panel depth - neutral grey hierarchy
+    pub const PANEL_SIDEBAR: Color = Color::rgba(0.055, 0.055, 0.063, 1.0); // #0e0e10
+    pub const PANEL_GRAPH: Color = Color::rgba(0.071, 0.071, 0.078, 1.0); // #121214
+    pub const PANEL_STAGING: Color = Color::rgba(0.082, 0.082, 0.094, 1.0); // #151518
 
     // Zebra striping for graph rows
-    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.145, 0.165, 0.204, 1.0); // #252a34 - increased zebra stripe contrast (~5-6% luminance diff)
+    pub const GRAPH_ROW_ALT: Color = Color::rgba(0.106, 0.106, 0.122, 1.0); // #1b1b1f
 
     // Orphaned commit colors (purple)
     pub const ORPHAN: Color = Color::rgba(0.671, 0.278, 0.737, 1.0); // #AB47BC purple
 
     /// Lane colors for visual distinction in the commit graph
     pub const LANE_COLORS: &[Color] = &[
-        Color::rgba(0.231, 0.510, 0.965, 1.0), // Blue - primary branch
-        Color::rgba(0.133, 0.773, 0.369, 1.0), // Green - feature branches
-        Color::rgba(0.961, 0.620, 0.043, 1.0), // Amber - release branches
+        Color::rgba(0.357, 0.659, 0.961, 1.0), // Blue - primary branch
+        Color::rgba(0.298, 0.773, 0.369, 1.0), // Green - feature branches
+        Color::rgba(1.0, 0.584, 0.110, 1.0),   // Orange - release branches
         Color::rgba(0.659, 0.333, 0.969, 1.0), // Purple - hotfix branches
-        Color::rgba(0.392, 0.455, 0.545, 1.0), // Slate - remote tracking
+        Color::rgba(0.420, 0.475, 0.565, 1.0), // Slate - remote tracking
         Color::rgba(0.4, 0.9, 0.9, 1.0),       // Cyan
         Color::rgba(1.0, 0.5, 0.5, 1.0),       // Red
         Color::rgba(0.7, 0.7, 0.9, 1.0),       // Lavender

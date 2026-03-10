@@ -18,7 +18,6 @@ pub enum HeaderAction {
     Pull,
     PullRebase,
     Push,
-    Commit,
     Help,
     Settings,
     /// Breadcrumb click: navigate to the given depth (0 = root)
@@ -45,15 +44,12 @@ pub struct HeaderBar {
     pub pulling: bool,
     /// Whether a push operation is in progress
     pub pushing: bool,
-    /// Whether there are staged changes (highlights commit button)
-    pub has_staged: bool,
     /// Pending action (set after button click)
     pending_action: Option<HeaderAction>,
     /// Button states (for hover/press tracking)
     fetch_button: Button,
     pull_button: Button,
     push_button: Button,
-    commit_button: Button,
     help_button: Button,
     settings_button: Button,
     /// Breadcrumb segments: empty = normal mode, non-empty = submodule drill-down
@@ -97,12 +93,10 @@ impl HeaderBar {
             fetching: false,
             pulling: false,
             pushing: false,
-            has_staged: false,
             pending_action: None,
             fetch_button: Button::new("Fetch"),
             pull_button: Button::new("Pull"),
             push_button: Button::new("Push"),
-            commit_button: Button::new("Commit").primary(),
             help_button: Button::new("?").ghost(),
             settings_button: Button::new("\u{2261}").ghost(),
             breadcrumb_segments: Vec::new(),
@@ -183,9 +177,9 @@ impl HeaderBar {
 
         // Fetch/Pull/Push buttons: slightly raised above the header's SURFACE_RAISED background
         // so they're visually distinct and look clickable (header bg is also SURFACE_RAISED).
-        let btn_bg = crate::ui::Color::rgba(0.20, 0.22, 0.28, 1.0); // #333847 — visible step above header
-        let btn_hover = crate::ui::Color::rgba(0.24, 0.27, 0.34, 1.0); // #3d4557 — brighter on hover
-        let btn_pressed = crate::ui::Color::rgba(0.15, 0.17, 0.22, 1.0); // #262b38 — dimmer on press
+        let btn_bg = crate::ui::Color::rgba(0.157, 0.157, 0.176, 1.0); // #28282d — step above header
+        let btn_hover = crate::ui::Color::rgba(0.200, 0.200, 0.224, 1.0); // #333339 — brighter on hover
+        let btn_pressed = crate::ui::Color::rgba(0.110, 0.110, 0.125, 1.0); // #1c1c20 — dimmer on press
         for btn in [
             &mut self.fetch_button,
             &mut self.pull_button,
@@ -205,12 +199,6 @@ impl HeaderBar {
         self.abort_button.text_color = crate::ui::Color::rgba(1.0, 0.718, 0.302, 1.0); // amber
         self.abort_button.border_color = Some(crate::ui::Color::rgba(1.0, 0.718, 0.302, 0.5));
 
-        // Commit button: always primary style (blue accent)
-        self.commit_button.background = theme::ACCENT;
-        self.commit_button.hover_background = crate::ui::Color::rgba(0.35, 0.70, 1.0, 1.0);
-        self.commit_button.pressed_background = crate::ui::Color::rgba(0.20, 0.55, 0.85, 1.0);
-        self.commit_button.text_color = theme::TEXT_BRIGHT;
-        self.commit_button.border_color = None;
     }
 
     /// Compute bounds for the breadcrumb close button [✕]
@@ -329,7 +317,6 @@ impl HeaderBar {
             || self.fetch_button.is_hovered()
             || self.pull_button.is_hovered()
             || self.push_button.is_hovered()
-            || self.commit_button.is_hovered()
             || self.help_button.is_hovered()
             || self.settings_button.is_hovered()
             || self.close_button.is_hovered()
@@ -341,7 +328,7 @@ impl HeaderBar {
     /// Compute button bounds within the header (scale-aware).
     /// Pull/Push buttons use dynamic widths based on label measurements,
     /// capped at 20% of header width.
-    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect, Rect) {
+    fn button_bounds(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect, Rect) {
         // Derive scale from header height (which is already scaled by ScreenLayout)
         let scale = (bounds.height / 32.0).max(1.0);
         let button_height = bounds.height - 8.0 * scale;
@@ -366,9 +353,8 @@ impl HeaderBar {
         let settings_x = bounds.right() - icon_button_width - gap;
         let help_x = settings_x - icon_button_width - gap;
 
-        // Action buttons: [Reload] [Fetch] [Pull] [Push] [Commit] before help/settings
-        let commit_x = help_x - fixed_width - gap * 2.0;
-        let push_x = commit_x - push_width - gap;
+        // Action buttons: [Reload] [Fetch] [Pull] [Push] before help/settings
+        let push_x = help_x - push_width - gap * 2.0;
         let pull_x = push_x - pull_width - gap;
         let fetch_x = pull_x - fixed_width - gap;
         let reload_x = fetch_x - fixed_width - gap;
@@ -378,7 +364,6 @@ impl HeaderBar {
             Rect::new(fetch_x, button_y, fixed_width, button_height),
             Rect::new(pull_x, button_y, pull_width, button_height),
             Rect::new(push_x, button_y, push_width, button_height),
-            Rect::new(commit_x, button_y, fixed_width, button_height),
             Rect::new(help_x, button_y, icon_button_width, button_height),
             Rect::new(settings_x, button_y, icon_button_width, button_height),
         )
@@ -387,7 +372,7 @@ impl HeaderBar {
     /// Report tooltip zones for truncated Pull/Push button labels.
     /// Call during the mouse-move hover pass.
     pub fn report_tooltip(&self, tooltip: &mut Tooltip, x: f32, y: f32, bounds: Rect) {
-        let (_, _, pull_bounds, push_bounds, _, _, _) = self.button_bounds(bounds);
+        let (_, _, pull_bounds, push_bounds, _, _) = self.button_bounds(bounds);
         // Show tooltip when label text is wider than button's available text area (width minus padding)
         let h_pad = 24.0; // 12px each side (logical, but bounds are physical)
         if pull_bounds.contains(x, y) && self.pull_label_width > pull_bounds.width - h_pad {
@@ -598,7 +583,6 @@ impl HeaderBar {
             fetch_bounds,
             pull_bounds,
             push_bounds,
-            commit_bounds,
             help_bounds,
             settings_bounds,
         ) = self.button_bounds(bounds);
@@ -676,13 +660,6 @@ impl HeaderBar {
             }
         }
 
-        // Commit button (no async state)
-        output.extend(self.commit_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            commit_bounds,
-        ));
-
         // Help and Settings buttons (ghost style - keep regular weight)
         output.extend(self.help_button.layout(text_renderer, help_bounds));
         output.extend(self.settings_button.layout(text_renderer, settings_bounds));
@@ -709,7 +686,6 @@ impl Widget for HeaderBar {
             fetch_bounds,
             pull_bounds,
             push_bounds,
-            commit_bounds,
             help_bounds,
             settings_bounds,
         ) = self.button_bounds(bounds);
@@ -825,17 +801,6 @@ impl Widget for HeaderBar {
         }
 
         if self
-            .commit_button
-            .handle_event(event, commit_bounds)
-            .is_consumed()
-        {
-            if self.commit_button.was_clicked() {
-                self.pending_action = Some(HeaderAction::Commit);
-            }
-            return EventResponse::Consumed;
-        }
-
-        if self
             .help_button
             .handle_event(event, help_bounds)
             .is_consumed()
@@ -866,7 +831,6 @@ impl Widget for HeaderBar {
             fetch_bounds,
             pull_bounds,
             push_bounds,
-            commit_bounds,
             help_bounds,
             settings_bounds,
         ) = self.button_bounds(bounds);
@@ -874,7 +838,6 @@ impl Widget for HeaderBar {
         self.fetch_button.update_hover(x, y, fetch_bounds);
         self.pull_button.update_hover(x, y, pull_bounds);
         self.push_button.update_hover(x, y, push_bounds);
-        self.commit_button.update_hover(x, y, commit_bounds);
         self.help_button.update_hover(x, y, help_bounds);
         self.settings_button.update_hover(x, y, settings_bounds);
 
@@ -1003,7 +966,6 @@ impl Widget for HeaderBar {
             fetch_bounds,
             pull_bounds,
             push_bounds,
-            commit_bounds,
             help_bounds,
             settings_bounds,
         ) = self.button_bounds(bounds);
@@ -1013,7 +975,6 @@ impl Widget for HeaderBar {
         output.extend(self.fetch_button.layout(text_renderer, fetch_bounds));
         output.extend(self.pull_button.layout(text_renderer, pull_bounds));
         output.extend(self.push_button.layout(text_renderer, push_bounds));
-        output.extend(self.commit_button.layout(text_renderer, commit_bounds));
 
         // Help and Settings buttons (ghost style - rendered via Button widget)
         output.extend(self.help_button.layout(text_renderer, help_bounds));
