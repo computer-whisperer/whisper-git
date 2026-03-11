@@ -2276,6 +2276,17 @@ impl GitRepo {
             .is_ok_and(|r| r.fetch_refspecs().is_ok_and(|s| s.is_empty()))
     }
 
+    /// Add the default fetch refspec for a remote that's missing one.
+    /// This typically happens with bare-cloned repos. Adds:
+    ///   `+refs/heads/*:refs/remotes/<name>/*`
+    pub fn add_default_fetch_refspec(&self, name: &str) -> Result<()> {
+        let refspec = format!("+refs/heads/*:refs/remotes/{}/*", name);
+        self.repo
+            .remote_add_fetch(name, &refspec)
+            .with_context(|| format!("Failed to add fetch refspec for remote '{}'", name))?;
+        Ok(())
+    }
+
     /// Add a new remote with the given name and URL.
     pub fn add_remote(&self, name: &str, url: &str) -> Result<()> {
         self.repo

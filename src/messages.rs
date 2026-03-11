@@ -433,12 +433,26 @@ pub fn handle_app_message(
                 repo.default_remote()
                     .unwrap_or_else(|_| "origin".to_string())
             });
-            // Warn if remote has no fetch refspec (fetch would silently do nothing)
+            // Auto-fix missing fetch refspec (common with bare-cloned repos)
             if repo.remote_missing_fetch_refspec(&remote) {
-                toast_manager.push(
-                    format!("Remote '{}' has no fetch refspec configured — fetch may not work. Add `fetch = +refs/heads/*:refs/remotes/{}/*` to git config.", remote, remote),
-                    ToastSeverity::Error,
-                );
+                match repo.add_default_fetch_refspec(&remote) {
+                    Ok(()) => {
+                        toast_manager.push(
+                            format!("Configured fetch tracking for '{}'", remote),
+                            ToastSeverity::Info,
+                        );
+                    }
+                    Err(e) => {
+                        toast_manager.push(
+                            format!(
+                                "Cannot fetch from '{}': it has no tracking configuration and auto-fix failed ({})",
+                                remote, e
+                            ),
+                            ToastSeverity::Error,
+                        );
+                        return false;
+                    }
+                }
             }
             let remote_for_closure = remote.clone();
             let p = proxy.clone();
@@ -456,6 +470,12 @@ pub fn handle_app_message(
             }
         }
         AppMessage::FetchAll => {
+            // Auto-fix missing fetch refspecs on all remotes
+            for name in repo.remote_names() {
+                if repo.remote_missing_fetch_refspec(&name) {
+                    let _ = repo.add_default_fetch_refspec(&name);
+                }
+            }
             let p = proxy.clone();
             if !start_remote_op(
                 view_state.fetch_receiver,
