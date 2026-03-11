@@ -2639,7 +2639,10 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
             .filter(|l| !l.is_empty())
             .collect();
         if files.is_empty() {
-            format!("{} aborted: Local changes would be overwritten. Commit or stash your changes first.", op)
+            format!(
+                "{} aborted: Local changes would be overwritten. Commit or stash your changes first.",
+                op
+            )
         } else {
             format!(
                 "{} aborted: Local changes to {} would be overwritten. Commit or stash first.",
@@ -2662,7 +2665,9 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
             "{} failed: Unresolved merge in progress. Resolve conflicts and commit, or abort the merge first.",
             op
         )
-    } else if lower.contains("you have unstaged changes") || lower.contains("your index contains uncommitted changes") {
+    } else if lower.contains("you have unstaged changes")
+        || lower.contains("your index contains uncommitted changes")
+    {
         format!(
             "{} aborted: You have uncommitted changes. Commit or stash them first.",
             op

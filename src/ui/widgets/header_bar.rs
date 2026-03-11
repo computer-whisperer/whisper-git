@@ -198,7 +198,6 @@ impl HeaderBar {
         self.abort_button.pressed_background = crate::ui::Color::rgba(0.30, 0.20, 0.08, 1.0);
         self.abort_button.text_color = crate::ui::Color::rgba(1.0, 0.718, 0.302, 1.0); // amber
         self.abort_button.border_color = Some(crate::ui::Color::rgba(1.0, 0.718, 0.302, 0.5));
-
     }
 
     /// Compute bounds for the breadcrumb close button [✕]
@@ -578,14 +577,8 @@ impl HeaderBar {
         }
 
         // Button bounds
-        let (
-            reload_bounds,
-            fetch_bounds,
-            pull_bounds,
-            push_bounds,
-            help_bounds,
-            settings_bounds,
-        ) = self.button_bounds(bounds);
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, help_bounds, settings_bounds) =
+            self.button_bounds(bounds);
 
         // Reload button (ghost style)
         output.extend(self.reload_button.layout_with_bold(
@@ -681,14 +674,8 @@ impl HeaderBar {
 
 impl Widget for HeaderBar {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
-        let (
-            reload_bounds,
-            fetch_bounds,
-            pull_bounds,
-            push_bounds,
-            help_bounds,
-            settings_bounds,
-        ) = self.button_bounds(bounds);
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, help_bounds, settings_bounds) =
+            self.button_bounds(bounds);
 
         // Handle CI indicator click
         if let InputEvent::MouseDown { x, y, .. } = event
@@ -826,14 +813,8 @@ impl Widget for HeaderBar {
     }
 
     fn update_hover(&mut self, x: f32, y: f32, bounds: Rect) {
-        let (
-            reload_bounds,
-            fetch_bounds,
-            pull_bounds,
-            push_bounds,
-            help_bounds,
-            settings_bounds,
-        ) = self.button_bounds(bounds);
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, help_bounds, settings_bounds) =
+            self.button_bounds(bounds);
         self.reload_button.update_hover(x, y, reload_bounds);
         self.fetch_button.update_hover(x, y, fetch_bounds);
         self.pull_button.update_hover(x, y, pull_bounds);
@@ -961,14 +942,8 @@ impl Widget for HeaderBar {
         }
 
         // Button bounds
-        let (
-            reload_bounds,
-            fetch_bounds,
-            pull_bounds,
-            push_bounds,
-            help_bounds,
-            settings_bounds,
-        ) = self.button_bounds(bounds);
+        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, help_bounds, settings_bounds) =
+            self.button_bounds(bounds);
 
         // Render stored buttons (preserves hover/press state from handle_event)
         output.extend(self.reload_button.layout(text_renderer, reload_bounds));

@@ -1594,7 +1594,10 @@ impl App {
                     AsyncOpPoll::Disconnected => {
                         self.error_dialog.show(
                             &format!("{} Failed", $op_name),
-                            &format!("{} failed: the background thread terminated unexpectedly.", $op_name),
+                            &format!(
+                                "{} failed: the background thread terminated unexpectedly.",
+                                $op_name
+                            ),
                             "",
                         );
                     }
@@ -1665,11 +1668,8 @@ impl App {
                         needs_repo_refresh = true;
                     } else {
                         let (msg, _) = git::classify_git_error(&label, &result.error);
-                        self.error_dialog.show(
-                            &format!("{} Failed", label),
-                            &msg,
-                            &result.error,
-                        );
+                        self.error_dialog
+                            .show(&format!("{} Failed", label), &msg, &result.error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -1677,7 +1677,10 @@ impl App {
                     view_state.showed_timeout_toast[3] = false;
                     self.error_dialog.show(
                         &format!("{} Failed", label),
-                        &format!("{} failed: the background thread terminated unexpectedly.", label),
+                        &format!(
+                            "{} failed: the background thread terminated unexpectedly.",
+                            label
+                        ),
                         "",
                     );
                 }
@@ -2727,7 +2730,11 @@ fn apply_status_result(
     view_state.staging_well.repo_state_label =
         crate::git::repo_state_label(result.staging_repo_state);
 
-    let main_dirty_count = result.main_status.as_ref().map(|s| s.total_files()).unwrap_or(0);
+    let main_dirty_count = result
+        .main_status
+        .as_ref()
+        .map(|s| s.total_files())
+        .unwrap_or(0);
     if let Some(status) = result.main_status {
         view_state.commit_graph_view.working_dir_status = Some(status);
     }
@@ -2769,8 +2776,7 @@ fn apply_status_result(
                     .find(|c| c.id == head)
                     .map(|c| c.time)
                     .unwrap_or(0);
-                let mut entry =
-                    CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
+                let mut entry = CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
                 if let Some((ins, del)) = result.main_diff_stats {
                     entry.insertions = ins;
                     entry.deletions = del;

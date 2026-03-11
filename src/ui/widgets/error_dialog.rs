@@ -197,7 +197,6 @@ impl ErrorDialog {
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
     }
-
 }
 
 impl Widget for ErrorDialog {
@@ -237,7 +236,11 @@ impl Widget for ErrorDialog {
         }
 
         // Dismiss button
-        if self.dismiss_button.handle_event(event, dismiss_bounds).is_consumed() {
+        if self
+            .dismiss_button
+            .handle_event(event, dismiss_bounds)
+            .is_consumed()
+        {
             if self.dismiss_button.was_clicked() {
                 self.hide();
             }
