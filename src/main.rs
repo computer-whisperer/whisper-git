@@ -55,7 +55,7 @@ use crate::renderer::{OffscreenTarget, SurfaceManager, VulkanContext, capture_to
 use crate::ui::widget::theme;
 use crate::ui::widgets::{
     BranchNameDialog, BranchNameDialogAction, CloneDialog, CloneDialogAction, ConfirmDialog,
-    ConfirmDialogAction, ContextMenu, HeaderBar, MenuAction, MenuItem, MergeDialog,
+    ConfirmDialogAction, ContextMenu, ErrorDialog, HeaderBar, MenuAction, MenuItem, MergeDialog,
     MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction,
     RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog,
     RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext,
@@ -530,6 +530,7 @@ struct App {
     clone_dialog: CloneDialog,
     settings_dialog: SettingsDialog,
     confirm_dialog: ConfirmDialog,
+    error_dialog: ErrorDialog,
     branch_name_dialog: BranchNameDialog,
     remote_dialog: RemoteDialog,
     merge_dialog: MergeDialog,
@@ -703,6 +704,7 @@ impl App {
             clone_dialog: CloneDialog::new(),
             settings_dialog,
             confirm_dialog: ConfirmDialog::new(),
+            error_dialog: ErrorDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
             remote_dialog: RemoteDialog::new(),
             merge_dialog: MergeDialog::new(),
@@ -1579,13 +1581,21 @@ impl App {
                         // Refresh CI status after remote ops
                         trigger_ci_fetch(github_token.as_deref(), repo_tab, view_state, &proxy);
                     }
-                    AsyncOpPoll::Failed(msg) => {
-                        self.toast_manager.push(msg, ToastSeverity::Error);
+                    AsyncOpPoll::Failed(summary, raw_stderr) => {
+                        self.error_dialog.show(
+                            &format!("{} Failed", $op_name),
+                            &summary,
+                            &raw_stderr,
+                        );
+                        // Refresh even on failure: a failed pull still fetches refs,
+                        // a failed merge may leave the repo in a new state, etc.
+                        needs_repo_refresh = true;
                     }
                     AsyncOpPoll::Disconnected => {
-                        self.toast_manager.push(
-                            format!("{} failed: background thread terminated", $op_name),
-                            ToastSeverity::Error,
+                        self.error_dialog.show(
+                            &format!("{} Failed", $op_name),
+                            &format!("{} failed: the background thread terminated unexpectedly.", $op_name),
+                            "",
                         );
                     }
                     AsyncOpPoll::Timeout => {
@@ -1655,15 +1665,20 @@ impl App {
                         needs_repo_refresh = true;
                     } else {
                         let (msg, _) = git::classify_git_error(&label, &result.error);
-                        self.toast_manager.push(msg, ToastSeverity::Error);
+                        self.error_dialog.show(
+                            &format!("{} Failed", label),
+                            &msg,
+                            &result.error,
+                        );
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
                     view_state.generic_op_receiver = None;
                     view_state.showed_timeout_toast[3] = false;
-                    self.toast_manager.push(
-                        format!("{} failed: background thread terminated", label),
-                        ToastSeverity::Error,
+                    self.error_dialog.show(
+                        &format!("{} Failed", label),
+                        &format!("{} failed: the background thread terminated unexpectedly.", label),
+                        "",
                     );
                 }
                 Err(TryRecvError::Empty) => {
@@ -1880,6 +1895,12 @@ impl App {
                     }
                 }
             }
+            return true;
+        }
+
+        // Error dialog takes high modal priority (dismiss-only, no action routing)
+        if self.error_dialog.is_visible() {
+            self.error_dialog.handle_event(input_event, screen_bounds);
             return true;
         }
 
@@ -2488,8 +2509,8 @@ impl App {
 enum AsyncOpPoll {
     /// Operation completed successfully; contains the remote/op name for the toast.
     Success(String),
-    /// Operation failed; contains the classified error message.
-    Failed(String),
+    /// Operation failed; contains (friendly_message, raw_stderr).
+    Failed(String, String),
     /// Background thread disconnected unexpectedly.
     Disconnected,
     /// Timeout threshold reached — caller should show a "still running" toast.
@@ -2546,7 +2567,7 @@ fn poll_remote_op(
                 AsyncOpPoll::Success(remote)
             } else {
                 let (msg, _) = git::classify_git_error(op_name, &result.error);
-                AsyncOpPoll::Failed(msg)
+                AsyncOpPoll::Failed(msg, result.error)
             }
         }
         Err(TryRecvError::Disconnected) => {
@@ -5329,6 +5350,7 @@ fn build_ui_output(
     clone_dialog: &CloneDialog,
     settings_dialog: &SettingsDialog,
     confirm_dialog: &ConfirmDialog,
+    error_dialog: &ErrorDialog,
     branch_name_dialog: &BranchNameDialog,
     remote_dialog: &RemoteDialog,
     merge_dialog: &MergeDialog,
@@ -5686,6 +5708,15 @@ fn build_ui_output(
         ));
     }
 
+    // Error dialog (overlay layer - on top of confirm dialog)
+    if error_dialog.is_visible() {
+        overlay_output.extend(error_dialog.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            screen_bounds,
+        ));
+    }
+
     // Branch name dialog (overlay layer - on top of everything)
     if branch_name_dialog.is_visible() {
         overlay_output.extend(branch_name_dialog.layout_with_bold(
@@ -5900,6 +5931,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
+        &app.error_dialog,
         &app.branch_name_dialog,
         &app.remote_dialog,
         &app.merge_dialog,
@@ -6118,6 +6150,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
+        &app.error_dialog,
         &app.branch_name_dialog,
         &app.remote_dialog,
         &app.merge_dialog,
@@ -6272,6 +6305,7 @@ fn capture_screenshot_offscreen(
         &app.clone_dialog,
         &app.settings_dialog,
         &app.confirm_dialog,
+        &app.error_dialog,
         &app.branch_name_dialog,
         &app.remote_dialog,
         &app.merge_dialog,

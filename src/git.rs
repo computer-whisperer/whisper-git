@@ -2617,14 +2617,67 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
             "{} failed: Cannot connect to remote. Check your network and remote URL.",
             op
         )
+    } else if lower.contains("local changes to the following files would be overwritten") {
+        // Extract the file names from the stderr (they appear between the error line and "Please commit")
+        let files: Vec<&str> = stderr
+            .lines()
+            .skip_while(|l| !l.to_lowercase().contains("would be overwritten"))
+            .skip(1)
+            .take_while(|l| !l.to_lowercase().starts_with("please"))
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if files.is_empty() {
+            format!("{} aborted: Local changes would be overwritten. Commit or stash your changes first.", op)
+        } else {
+            format!(
+                "{} aborted: Local changes to {} would be overwritten. Commit or stash first.",
+                op,
+                files.join(", ")
+            )
+        }
+    } else if lower.contains("not possible to fast-forward") {
+        format!(
+            "{} failed: Cannot fast-forward — the branches have diverged. Pull with merge or rebase instead.",
+            op
+        )
+    } else if lower.contains("merge conflict") || lower.contains("fix conflicts") {
+        format!(
+            "{} stopped: Merge conflicts need to be resolved. Check the staging area for conflicted files.",
+            op
+        )
+    } else if lower.contains("needs merge") {
+        format!(
+            "{} failed: Unresolved merge in progress. Resolve conflicts and commit, or abort the merge first.",
+            op
+        )
+    } else if lower.contains("you have unstaged changes") || lower.contains("your index contains uncommitted changes") {
+        format!(
+            "{} aborted: You have uncommitted changes. Commit or stash them first.",
+            op
+        )
     } else if is_rejected {
         format!(
             "{} rejected: Remote has new commits. Pull first, or use Force Push.",
             op
         )
     } else {
-        // Show up to 3 lines of the error for context
-        let error_summary: String = stderr.lines().take(3).collect::<Vec<_>>().join("\n");
+        // Show first meaningful lines of the error for context
+        let error_lines: Vec<&str> = stderr
+            .lines()
+            .filter(|l| {
+                let trimmed = l.trim();
+                !trimmed.is_empty()
+                    && !trimmed.starts_with("From ")
+                    && !trimmed.starts_with("To ")
+                    && !trimmed.starts_with(" * branch")
+                    && !trimmed.starts_with(" * [new")
+                    && !trimmed.starts_with("   ")
+                    && !trimmed.starts_with("Updating ")
+            })
+            .take(3)
+            .collect();
+        let error_summary = error_lines.join("\n");
         if error_summary.is_empty() {
             format!("{} failed: unknown error", op)
         } else {
