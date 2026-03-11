@@ -323,7 +323,7 @@ struct TabViewState {
     /// Compared every 5s to detect external ref changes missed by the watcher.
     ref_fingerprint: u64,
     /// Receiver for async GitHub CI status fetch
-    ci_receiver: Option<Receiver<github::CiStatus>>,
+    ci_receiver: Option<Receiver<github::CiFetchResult>>,
     /// Most recent CI status for this tab's repo
     ci_status: Option<github::CiStatus>,
     /// When CI status was last fetched (for periodic polling)
@@ -1640,9 +1640,13 @@ impl App {
 
         // Poll CI status receiver
         if let Some(ref rx) = view_state.ci_receiver
-            && let Ok(status) = rx.try_recv()
+            && let Ok(result) = rx.try_recv()
         {
-            view_state.ci_status = Some(status);
+            view_state.ci_status = Some(result.status);
+            view_state
+                .commit_graph_view
+                .ci_commit_states
+                .clone_from(&result.per_commit);
             view_state.ci_receiver = None;
         }
 

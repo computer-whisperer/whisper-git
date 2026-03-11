@@ -257,6 +257,8 @@ pub struct CommitGraphView {
     pub fast_scroll: bool,
     /// Whether ratchet (snap-to-row) scrolling is enabled vs smooth pixel scrolling
     pub ratchet_scroll: bool,
+    /// Per-commit CI states keyed by full SHA (populated from GitHub Actions)
+    pub ci_commit_states: HashMap<String, crate::github::CiState>,
 }
 
 impl Default for CommitGraphView {
@@ -292,6 +294,7 @@ impl Default for CommitGraphView {
             scroll_accumulator: 0.0,
             fast_scroll: false,
             ratchet_scroll: true,
+            ci_commit_states: HashMap::new(),
         }
     }
 }
@@ -1530,13 +1533,20 @@ impl CommitGraphView {
 
         // Column layout: scale-proportional widths derived from line_height
         let time_col_width = (line_height * 2.0).max(52.0);
+        let ci_col_width = if self.ci_commit_states.is_empty() {
+            0.0
+        } else {
+            (line_height * 0.8).max(12.0)
+        };
         let stats_col_width = (line_height * 4.5).max(68.0);
         let right_margin = (line_height * 0.4).max(4.0);
         let col_gap = (line_height * 0.25).max(4.0);
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
-        let stats_col_right = time_col_right - time_col_width - col_gap;
+        let ci_col_center_x = time_col_right - time_col_width - col_gap - ci_col_width / 2.0;
+        let stats_col_right = time_col_right - time_col_width - col_gap - ci_col_width - col_gap;
         let stats_col_left = stats_col_right - stats_col_width;
         let time_col_left = time_col_right - time_col_width;
+        let ci_dot_radius = (line_height * 0.22).max(3.0);
 
         // Branch tip lookup
         let branch_tips_by_oid: HashMap<Oid, Vec<&BranchTip>> =
@@ -1922,6 +1932,34 @@ impl CommitGraphView {
                     stats_col_right,
                     &mut vertices,
                 );
+
+                // === CI status dot (between stats and time columns) ===
+                if !self.ci_commit_states.is_empty() {
+                    let sha = commit.id.to_string();
+                    if let Some(ci_state) = self.ci_commit_states.get(&sha) {
+                        let dot_color = match ci_state {
+                            crate::github::CiState::Success => {
+                                Color::rgba(0.34, 0.80, 0.44, dim_alpha) // green
+                            }
+                            crate::github::CiState::Failure => {
+                                Color::rgba(0.90, 0.30, 0.30, dim_alpha) // red
+                            }
+                            crate::github::CiState::Pending => {
+                                Color::rgba(1.0, 0.718, 0.302, dim_alpha) // amber
+                            }
+                            crate::github::CiState::None => {
+                                Color::rgba(0.3, 0.3, 0.3, 0.3 * dim_alpha) // dim grey
+                            }
+                        };
+                        let dot_cy = y + line_height / 2.0;
+                        pill_vertices.extend(self.create_circle_vertices(
+                            ci_col_center_x,
+                            dot_cy,
+                            ci_dot_radius,
+                            dot_color.to_array(),
+                        ));
+                    }
+                }
 
                 // === Subject line (primary content, bright text, in remaining space) ===
                 let subject_right = stats_col_left - col_gap;

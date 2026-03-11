@@ -275,30 +275,96 @@ impl CiStatus {
     }
 }
 
+/// Result of a CI status fetch: both the branch-level summary and per-commit states.
+#[derive(Debug, Clone)]
+pub struct CiFetchResult {
+    /// Branch-level summary (for the header bar indicator)
+    pub status: CiStatus,
+    /// Per-commit CI state keyed by full SHA
+    pub per_commit: std::collections::HashMap<String, CiState>,
+}
+
+/// Build per-commit CI states from workflow runs.
+/// Groups runs by commit SHA, then for each SHA deduplicates by workflow name
+/// and computes an aggregate state (all pass = Success, any fail = Failure, etc.)
+fn per_commit_states(runs: &[WorkflowRun]) -> std::collections::HashMap<String, CiState> {
+    use std::collections::HashMap;
+
+    // Group runs by commit SHA
+    let mut by_sha: HashMap<&str, Vec<&WorkflowRun>> = HashMap::new();
+    for run in runs {
+        by_sha.entry(run.head_sha.as_str()).or_default().push(run);
+    }
+
+    let mut result = HashMap::new();
+    for (sha, sha_runs) in &by_sha {
+        // Deduplicate by workflow name (keep latest run per name)
+        let mut latest: HashMap<&str, &WorkflowRun> = HashMap::new();
+        for run in sha_runs {
+            latest
+                .entry(run.name.as_str())
+                .and_modify(|existing| {
+                    if run.id > existing.id {
+                        *existing = run;
+                    }
+                })
+                .or_insert(run);
+        }
+
+        let mut failed = 0;
+        let mut pending = 0;
+        for run in latest.values() {
+            match run.conclusion.as_deref() {
+                Some("success") => {}
+                Some("failure" | "timed_out" | "cancelled") => failed += 1,
+                _ if run.status == "completed" => {}
+                _ => pending += 1,
+            }
+        }
+
+        let state = if failed > 0 {
+            CiState::Failure
+        } else if pending > 0 {
+            CiState::Pending
+        } else {
+            CiState::Success
+        };
+        result.insert(sha.to_string(), state);
+    }
+
+    result
+}
+
 /// Fetch CI status for a GitHub repo asynchronously.
-/// Returns a receiver that will produce a CiStatus once the API call completes.
+/// Returns a receiver that will produce a CiFetchResult (branch summary + per-commit states).
 /// Returns None if the origin remote isn't a GitHub URL or no token is configured.
 pub fn fetch_ci_status_async(
     token: &str,
     origin_url: &str,
     branch: Option<String>,
     proxy: EventLoopProxy<()>,
-) -> Option<Receiver<CiStatus>> {
+) -> Option<Receiver<CiFetchResult>> {
     let (owner, repo) = parse_github_remote(origin_url)?;
     let token = token.to_string();
     let (tx, rx) = mpsc::channel();
 
     std::thread::spawn(move || {
         let client = GitHubClient::new(token);
-        let status = match client.workflow_runs(&owner, &repo, branch.as_deref(), 10) {
-            Ok(runs) => CiStatus::from_runs(&runs),
-            Err(e) => CiStatus {
-                state: CiState::None,
-                summary: format!("CI fetch failed: {e}"),
-                url: None,
+        let result = match client.workflow_runs(&owner, &repo, branch.as_deref(), 50) {
+            Ok(runs) => CiFetchResult {
+                status: CiStatus::from_runs(&runs),
+                per_commit: per_commit_states(&runs),
+            },
+            Err(e) => CiFetchResult {
+                status: CiStatus {
+                    state: CiState::None,
+                    summary: format!("CI fetch failed: {e}"),
+                    url: None,
+                },
+                per_commit: std::collections::HashMap::new(),
             },
         };
-        let _ = tx.send(status);
+        let _ = tx.send(result);
         let _ = proxy.send_event(());
     });
 
