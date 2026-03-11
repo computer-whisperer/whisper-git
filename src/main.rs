@@ -2587,8 +2587,6 @@ fn poll_remote_op(
     }
 }
 
-/// Refresh commits, branch tips, tags, and header info from the repo.
-
 // ============================================================================
 // Async status refresh
 // ============================================================================
@@ -2761,23 +2759,23 @@ fn apply_status_result(
 
         if view_state.worktree_state.worktrees.is_empty() {
             // Single-worktree: use main repo diff stats
-            if let (Some(head), Some(wd)) = (result.head_oid, &result.workdir) {
-                if main_dirty_count > 0 {
-                    let count = main_dirty_count;
-                    let parent_time = repo_tab
-                        .commits
-                        .iter()
-                        .find(|c| c.id == head)
-                        .map(|c| c.time)
-                        .unwrap_or(0);
-                    let mut entry =
-                        CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
-                    if let Some((ins, del)) = result.main_diff_stats {
-                        entry.insertions = ins;
-                        entry.deletions = del;
-                    }
-                    synthetics.push(entry);
+            if let (Some(head), Some(wd)) = (result.head_oid, &result.workdir)
+                && main_dirty_count > 0
+            {
+                let count = main_dirty_count;
+                let parent_time = repo_tab
+                    .commits
+                    .iter()
+                    .find(|c| c.id == head)
+                    .map(|c| c.time)
+                    .unwrap_or(0);
+                let mut entry =
+                    CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
+                if let Some((ins, del)) = result.main_diff_stats {
+                    entry.insertions = ins;
+                    entry.deletions = del;
                 }
+                synthetics.push(entry);
             }
         } else {
             // Multi-worktree: use per-worktree diff stats

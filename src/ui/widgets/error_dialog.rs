@@ -219,26 +219,21 @@ impl Widget for ErrorDialog {
         let dismiss_bounds = Rect::new(dismiss_x, button_y, button_w, btn_h);
 
         // Keyboard shortcuts
-        if let InputEvent::KeyDown { key, .. } = event {
-            match key {
-                Key::Escape | Key::Enter => {
-                    self.hide();
-                    return EventResponse::Consumed;
-                }
-                _ => {}
-            }
+        if let InputEvent::KeyDown { key, .. } = event
+            && matches!(key, Key::Escape | Key::Enter)
+        {
+            self.hide();
+            return EventResponse::Consumed;
         }
 
         // Scroll in detail area
-        if let InputEvent::Scroll { x, y, delta_y, .. } = event {
-            if dialog.contains(*x, *y) {
-                let line_h = 18.0 * scale; // approximate line height for scrolling
-                self.scroll_offset = (self.scroll_offset - delta_y * line_h * 3.0).max(0.0);
-                // Clamp is done loosely here — exact clamp needs text height from layout
-                // We allow a generous max and clamp properly during render
-                self.scroll_offset = self.scroll_offset.min(10000.0);
-                return EventResponse::Consumed;
-            }
+        if let InputEvent::Scroll { x, y, delta_y, .. } = event
+            && dialog.contains(*x, *y)
+        {
+            let line_h = 18.0 * scale; // approximate line height for scrolling
+            self.scroll_offset = (self.scroll_offset - delta_y * line_h * 3.0).max(0.0);
+            self.scroll_offset = self.scroll_offset.min(10000.0);
+            return EventResponse::Consumed;
         }
 
         // Dismiss button
