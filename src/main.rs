@@ -25,9 +25,11 @@ use std::time::Instant;
 use vulkano::{
     Validated, VulkanError,
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer, RenderPassBeginInfo,
+        AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer,
+        RenderPassBeginInfo, allocator::StandardCommandBufferAllocator,
     },
     format::{Format, NumericFormat},
+    memory::allocator::StandardMemoryAllocator,
     pipeline::graphics::viewport::Viewport,
     swapchain::{SwapchainPresentInfo, acquire_next_image},
     sync::{self, GpuFuture},
@@ -580,6 +582,8 @@ struct App {
     /// "Before" snapshot for async diagnostic reload (F5). When Some, a diagnostic
     /// reload is in progress; finalized when both repo state and status results arrive.
     diagnostic_before: Option<RepoStateSnapshot>,
+    /// Receiver for async text renderer rebuild (HiDPI monitor switch)
+    text_rebuild_receiver: Option<Receiver<(TextRenderer, TextRenderer)>>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -599,38 +603,48 @@ struct RenderState {
     input_state: InputState,
 }
 
-fn rebuild_text_renderers(state: &mut RenderState, atlas_build_scale: f64) -> Result<()> {
+/// Build new text renderers on the current thread (CPU-heavy: rasterization, SDF, kerning).
+/// Returns the pair ready for use. Called from a background thread to avoid blocking the event loop.
+fn build_text_renderers(
+    command_buffer_allocator: Arc<StandardCommandBufferAllocator>,
+    queue: Arc<vulkano::device::Queue>,
+    memory_allocator: Arc<StandardMemoryAllocator>,
+    render_pass: Arc<vulkano::render_pass::RenderPass>,
+    device: Arc<vulkano::device::Device>,
+    atlas_build_scale: f64,
+    display_scale: f64,
+) -> Result<(TextRenderer, TextRenderer)> {
     let mut upload_builder = AutoCommandBufferBuilder::primary(
-        state.ctx.command_buffer_allocator.clone(),
-        state.ctx.queue.queue_family_index(),
+        command_buffer_allocator,
+        queue.queue_family_index(),
         CommandBufferUsage::OneTimeSubmit,
     )
     .context("Failed to create text upload command buffer")?;
 
     let mut text_renderer = TextRenderer::new(
-        state.ctx.memory_allocator.clone(),
-        state.surface.render_pass.clone(),
+        memory_allocator.clone(),
+        render_pass.clone(),
         &mut upload_builder,
         atlas_build_scale,
     )
     .context("Failed to rebuild text renderer")?;
 
     let mut bold_text_renderer = TextRenderer::new_bold(
-        state.ctx.memory_allocator.clone(),
-        state.surface.render_pass.clone(),
+        memory_allocator,
+        render_pass,
         &mut upload_builder,
         atlas_build_scale,
     )
     .context("Failed to rebuild bold text renderer")?;
 
-    text_renderer.set_render_scale(state.scale_factor);
-    bold_text_renderer.set_render_scale(state.scale_factor);
+    text_renderer.set_render_scale(display_scale);
+    bold_text_renderer.set_render_scale(display_scale);
 
     let upload_cb = upload_builder
         .build()
         .context("Failed to build text upload command buffer")?;
-    let upload_future = sync::now(state.ctx.device.clone())
-        .then_execute(state.ctx.queue.clone(), upload_cb)
+    let upload_future = sync::now(device)
+        .then_execute(queue, upload_cb)
         .context("Failed to execute text upload")?
         .then_signal_fence_and_flush()
         .map_err(Validated::unwrap)
@@ -639,10 +653,7 @@ fn rebuild_text_renderers(state: &mut RenderState, atlas_build_scale: f64) -> Re
         .wait(None)
         .context("Failed to wait for text upload")?;
 
-    state.text_renderer = text_renderer;
-    state.bold_text_renderer = bold_text_renderer;
-
-    Ok(())
+    Ok((text_renderer, bold_text_renderer))
 }
 
 impl App {
@@ -734,6 +745,7 @@ impl App {
             status_receiver: None,
             repo_state_receiver: None,
             diagnostic_before: None,
+            text_rebuild_receiver: None,
         })
     }
 
@@ -3533,6 +3545,12 @@ impl ApplicationHandler for App {
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 state.scale_factor = scale_factor;
+                // Always update render scale immediately — the SDF atlas still works
+                // at different scales, just with slightly lower quality until the
+                // new atlas is ready.
+                state.text_renderer.set_render_scale(scale_factor);
+                state.bold_text_renderer.set_render_scale(scale_factor);
+
                 let atlas_build_scale = state.text_renderer.atlas_build_scale() as f64;
                 let needs_rebuild = scale_factor > atlas_build_scale + 0.05;
                 if needs_rebuild {
@@ -3542,14 +3560,35 @@ impl ApplicationHandler for App {
                             atlas_build_scale, scale_factor
                         );
                     }
-                    if let Err(e) = rebuild_text_renderers(state, scale_factor) {
-                        eprintln!("Failed to rebuild text atlases: {e:?}");
-                        state.text_renderer.set_render_scale(scale_factor);
-                        state.bold_text_renderer.set_render_scale(scale_factor);
-                    }
-                } else {
-                    state.text_renderer.set_render_scale(scale_factor);
-                    state.bold_text_renderer.set_render_scale(scale_factor);
+                    // Spawn atlas rebuild on background thread to avoid blocking
+                    // the event loop (which causes Wayland disconnects).
+                    let cba = state.ctx.command_buffer_allocator.clone();
+                    let queue = state.ctx.queue.clone();
+                    let mem = state.ctx.memory_allocator.clone();
+                    let rp = state.surface.render_pass.clone();
+                    let dev = state.ctx.device.clone();
+                    let proxy = self.proxy.clone();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.text_rebuild_receiver = Some(rx);
+                    std::thread::spawn(move || {
+                        match build_text_renderers(
+                            cba,
+                            queue,
+                            mem,
+                            rp,
+                            dev,
+                            scale_factor,
+                            scale_factor,
+                        ) {
+                            Ok(renderers) => {
+                                let _ = tx.send(renderers);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to rebuild text atlases: {e:?}");
+                            }
+                        }
+                        let _ = proxy.send_event(());
+                    });
                 }
                 for (repo_tab, view_state) in &mut self.tabs {
                     view_state
@@ -3567,6 +3606,26 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.last_frame_time = Instant::now();
+
+                // Poll background text renderer rebuild (HiDPI monitor switch)
+                if let Some(ref rx) = self.text_rebuild_receiver
+                    && let Ok((text, bold)) = rx.try_recv()
+                {
+                    state.text_renderer = text;
+                    state.bold_text_renderer = bold;
+                    self.text_rebuild_receiver = None;
+                    // Re-sync all tab metrics with the new atlas
+                    for (repo_tab, view_state) in &mut self.tabs {
+                        view_state
+                            .commit_graph_view
+                            .sync_metrics(&state.text_renderer);
+                        view_state
+                            .commit_graph_view
+                            .update_layout(&repo_tab.commits);
+                        view_state.branch_sidebar.sync_metrics(&state.text_renderer);
+                    }
+                    state.window.request_redraw();
+                }
 
                 // Poll async diff stats FIRST — apply completed results before
                 // watcher or remote ops can orphan the receiver with a new one
