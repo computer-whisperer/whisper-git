@@ -338,10 +338,12 @@ fn per_commit_states(runs: &[WorkflowRun]) -> std::collections::HashMap<String, 
 /// Fetch CI status for a GitHub repo asynchronously.
 /// Returns a receiver that will produce a CiFetchResult (branch summary + per-commit states).
 /// Returns None if the origin remote isn't a GitHub URL or no token is configured.
+///
+/// Fetches all recent runs (unfiltered) for both the header summary and per-commit dots.
+/// The header shows overall repo CI status (like GitHub's repo page), not per-branch.
 pub fn fetch_ci_status_async(
     token: &str,
     origin_url: &str,
-    branch: Option<String>,
     proxy: EventLoopProxy<()>,
 ) -> Option<Receiver<CiFetchResult>> {
     let (owner, repo) = parse_github_remote(origin_url)?;
@@ -350,7 +352,7 @@ pub fn fetch_ci_status_async(
 
     std::thread::spawn(move || {
         let client = GitHubClient::new(token);
-        let result = match client.workflow_runs(&owner, &repo, branch.as_deref(), 50) {
+        let result = match client.workflow_runs(&owner, &repo, None, 50) {
             Ok(runs) => CiFetchResult {
                 status: CiStatus::from_runs(&runs),
                 per_commit: per_commit_states(&runs),

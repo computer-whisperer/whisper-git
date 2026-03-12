@@ -332,8 +332,6 @@ struct TabViewState {
     last_ci_fetch: Instant,
     /// When the last push completed (enables fast CI polling for 5 min)
     last_push_time: Option<Instant>,
-    /// Branch that the current CI status corresponds to (detect branch switches)
-    ci_branch: String,
 }
 
 impl TabViewState {
@@ -479,9 +477,8 @@ impl TabViewState {
             ref_fingerprint: 0,
             ci_receiver: None,
             ci_status: None,
-            last_ci_fetch: Instant::now(),
+            last_ci_fetch: Instant::now() - Duration::from_secs(600),
             last_push_time: None,
-            ci_branch: String::new(),
         }
     }
 }
@@ -2549,17 +2546,27 @@ fn trigger_ci_fetch(
     view_state: &mut TabViewState,
     proxy: &EventLoopProxy<()>,
 ) {
-    if let Some(token) = token
-        && !token.is_empty()
-        && let Some(url) = repo_tab.repo.remote_url("origin")
+    let Some(token) = token.filter(|t| !t.is_empty()) else {
+        return;
+    };
+    // Find the first remote with a GitHub URL (prefer "origin", then scan all)
+    let github_url = repo_tab
+        .repo
+        .remote_url("origin")
+        .filter(|u| github::parse_github_remote(u).is_some())
+        .or_else(|| {
+            repo_tab
+                .repo
+                .remote_names()
+                .into_iter()
+                .filter_map(|name| repo_tab.repo.remote_url(&name))
+                .find(|u| github::parse_github_remote(u).is_some())
+        });
+    if let Some(url) = github_url
+        && let Some(rx) = github::fetch_ci_status_async(token, &url, proxy.clone())
     {
-        let branch = view_state.current_branch_opt().map(|s| s.to_string());
-        if let Some(rx) = github::fetch_ci_status_async(token, &url, branch.clone(), proxy.clone())
-        {
-            view_state.ci_receiver = Some(rx);
-            view_state.last_ci_fetch = Instant::now();
-            view_state.ci_branch = branch.unwrap_or_default();
-        }
+        view_state.ci_receiver = Some(rx);
+        view_state.last_ci_fetch = Instant::now();
     }
 }
 
@@ -3695,10 +3702,6 @@ impl ApplicationHandler for App {
                     let now = Instant::now();
                     // Skip if a fetch is already in flight
                     if view_state.ci_receiver.is_none() {
-                        let branch_changed = view_state
-                            .current_branch_opt()
-                            .is_some_and(|b| b != view_state.ci_branch);
-
                         // Determine poll interval:
                         // - 15s if CI is pending or within 5 min of a push
                         // - 5 min otherwise
@@ -3713,7 +3716,7 @@ impl ApplicationHandler for App {
                         let elapsed_since_fetch =
                             now.duration_since(view_state.last_ci_fetch).as_secs();
 
-                        if branch_changed || elapsed_since_fetch >= interval {
+                        if elapsed_since_fetch >= interval {
                             trigger_ci_fetch(
                                 self.config.github_token.as_deref(),
                                 repo_tab,
