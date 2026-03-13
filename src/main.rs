@@ -29,6 +29,7 @@ use vulkano::{
         RenderPassBeginInfo, allocator::StandardCommandBufferAllocator,
     },
     format::{Format, NumericFormat},
+    image::ImageLayout,
     memory::allocator::StandardMemoryAllocator,
     pipeline::graphics::viewport::Viewport,
     swapchain::{SwapchainPresentInfo, acquire_next_image},
@@ -773,7 +774,14 @@ impl App {
         let ctx = VulkanContext::with_surface(instance, &surface)?;
         crash_log::set_vulkan_device(&ctx.device.physical_device().properties().device_name);
 
-        // Create render pass with MSAA 4x
+        // Create render pass with MSAA 4x.
+        // The resolve target's final_layout is PresentSrc so the swapchain
+        // image is in the spec-required layout for vkQueuePresentKHR.
+        // Vulkano's then_swapchain_present() does not insert this transition
+        // (upstream TODO in acquire_present.rs), so without this override the
+        // image would be presented in TransferDstOptimal — which causes
+        // corruption on some drivers, particularly multi-GPU X11 with
+        // DRI3/PRIME.
         let image_format = SurfaceManager::choose_surface_format(&ctx, &surface)?;
         let render_pass = vulkano::single_pass_renderpass!(
             ctx.device.clone(),
@@ -789,6 +797,7 @@ impl App {
                     samples: 1,
                     load_op: DontCare,
                     store_op: Store,
+                    final_layout: ImageLayout::PresentSrc,
                 },
             },
             pass: {
