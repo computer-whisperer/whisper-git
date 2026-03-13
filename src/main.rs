@@ -799,8 +799,9 @@ impl App {
         )
         .context("Failed to create render pass")?;
 
-        // Create surface manager
-        let surface_mgr = SurfaceManager::new(&ctx, window.clone(), render_pass.clone())?;
+        // Create surface manager (reuse the surface from device selection)
+        let surface_mgr =
+            SurfaceManager::new(&ctx, &surface, window.inner_size(), render_pass.clone())?;
 
         // Create text renderer
         let mut upload_builder = AutoCommandBufferBuilder::primary(

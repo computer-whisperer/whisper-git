@@ -5,9 +5,8 @@ use vulkano::{
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
-    swapchain::{Surface, Swapchain, SwapchainCreateInfo},
+    swapchain::{CompositeAlpha, Surface, Swapchain, SwapchainCreateInfo},
 };
-use winit::window::Window;
 
 use super::VulkanContext;
 
@@ -22,16 +21,14 @@ pub struct SurfaceManager {
 }
 
 impl SurfaceManager {
-    /// Create a new surface manager
+    /// Create a new surface manager using an existing surface
     pub fn new(
         ctx: &VulkanContext,
-        window: Arc<Window>,
+        surface: &Arc<Surface>,
+        size: winit::dpi::PhysicalSize<u32>,
         render_pass: Arc<RenderPass>,
     ) -> Result<Self> {
-        let surface = Surface::from_window(ctx.instance.clone(), window.clone())
-            .context("Failed to create surface")?;
-
-        let (swapchain, images) = Self::create_swapchain(ctx, &surface, window.inner_size())?;
+        let (swapchain, images) = Self::create_swapchain(ctx, surface, size)?;
         let msaa_views = Self::create_msaa_images(ctx, &images)?;
         let framebuffers = Self::create_framebuffers(&images, &msaa_views, &render_pass)?;
 
@@ -69,11 +66,18 @@ impl SurfaceManager {
                 image_usage: ImageUsage::COLOR_ATTACHMENT
                     | ImageUsage::TRANSFER_SRC
                     | ImageUsage::TRANSFER_DST,
-                composite_alpha: surface_capabilities
+                composite_alpha: if surface_capabilities
                     .supported_composite_alpha
-                    .into_iter()
-                    .next()
-                    .context("No composite alpha mode supported")?,
+                    .contains_enum(CompositeAlpha::Opaque)
+                {
+                    CompositeAlpha::Opaque
+                } else {
+                    surface_capabilities
+                        .supported_composite_alpha
+                        .into_iter()
+                        .next()
+                        .context("No composite alpha mode supported")?
+                },
                 ..Default::default()
             },
         )

@@ -25,12 +25,19 @@ pub struct VulkanContext {
 }
 
 impl VulkanContext {
-    /// Create context with a surface (needed for device selection)
+    /// Create context with a surface (needed for device selection).
+    ///
+    /// GPU preference can be overridden with `WHISPER_GPU`:
+    /// - `integrated` — prefer integrated GPU (lower power, quieter)
+    /// - `discrete` — prefer discrete GPU (default)
+    /// - a substring of a device name — select that specific device
     pub fn with_surface(instance: Arc<Instance>, surface: &Surface) -> Result<Self> {
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
             ..DeviceExtensions::empty()
         };
+
+        let gpu_pref = std::env::var("WHISPER_GPU").ok();
 
         let (physical_device, queue_family_index) = instance
             .enumerate_physical_devices()
@@ -46,13 +53,34 @@ impl VulkanContext {
                     })
                     .map(|i| (p, i as u32))
             })
-            .min_by_key(|(p, _)| match p.properties().device_type {
-                PhysicalDeviceType::DiscreteGpu => 0,
-                PhysicalDeviceType::IntegratedGpu => 1,
-                PhysicalDeviceType::VirtualGpu => 2,
-                PhysicalDeviceType::Cpu => 3,
-                PhysicalDeviceType::Other => 4,
-                _ => 5,
+            .min_by_key(|(p, _)| {
+                let dev_type = p.properties().device_type;
+                let dev_name = p.properties().device_name.to_lowercase();
+                match gpu_pref.as_deref() {
+                    Some("integrated") => match dev_type {
+                        PhysicalDeviceType::IntegratedGpu => 0,
+                        PhysicalDeviceType::DiscreteGpu => 1,
+                        PhysicalDeviceType::VirtualGpu => 2,
+                        PhysicalDeviceType::Cpu => 3,
+                        PhysicalDeviceType::Other => 4,
+                        _ => 5,
+                    },
+                    Some("discrete") | None => match dev_type {
+                        PhysicalDeviceType::DiscreteGpu => 0,
+                        PhysicalDeviceType::IntegratedGpu => 1,
+                        PhysicalDeviceType::VirtualGpu => 2,
+                        PhysicalDeviceType::Cpu => 3,
+                        PhysicalDeviceType::Other => 4,
+                        _ => 5,
+                    },
+                    Some(name) => {
+                        if dev_name.contains(&name.to_lowercase()) {
+                            0
+                        } else {
+                            1
+                        }
+                    }
+                }
             })
             .context("No suitable GPU found")?;
 
