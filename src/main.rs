@@ -1942,9 +1942,11 @@ impl App {
                     }
                     BranchNameDialogAction::CreateWorktree(name, source, init_submodules) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::CreateWorktree(name, source, init_submodules));
+                            view_state.pending_messages.push(AppMessage::CreateWorktree(
+                                name,
+                                source,
+                                init_submodules,
+                            ));
                         }
                     }
                     BranchNameDialogAction::Rename(new_name, old_name) => {

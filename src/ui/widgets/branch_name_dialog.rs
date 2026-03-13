@@ -76,7 +76,12 @@ impl BranchNameDialog {
     /// Show the dialog in worktree creation mode.
     /// `default_name` is pre-filled, `source_ref` is the branch or SHA to base the worktree on.
     /// `has_submodules` controls whether the "Init submodules" checkbox is shown.
-    pub fn show_for_worktree(&mut self, default_name: &str, source_ref: &str, has_submodules: bool) {
+    pub fn show_for_worktree(
+        &mut self,
+        default_name: &str,
+        source_ref: &str,
+        has_submodules: bool,
+    ) {
         self.visible = true;
         self.title = "Create Worktree".to_string();
         self.name_input = TextInput::new().with_placeholder("worktree-name");
@@ -139,8 +144,11 @@ impl BranchNameDialog {
             self.hide();
         } else if let Some(ref source) = self.worktree_source {
             let init_subs = self.has_submodules && self.init_submodules;
-            self.pending_action =
-                Some(BranchNameDialogAction::CreateWorktree(name, source.clone(), init_subs));
+            self.pending_action = Some(BranchNameDialogAction::CreateWorktree(
+                name,
+                source.clone(),
+                init_subs,
+            ));
             self.hide();
         } else if let Some(oid) = self.target_oid {
             self.pending_action = Some(BranchNameDialogAction::Create(name, oid));
