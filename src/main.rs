@@ -201,18 +201,11 @@ impl WorktreeState {
         self.worktrees.len() >= 2
     }
 
-    /// Refresh worktree list from repo, populate cache, prune stale entries.
+    /// Refresh worktree list from repo and prune stale cache entries.
+    /// Does NOT open worktree repos — those are opened on background threads
+    /// via `spawn_repo_state_refresh` and merged in `apply_repo_state_result`.
     fn refresh(&mut self, repo: &GitRepo) {
         self.worktrees = repo.worktrees().unwrap_or_default();
-        // Open repos for any new worktrees
-        for wt in &self.worktrees {
-            let path = PathBuf::from(&wt.path);
-            if let std::collections::hash_map::Entry::Vacant(entry) = self.repo_cache.entry(path)
-                && let Ok(wt_repo) = GitRepo::open(entry.key())
-            {
-                entry.insert(wt_repo);
-            }
-        }
         // Prune cache entries for removed worktrees
         let valid: HashSet<PathBuf> = self
             .worktrees
@@ -1018,6 +1011,11 @@ impl App {
         match rx.try_recv() {
             Ok(result) => {
                 self.repo_state_receiver = None;
+                crash_log::breadcrumb(format!(
+                    "apply_repo_state: {} commits, {} worktrees",
+                    result.commits.len(),
+                    result.worktrees.len()
+                ));
                 if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
                     let rx = apply_repo_state_result(
                         result,
@@ -1816,6 +1814,7 @@ impl App {
     }
 
     fn open_repo_tab(&mut self, path: PathBuf) {
+        crash_log::breadcrumb(format!("open_repo_tab: {}", path.display()));
         match GitRepo::open(path) {
             Ok(repo) => {
                 let name = repo.repo_name();
@@ -2862,6 +2861,8 @@ struct RepoStateResult {
     ref_fingerprint: u64,
     /// OIDs for which diff stats should be computed
     real_oids: Vec<Oid>,
+    /// Pre-opened worktree repo handles (opened on background thread)
+    worktree_repos: HashMap<PathBuf, GitRepo>,
     errors: Vec<String>,
 }
 
@@ -2896,6 +2897,7 @@ fn spawn_repo_state_refresh(
                     staging_repo_state: git2::RepositoryState::Clean,
                     ref_fingerprint: 0,
                     real_oids: Vec::new(),
+                    worktree_repos: HashMap::new(),
                     errors,
                 });
                 let _ = proxy.send_event(());
@@ -2947,6 +2949,16 @@ fn spawn_repo_state_refresh(
             errors.push(format!("Failed to load worktrees: {e}"));
             Vec::new()
         });
+
+        // Open worktree repos on the background thread to avoid blocking the
+        // main thread (which causes Wayland disconnects on compositor timeout).
+        let worktree_repos: HashMap<PathBuf, GitRepo> = worktrees
+            .iter()
+            .filter_map(|wt| {
+                let path = PathBuf::from(&wt.path);
+                GitRepo::open(&path).ok().map(|r| (path, r))
+            })
+            .collect();
 
         // Synthetic entries
         let synthetics = git::create_synthetic_entries(&repo, &worktrees, &commits);
@@ -3003,6 +3015,7 @@ fn spawn_repo_state_refresh(
             staging_repo_state,
             ref_fingerprint,
             real_oids,
+            worktree_repos,
             errors,
         });
         let _ = proxy.send_event(());
@@ -3061,15 +3074,15 @@ fn apply_repo_state_result(
 
     // Update worktree state
     view_state.worktree_state.worktrees = result.worktrees;
-    // Open repos for any new worktrees in the cache
-    for wt in &view_state.worktree_state.worktrees {
-        let path = PathBuf::from(&wt.path);
-        if let std::collections::hash_map::Entry::Vacant(entry) =
-            view_state.worktree_state.repo_cache.entry(path)
-            && let Ok(wt_repo) = GitRepo::open(entry.key())
-        {
-            entry.insert(wt_repo);
-        }
+    // Merge pre-opened worktree repos from background thread into the cache.
+    // Keep existing cache entries (avoids replacing repos that may be in use)
+    // and add new ones from the background result.
+    for (path, repo) in result.worktree_repos {
+        view_state
+            .worktree_state
+            .repo_cache
+            .entry(path)
+            .or_insert(repo);
     }
     // Prune stale cache entries
     let valid: HashSet<PathBuf> = view_state
