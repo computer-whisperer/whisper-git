@@ -104,7 +104,7 @@ pub enum AppMessage {
     ExitSubmodule,
     ExitToDepth(usize),
     AbortOperation,
-    CreateWorktree(String, String), // (name, source_ref)
+    CreateWorktree(String, String, bool), // (name, source_ref, init_submodules)
     AddRemote(String, String),      // (name, url)
     DeleteRemote(String),
     RenameRemote(String, String),       // (old_name, new_name)
@@ -999,18 +999,21 @@ pub fn handle_app_message(
                 toast_manager,
             );
         }
-        AppMessage::CreateWorktree(name, source) => {
+        AppMessage::CreateWorktree(name, source, init_submodules) => {
             let cmd_dir = repo.git_command_dir();
             // Compute worktree path: sibling directory to the current workdir
-            let wt_path = cmd_dir
+            let wt_path_buf = cmd_dir
                 .parent()
                 .unwrap_or(&cmd_dir)
-                .join(&name)
-                .to_string_lossy()
-                .to_string();
+                .join(&name);
+            let wt_path = wt_path_buf.to_string_lossy().to_string();
             // Heuristic: if source looks like a hex SHA (7+ hex chars), use detached mode
             let is_sha = source.len() >= 7 && source.chars().all(|c| c.is_ascii_hexdigit());
-            let rx = if is_sha {
+            let rx = if init_submodules {
+                git::create_worktree_with_submodules_async(
+                    cmd_dir, wt_path, source.clone(), is_sha, proxy.clone(),
+                )
+            } else if is_sha {
                 git::create_worktree_detached_async(cmd_dir, wt_path, source.clone(), proxy.clone())
             } else {
                 git::create_worktree_async(cmd_dir, wt_path, source.clone(), proxy.clone())

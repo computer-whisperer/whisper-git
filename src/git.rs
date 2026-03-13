@@ -2592,6 +2592,79 @@ pub fn remove_submodule_async(
     rx
 }
 
+/// Spawn a background thread to create a worktree and then initialize submodules in it.
+/// Chains `git worktree add` + `git submodule update --init --recursive` in the new worktree.
+pub fn create_worktree_with_submodules_async(
+    workdir: PathBuf,
+    wt_path: String,
+    source: String,
+    detached: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        // Step 1: create worktree
+        let mut args = vec!["worktree", "add"];
+        if detached {
+            args.push("--detach");
+        }
+        args.push(&wt_path);
+        args.push(&source);
+
+        let wt_result = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+
+        match wt_result {
+            Ok(output) if output.status.success() => {
+                // Step 2: init submodules in the new worktree
+                let sm_result = std::process::Command::new("git")
+                    .args(["submodule", "update", "--init", "--recursive"])
+                    .current_dir(&wt_path)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output();
+                let op_result = match sm_result {
+                    Ok(sm_output) if sm_output.status.success() => RemoteOpResult {
+                        success: true,
+                        error: String::new(),
+                    },
+                    Ok(sm_output) => RemoteOpResult {
+                        success: false,
+                        error: format!(
+                            "Worktree created, but submodule init failed:\n{}",
+                            String::from_utf8_lossy(&sm_output.stderr)
+                        ),
+                    },
+                    Err(e) => RemoteOpResult {
+                        success: false,
+                        error: format!(
+                            "Worktree created, but failed to run submodule update: {}",
+                            e
+                        ),
+                    },
+                };
+                let _ = tx.send(op_result);
+            }
+            Ok(output) => {
+                let _ = tx.send(RemoteOpResult {
+                    success: false,
+                    error: String::from_utf8_lossy(&output.stderr).to_string(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(RemoteOpResult {
+                    success: false,
+                    error: format!("Failed to run git worktree add: {}", e),
+                });
+            }
+        }
+        let _ = proxy.send_event(());
+    });
+    rx
+}
+
 /// Classify a git CLI stderr message into a user-friendly error string.
 /// Returns `(friendly_message, is_rejected)` where `is_rejected` indicates
 /// the remote rejected the push (e.g. non-fast-forward).
