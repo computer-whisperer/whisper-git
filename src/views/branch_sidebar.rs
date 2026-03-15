@@ -110,8 +110,8 @@ pub struct BranchSidebar {
     worktree_count: usize,
     /// Worktree paths indexed by name (for checkout_in_wt action)
     worktree_paths: HashMap<String, String>,
-    /// Remote names that are GitHub remotes (for icon display)
-    github_remotes: HashSet<String>,
+    /// Remote name → icon key for known hosting providers (GitHub, GitLab, etc.)
+    remote_icons: HashMap<String, &'static str>,
     /// Filter query text for searching branches/tags/stashes
     filter_query: String,
     /// Cursor position in the filter query
@@ -199,7 +199,7 @@ impl BranchSidebar {
             is_bare_repo: false,
             worktree_count: 0,
             worktree_paths: HashMap::new(),
-            github_remotes: HashSet::new(),
+            remote_icons: HashMap::new(),
             filter_query: String::new(),
             filter_cursor: 0,
             filter_focused: false,
@@ -311,11 +311,11 @@ impl BranchSidebar {
         worktrees: &[WorktreeInfo],
         is_bare: bool,
     ) {
-        // Determine which remotes are GitHub-hosted
-        self.github_remotes.clear();
+        // Determine which remotes have known hosting provider icons
+        self.remote_icons.clear();
         for (name, url) in remote_urls {
-            if crate::github::parse_github_remote(url).is_some() {
-                self.github_remotes.insert(name.clone());
+            if let Some(icon) = crate::github::icon_for_remote_url(url) {
+                self.remote_icons.insert(name.clone(), icon);
             }
         }
 
@@ -1595,14 +1595,13 @@ impl BranchSidebar {
                     let chevron_w = chevron_size + 4.0;
                     let text_x = params.inner.x + params.indent + chevron_w;
 
-                    // GitHub icon for GitHub remotes, cloud for others
-                    let github_tc = if self.github_remotes.contains(remote_name) {
-                        icon_renderer.and_then(|ir| ir.get_tex_coords(crate::ui::icon::ICON_GITHUB))
-                    } else {
-                        None
-                    };
+                    // Provider icon for known remotes, cloud for others
+                    let remote_tc = self
+                        .remote_icons
+                        .get(remote_name)
+                        .and_then(|icon| icon_renderer.and_then(|ir| ir.get_tex_coords(icon)));
 
-                    let name_x = if let Some(tc) = github_tc {
+                    let name_x = if let Some(tc) = remote_tc {
                         let icon_size = params.line_height * 0.7;
                         let icon_y = y + (params.line_height - icon_size) * 0.5;
                         output.icon_vertices.extend(crate::ui::icon::icon_quad(

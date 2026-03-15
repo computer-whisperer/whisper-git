@@ -45,6 +45,18 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
     }
 }
 
+/// Return the icon name for a remote URL, if it matches a known hosting provider.
+pub fn icon_for_remote_url(url: &str) -> Option<&'static str> {
+    let url = url.trim();
+    if url.contains("github.com") {
+        Some(crate::ui::icon::ICON_GITHUB)
+    } else if url.contains("gitlab.com") || url.contains("gitlab.") {
+        Some(crate::ui::icon::ICON_GITLAB)
+    } else {
+        None
+    }
+}
+
 // --- Actions workflow run status ---
 
 #[derive(Debug, Clone, Deserialize)]

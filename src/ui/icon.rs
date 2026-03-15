@@ -465,9 +465,12 @@ pub fn icon_quad(
 
 /// Built-in icon names
 pub const ICON_GITHUB: &str = "github";
+pub const ICON_GITLAB: &str = "gitlab";
 
 /// Register all built-in icons.
 pub fn register_builtin_icons(renderer: &mut IconRenderer) {
     let github_png = include_bytes!("../../assets/icons/github.png");
     renderer.register_png(ICON_GITHUB, github_png);
+    let gitlab_png = include_bytes!("../../assets/icons/gitlab.png");
+    renderer.register_png(ICON_GITLAB, gitlab_png);
 }
