@@ -17,7 +17,6 @@ use vulkano::{
 
 /// Core Vulkan context - created once at startup
 pub struct VulkanContext {
-    pub instance: Arc<Instance>,
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub memory_allocator: Arc<StandardMemoryAllocator>,
@@ -112,7 +111,6 @@ impl VulkanContext {
         ));
 
         Ok(Self {
-            instance,
             device,
             queue,
             memory_allocator,
