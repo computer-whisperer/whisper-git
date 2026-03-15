@@ -25,9 +25,6 @@ pub enum RightPanelMode {
     Browse,
 }
 
-/// Maximum number of commits to load into the graph view.
-const MAX_COMMITS: usize = 50;
-
 /// Application-level messages for state changes
 #[derive(Clone, Debug)]
 pub enum AppMessage {
@@ -175,31 +172,19 @@ fn validate_commit_preconditions(
     true
 }
 
-/// Execute a synchronous git operation that mutates repo state, then refresh
-/// the UI. On success, shows `success_msg` as a toast. On error, shows
-/// `error_msg_prefix: <error>`.
-#[allow(clippy::too_many_arguments)]
+/// Execute a synchronous git operation that mutates repo state, then request
+/// an async refresh. On success, shows `success_msg` as a toast and sets
+/// `needs_repo_refresh`. On error, shows `error_msg_prefix: <error>`.
 fn handle_repo_mutation(
     result: Result<(), anyhow::Error>,
     success_msg: String,
     error_msg_prefix: &str,
-    repo: &GitRepo,
-    staging_repo: &GitRepo,
-    commits: &mut Vec<CommitInfo>,
     view_state: &mut MessageViewState<'_>,
     toast_manager: &mut ToastManager,
-    show_orphaned_commits: bool,
 ) {
     match result {
         Ok(()) => {
-            refresh_repo_state(
-                repo,
-                staging_repo,
-                commits,
-                view_state,
-                toast_manager,
-                show_orphaned_commits,
-            );
+            view_state.needs_repo_refresh = true;
             toast_manager.push(success_msg, ToastSeverity::Success);
         }
         Err(e) => {
@@ -409,14 +394,7 @@ pub fn handle_app_message(
             }
             match staging_repo.commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(
-                        repo,
-                        staging_repo,
-                        commits,
-                        view_state,
-                        toast_manager,
-                        ctx.show_orphaned_commits,
-                    );
+                    view_state.needs_repo_refresh = true;
                     view_state.staging_well.clear_and_focus();
                     toast_manager.push(
                         format!("Commit {}", &oid.to_string()[..7]),
@@ -751,12 +729,8 @@ pub fn handle_app_message(
                 staging_repo.checkout_branch(&name),
                 format!("Switched to {}", name),
                 "Checkout failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
         AppMessage::CheckoutRemoteBranch(remote, branch) => {
@@ -764,61 +738,27 @@ pub fn handle_app_message(
                 staging_repo.checkout_remote_branch(&remote, &branch),
                 format!("Switched to {}/{}", remote, branch),
                 "Checkout failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteBranch(name) => {
-            match repo.delete_branch(&name) {
-                Ok(()) => {
-                    refresh_repo_state(
-                        repo,
-                        staging_repo,
-                        commits,
-                        view_state,
-                        toast_manager,
-                        ctx.show_orphaned_commits,
-                    );
-                    toast_manager.push(format!("Deleted branch {}", name), ToastSeverity::Success);
-                }
-                Err(e) => {
-                    // Show root cause for a cleaner message
-                    let root = e.root_cause().to_string();
-                    toast_manager.push(
-                        format!("Cannot delete '{}': {}", name, root),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.delete_branch(&name),
+                format!("Deleted branch {}", name),
+                &format!("Cannot delete '{}'", name),
+                view_state,
+                toast_manager,
+            );
         }
         AppMessage::RenameBranch(old_name, new_name) => {
-            match repo.rename_branch(&old_name, &new_name, false) {
-                Ok(()) => {
-                    refresh_repo_state(
-                        repo,
-                        staging_repo,
-                        commits,
-                        view_state,
-                        toast_manager,
-                        ctx.show_orphaned_commits,
-                    );
-                    toast_manager.push(
-                        format!("Renamed branch '{}' to '{}'", old_name, new_name),
-                        ToastSeverity::Success,
-                    );
-                }
-                Err(e) => {
-                    let root = e.root_cause().to_string();
-                    toast_manager.push(
-                        format!("Cannot rename '{}': {}", old_name, root),
-                        ToastSeverity::Error,
-                    );
-                }
-            }
+            handle_repo_mutation(
+                repo.rename_branch(&old_name, &new_name, false),
+                format!("Renamed branch '{}' to '{}'", old_name, new_name),
+                &format!("Cannot rename '{}'", old_name),
+                view_state,
+                toast_manager,
+            );
         }
         AppMessage::StageHunk(path, hunk_idx) => match staging_repo.stage_hunk(&path, hunk_idx) {
             Ok(()) => {
@@ -1093,12 +1033,8 @@ pub fn handle_app_message(
                 repo.create_branch_at(&name, oid),
                 format!("Created branch '{}'", name),
                 "Create branch failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
         AppMessage::CreateTag(name, oid) => {
@@ -1106,12 +1042,8 @@ pub fn handle_app_message(
                 repo.create_tag(&name, oid),
                 format!("Created tag '{}'", name),
                 "Create tag failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
         AppMessage::DeleteTag(name) => {
@@ -1119,12 +1051,8 @@ pub fn handle_app_message(
                 repo.delete_tag(&name),
                 format!("Deleted tag '{}'", name),
                 "Delete tag failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
         AppMessage::StashPush => {
@@ -1200,14 +1128,7 @@ pub fn handle_app_message(
             }
             match staging_repo.amend_commit(&message) {
                 Ok(oid) => {
-                    refresh_repo_state(
-                        repo,
-                        staging_repo,
-                        commits,
-                        view_state,
-                        toast_manager,
-                        ctx.show_orphaned_commits,
-                    );
+                    view_state.needs_repo_refresh = true;
                     view_state.staging_well.exit_amend_mode();
                     toast_manager.push(
                         format!("Amended {}", &oid.to_string()[..7]),
@@ -1253,12 +1174,8 @@ pub fn handle_app_message(
                 reset_repo.reset_to_commit(oid, mode),
                 format!("Reset ({}) to {}", mode_name, &oid.to_string()[..7]),
                 "Reset failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1267,12 +1184,8 @@ pub fn handle_app_message(
                 staging_repo.cleanup_state(),
                 "Operation aborted".to_string(),
                 "Abort failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1281,12 +1194,8 @@ pub fn handle_app_message(
                 repo.add_remote(&name, &url),
                 format!("Added remote '{}'", name),
                 "Failed to add remote",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1295,12 +1204,8 @@ pub fn handle_app_message(
                 repo.delete_remote(&name),
                 format!("Deleted remote '{}'", name),
                 "Failed to delete remote",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1309,12 +1214,8 @@ pub fn handle_app_message(
                 repo.rename_remote(&old_name, &new_name),
                 format!("Renamed remote '{}' to '{}'", old_name, new_name),
                 "Failed to rename remote",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1323,12 +1224,8 @@ pub fn handle_app_message(
                 repo.set_remote_url(&name, &url),
                 format!("Updated URL for '{}'", name),
                 "Failed to update remote URL",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1355,12 +1252,8 @@ pub fn handle_app_message(
                     wt_repo.checkout_branch(&name),
                     format!("Switched to {} in {}", name, wt_path.display()),
                     "Checkout failed",
-                    repo,
-                    staging_repo,
-                    commits,
                     view_state,
                     toast_manager,
-                    ctx.show_orphaned_commits,
                 );
             }
             Err(e) => {
@@ -1376,12 +1269,8 @@ pub fn handle_app_message(
                 repo.set_head_to(&name),
                 format!("HEAD now points to {}", name),
                 "Set HEAD failed",
-                repo,
-                staging_repo,
-                commits,
                 view_state,
                 toast_manager,
-                ctx.show_orphaned_commits,
             );
         }
 
@@ -1419,8 +1308,10 @@ pub struct MessageViewState<'a> {
     pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
     pub right_panel_mode: &'a mut RightPanelMode,
     pub worktrees: &'a mut Vec<WorktreeInfo>,
-    pub submodule_focus: &'a mut Option<crate::SubmoduleFocus>,
     pub proxy: EventLoopProxy<()>,
+    /// Set by message handlers to request an async repo state refresh
+    /// (commit graph, branch tips, tags, etc.) after the message loop.
+    pub needs_repo_refresh: bool,
 }
 
 /// Lightweight snapshot of diffable repo state for diagnostic reload comparison.
@@ -1706,154 +1597,4 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
     }
 
     deltas
-}
-
-/// Refresh commits, branch tips, tags, and header info from the repo.
-/// Call this after any operation that changes branches, commits, or remote state.
-///
-/// `repo` provides ref data (commits, branches, tags, remotes).
-/// `staging_repo` provides the working context (HEAD, current branch).
-/// For normal repos these are the same. For bare repos with worktrees,
-/// `staging_repo` is the active worktree repo.
-///
-/// Returns the (current_branch, staging_head_oid) so callers can store them centrally.
-pub fn refresh_repo_state(
-    repo: &GitRepo,
-    staging_repo: &GitRepo,
-    commits: &mut Vec<CommitInfo>,
-    view_state: &mut MessageViewState<'_>,
-    toast_manager: &mut ToastManager,
-    show_orphaned_commits: bool,
-) -> (String, Option<Oid>) {
-    // Preserve existing diff stats so they don't flicker away during refresh
-    let prev_stats: HashMap<Oid, (usize, usize)> = commits
-        .iter()
-        .filter(|c| c.insertions > 0 || c.deletions > 0)
-        .map(|c| (c.id, (c.insertions, c.deletions)))
-        .collect();
-
-    let graph_result = if show_orphaned_commits {
-        repo.commit_graph_with_orphans(MAX_COMMITS)
-    } else {
-        repo.commit_graph(MAX_COMMITS)
-    };
-    match graph_result {
-        Ok(c) => *commits = c,
-        Err(e) => {
-            toast_manager.push(
-                format!("Failed to load commits: {}", e),
-                ToastSeverity::Error,
-            );
-            *commits = Vec::new();
-        }
-    }
-
-    // Restore cached diff stats until async task provides fresh values
-    for commit in commits.iter_mut() {
-        if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
-            commit.insertions = ins;
-            commit.deletions = del;
-        }
-    }
-
-    // HEAD and current branch come from the working context (staging_repo),
-    // not the ref repo. For bare repos, repo.head_oid() is meaningless.
-    let staging_head_oid = staging_repo.head_oid().ok();
-
-    let mut branch_tips = repo.branch_tips().unwrap_or_else(|e| {
-        toast_manager.push(
-            format!("Failed to load branches: {}", e),
-            ToastSeverity::Error,
-        );
-        Vec::new()
-    });
-    let tags = repo.tags().unwrap_or_else(|e| {
-        toast_manager.push(format!("Failed to load tags: {}", e), ToastSeverity::Error);
-        Vec::new()
-    });
-    let current = staging_repo.current_branch().unwrap_or_else(|e| {
-        toast_manager.push(
-            format!("Failed to get current branch: {}", e),
-            ToastSeverity::Error,
-        );
-        String::new()
-    });
-
-    // branch_tips() sets is_head based on the ref repo's HEAD, which is
-    // meaningless for bare repos. Override with the staging context so that
-    // the graph and context menus reflect the branch the user is working on.
-    for tip in &mut branch_tips {
-        tip.is_head = tip.name == current && !tip.is_remote;
-    }
-
-    let worktrees = repo.worktrees().unwrap_or_else(|e| {
-        toast_manager.push(
-            format!("Failed to load worktrees: {}", e),
-            ToastSeverity::Error,
-        );
-        Vec::new()
-    });
-
-    // Insert synthetic "uncommitted changes" entries sorted by time
-    let synthetics = git::create_synthetic_entries(repo, &worktrees, commits);
-    if !synthetics.is_empty() {
-        git::insert_synthetics_sorted(commits, synthetics);
-    }
-
-    view_state.commit_graph_view.update_layout(commits);
-    view_state.commit_graph_view.branch_tips = branch_tips.clone();
-    view_state.commit_graph_view.tags = tags.clone();
-    let remote_names = repo.remote_names();
-    let is_bare = repo.is_effectively_bare();
-    let remote_urls: std::collections::HashMap<String, String> = remote_names
-        .iter()
-        .filter_map(|name| repo.remote_url(name).map(|url| (name.clone(), url)))
-        .collect();
-
-    view_state.branch_sidebar.set_branch_data(
-        &branch_tips,
-        &tags,
-        &remote_names,
-        &remote_urls,
-        &worktrees,
-        is_bare,
-    );
-    view_state.staging_well.set_worktrees(&worktrees);
-    *view_state.worktrees = worktrees;
-
-    let submodules = repo.submodules().unwrap_or_else(|e| {
-        toast_manager.push(
-            format!("Failed to load submodules: {}", e),
-            ToastSeverity::Error,
-        );
-        Vec::new()
-    });
-    view_state.staging_well.set_submodules(submodules);
-
-    // When inside a submodule, populate sibling submodules for lateral navigation
-    if let Some(focus) = view_state.submodule_focus.as_ref() {
-        if let Some(parent) = focus.parent_stack.last() {
-            view_state
-                .staging_well
-                .set_sibling_submodules(parent.parent_submodules.clone());
-        }
-    } else {
-        // At top level, clear siblings
-        view_state.staging_well.sibling_submodules.clear();
-    }
-
-    view_state.branch_sidebar.stashes = repo.stash_list();
-
-    // Compute ahead/behind for all local branches (sidebar indicators)
-    let ab_cache = repo.all_branches_ahead_behind();
-    view_state.branch_sidebar.update_ahead_behind(ab_cache);
-
-    // Set the repo path in the header — use common_dir parent to show project path,
-    // not a worktree-specific path.
-    let project_path = repo.common_dir().parent().unwrap_or(repo.common_dir());
-    let repo_path_str = project_path.to_string_lossy().into_owned();
-    let repo_path_str = repo_path_str.trim_end_matches('/').to_string();
-    view_state.header_bar.set_repo_path(&repo_path_str);
-
-    (current, staging_head_oid)
 }

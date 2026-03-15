@@ -566,6 +566,8 @@ struct App {
     last_ref_check: Instant,
     /// Receiver for async git clone operation (success = destination path)
     clone_receiver: Option<(Receiver<Result<PathBuf, String>>, Instant)>,
+    /// Receiver for async repo open operation (background GitRepo::open)
+    open_receiver: Option<Receiver<Result<(GitRepo, String), String>>>,
     /// Receiver for async status refresh (background thread)
     status_receiver: Option<Receiver<StatusResult>>,
     /// Receiver for async repo state refresh (background thread)
@@ -733,6 +735,7 @@ impl App {
             last_frame_time: Instant::now(),
             last_ref_check: Instant::now(),
             clone_receiver: None,
+            open_receiver: None,
             status_receiver: None,
             repo_state_receiver: None,
             diagnostic_before: None,
@@ -1078,8 +1081,8 @@ impl App {
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
-                submodule_focus: &mut view_state.submodule_focus,
                 proxy: self.proxy.clone(),
+                needs_repo_refresh: false,
             };
             RepoStateSnapshot::from_ui(
                 &repo_tab.commits,
@@ -1131,8 +1134,8 @@ impl App {
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
-                submodule_focus: &mut view_state.submodule_focus,
                 proxy: self.proxy.clone(),
+                needs_repo_refresh: false,
             };
             RepoStateSnapshot::from_ui(
                 &repo_tab.commits,
@@ -1437,6 +1440,7 @@ impl App {
             .as_ref()
             .and_then(|p| view_state.worktree_state.repo_cache.get(p))
             .unwrap_or(repo);
+        let mut needs_repo_refresh = false;
         for msg in normal_messages {
             let mut msg_view_state = MessageViewState {
                 commit_graph_view: &mut view_state.commit_graph_view,
@@ -1452,8 +1456,8 @@ impl App {
                 generic_op_receiver: &mut view_state.generic_op_receiver,
                 right_panel_mode: &mut view_state.right_panel_mode,
                 worktrees: &mut view_state.worktree_state.worktrees,
-                submodule_focus: &mut view_state.submodule_focus,
                 proxy: self.proxy.clone(),
+                needs_repo_refresh: false,
             };
             handle_app_message(
                 msg,
@@ -1464,6 +1468,10 @@ impl App {
                 &mut self.toast_manager,
                 &ctx,
             );
+            needs_repo_refresh |= msg_view_state.needs_repo_refresh;
+        }
+        if needs_repo_refresh {
+            self.trigger_repo_state_refresh();
         }
     }
 
@@ -1823,61 +1831,76 @@ impl App {
         self.clone_receiver = Some((rx, Instant::now()));
     }
 
+    /// Spawn a background thread to open a repo, avoiding main-thread stalls
+    /// that can cause Wayland disconnects.
     fn open_repo_tab(&mut self, path: PathBuf) {
         crash_log::breadcrumb(format!("open_repo_tab: {}", path.display()));
-        match GitRepo::open(path) {
-            Ok(repo) => {
-                let name = repo.repo_name();
-                self.tab_bar.add_tab(name.clone());
-                let mut view_state = TabViewState::new();
-
-                // Initialize the view if render state exists
-                // (init_tab_view -> refresh_repo_state will load commits)
-                let mut repo_tab = RepoTab {
-                    repo,
-                    commits: Vec::new(),
-                    name,
-                };
-
-                if let Some(ref render_state) = self.state {
-                    view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
-                    view_state.commit_graph_view.abbreviate_worktree_names =
-                        self.settings_dialog.abbreviate_worktree_names;
-                    view_state.commit_graph_view.time_spacing_strength =
-                        self.settings_dialog.time_spacing_strength;
-                    view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
-                    view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-                    self.repo_state_receiver = Some(init_tab_view(
-                        &mut repo_tab,
-                        &mut view_state,
-                        &render_state.text_renderer,
-                        render_state.scale_factor as f32,
-                        &mut self.toast_manager,
-                        self.config.show_orphaned_commits,
-                        &self.proxy,
-                    ));
-                }
-
-                trigger_ci_fetch(
-                    self.config.github_token.as_deref(),
-                    &repo_tab,
-                    &mut view_state,
-                    &self.proxy,
-                );
-                self.tabs.push((repo_tab, view_state));
-                let new_idx = self.tabs.len() - 1;
-                self.active_tab = new_idx;
-                self.tab_bar.set_active(new_idx);
-                self.toast_manager.push(
-                    format!("Opened {}", self.tabs[new_idx].0.name),
-                    ToastSeverity::Success,
-                );
-            }
-            Err(e) => {
-                self.toast_manager
-                    .push(format!("Failed to open: {}", e), ToastSeverity::Error);
-            }
+        if self.open_receiver.is_some() {
+            self.toast_manager.push(
+                "A repo is already being opened".to_string(),
+                ToastSeverity::Info,
+            );
+            return;
         }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = GitRepo::open(&path)
+                .map(|repo| {
+                    let name = repo.repo_name();
+                    (repo, name)
+                })
+                .map_err(|e| format!("{e}"));
+            let _ = tx.send(result);
+            let _ = proxy.send_event(());
+        });
+        self.open_receiver = Some(rx);
+    }
+
+    /// Finish creating a tab after the background GitRepo::open completes.
+    fn finish_open_repo_tab(&mut self, repo: GitRepo, name: String) {
+        self.tab_bar.add_tab(name.clone());
+        let mut view_state = TabViewState::new();
+
+        let mut repo_tab = RepoTab {
+            repo,
+            commits: Vec::new(),
+            name,
+        };
+
+        if let Some(ref render_state) = self.state {
+            view_state.commit_graph_view.row_scale = self.settings_dialog.row_scale;
+            view_state.commit_graph_view.abbreviate_worktree_names =
+                self.settings_dialog.abbreviate_worktree_names;
+            view_state.commit_graph_view.time_spacing_strength =
+                self.settings_dialog.time_spacing_strength;
+            view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
+            view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
+            self.repo_state_receiver = Some(init_tab_view(
+                &mut repo_tab,
+                &mut view_state,
+                &render_state.text_renderer,
+                render_state.scale_factor as f32,
+                &mut self.toast_manager,
+                self.config.show_orphaned_commits,
+                &self.proxy,
+            ));
+        }
+
+        trigger_ci_fetch(
+            self.config.github_token.as_deref(),
+            &repo_tab,
+            &mut view_state,
+            &self.proxy,
+        );
+        self.tabs.push((repo_tab, view_state));
+        let new_idx = self.tabs.len() - 1;
+        self.active_tab = new_idx;
+        self.tab_bar.set_active(new_idx);
+        self.toast_manager.push(
+            format!("Opened {}", self.tabs[new_idx].0.name),
+            ToastSeverity::Success,
+        );
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -3805,6 +3828,29 @@ impl ApplicationHandler for App {
                             self.clone_receiver = None;
                             self.toast_manager.push(
                                 "Clone failed: background thread terminated".to_string(),
+                                ToastSeverity::Error,
+                            );
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    }
+                }
+
+                // Poll repo open receiver
+                if let Some(ref rx) = self.open_receiver {
+                    match rx.try_recv() {
+                        Ok(Ok((repo, name))) => {
+                            self.open_receiver = None;
+                            self.finish_open_repo_tab(repo, name);
+                        }
+                        Ok(Err(err)) => {
+                            self.open_receiver = None;
+                            self.toast_manager
+                                .push(format!("Failed to open: {}", err), ToastSeverity::Error);
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.open_receiver = None;
+                            self.toast_manager.push(
+                                "Failed to open: background thread terminated".to_string(),
                                 ToastSeverity::Error,
                             );
                         }
