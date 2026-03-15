@@ -1972,12 +1972,18 @@ impl App {
                             }
                         }
                     }
-                    BranchNameDialogAction::CreateWorktree(name, source, init_submodules) => {
+                    BranchNameDialogAction::CreateWorktree(
+                        name,
+                        source,
+                        init_submodules,
+                        checkout_lfs,
+                    ) => {
                         if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
                             view_state.pending_messages.push(AppMessage::CreateWorktree(
                                 name,
                                 source,
                                 init_submodules,
+                                checkout_lfs,
                             ));
                         }
                     }
@@ -5165,16 +5171,22 @@ fn handle_context_menu_action(
         }
         "create_worktree" => {
             let has_submodules = !view_state.staging_well.submodules.is_empty();
+            let has_lfs = repo.has_lfs();
             if param.is_empty() {
                 // From commit graph: use short SHA as source
                 if let Some(oid) = view_state.context_menu_commit {
                     let short = &oid.to_string()[..7];
                     let default_name = format!("wt-{}", short);
-                    branch_name_dialog.show_for_worktree(&default_name, short, has_submodules);
+                    branch_name_dialog.show_for_worktree(
+                        &default_name,
+                        short,
+                        has_submodules,
+                        has_lfs,
+                    );
                 }
             } else {
                 // From branch sidebar: use branch name as source
-                branch_name_dialog.show_for_worktree(param, param, has_submodules);
+                branch_name_dialog.show_for_worktree(param, param, has_submodules, has_lfs);
             }
         }
         "create_tag" => {

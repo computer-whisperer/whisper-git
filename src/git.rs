@@ -1657,6 +1657,29 @@ impl GitRepo {
         self.repo.signature().is_ok()
     }
 
+    /// Check if the repo uses Git LFS (has `filter=lfs` in .gitattributes).
+    pub fn has_lfs(&self) -> bool {
+        // Check workdir .gitattributes first (covers normal repos)
+        if let Some(workdir) = self.workdir() {
+            let attrs = workdir.join(".gitattributes");
+            if let Ok(content) = std::fs::read_to_string(attrs)
+                && content.contains("filter=lfs")
+            {
+                return true;
+            }
+        }
+        // For bare repos, check HEAD tree for .gitattributes
+        if let Ok(head) = self.repo.head()
+            && let Some(tree) = head.peel_to_tree().ok()
+            && let Ok(entry) = tree.get_name(".gitattributes").ok_or(())
+            && let Ok(blob) = self.repo.find_blob(entry.id())
+            && let Ok(content) = std::str::from_utf8(blob.content())
+        {
+            return content.contains("filter=lfs");
+        }
+        false
+    }
+
     /// Check if any remotes are configured.
     pub fn has_remotes(&self) -> bool {
         self.repo.remotes().is_ok_and(|r| !r.is_empty())
@@ -2594,11 +2617,14 @@ pub fn remove_submodule_async(
 
 /// Spawn a background thread to create a worktree and then initialize submodules in it.
 /// Chains `git worktree add` + `git submodule update --init --recursive` in the new worktree.
-pub fn create_worktree_with_submodules_async(
+/// Create a worktree and run optional post-creation steps (submodule init, LFS checkout).
+pub fn create_worktree_with_post_steps_async(
     workdir: PathBuf,
     wt_path: String,
     source: String,
     detached: bool,
+    init_submodules: bool,
+    checkout_lfs: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<RemoteOpResult> {
     let (tx, rx) = mpsc::channel();
@@ -2619,31 +2645,60 @@ pub fn create_worktree_with_submodules_async(
 
         match wt_result {
             Ok(output) if output.status.success() => {
-                // Step 2: init submodules in the new worktree
-                let sm_result = std::process::Command::new("git")
-                    .args(["submodule", "update", "--init", "--recursive"])
-                    .current_dir(&wt_path)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .output();
-                let op_result = match sm_result {
-                    Ok(sm_output) if sm_output.status.success() => RemoteOpResult {
+                let mut warnings = Vec::new();
+
+                // Step 2: init submodules
+                if init_submodules {
+                    match std::process::Command::new("git")
+                        .args(["submodule", "update", "--init", "--recursive"])
+                        .current_dir(&wt_path)
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .output()
+                    {
+                        Ok(out) if !out.status.success() => {
+                            warnings.push(format!(
+                                "submodule init failed:\n{}",
+                                String::from_utf8_lossy(&out.stderr)
+                            ));
+                        }
+                        Err(e) => {
+                            warnings.push(format!("failed to run submodule update: {}", e));
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Step 3: LFS checkout
+                if checkout_lfs {
+                    match std::process::Command::new("git")
+                        .args(["lfs", "checkout"])
+                        .current_dir(&wt_path)
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .output()
+                    {
+                        Ok(out) if !out.status.success() => {
+                            warnings.push(format!(
+                                "LFS checkout failed:\n{}",
+                                String::from_utf8_lossy(&out.stderr)
+                            ));
+                        }
+                        Err(e) => {
+                            warnings.push(format!("failed to run git lfs checkout: {}", e));
+                        }
+                        _ => {}
+                    }
+                }
+
+                let op_result = if warnings.is_empty() {
+                    RemoteOpResult {
                         success: true,
                         error: String::new(),
-                    },
-                    Ok(sm_output) => RemoteOpResult {
+                    }
+                } else {
+                    RemoteOpResult {
                         success: false,
-                        error: format!(
-                            "Worktree created, but submodule init failed:\n{}",
-                            String::from_utf8_lossy(&sm_output.stderr)
-                        ),
-                    },
-                    Err(e) => RemoteOpResult {
-                        success: false,
-                        error: format!(
-                            "Worktree created, but failed to run submodule update: {}",
-                            e
-                        ),
-                    },
+                        error: format!("Worktree created, but {}", warnings.join("; ")),
+                    }
                 };
                 let _ = tx.send(op_result);
             }

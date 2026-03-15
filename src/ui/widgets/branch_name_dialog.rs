@@ -14,8 +14,8 @@ use crate::ui::{Rect, TextRenderer};
 #[derive(Clone, Debug)]
 pub enum BranchNameDialogAction {
     Create(String, Oid),
-    /// Create a worktree with (name, source_ref, init_submodules)
-    CreateWorktree(String, String, bool),
+    /// Create a worktree with (name, source_ref, init_submodules, checkout_lfs)
+    CreateWorktree(String, String, bool, bool),
     /// Rename a branch: (new_name, old_name)
     Rename(String, String),
     Cancel,
@@ -37,6 +37,10 @@ pub struct BranchNameDialog {
     has_submodules: bool,
     /// Whether to init submodules in the new worktree (checkbox state)
     init_submodules: bool,
+    /// Whether the repo uses Git LFS (controls checkbox visibility in worktree mode)
+    has_lfs: bool,
+    /// Whether to checkout LFS files in the new worktree (checkbox state)
+    checkout_lfs: bool,
     /// When set, dialog is in rename mode: stores the old branch name
     rename_source: Option<String>,
 }
@@ -54,6 +58,8 @@ impl BranchNameDialog {
             worktree_source: None,
             has_submodules: false,
             init_submodules: true,
+            has_lfs: false,
+            checkout_lfs: true,
             rename_source: None,
         }
     }
@@ -76,11 +82,13 @@ impl BranchNameDialog {
     /// Show the dialog in worktree creation mode.
     /// `default_name` is pre-filled, `source_ref` is the branch or SHA to base the worktree on.
     /// `has_submodules` controls whether the "Init submodules" checkbox is shown.
+    /// `has_lfs` controls whether the "Checkout LFS files" checkbox is shown.
     pub fn show_for_worktree(
         &mut self,
         default_name: &str,
         source_ref: &str,
         has_submodules: bool,
+        has_lfs: bool,
     ) {
         self.visible = true;
         self.title = "Create Worktree".to_string();
@@ -91,6 +99,8 @@ impl BranchNameDialog {
         self.worktree_source = Some(source_ref.to_string());
         self.has_submodules = has_submodules;
         self.init_submodules = has_submodules; // default checked when submodules exist
+        self.has_lfs = has_lfs;
+        self.checkout_lfs = has_lfs; // default checked when LFS detected
         self.rename_source = None;
         self.pending_action = None;
     }
@@ -122,6 +132,8 @@ impl BranchNameDialog {
         self.worktree_source = None;
         self.has_submodules = false;
         self.init_submodules = true;
+        self.has_lfs = false;
+        self.checkout_lfs = true;
         self.rename_source = None;
         self.create_button = Button::new("Create").primary();
     }
@@ -144,10 +156,12 @@ impl BranchNameDialog {
             self.hide();
         } else if let Some(ref source) = self.worktree_source {
             let init_subs = self.has_submodules && self.init_submodules;
+            let do_lfs = self.has_lfs && self.checkout_lfs;
             self.pending_action = Some(BranchNameDialogAction::CreateWorktree(
                 name,
                 source.clone(),
                 init_subs,
+                do_lfs,
             ));
             self.hide();
         } else if let Some(oid) = self.target_oid {
@@ -161,14 +175,19 @@ impl BranchNameDialog {
         self.worktree_source.is_some() && self.has_submodules
     }
 
+    fn show_lfs_checkbox(&self) -> bool {
+        self.worktree_source.is_some() && self.has_lfs
+    }
+
+    /// Number of checkboxes shown in the dialog
+    fn checkbox_count(&self) -> usize {
+        self.show_submodule_checkbox() as usize + self.show_lfs_checkbox() as usize
+    }
+
     /// Compute dialog bounds centered in screen
     fn dialog_bounds(&self, screen: Rect, scale: f32) -> Rect {
         let dialog_w = (380.0 * scale).min(screen.width * 0.8);
-        let checkbox_extra = if self.show_submodule_checkbox() {
-            28.0 * scale
-        } else {
-            0.0
-        };
+        let checkbox_extra = self.checkbox_count() as f32 * 28.0 * scale;
         let dialog_h = (160.0 * scale + checkbox_extra).min(screen.height * 0.5);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
@@ -230,26 +249,40 @@ impl Widget for BranchNameDialog {
             return EventResponse::Consumed;
         }
 
-        // Submodule checkbox click
-        if self.show_submodule_checkbox()
-            && let InputEvent::MouseDown {
-                button: MouseButton::Left,
-                x,
-                y,
-                ..
-            } = event
+        // Checkbox clicks
+        if let InputEvent::MouseDown {
+            button: MouseButton::Left,
+            x,
+            y,
+            ..
+        } = event
         {
-            let checkbox_y = input_y + line_h + 6.0 * scale;
             let checkbox_line_h = 22.0 * scale;
-            let cb_bounds = Rect::new(
-                dialog.x + padding,
-                checkbox_y,
-                dialog.width - padding * 2.0,
-                checkbox_line_h,
-            );
-            if cb_bounds.contains(*x, *y) {
-                self.init_submodules = !self.init_submodules;
-                return EventResponse::Consumed;
+            let mut cb_y = input_y + line_h + 6.0 * scale;
+            if self.show_submodule_checkbox() {
+                let cb_bounds = Rect::new(
+                    dialog.x + padding,
+                    cb_y,
+                    dialog.width - padding * 2.0,
+                    checkbox_line_h,
+                );
+                if cb_bounds.contains(*x, *y) {
+                    self.init_submodules = !self.init_submodules;
+                    return EventResponse::Consumed;
+                }
+                cb_y += checkbox_line_h + 4.0 * scale;
+            }
+            if self.show_lfs_checkbox() {
+                let cb_bounds = Rect::new(
+                    dialog.x + padding,
+                    cb_y,
+                    dialog.width - padding * 2.0,
+                    checkbox_line_h,
+                );
+                if cb_bounds.contains(*x, *y) {
+                    self.checkout_lfs = !self.checkout_lfs;
+                    return EventResponse::Consumed;
+                }
             }
         }
 
@@ -347,55 +380,30 @@ impl BranchNameDialog {
         );
         output.extend(self.name_input.layout(text_renderer, input_bounds));
 
-        // Submodule checkbox (only in worktree mode when repo has submodules)
+        // Worktree option checkboxes
+        let mut next_cb_y = input_y + line_h + 6.0 * scale;
         if self.show_submodule_checkbox() {
-            let checkbox_y = input_y + line_h + 6.0 * scale;
-            let checkbox_line_h = 22.0 * scale;
-            let checkbox_size = 14.0 * scale;
-            let cb_x = dialog.x + padding;
-            let cb_y = checkbox_y + (checkbox_line_h - checkbox_size) / 2.0;
-            let cb_rect = Rect::new(cb_x, cb_y, checkbox_size, checkbox_size);
-            let cb_r = 3.0 * scale;
-
-            let border_color = if self.init_submodules {
-                theme::ACCENT.to_array()
-            } else {
-                theme::BORDER.to_array()
-            };
-            output
-                .spline_vertices
-                .extend(create_rounded_rect_outline_vertices(
-                    &cb_rect,
-                    border_color,
-                    cb_r,
-                    1.0 * scale,
-                ));
-            if self.init_submodules {
-                let check_padding = 3.0 * scale;
-                let check_rect = Rect::new(
-                    cb_x + check_padding,
-                    cb_y + check_padding,
-                    checkbox_size - check_padding * 2.0,
-                    checkbox_size - check_padding * 2.0,
-                );
-                output.spline_vertices.extend(create_rounded_rect_vertices(
-                    &check_rect,
-                    theme::ACCENT.to_array(),
-                    cb_r - 1.0,
-                ));
-            }
-            let text_x = cb_x + checkbox_size + 8.0 * scale;
-            let text_color = if self.init_submodules {
-                theme::TEXT_BRIGHT
-            } else {
-                theme::TEXT
-            };
-            output.text_vertices.extend(text_renderer.layout_text(
+            render_checkbox(
+                &mut output,
+                text_renderer,
                 "Initialize submodules",
-                text_x,
-                checkbox_y,
-                text_color.to_array(),
-            ));
+                self.init_submodules,
+                dialog.x + padding,
+                next_cb_y,
+                scale,
+            );
+            next_cb_y += 22.0 * scale + 4.0 * scale;
+        }
+        if self.show_lfs_checkbox() {
+            render_checkbox(
+                &mut output,
+                text_renderer,
+                "Checkout LFS files",
+                self.checkout_lfs,
+                dialog.x + padding,
+                next_cb_y,
+                scale,
+            );
         }
 
         // Buttons at bottom
@@ -425,4 +433,54 @@ impl BranchNameDialog {
 
         output
     }
+}
+
+/// Render a checkbox with label at the given position.
+fn render_checkbox(
+    output: &mut WidgetOutput,
+    text_renderer: &TextRenderer,
+    label: &str,
+    checked: bool,
+    x: f32,
+    y: f32,
+    scale: f32,
+) {
+    let line_h = 22.0 * scale;
+    let size = 14.0 * scale;
+    let cb_x = x;
+    let cb_y = y + (line_h - size) / 2.0;
+    let cb_rect = Rect::new(cb_x, cb_y, size, size);
+    let r = 3.0 * scale;
+
+    let border_color = if checked {
+        theme::ACCENT.to_array()
+    } else {
+        theme::BORDER.to_array()
+    };
+    output
+        .spline_vertices
+        .extend(create_rounded_rect_outline_vertices(
+            &cb_rect,
+            border_color,
+            r,
+            1.0 * scale,
+        ));
+    if checked {
+        let p = 3.0 * scale;
+        let check_rect = Rect::new(cb_x + p, cb_y + p, size - p * 2.0, size - p * 2.0);
+        output.spline_vertices.extend(create_rounded_rect_vertices(
+            &check_rect,
+            theme::ACCENT.to_array(),
+            r - 1.0,
+        ));
+    }
+    let text_x = cb_x + size + 8.0 * scale;
+    let text_color = if checked {
+        theme::TEXT_BRIGHT
+    } else {
+        theme::TEXT
+    };
+    output
+        .text_vertices
+        .extend(text_renderer.layout_text(label, text_x, y, text_color.to_array()));
 }
