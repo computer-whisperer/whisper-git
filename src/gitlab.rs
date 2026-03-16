@@ -102,8 +102,9 @@ impl GitLabClient {
         per_page: u32,
     ) -> Result<Vec<Pipeline>> {
         let encoded = url_encode_path(project_path);
-        let mut path =
-            format!("/api/v4/projects/{encoded}/pipelines?per_page={per_page}&order_by=id&sort=desc");
+        let mut path = format!(
+            "/api/v4/projects/{encoded}/pipelines?per_page={per_page}&order_by=id&sort=desc"
+        );
         if let Some(r) = ref_name {
             path.push_str(&format!("&ref={r}"));
         }
@@ -126,8 +127,13 @@ fn pipeline_state(status: &str) -> CiState {
         "success" => CiState::Success,
         "failed" => CiState::Failure,
         "canceled" | "skipped" => CiState::Failure,
-        "running" | "pending" | "created" | "waiting_for_resource" | "preparing"
-        | "scheduled" | "manual" => CiState::Pending,
+        "running"
+        | "pending"
+        | "created"
+        | "waiting_for_resource"
+        | "preparing"
+        | "scheduled"
+        | "manual" => CiState::Pending,
         _ => CiState::None,
     }
 }
@@ -167,9 +173,15 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
 
     let total = passed + failed + pending;
     let (state, summary) = if failed > 0 {
-        (CiState::Failure, format!("{passed}/{total} pipelines passed"))
+        (
+            CiState::Failure,
+            format!("{passed}/{total} pipelines passed"),
+        )
     } else if pending > 0 {
-        (CiState::Pending, format!("{pending} pipeline(s) in progress"))
+        (
+            CiState::Pending,
+            format!("{pending} pipeline(s) in progress"),
+        )
     } else {
         let s = if total == 1 {
             "Pipeline passed".into()

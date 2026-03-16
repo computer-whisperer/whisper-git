@@ -15,7 +15,10 @@ pub enum TokenDialogAction {
     /// Set the GitHub token (may be empty to clear)
     SetGitHubToken(String),
     /// Set a GitLab token for a host
-    SetGitLabToken { host: String, token: String },
+    SetGitLabToken {
+        host: String,
+        token: String,
+    },
     /// Remove a GitLab token entry
     RemoveGitLabToken(String),
 }
@@ -143,7 +146,7 @@ impl TokenDialog {
         // Compute edit area height
         let edit_h = match &self.editing {
             Some(EditingTarget::NewGitLab) => line_h * 2.0 + 20.0 * scale, // two-line edit
-            Some(_) => line_h + 16.0 * scale,                               // one-line edit
+            Some(_) => line_h + 16.0 * scale,                              // one-line edit
             None => 0.0,
         };
 
@@ -241,23 +244,25 @@ impl TokenDialog {
                 }
             }
             EditingTarget::GitLab(idx) => {
-                if !token.is_empty() {
-                    if let Some((host, has)) = self.gitlab_entries.get_mut(idx) {
-                        self.pending_actions.push(TokenDialogAction::SetGitLabToken {
+                if !token.is_empty()
+                    && let Some((host, has)) = self.gitlab_entries.get_mut(idx)
+                {
+                    self.pending_actions
+                        .push(TokenDialogAction::SetGitLabToken {
                             host: host.clone(),
                             token,
                         });
-                        *has = true;
-                    }
+                    *has = true;
                 }
             }
             EditingTarget::NewGitLab => {
                 let host = self.host_input.text.trim().to_string();
                 if !host.is_empty() && !token.is_empty() {
-                    self.pending_actions.push(TokenDialogAction::SetGitLabToken {
-                        host: host.clone(),
-                        token,
-                    });
+                    self.pending_actions
+                        .push(TokenDialogAction::SetGitLabToken {
+                            host: host.clone(),
+                            token,
+                        });
                     self.gitlab_entries.push((host, true));
                     self.sync_gitlab_buttons();
                 }
@@ -279,9 +284,13 @@ impl TokenDialog {
     }
 
     /// Compute bounds for the edit input and save/cancel buttons.
-    fn edit_input_bounds(&self, dl: &DialogLayout, edit_y: f32, two_line: bool) -> (Rect, Rect, Rect, Rect) {
-        let input_w =
-            dl.dialog.width - dl.padding * 2.0 - dl.btn_w * 2.0 - 16.0 * dl.scale;
+    fn edit_input_bounds(
+        &self,
+        dl: &DialogLayout,
+        edit_y: f32,
+        two_line: bool,
+    ) -> (Rect, Rect, Rect, Rect) {
+        let input_w = dl.dialog.width - dl.padding * 2.0 - dl.btn_w * 2.0 - 16.0 * dl.scale;
 
         if two_line {
             // Host input on first line (full width)
@@ -293,23 +302,34 @@ impl TokenDialog {
             );
             // Token input + buttons on second line
             let token_y = edit_y + dl.line_h + 4.0 * dl.scale;
-            let token_bounds =
-                Rect::new(dl.dialog.x + dl.padding, token_y, input_w, dl.line_h);
+            let token_bounds = Rect::new(dl.dialog.x + dl.padding, token_y, input_w, dl.line_h);
             let btns_x = dl.dialog.x + dl.padding + input_w + 8.0 * dl.scale;
             let save_bounds = Rect::new(btns_x, token_y, dl.btn_w, dl.line_h);
-            let cancel_bounds =
-                Rect::new(btns_x + dl.btn_w + 4.0 * dl.scale, token_y, dl.btn_w, dl.line_h);
+            let cancel_bounds = Rect::new(
+                btns_x + dl.btn_w + 4.0 * dl.scale,
+                token_y,
+                dl.btn_w,
+                dl.line_h,
+            );
             (host_bounds, token_bounds, save_bounds, cancel_bounds)
         } else {
             // Token input + buttons on one line
-            let token_bounds =
-                Rect::new(dl.dialog.x + dl.padding, edit_y, input_w, dl.line_h);
+            let token_bounds = Rect::new(dl.dialog.x + dl.padding, edit_y, input_w, dl.line_h);
             let btns_x = dl.dialog.x + dl.padding + input_w + 8.0 * dl.scale;
             let save_bounds = Rect::new(btns_x, edit_y, dl.btn_w, dl.line_h);
-            let cancel_bounds =
-                Rect::new(btns_x + dl.btn_w + 4.0 * dl.scale, edit_y, dl.btn_w, dl.line_h);
+            let cancel_bounds = Rect::new(
+                btns_x + dl.btn_w + 4.0 * dl.scale,
+                edit_y,
+                dl.btn_w,
+                dl.line_h,
+            );
             // host_bounds unused for single-line — return zero rect
-            (Rect::new(0.0, 0.0, 0.0, 0.0), token_bounds, save_bounds, cancel_bounds)
+            (
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                token_bounds,
+                save_bounds,
+                cancel_bounds,
+            )
         }
     }
 }
@@ -377,7 +397,10 @@ impl Widget for TokenDialog {
                 }
 
                 if self.host_input.is_focused()
-                    && self.host_input.handle_event(event, host_bounds).is_consumed()
+                    && self
+                        .host_input
+                        .handle_event(event, host_bounds)
+                        .is_consumed()
                 {
                     return EventResponse::Consumed;
                 }
@@ -422,8 +445,12 @@ impl Widget for TokenDialog {
             dl.btn_w,
             dl.line_h,
         );
-        let github_clear_bounds =
-            Rect::new(dl.right_edge - dl.btn_w, dl.github_row_y, dl.btn_w, dl.line_h);
+        let github_clear_bounds = Rect::new(
+            dl.right_edge - dl.btn_w,
+            dl.github_row_y,
+            dl.btn_w,
+            dl.line_h,
+        );
 
         if self
             .github_set_button
@@ -458,34 +485,31 @@ impl Widget for TokenDialog {
                 dl.btn_w,
                 dl.line_h,
             );
-            let clear_bounds =
-                Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
+            let clear_bounds = Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
 
-            if let Some(btn) = self.gitlab_set_buttons.get_mut(i) {
-                if btn.handle_event(event, set_bounds).is_consumed() {
-                    if btn.was_clicked() {
-                        self.start_editing(EditingTarget::GitLab(i));
-                    }
-                    return EventResponse::Consumed;
+            if let Some(btn) = self.gitlab_set_buttons.get_mut(i)
+                && btn.handle_event(event, set_bounds).is_consumed()
+            {
+                if btn.was_clicked() {
+                    self.start_editing(EditingTarget::GitLab(i));
                 }
+                return EventResponse::Consumed;
             }
-            if *has_token {
-                if let Some(btn) = self.gitlab_clear_buttons.get_mut(i) {
-                    if btn.handle_event(event, clear_bounds).is_consumed() {
-                        if btn.was_clicked() {
-                            self.pending_actions
-                                .push(TokenDialogAction::RemoveGitLabToken(host.clone()));
-                        }
-                        return EventResponse::Consumed;
-                    }
+            if *has_token
+                && let Some(btn) = self.gitlab_clear_buttons.get_mut(i)
+                && btn.handle_event(event, clear_bounds).is_consumed()
+            {
+                if btn.was_clicked() {
+                    self.pending_actions
+                        .push(TokenDialogAction::RemoveGitLabToken(host.clone()));
                 }
+                return EventResponse::Consumed;
             }
         }
 
         // --- Add GitLab host button ---
         let add_w = 180.0 * dl.scale;
-        let add_bounds =
-            Rect::new(dl.dialog.x + dl.padding, dl.add_button_y, add_w, dl.line_h);
+        let add_bounds = Rect::new(dl.dialog.x + dl.padding, dl.add_button_y, add_w, dl.line_h);
         if self
             .gitlab_add_button
             .handle_event(event, add_bounds)
@@ -499,8 +523,7 @@ impl Widget for TokenDialog {
 
         // --- Close button ---
         let close_w = 80.0 * dl.scale;
-        let close_bounds =
-            Rect::new(dl.right_edge - close_w, dl.close_y, close_w, dl.line_h);
+        let close_bounds = Rect::new(dl.right_edge - close_w, dl.close_y, close_w, dl.line_h);
         if self
             .close_button
             .handle_event(event, close_bounds)
@@ -542,8 +565,7 @@ impl Widget for TokenDialog {
                     dl.btn_w,
                     dl.line_h,
                 );
-                let clear_bounds =
-                    Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
+                let clear_bounds = Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
                 if let Some(btn) = self.gitlab_set_buttons.get_mut(i) {
                     btn.handle_event(event, set_bounds);
                 }
@@ -620,9 +642,12 @@ impl Widget for TokenDialog {
         };
         let status_x =
             dl.dialog.x + dl.padding + text_renderer.measure_text("GitHub") + 12.0 * dl.scale;
-        output.text_vertices.extend(
-            text_renderer.layout_text(status_text, status_x, label_y, status_color),
-        );
+        output.text_vertices.extend(text_renderer.layout_text(
+            status_text,
+            status_x,
+            label_y,
+            status_color,
+        ));
 
         // Set / Clear buttons
         let set_bounds = Rect::new(
@@ -633,12 +658,13 @@ impl Widget for TokenDialog {
         );
         output.extend(self.github_set_button.layout(text_renderer, set_bounds));
         if self.github_has_token {
-            let clear_bounds =
-                Rect::new(dl.right_edge - dl.btn_w, dl.github_row_y, dl.btn_w, dl.line_h);
-            output.extend(
-                self.github_clear_button
-                    .layout(text_renderer, clear_bounds),
+            let clear_bounds = Rect::new(
+                dl.right_edge - dl.btn_w,
+                dl.github_row_y,
+                dl.btn_w,
+                dl.line_h,
             );
+            output.extend(self.github_clear_button.layout(text_renderer, clear_bounds));
         }
 
         // GitHub separator
@@ -715,8 +741,7 @@ impl Widget for TokenDialog {
                 output.extend(btn.layout(text_renderer, set_bounds));
             }
             if *has_token {
-                let clear_bounds =
-                    Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
+                let clear_bounds = Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
                 if let Some(btn) = self.gitlab_clear_buttons.get(i) {
                     output.extend(btn.layout(text_renderer, clear_bounds));
                 }
@@ -737,8 +762,7 @@ impl Widget for TokenDialog {
 
         // Add GitLab host button
         let add_w = 180.0 * dl.scale;
-        let add_bounds =
-            Rect::new(dl.dialog.x + dl.padding, dl.add_button_y, add_w, dl.line_h);
+        let add_bounds = Rect::new(dl.dialog.x + dl.padding, dl.add_button_y, add_w, dl.line_h);
         output.extend(self.gitlab_add_button.layout(text_renderer, add_bounds));
 
         // === Inline edit area ===
@@ -758,36 +782,28 @@ impl Widget for TokenDialog {
                 dl.dialog.width - dl.padding,
                 edit_area_h,
             );
-            output
-                .spline_vertices
-                .extend(create_rounded_rect_vertices(
-                    &edit_bg,
-                    theme::SURFACE.with_alpha(0.9).to_array(),
-                    4.0,
-                ));
-            output
-                .spline_vertices
-                .extend(create_rect_outline_vertices(
-                    &edit_bg,
-                    theme::ACCENT.with_alpha(0.5).to_array(),
-                    1.0,
-                ));
+            output.spline_vertices.extend(create_rounded_rect_vertices(
+                &edit_bg,
+                theme::SURFACE.with_alpha(0.9).to_array(),
+                4.0,
+            ));
+            output.spline_vertices.extend(create_rect_outline_vertices(
+                &edit_bg,
+                theme::ACCENT.with_alpha(0.5).to_array(),
+                1.0,
+            ));
 
             if two_line {
                 output.extend(self.host_input.layout(text_renderer, host_bounds));
             }
             output.extend(self.edit_input.layout(text_renderer, token_bounds));
             output.extend(self.edit_save_button.layout(text_renderer, save_bounds));
-            output.extend(
-                self.edit_cancel_button
-                    .layout(text_renderer, cancel_bounds),
-            );
+            output.extend(self.edit_cancel_button.layout(text_renderer, cancel_bounds));
         }
 
         // === Close button ===
         let close_w = 80.0 * dl.scale;
-        let close_bounds =
-            Rect::new(dl.right_edge - close_w, dl.close_y, close_w, dl.line_h);
+        let close_bounds = Rect::new(dl.right_edge - close_w, dl.close_y, close_w, dl.line_h);
 
         // Button separator
         let btn_sep_y = dl.close_y - 8.0 * dl.scale;

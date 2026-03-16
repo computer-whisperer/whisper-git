@@ -63,7 +63,7 @@ pub fn is_available() -> bool {
         match e.get_password() {
             Ok(_) => true,
             Err(keyring::Error::NoEntry) => true, // backend works, just no entry
-            Err(_) => false,                       // backend broken
+            Err(_) => false,                      // backend broken
         }
     })
 }

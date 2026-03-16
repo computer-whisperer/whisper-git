@@ -92,10 +92,22 @@ mod tests {
 
     #[test]
     fn worse_state_ordering() {
-        assert_eq!(worse_state(CiState::Success, CiState::Failure), CiState::Failure);
-        assert_eq!(worse_state(CiState::Pending, CiState::Success), CiState::Pending);
-        assert_eq!(worse_state(CiState::None, CiState::Success), CiState::Success);
-        assert_eq!(worse_state(CiState::Failure, CiState::Pending), CiState::Failure);
+        assert_eq!(
+            worse_state(CiState::Success, CiState::Failure),
+            CiState::Failure
+        );
+        assert_eq!(
+            worse_state(CiState::Pending, CiState::Success),
+            CiState::Pending
+        );
+        assert_eq!(
+            worse_state(CiState::None, CiState::Success),
+            CiState::Success
+        );
+        assert_eq!(
+            worse_state(CiState::Failure, CiState::Pending),
+            CiState::Failure
+        );
     }
 
     #[test]

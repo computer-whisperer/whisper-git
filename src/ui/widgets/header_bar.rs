@@ -591,31 +591,26 @@ impl HeaderBar {
                     }
 
                     // Provider icon (only in multi-provider mode)
-                    if multi {
-                        if let Some(ir) = icon_renderer {
-                            let icon_key = ci_result.provider.icon();
-                            if let Some(tc) = ir.get_tex_coords(icon_key) {
-                                let icon_size = line_height * 0.7;
-                                let icon_y =
-                                    bounds.y + (bounds.height - icon_size) * 0.5;
-                                output
-                                    .icon_vertices
-                                    .extend(crate::ui::icon::icon_quad(
-                                        x,
-                                        icon_y,
-                                        icon_size,
-                                        icon_size,
-                                        tc,
-                                        [1.0, 1.0, 1.0, 0.7],
-                                    ));
-                                x += icon_size + 4.0 * scale;
-                            }
+                    if multi && let Some(ir) = icon_renderer {
+                        let icon_key = ci_result.provider.icon();
+                        if let Some(tc) = ir.get_tex_coords(icon_key) {
+                            let icon_size = line_height * 0.7;
+                            let icon_y = bounds.y + (bounds.height - icon_size) * 0.5;
+                            output.icon_vertices.extend(crate::ui::icon::icon_quad(
+                                x,
+                                icon_y,
+                                icon_size,
+                                icon_size,
+                                tc,
+                                [1.0, 1.0, 1.0, 0.7],
+                            ));
+                            x += icon_size + 4.0 * scale;
                         }
                     }
 
                     let dot_color = match ci_result.status.state {
-                        CiState::Success => [0.34, 0.80, 0.44, 1.0], // green
-                        CiState::Failure => [0.90, 0.30, 0.30, 1.0], // red
+                        CiState::Success => [0.34, 0.80, 0.44, 1.0],  // green
+                        CiState::Failure => [0.90, 0.30, 0.30, 1.0],  // red
                         CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
                         CiState::None => unreachable!(),
                     };
@@ -913,13 +908,9 @@ impl Widget for HeaderBar {
             .iter()
             .filter(|r| r.status.state != CiState::None)
             .collect();
-        self.ci_hovered = self
-            .ci_indicator_bounds
-            .iter()
-            .enumerate()
-            .any(|(i, b)| {
-                b.contains(x, y) && active.get(i).is_some_and(|r| r.status.url.is_some())
-            });
+        self.ci_hovered = self.ci_indicator_bounds.iter().enumerate().any(|(i, b)| {
+            b.contains(x, y) && active.get(i).is_some_and(|r| r.status.url.is_some())
+        });
 
         // Breadcrumb hover tracking
         if !self.breadcrumb_segments.is_empty() {

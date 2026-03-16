@@ -431,18 +431,17 @@ impl Widget for TextArea {
                                 .get()
                                 .clipboard(LinuxClipboardKind::Primary)
                                 .text()
+                            && !pasted.is_empty()
                         {
-                            if !pasted.is_empty() {
-                                self.delete_selection();
-                                for c in pasted.chars() {
-                                    if c == '\n' || c == '\r' {
-                                        self.insert_newline();
-                                    } else if !c.is_control() {
-                                        self.insert_char(c);
-                                    }
+                            self.delete_selection();
+                            for c in pasted.chars() {
+                                if c == '\n' || c == '\r' {
+                                    self.insert_newline();
+                                } else if !c.is_control() {
+                                    self.insert_char(c);
                                 }
-                                self.modified = true;
                             }
+                            self.modified = true;
                         }
                     }
                     return EventResponse::Consumed;
