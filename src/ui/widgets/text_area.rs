@@ -413,6 +413,41 @@ impl Widget for TextArea {
                     return EventResponse::Consumed;
                 }
             }
+            // Middle-click: paste from primary selection (X11/Wayland)
+            InputEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+                ..
+            } => {
+                if bounds.contains(*x, *y) {
+                    self.state.focused = true;
+                    self.selection_start = None;
+                    #[cfg(target_os = "linux")]
+                    {
+                        use arboard::{GetExtLinux, LinuxClipboardKind};
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(pasted) = clipboard
+                                .get()
+                                .clipboard(LinuxClipboardKind::Primary)
+                                .text()
+                        {
+                            if !pasted.is_empty() {
+                                self.delete_selection();
+                                for c in pasted.chars() {
+                                    if c == '\n' || c == '\r' {
+                                        self.insert_newline();
+                                    } else if !c.is_control() {
+                                        self.insert_char(c);
+                                    }
+                                }
+                                self.modified = true;
+                            }
+                        }
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
             InputEvent::KeyDown {
                 key,
                 modifiers,

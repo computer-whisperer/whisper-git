@@ -281,6 +281,40 @@ impl Widget for TextInput {
                     return EventResponse::Consumed;
                 }
             }
+            // Middle-click: paste from primary selection (X11/Wayland)
+            InputEvent::MouseDown {
+                button: MouseButton::Middle,
+                x,
+                y,
+                ..
+            } => {
+                if bounds.contains(*x, *y) {
+                    self.state.focused = true;
+                    self.selection_start = None;
+                    #[cfg(target_os = "linux")]
+                    {
+                        use arboard::{GetExtLinux, LinuxClipboardKind};
+                        if let Ok(mut clipboard) = arboard::Clipboard::new()
+                            && let Ok(pasted) = clipboard
+                                .get()
+                                .clipboard(LinuxClipboardKind::Primary)
+                                .text()
+                        {
+                            let clean: String = pasted
+                                .chars()
+                                .filter(|c| *c != '\n' && *c != '\r')
+                                .collect();
+                            if !clean.is_empty() {
+                                self.delete_selection();
+                                self.text.insert_str(self.cursor, &clean);
+                                self.cursor += clean.len();
+                                self.modified = true;
+                            }
+                        }
+                    }
+                    return EventResponse::Consumed;
+                }
+            }
             InputEvent::KeyDown {
                 key,
                 modifiers,
