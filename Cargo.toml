@@ -35,10 +35,15 @@ rfd = "0.15"
 # Filesystem watching
 notify = "8"
 
-# Secure credential storage
-keyring = "3"
-
 # Utilities
 bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"
 half = "2.4"
+
+# Secure credential storage (platform-specific backends)
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
