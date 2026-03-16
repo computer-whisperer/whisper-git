@@ -13,6 +13,7 @@ mod gitlab;
 mod input;
 mod messages;
 mod renderer;
+mod token_store;
 mod ui;
 mod views;
 mod watcher;
@@ -64,7 +65,7 @@ use crate::ui::widgets::{
     MergeDialogAction, MergeStrategy, PullDialog, PullDialogAction, PushDialog, PushDialogAction,
     RebaseDialog, RebaseDialogAction, RemoteDialog, RemoteDialogAction, RepoDialog,
     RepoDialogAction, SettingsDialog, SettingsDialogAction, ShortcutBar, ShortcutContext,
-    TabAction, TabBar, ToastManager, ToastSeverity, Tooltip,
+    TabAction, TabBar, ToastManager, ToastSeverity, TokenDialog, TokenDialogAction, Tooltip,
 };
 use crate::ui::{
     AvatarCache, AvatarRenderer, IconRenderer, Rect, ScreenLayout, SplineRenderer, TextRenderer,
@@ -524,6 +525,7 @@ struct App {
     repo_dialog: RepoDialog,
     clone_dialog: CloneDialog,
     settings_dialog: SettingsDialog,
+    token_dialog: TokenDialog,
     confirm_dialog: ConfirmDialog,
     error_dialog: ErrorDialog,
     branch_name_dialog: BranchNameDialog,
@@ -653,7 +655,7 @@ fn build_text_renderers(
 
 impl App {
     fn new(cli_args: CliArgs, proxy: EventLoopProxy<()>) -> Result<Self> {
-        let config = Config::load();
+        let mut config = Config::load();
         let mut tabs = Vec::new();
         let mut tab_bar = TabBar::new();
 
@@ -699,6 +701,30 @@ impl App {
         settings_dialog.ratchet_scroll = config.ratchet_scroll;
         let shortcut_bar_visible = config.shortcut_bar_visible;
         let ai_provider = ai::AiProvider::from_config(&config.ai_provider);
+        let token_dialog = TokenDialog::new();
+
+        // Migrate plaintext tokens from config to system keychain
+        {
+            let has_plaintext = config.github_token.is_some()
+                || !config.gitlab_tokens.is_empty();
+            if has_plaintext && token_store::is_available() {
+                let (migrated, errors) = token_store::migrate_from_config(
+                    config.github_token.as_deref(),
+                    &config.gitlab_tokens,
+                );
+                if migrated > 0 {
+                    // Clear plaintext token values but keep host keys as registry
+                    config.github_token = None;
+                    for value in config.gitlab_tokens.values_mut() {
+                        *value = String::new();
+                    }
+                    let _ = config.save();
+                }
+                for err in errors {
+                    eprintln!("Token migration warning: {err}");
+                }
+            }
+        }
 
         Ok(Self {
             cli_args,
@@ -709,6 +735,7 @@ impl App {
             repo_dialog: RepoDialog::new(),
             clone_dialog: CloneDialog::new(),
             settings_dialog,
+            token_dialog,
             confirm_dialog: ConfirmDialog::new(),
             error_dialog: ErrorDialog::new(),
             branch_name_dialog: BranchNameDialog::new(),
@@ -1915,6 +1942,87 @@ impl App {
         );
     }
 
+    /// Open the token management dialog with current keychain state.
+    fn open_token_dialog(&mut self) {
+        let github_has_token = token_store::get_github_token().is_some()
+            || self
+                .config
+                .github_token
+                .as_ref()
+                .is_some_and(|t| !t.is_empty());
+
+        // Collect known GitLab hosts from keychain + config
+        let mut gitlab_hosts: Vec<(String, bool)> = Vec::new();
+        // From config (may still have hosts listed even if tokens migrated)
+        for host in self.config.gitlab_tokens.keys() {
+            let has_token = token_store::get_gitlab_token(host).is_some()
+                || self
+                    .config
+                    .gitlab_tokens
+                    .get(host)
+                    .is_some_and(|t| !t.is_empty());
+            gitlab_hosts.push((host.clone(), has_token));
+        }
+        self.token_dialog.show(github_has_token, gitlab_hosts);
+    }
+
+    /// Handle an action from the token dialog.
+    fn handle_token_action(&mut self, action: TokenDialogAction) {
+        match action {
+            TokenDialogAction::Close => {}
+            TokenDialogAction::SetGitHubToken(token) => {
+                if token.is_empty() {
+                    // Clear
+                    token_store::delete_github_token();
+                    self.config.github_token = None;
+                    let _ = self.config.save();
+                    self.toast_manager
+                        .push("GitHub token removed", ToastSeverity::Success);
+                } else if token_store::set_github_token(&token) {
+                    // Stored in keychain — clear plaintext
+                    self.config.github_token = None;
+                    let _ = self.config.save();
+                    self.toast_manager
+                        .push("GitHub token saved to keychain", ToastSeverity::Success);
+                } else {
+                    // Keychain unavailable — fall back to plaintext
+                    self.config.github_token = Some(token);
+                    let _ = self.config.save();
+                    self.toast_manager
+                        .push("GitHub token saved to config (keychain unavailable)", ToastSeverity::Success);
+                }
+            }
+            TokenDialogAction::SetGitLabToken { host, token } => {
+                if token_store::set_gitlab_token(&host, &token) {
+                    // Keep host in config as registry (empty value = stored in keychain)
+                    self.config.gitlab_tokens.insert(host.clone(), String::new());
+                    let _ = self.config.save();
+                    self.toast_manager.push(
+                        format!("GitLab token for {host} saved to keychain"),
+                        ToastSeverity::Success,
+                    );
+                } else {
+                    // Fallback to plaintext
+                    self.config.gitlab_tokens.insert(host.clone(), token);
+                    let _ = self.config.save();
+                    self.toast_manager.push(
+                        format!("GitLab token for {host} saved to config (keychain unavailable)"),
+                        ToastSeverity::Success,
+                    );
+                }
+            }
+            TokenDialogAction::RemoveGitLabToken(host) => {
+                token_store::delete_gitlab_token(&host);
+                self.config.gitlab_tokens.remove(&host);
+                let _ = self.config.save();
+                self.toast_manager.push(
+                    format!("GitLab token for {host} removed"),
+                    ToastSeverity::Success,
+                );
+            }
+        }
+    }
+
     fn close_tab(&mut self, index: usize) {
         if self.tabs.len() <= 1 {
             return; // Don't close the last tab
@@ -2199,7 +2307,20 @@ impl App {
                             self.trigger_repo_state_refresh();
                         }
                     }
+                    SettingsDialogAction::ManageTokens => {
+                        self.open_token_dialog();
+                    }
                 }
+            }
+            return true;
+        }
+
+        // Token dialog takes priority (modal, opened from settings)
+        if self.token_dialog.is_visible() {
+            self.token_dialog
+                .handle_event(input_event, screen_bounds);
+            for action in self.token_dialog.take_actions() {
+                self.handle_token_action(action);
             }
             return true;
         }
@@ -2378,7 +2499,9 @@ impl App {
         }
         // Ctrl+Shift+O: clone repo
         if *key == Key::O && modifiers.ctrl && modifiers.shift && !modifiers.alt {
-            self.clone_dialog.show(self.config.github_token.as_deref());
+            let gh_token = token_store::get_github_token()
+                .or_else(|| self.config.github_token.clone());
+            self.clone_dialog.show(gh_token.as_deref());
             return true;
         }
         // Ctrl+W: close tab
@@ -2613,29 +2736,37 @@ fn trigger_ci_fetch(
     let mut receivers = Vec::new();
 
     // GitHub: try to find a GitHub remote and fetch CI
-    if let Some(token) = config.github_token.as_deref().filter(|t| !t.is_empty()) {
+    // Check keychain first, fall back to plaintext config
+    let github_token = token_store::get_github_token()
+        .or_else(|| config.github_token.clone())
+        .filter(|t| !t.is_empty());
+    if let Some(token) = github_token {
         if let Some(url) = remote_urls
             .iter()
             .find(|u| github::parse_github_remote(u).is_some())
         {
-            if let Some(rx) = github::fetch_ci_status_async(token, url, proxy.clone()) {
+            if let Some(rx) = github::fetch_ci_status_async(&token, url, proxy.clone()) {
                 receivers.push(rx);
             }
         }
     }
 
     // GitLab: try to find a GitLab remote with a matching token
-    if !config.gitlab_tokens.is_empty() {
-        for url in &remote_urls {
-            if let Some(remote) = gitlab::parse_gitlab_remote(url) {
-                if let Some(token) = config.gitlab_token_for_host(&remote.api_base) {
-                    if let Some(rx) =
-                        gitlab::fetch_ci_status_async(token, url, proxy.clone())
-                    {
-                        receivers.push(rx);
-                    }
-                    break;
+    for url in &remote_urls {
+        if let Some(remote) = gitlab::parse_gitlab_remote(url) {
+            // Check keychain first, fall back to plaintext config
+            let token = token_store::get_gitlab_token(
+                remote.api_base.strip_prefix("https://").unwrap_or(&remote.api_base),
+            )
+            .or_else(|| config.gitlab_token_for_host(&remote.api_base).map(|s| s.to_string()))
+            .filter(|t| !t.is_empty());
+            if let Some(token) = token {
+                if let Some(rx) =
+                    gitlab::fetch_ci_status_async(&token, url, proxy.clone())
+                {
+                    receivers.push(rx);
                 }
+                break;
             }
         }
     }
@@ -3999,15 +4130,10 @@ impl ApplicationHandler for App {
         merge(self.last_ref_check + Duration::from_secs(5));
 
         // 6. CI status polling timer
-        let has_any_token = self
-            .config
-            .github_token
-            .as_ref()
-            .is_some_and(|t| !t.is_empty())
-            || !self.config.gitlab_tokens.is_empty();
+        // Continue polling if we already have CI results (tokens may be in keychain, not config)
         if let Some((_, vs)) = self.tabs.get(self.active_tab)
             && vs.ci_receivers.is_empty()
-            && has_any_token
+            && !vs.ci_results.is_empty()
         {
             let any_pending = vs
                 .ci_results
@@ -4061,6 +4187,9 @@ impl App {
             return true;
         }
         if self.repo_dialog.is_visible() {
+            return true;
+        }
+        if self.token_dialog.is_visible() {
             return true;
         }
         false
@@ -5543,6 +5672,7 @@ fn build_ui_output(
     repo_dialog: &RepoDialog,
     clone_dialog: &CloneDialog,
     settings_dialog: &SettingsDialog,
+    token_dialog: &TokenDialog,
     confirm_dialog: &ConfirmDialog,
     error_dialog: &ErrorDialog,
     branch_name_dialog: &BranchNameDialog,
@@ -5894,6 +6024,11 @@ fn build_ui_output(
         ));
     }
 
+    // Token dialog (overlay layer - on top of settings)
+    if token_dialog.is_visible() {
+        overlay_output.extend(token_dialog.layout(text_renderer, screen_bounds));
+    }
+
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
         overlay_output.extend(confirm_dialog.layout_with_bold(
@@ -6125,6 +6260,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
+        &app.token_dialog,
         &app.confirm_dialog,
         &app.error_dialog,
         &app.branch_name_dialog,
@@ -6344,6 +6480,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
+        &app.token_dialog,
         &app.confirm_dialog,
         &app.error_dialog,
         &app.branch_name_dialog,
@@ -6499,6 +6636,7 @@ fn capture_screenshot_offscreen(
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
+        &app.token_dialog,
         &app.confirm_dialog,
         &app.error_dialog,
         &app.branch_name_dialog,

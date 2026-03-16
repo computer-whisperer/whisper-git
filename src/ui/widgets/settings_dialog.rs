@@ -12,12 +12,14 @@ use crate::ui::{Rect, TextRenderer};
 #[derive(Clone, Debug)]
 pub enum SettingsDialogAction {
     Close,
+    ManageTokens,
 }
 
 /// A modal dialog for configuring application settings
 pub struct SettingsDialog {
     visible: bool,
     close_button: Button,
+    manage_tokens_button: Button,
     pending_action: Option<SettingsDialogAction>,
     // Settings state:
     pub show_avatars: bool,
@@ -34,6 +36,7 @@ impl SettingsDialog {
         Self {
             visible: false,
             close_button: Button::new("Close"),
+            manage_tokens_button: Button::new("Manage Tokens"),
             pending_action: None,
             show_avatars: true,
             scroll_speed: 1.0,
@@ -64,7 +67,7 @@ impl SettingsDialog {
     /// Compute dialog bounds centered in screen
     fn dialog_bounds(&self, screen: Rect, scale: f32) -> Rect {
         let dialog_w = (450.0 * scale).min(screen.width * 0.8);
-        let dialog_h = (590.0 * scale).min(screen.height * 0.8);
+        let dialog_h = (640.0 * scale).min(screen.height * 0.8);
         let dialog_x = screen.x + (screen.width - dialog_w) / 2.0;
         let dialog_y = screen.y + (screen.height - dialog_h) / 2.0;
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
@@ -136,6 +139,11 @@ impl Widget for SettingsDialog {
             self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
         let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
+
+        // Manage Tokens button bounds (after last setting row)
+        let tokens_y = row7_y + line_h + row_gap + 4.0 * scale;
+        let tokens_w = 160.0 * scale;
+        let tokens_bounds = Rect::new(dialog.x + padding, tokens_y, tokens_w, line_h);
 
         // Close button bounds
         let button_y = dialog.bottom() - padding - line_h;
@@ -227,6 +235,18 @@ impl Widget for SettingsDialog {
                 self.ratchet_scroll = false;
                 return EventResponse::Consumed;
             }
+        }
+
+        // Route to Manage Tokens button
+        if self
+            .manage_tokens_button
+            .handle_event(event, tokens_bounds)
+            .is_consumed()
+        {
+            if self.manage_tokens_button.was_clicked() {
+                self.pending_action = Some(SettingsDialogAction::ManageTokens);
+            }
+            return EventResponse::Consumed;
         }
 
         // Route to close button
@@ -561,6 +581,15 @@ impl SettingsDialog {
             &gs_smooth,
             "Smooth",
             !self.ratchet_scroll,
+        );
+
+        // Manage Tokens button
+        let tokens_y = row7_y + line_h + row_gap + 4.0 * scale;
+        let tokens_w = 160.0 * scale;
+        let tokens_bounds = Rect::new(dialog.x + padding, tokens_y, tokens_w, line_h);
+        output.extend(
+            self.manage_tokens_button
+                .layout(text_renderer, tokens_bounds),
         );
 
         // Close button at bottom

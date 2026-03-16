@@ -35,6 +35,9 @@ rfd = "0.15"
 # Filesystem watching
 notify = "8"
 
+# Secure credential storage
+keyring = "3"
+
 # Utilities
 bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"
