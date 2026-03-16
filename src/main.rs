@@ -516,6 +516,24 @@ enum DividerDrag {
     StagingPreview,
 }
 
+/// Which modal dialog is currently receiving events.
+/// Only one modal is active at a time. Rendering uses dialog `visible` flags independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveModal {
+    Settings,
+    TokenManager,
+    Confirm,
+    Error,
+    BranchName,
+    Remote,
+    Pull,
+    Push,
+    Merge,
+    Rebase,
+    RepoDialog,
+    CloneDialog,
+}
+
 struct App {
     cli_args: CliArgs,
     config: Config,
@@ -534,6 +552,11 @@ struct App {
     rebase_dialog: RebaseDialog,
     pull_dialog: PullDialog,
     push_dialog: PushDialog,
+    /// Which modal dialog is active (receives events). None = no modal open.
+    active_modal: Option<ActiveModal>,
+    /// Modal that was active before an interrupt (Error/Confirm) opened.
+    /// Restored when the interrupt modal closes.
+    interrupted_modal: Option<ActiveModal>,
     pending_confirm_action: Option<AppMessage>,
     toast_manager: ToastManager,
     tooltip: Tooltip,
@@ -744,6 +767,8 @@ impl App {
             rebase_dialog: RebaseDialog::new(),
             pull_dialog: PullDialog::new(),
             push_dialog: PushDialog::new(),
+            active_modal: None,
+            interrupted_modal: None,
             pending_confirm_action: None,
             toast_manager: ToastManager::new(),
             tooltip: Tooltip::new(),
@@ -1297,6 +1322,7 @@ impl App {
                     .default_remote()
                     .unwrap_or_else(|_| "origin".to_string());
                 self.pull_dialog.show(branch, &default_remote);
+                self.active_modal = Some(ActiveModal::Pull);
                 false
             } else if let AppMessage::ShowPushDialog(branch) = msg {
                 let repo = &repo_tab.repo;
@@ -1304,6 +1330,7 @@ impl App {
                     .default_remote()
                     .unwrap_or_else(|_| "origin".to_string());
                 self.push_dialog.show(branch, &default_remote);
+                self.active_modal = Some(ActiveModal::Push);
                 false
             } else if matches!(msg, AppMessage::AiGenerateCommitMessage) {
                 // Inline AI generation (can't call method due to borrow conflict with repo_tab/view_state)
@@ -1641,6 +1668,8 @@ impl App {
                             &summary,
                             &raw_stderr,
                         );
+                        self.interrupted_modal = self.active_modal.take();
+                        self.active_modal = Some(ActiveModal::Error);
                         // Refresh even on failure: a failed pull still fetches refs,
                         // a failed merge may leave the repo in a new state, etc.
                         needs_repo_refresh = true;
@@ -1654,6 +1683,8 @@ impl App {
                             ),
                             "",
                         );
+                        self.interrupted_modal = self.active_modal.take();
+                        self.active_modal = Some(ActiveModal::Error);
                     }
                     AsyncOpPoll::Timeout => {
                         self.toast_manager.push(
@@ -1738,6 +1769,8 @@ impl App {
                         let (msg, _) = git::classify_git_error(&label, &result.error);
                         self.error_dialog
                             .show(&format!("{} Failed", label), &msg, &result.error);
+                        self.interrupted_modal = self.active_modal.take();
+                        self.active_modal = Some(ActiveModal::Error);
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -1751,6 +1784,8 @@ impl App {
                         ),
                         "",
                     );
+                    self.interrupted_modal = self.active_modal.take();
+                    self.active_modal = Some(ActiveModal::Error);
                 }
                 Err(TryRecvError::Empty) => {
                     if now.duration_since(started).as_secs() >= TIMEOUT_SECS
@@ -1942,6 +1977,45 @@ impl App {
         );
     }
 
+    /// Apply settings dialog values to config and views.
+    fn apply_settings_changes(&mut self) {
+        let row_scale = self.settings_dialog.row_scale;
+        let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
+        let time_strength = self.settings_dialog.time_spacing_strength;
+        let fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
+        let ratchet_scroll = self.settings_dialog.ratchet_scroll;
+        let orphans_changed =
+            self.config.show_orphaned_commits != self.settings_dialog.show_orphaned_commits;
+        if let Some(ref state) = self.state {
+            for (repo_tab, view_state) in &mut self.tabs {
+                view_state.commit_graph_view.row_scale = row_scale;
+                view_state.commit_graph_view.abbreviate_worktree_names = abbreviate_wt;
+                view_state.commit_graph_view.time_spacing_strength = time_strength;
+                view_state.commit_graph_view.fast_scroll = fast_scroll;
+                view_state.commit_graph_view.ratchet_scroll = ratchet_scroll;
+                view_state
+                    .commit_graph_view
+                    .sync_metrics(&state.text_renderer);
+                view_state
+                    .commit_graph_view
+                    .compute_row_offsets(&repo_tab.commits);
+            }
+        }
+        self.config.avatars_enabled = self.settings_dialog.show_avatars;
+        self.config.fast_scroll = fast_scroll;
+        self.config.row_scale = self.settings_dialog.row_scale;
+        self.config.abbreviate_worktree_names = self.settings_dialog.abbreviate_worktree_names;
+        self.config.time_spacing_strength = self.settings_dialog.time_spacing_strength;
+        self.config.show_orphaned_commits = self.settings_dialog.show_orphaned_commits;
+        self.config.ratchet_scroll = self.settings_dialog.ratchet_scroll;
+        if let Err(e) = self.config.save() {
+            self.toast_manager.push(e, ToastSeverity::Error);
+        }
+        if orphans_changed {
+            self.trigger_repo_state_refresh();
+        }
+    }
+
     /// Open the token management dialog with current keychain state.
     fn open_token_dialog(&mut self) {
         let github_has_token = token_store::get_github_token().is_some()
@@ -1964,6 +2038,7 @@ impl App {
             gitlab_hosts.push((host.clone(), has_token));
         }
         self.token_dialog.show(github_has_token, gitlab_hosts);
+        self.active_modal = Some(ActiveModal::TokenManager);
     }
 
     /// Handle an action from the token dialog.
@@ -2045,304 +2120,389 @@ impl App {
 
     /// Handle events for modal dialogs (confirm, branch name, remote, settings, repo, toast, context menu).
     /// Returns true if the event was consumed by a modal.
+    /// Set the active modal, hiding the previous one.
+    fn set_active_modal(&mut self, modal: ActiveModal) {
+        if let Some(prev) = self.active_modal.take() {
+            self.set_modal_visible(prev, false);
+        }
+        self.set_modal_visible(modal, true);
+        self.active_modal = Some(modal);
+    }
+
+    /// Close the active modal.
+    fn close_active_modal(&mut self) {
+        if let Some(modal) = self.active_modal.take() {
+            self.set_modal_visible(modal, false);
+        }
+    }
+
+    /// Open an interrupt modal (Error/Confirm) that will restore the previous modal on close.
+    fn open_interrupt_modal(&mut self, modal: ActiveModal) {
+        self.interrupted_modal = self.active_modal.take();
+        if let Some(prev) = self.interrupted_modal {
+            self.set_modal_visible(prev, false);
+        }
+        self.set_modal_visible(modal, true);
+        self.active_modal = Some(modal);
+    }
+
+    /// Close an interrupt modal and restore whatever was active before.
+    fn close_interrupt_modal(&mut self) {
+        if let Some(modal) = self.active_modal.take() {
+            self.set_modal_visible(modal, false);
+        }
+        if let Some(prev) = self.interrupted_modal.take() {
+            self.set_modal_visible(prev, true);
+            self.active_modal = Some(prev);
+        }
+    }
+
+    /// Set the visible flag on a dialog by modal variant.
+    fn set_modal_visible(&mut self, modal: ActiveModal, visible: bool) {
+        match modal {
+            ActiveModal::Settings => {
+                if visible {
+                    // show() is idempotent — just sets visible=true
+                    self.settings_dialog.show();
+                } else {
+                    self.settings_dialog.hide();
+                }
+            }
+            ActiveModal::TokenManager => {
+                if !visible {
+                    self.token_dialog.hide();
+                }
+                // show() requires params — handled by open_token_dialog()
+            }
+            ActiveModal::Confirm => {
+                if !visible {
+                    self.confirm_dialog.hide();
+                }
+            }
+            ActiveModal::Error => {
+                if !visible {
+                    self.error_dialog.hide();
+                }
+            }
+            ActiveModal::BranchName => {
+                if !visible {
+                    self.branch_name_dialog.hide();
+                }
+            }
+            ActiveModal::Remote => {
+                if !visible {
+                    self.remote_dialog.hide();
+                }
+            }
+            ActiveModal::Pull => {
+                if !visible {
+                    self.pull_dialog.hide();
+                }
+            }
+            ActiveModal::Push => {
+                if !visible {
+                    self.push_dialog.hide();
+                }
+            }
+            ActiveModal::Merge => {
+                if !visible {
+                    self.merge_dialog.hide();
+                }
+            }
+            ActiveModal::Rebase => {
+                if !visible {
+                    self.rebase_dialog.hide();
+                }
+            }
+            ActiveModal::RepoDialog => {
+                if !visible {
+                    self.repo_dialog.hide();
+                }
+            }
+            ActiveModal::CloneDialog => {
+                if !visible {
+                    self.clone_dialog.hide();
+                }
+            }
+        }
+    }
+
     fn handle_modal_events(&mut self, input_event: &InputEvent, screen_bounds: Rect) -> bool {
-        // Confirm dialog takes highest modal priority
-        if self.confirm_dialog.is_visible() {
-            self.confirm_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.confirm_dialog.take_action() {
-                match action {
-                    ConfirmDialogAction::Confirm => {
-                        if let Some(msg) = self.pending_confirm_action.take()
-                            && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
-                        {
-                            view_state.pending_messages.push(msg);
-                        }
-                    }
-                    ConfirmDialogAction::Cancel => {
-                        self.pending_confirm_action = None;
-                    }
-                }
-            }
-            return true;
-        }
+        let Some(modal) = self.active_modal else {
+            // No modal active — check non-modal overlays
+            return self.handle_overlay_events(input_event, screen_bounds);
+        };
 
-        // Error dialog takes high modal priority (dismiss-only, no action routing)
-        if self.error_dialog.is_visible() {
-            self.error_dialog.handle_event(input_event, screen_bounds);
-            return true;
-        }
-
-        // Branch name dialog takes modal priority
-        if self.branch_name_dialog.is_visible() {
-            let is_tag = self.branch_name_dialog.title().contains("Tag");
-            self.branch_name_dialog
-                .handle_event(input_event, screen_bounds);
-            if let Some(action) = self.branch_name_dialog.take_action() {
-                match action {
-                    BranchNameDialogAction::Create(name, oid) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            if is_tag {
-                                view_state
-                                    .pending_messages
-                                    .push(AppMessage::CreateTag(name, oid));
-                            } else {
-                                view_state
-                                    .pending_messages
-                                    .push(AppMessage::CreateBranch(name, oid));
+        match modal {
+            ActiveModal::Confirm => {
+                self.confirm_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.confirm_dialog.take_action() {
+                    match action {
+                        ConfirmDialogAction::Confirm => {
+                            if let Some(msg) = self.pending_confirm_action.take()
+                                && let Some((_, view_state)) = self.tabs.get_mut(self.active_tab)
+                            {
+                                view_state.pending_messages.push(msg);
                             }
                         }
-                    }
-                    BranchNameDialogAction::CreateWorktree(
-                        name,
-                        source,
-                        init_submodules,
-                        checkout_lfs,
-                    ) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::CreateWorktree(
-                                name,
-                                source,
-                                init_submodules,
-                                checkout_lfs,
-                            ));
+                        ConfirmDialogAction::Cancel => {
+                            self.pending_confirm_action = None;
                         }
                     }
-                    BranchNameDialogAction::Rename(new_name, old_name) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::RenameBranch(old_name, new_name));
-                        }
-                    }
-                    BranchNameDialogAction::Cancel => {}
+                    self.close_interrupt_modal();
                 }
             }
-            return true;
-        }
 
-        // Remote dialog takes modal priority
-        if self.remote_dialog.is_visible() {
-            self.remote_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.remote_dialog.take_action() {
-                match action {
-                    RemoteDialogAction::AddRemote(name, url) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::AddRemote(name, url));
-                        }
-                    }
-                    RemoteDialogAction::EditUrl(name, url) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::SetRemoteUrl(name, url));
-                        }
-                    }
-                    RemoteDialogAction::Rename(old_name, new_name) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::RenameRemote(old_name, new_name));
-                        }
-                    }
-                    RemoteDialogAction::Cancel => {}
+            ActiveModal::Error => {
+                self.error_dialog.handle_event(input_event, screen_bounds);
+                if !self.error_dialog.is_visible() {
+                    self.close_interrupt_modal();
                 }
             }
-            return true;
-        }
 
-        // Pull dialog takes modal priority
-        if self.pull_dialog.is_visible() {
-            self.pull_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.pull_dialog.take_action() {
-                match action {
-                    PullDialogAction::Confirm {
-                        remote,
-                        branch,
-                        rebase,
-                    } => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::PullBranchFrom {
-                                    remote,
-                                    branch,
-                                    rebase,
-                                });
-                        }
-                    }
-                    PullDialogAction::Cancel => {}
-                }
-            }
-            return true;
-        }
-
-        // Push dialog takes modal priority
-        if self.push_dialog.is_visible() {
-            self.push_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.push_dialog.take_action() {
-                match action {
-                    PushDialogAction::Confirm {
-                        local_branch,
-                        remote,
-                        remote_branch,
-                        force,
-                    } => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state.pending_messages.push(AppMessage::PushBranchTo {
-                                local_branch,
-                                remote,
-                                remote_branch,
-                                force,
-                            });
-                        }
-                    }
-                    PushDialogAction::Cancel => {}
-                }
-            }
-            return true;
-        }
-
-        // Merge dialog takes modal priority
-        if self.merge_dialog.is_visible() {
-            self.merge_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.merge_dialog.take_action() {
-                match action {
-                    MergeDialogAction::Confirm(branch, strategy, message, target_dir) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            let msg = match strategy {
-                                MergeStrategy::Default => {
-                                    AppMessage::MergeBranch(branch, target_dir)
+            ActiveModal::BranchName => {
+                let is_tag = self.branch_name_dialog.title().contains("Tag");
+                self.branch_name_dialog
+                    .handle_event(input_event, screen_bounds);
+                if let Some(action) = self.branch_name_dialog.take_action() {
+                    match action {
+                        BranchNameDialogAction::Create(name, oid) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                if is_tag {
+                                    view_state
+                                        .pending_messages
+                                        .push(AppMessage::CreateTag(name, oid));
+                                } else {
+                                    view_state
+                                        .pending_messages
+                                        .push(AppMessage::CreateBranch(name, oid));
                                 }
-                                MergeStrategy::NoFastForward => {
-                                    let commit_msg = message
-                                        .unwrap_or_else(|| format!("Merge branch '{}'", branch));
-                                    AppMessage::MergeNoFf(branch, commit_msg, target_dir)
-                                }
-                                MergeStrategy::FastForwardOnly => {
-                                    AppMessage::MergeFfOnly(branch, target_dir)
-                                }
-                                MergeStrategy::Squash => {
-                                    AppMessage::MergeSquash(branch, target_dir)
-                                }
-                            };
-                            view_state.pending_messages.push(msg);
+                            }
                         }
-                    }
-                    MergeDialogAction::Cancel => {}
-                }
-            }
-            return true;
-        }
-
-        // Rebase dialog takes modal priority
-        if self.rebase_dialog.is_visible() {
-            self.rebase_dialog.handle_event(input_event, screen_bounds);
-            if let Some(action) = self.rebase_dialog.take_action() {
-                match action {
-                    RebaseDialogAction::Confirm(branch, opts, target_dir) => {
-                        if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            view_state
-                                .pending_messages
-                                .push(AppMessage::RebaseBranchWithOptions(
-                                    branch,
-                                    opts.autostash,
-                                    opts.rebase_merges,
-                                    target_dir,
+                        BranchNameDialogAction::CreateWorktree(
+                            name,
+                            source,
+                            init_submodules,
+                            checkout_lfs,
+                        ) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state.pending_messages.push(AppMessage::CreateWorktree(
+                                    name,
+                                    source,
+                                    init_submodules,
+                                    checkout_lfs,
                                 ));
-                        }
-                    }
-                    RebaseDialogAction::Cancel => {}
-                }
-            }
-            return true;
-        }
-
-        // Settings dialog takes priority (modal)
-        if self.settings_dialog.is_visible() {
-            self.settings_dialog
-                .handle_event(input_event, screen_bounds);
-            if let Some(action) = self.settings_dialog.take_action() {
-                match action {
-                    SettingsDialogAction::Close => {
-                        let row_scale = self.settings_dialog.row_scale;
-                        let abbreviate_wt = self.settings_dialog.abbreviate_worktree_names;
-                        let time_strength = self.settings_dialog.time_spacing_strength;
-                        let fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
-                        let ratchet_scroll = self.settings_dialog.ratchet_scroll;
-                        let orphans_changed = self.config.show_orphaned_commits
-                            != self.settings_dialog.show_orphaned_commits;
-                        if let Some(ref state) = self.state {
-                            for (repo_tab, view_state) in &mut self.tabs {
-                                view_state.commit_graph_view.row_scale = row_scale;
-                                view_state.commit_graph_view.abbreviate_worktree_names =
-                                    abbreviate_wt;
-                                view_state.commit_graph_view.time_spacing_strength = time_strength;
-                                view_state.commit_graph_view.fast_scroll = fast_scroll;
-                                view_state.commit_graph_view.ratchet_scroll = ratchet_scroll;
-                                view_state
-                                    .commit_graph_view
-                                    .sync_metrics(&state.text_renderer);
-                                view_state
-                                    .commit_graph_view
-                                    .compute_row_offsets(&repo_tab.commits);
                             }
                         }
-                        self.config.avatars_enabled = self.settings_dialog.show_avatars;
-                        self.config.fast_scroll = self.settings_dialog.scroll_speed >= 1.5;
-                        self.config.row_scale = self.settings_dialog.row_scale;
-                        self.config.abbreviate_worktree_names =
-                            self.settings_dialog.abbreviate_worktree_names;
-                        self.config.time_spacing_strength =
-                            self.settings_dialog.time_spacing_strength;
-                        self.config.show_orphaned_commits =
-                            self.settings_dialog.show_orphaned_commits;
-                        self.config.ratchet_scroll = self.settings_dialog.ratchet_scroll;
-                        if let Err(e) = self.config.save() {
-                            self.toast_manager.push(e, ToastSeverity::Error);
+                        BranchNameDialogAction::Rename(new_name, old_name) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::RenameBranch(old_name, new_name));
+                            }
                         }
-                        // Reload commits if orphan visibility changed
-                        if orphans_changed {
-                            self.trigger_repo_state_refresh();
-                        }
+                        BranchNameDialogAction::Cancel => {}
                     }
-                    SettingsDialogAction::ManageTokens => {
-                        self.open_token_dialog();
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Remote => {
+                self.remote_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.remote_dialog.take_action() {
+                    match action {
+                        RemoteDialogAction::AddRemote(name, url) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::AddRemote(name, url));
+                            }
+                        }
+                        RemoteDialogAction::EditUrl(name, url) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::SetRemoteUrl(name, url));
+                            }
+                        }
+                        RemoteDialogAction::Rename(old_name, new_name) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::RenameRemote(old_name, new_name));
+                            }
+                        }
+                        RemoteDialogAction::Cancel => {}
+                    }
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Pull => {
+                self.pull_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.pull_dialog.take_action() {
+                    match action {
+                        PullDialogAction::Confirm {
+                            remote,
+                            branch,
+                            rebase,
+                        } => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::PullBranchFrom {
+                                        remote,
+                                        branch,
+                                        rebase,
+                                    });
+                            }
+                        }
+                        PullDialogAction::Cancel => {}
+                    }
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Push => {
+                self.push_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.push_dialog.take_action() {
+                    match action {
+                        PushDialogAction::Confirm {
+                            local_branch,
+                            remote,
+                            remote_branch,
+                            force,
+                        } => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state.pending_messages.push(AppMessage::PushBranchTo {
+                                    local_branch,
+                                    remote,
+                                    remote_branch,
+                                    force,
+                                });
+                            }
+                        }
+                        PushDialogAction::Cancel => {}
+                    }
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Merge => {
+                self.merge_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.merge_dialog.take_action() {
+                    match action {
+                        MergeDialogAction::Confirm(branch, strategy, message, target_dir) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                let msg = match strategy {
+                                    MergeStrategy::Default => {
+                                        AppMessage::MergeBranch(branch, target_dir)
+                                    }
+                                    MergeStrategy::NoFastForward => {
+                                        let commit_msg = message.unwrap_or_else(|| {
+                                            format!("Merge branch '{}'", branch)
+                                        });
+                                        AppMessage::MergeNoFf(branch, commit_msg, target_dir)
+                                    }
+                                    MergeStrategy::FastForwardOnly => {
+                                        AppMessage::MergeFfOnly(branch, target_dir)
+                                    }
+                                    MergeStrategy::Squash => {
+                                        AppMessage::MergeSquash(branch, target_dir)
+                                    }
+                                };
+                                view_state.pending_messages.push(msg);
+                            }
+                        }
+                        MergeDialogAction::Cancel => {}
+                    }
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Rebase => {
+                self.rebase_dialog.handle_event(input_event, screen_bounds);
+                if let Some(action) = self.rebase_dialog.take_action() {
+                    match action {
+                        RebaseDialogAction::Confirm(branch, opts, target_dir) => {
+                            if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                                view_state
+                                    .pending_messages
+                                    .push(AppMessage::RebaseBranchWithOptions(
+                                        branch,
+                                        opts.autostash,
+                                        opts.rebase_merges,
+                                        target_dir,
+                                    ));
+                            }
+                        }
+                        RebaseDialogAction::Cancel => {}
+                    }
+                    self.close_active_modal();
+                }
+            }
+
+            ActiveModal::Settings => {
+                self.settings_dialog
+                    .handle_event(input_event, screen_bounds);
+                if let Some(action) = self.settings_dialog.take_action() {
+                    match action {
+                        SettingsDialogAction::Close => {
+                            self.apply_settings_changes();
+                            self.close_active_modal();
+                        }
+                        SettingsDialogAction::ManageTokens => {
+                            // Transition: Settings → TokenManager
+                            self.settings_dialog.hide();
+                            self.open_token_dialog();
+                            // active_modal is now TokenManager (set by open_token_dialog)
+                        }
                     }
                 }
             }
-            return true;
-        }
 
-        // Token dialog takes priority (modal, opened from settings)
-        if self.token_dialog.is_visible() {
-            self.token_dialog
-                .handle_event(input_event, screen_bounds);
-            for action in self.token_dialog.take_actions() {
-                self.handle_token_action(action);
+            ActiveModal::TokenManager => {
+                self.token_dialog
+                    .handle_event(input_event, screen_bounds);
+                for action in self.token_dialog.take_actions() {
+                    match action {
+                        TokenDialogAction::Close => {
+                            // Transition: TokenManager → Settings
+                            self.token_dialog.hide();
+                            self.settings_dialog.show();
+                            self.active_modal = Some(ActiveModal::Settings);
+                        }
+                        other => self.handle_token_action(other),
+                    }
+                }
             }
-            return true;
+
+            ActiveModal::RepoDialog => {
+                self.repo_dialog.handle_event(input_event, screen_bounds);
+                if !self.repo_dialog.is_visible() {
+                    self.active_modal = None;
+                }
+            }
+
+            ActiveModal::CloneDialog => {
+                self.clone_dialog.handle_event(input_event, screen_bounds);
+                if !self.clone_dialog.is_visible() {
+                    self.active_modal = None;
+                }
+            }
         }
 
-        // Repo dialog takes priority (modal)
-        if self.repo_dialog.is_visible() {
-            self.repo_dialog.handle_event(input_event, screen_bounds);
-            return true;
-        }
+        true
+    }
 
-        // Clone dialog (modal)
-        if self.clone_dialog.is_visible() {
-            self.clone_dialog.handle_event(input_event, screen_bounds);
-            return true;
-        }
-
-        // Toast click-to-dismiss (overlay, before context menu)
+    /// Handle non-modal overlay events (toasts, context menus).
+    fn handle_overlay_events(&mut self, input_event: &InputEvent, screen_bounds: Rect) -> bool {
+        // Toast click-to-dismiss
         if self.toast_manager.handle_event(input_event, screen_bounds) {
             return true;
         }
 
-        // Context menu takes priority when visible (overlay)
+        // Context menu
         if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab)
             && view_state.context_menu.is_visible()
         {
@@ -2363,6 +2523,7 @@ impl App {
                             &mut self.rebase_dialog,
                             &repo_tab.repo,
                             &mut self.pending_confirm_action,
+                            &mut self.active_modal,
                         );
                     }
                 }
@@ -2495,6 +2656,7 @@ impl App {
         // Ctrl+O: open repo
         if *key == Key::O && modifiers.only_ctrl() {
             self.repo_dialog.show_with_recent(&self.config.recent_repos);
+            self.active_modal = Some(ActiveModal::RepoDialog);
             return true;
         }
         // Ctrl+Shift+O: clone repo
@@ -2502,6 +2664,7 @@ impl App {
             let gh_token = token_store::get_github_token()
                 .or_else(|| self.config.github_token.clone());
             self.clone_dialog.show(gh_token.as_deref());
+            self.active_modal = Some(ActiveModal::CloneDialog);
             return true;
         }
         // Ctrl+W: close tab
@@ -2671,6 +2834,7 @@ impl App {
                 self.confirm_dialog
                     .show("Delete Branch", &format!("Delete local branch '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteBranch(name));
+                self.open_interrupt_modal(ActiveModal::Confirm);
             }
             SidebarAction::ApplyStash(index) => {
                 view_state
@@ -2683,11 +2847,13 @@ impl App {
                     &format!("Drop stash@{{{}}}? This cannot be undone.", index),
                 );
                 self.pending_confirm_action = Some(AppMessage::StashDrop(index));
+                self.open_interrupt_modal(ActiveModal::Confirm);
             }
             SidebarAction::DeleteTag(name) => {
                 self.confirm_dialog
                     .show("Delete Tag", &format!("Delete tag '{}'?", name));
                 self.pending_confirm_action = Some(AppMessage::DeleteTag(name));
+                self.open_interrupt_modal(ActiveModal::Confirm);
             }
             SidebarAction::SwitchWorktree(wt_name) => {
                 view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
@@ -4244,7 +4410,10 @@ impl App {
                 match action {
                     TabAction::Select(idx) => self.switch_tab(idx),
                     TabAction::Close(idx) => self.close_tab(idx),
-                    TabAction::New => self.repo_dialog.show_with_recent(&self.config.recent_repos),
+                    TabAction::New => {
+                        self.repo_dialog.show_with_recent(&self.config.recent_repos);
+                        self.active_modal = Some(ActiveModal::RepoDialog);
+                    }
                 }
             }
             return;
@@ -4346,7 +4515,7 @@ impl App {
                         }
                     }
                     HeaderAction::Settings => {
-                        self.settings_dialog.show();
+                        self.set_active_modal(ActiveModal::Settings);
                     }
                     HeaderAction::BreadcrumbNav(depth) => {
                         view_state
@@ -4456,6 +4625,7 @@ impl App {
                                 );
                                 self.pending_confirm_action =
                                     Some(AppMessage::DiscardHunk(path, hunk_idx));
+                                self.open_interrupt_modal(ActiveModal::Confirm);
                             }
                         }
                     }
@@ -4942,6 +5112,7 @@ fn handle_context_menu_action(
     rebase_dialog: &mut RebaseDialog,
     repo: &crate::git::GitRepo,
     pending_confirm_action: &mut Option<AppMessage>,
+    active_modal: &mut Option<ActiveModal>,
 ) {
     // Actions may be in format "action:param" or just "action"
     let (action, param) = action_id.split_once(':').unwrap_or((action_id, ""));
@@ -5003,6 +5174,7 @@ fn handle_context_menu_action(
         "rename" => {
             if !param.is_empty() {
                 branch_name_dialog.show_for_rename(param);
+                *active_modal = Some(ActiveModal::BranchName);
             }
         }
         "delete" => {
@@ -5011,6 +5183,7 @@ fn handle_context_menu_action(
                     "Delete Branch",
                     &format!("Delete local branch '{}'?", param),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteBranch(param.to_string()));
             }
         }
@@ -5082,6 +5255,7 @@ fn handle_context_menu_action(
                     branch
                 ),
             );
+            *active_modal = Some(ActiveModal::Confirm);
             *pending_confirm_action = Some(AppMessage::PushForce {
                 remote: None,
                 branch,
@@ -5128,6 +5302,7 @@ fn handle_context_menu_action(
                     "Discard Changes",
                     &format!("Discard changes to '{}'? This cannot be undone.", param),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
             }
         }
@@ -5140,6 +5315,7 @@ fn handle_context_menu_action(
                         param
                     ),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteSubmodule(param.to_string()));
             }
         }
@@ -5221,6 +5397,7 @@ fn handle_context_menu_action(
                     format!("Remove worktree '{}'?", param)
                 };
                 confirm_dialog.show("Remove Worktree", &msg);
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::RemoveWorktree(param.to_string()));
             }
         }
@@ -5237,6 +5414,7 @@ fn handle_context_menu_action(
                     let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let uncommitted = r.uncommitted_change_count();
                     merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
+                    *active_modal = Some(ActiveModal::Merge);
                 }
             }
         }
@@ -5253,6 +5431,7 @@ fn handle_context_menu_action(
                     let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let uncommitted = r.uncommitted_change_count();
                     rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
+                    *active_modal = Some(ActiveModal::Rebase);
                 }
             }
         }
@@ -5265,6 +5444,7 @@ fn handle_context_menu_action(
                     "Cherry-pick",
                     &format!("Cherry-pick commit {} into '{}'?", short, branch),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
             }
         }
@@ -5277,6 +5457,7 @@ fn handle_context_menu_action(
                     "Revert Commit",
                     &format!("Create a revert of {} on '{}'?", short, branch),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
             }
         }
@@ -5292,6 +5473,7 @@ fn handle_context_menu_action(
                         branch, short
                     ),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(
                     oid,
                     git2::ResetType::Soft,
@@ -5311,6 +5493,7 @@ fn handle_context_menu_action(
                         branch, short
                     ),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(
                     oid,
                     git2::ResetType::Mixed,
@@ -5324,6 +5507,7 @@ fn handle_context_menu_action(
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(
                     oid,
                     git2::ResetType::Hard,
@@ -5336,6 +5520,7 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let default_name = format!("branch-{}", short);
                 branch_name_dialog.show(&default_name, oid);
+                *active_modal = Some(ActiveModal::BranchName);
             }
         }
         "create_worktree" => {
@@ -5352,10 +5537,12 @@ fn handle_context_menu_action(
                         has_submodules,
                         has_lfs,
                     );
+                    *active_modal = Some(ActiveModal::BranchName);
                 }
             } else {
                 // From branch sidebar: use branch name as source
                 branch_name_dialog.show_for_worktree(param, param, has_submodules, has_lfs);
+                *active_modal = Some(ActiveModal::BranchName);
             }
         }
         "create_tag" => {
@@ -5363,11 +5550,13 @@ fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let default_name = format!("v0.1.0-{}", short);
                 branch_name_dialog.show_with_title("Create Tag", &default_name, oid);
+                *active_modal = Some(ActiveModal::BranchName);
             }
         }
         "delete_tag" => {
             if !param.is_empty() {
                 confirm_dialog.show("Delete Tag", &format!("Delete tag '{}'?", param));
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteTag(param.to_string()));
             }
         }
@@ -5397,6 +5586,7 @@ fn handle_context_menu_action(
                     "Drop Stash",
                     &format!("Drop stash@{{{}}}? This cannot be undone.", index),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::StashDrop(index));
             }
         }
@@ -5405,21 +5595,25 @@ fn handle_context_menu_action(
         }
         "add_remote" => {
             remote_dialog.show_add();
+            *active_modal = Some(ActiveModal::Remote);
         }
         "edit_remote_url" => {
             if !param.is_empty() {
                 let current_url = repo.remote_url(param).unwrap_or_default();
                 remote_dialog.show_edit_url(param, &current_url);
+                *active_modal = Some(ActiveModal::Remote);
             }
         }
         "rename_remote" => {
             if !param.is_empty() {
                 remote_dialog.show_rename(param);
+                *active_modal = Some(ActiveModal::Remote);
             }
         }
         "delete_remote" => {
             if !param.is_empty() {
                 confirm_dialog.show("Delete Remote", &format!("Delete remote '{}'? This will remove all remote-tracking branches for this remote.", param));
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteRemote(param.to_string()));
             }
         }
@@ -5436,6 +5630,7 @@ fn handle_context_menu_action(
                     let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let uncommitted = r.uncommitted_change_count();
                     merge_dialog.show_with_target(param, &current, uncommitted, target_dir);
+                    *active_modal = Some(ActiveModal::Merge);
                 }
             }
         }
@@ -5452,6 +5647,7 @@ fn handle_context_menu_action(
                     let current = r.current_branch().unwrap_or_else(|_| "HEAD".to_string());
                     let uncommitted = r.uncommitted_change_count();
                     rebase_dialog.show_with_target(param, &current, uncommitted, target_dir);
+                    *active_modal = Some(ActiveModal::Rebase);
                 }
             }
         }
@@ -5466,6 +5662,7 @@ fn handle_context_menu_action(
                         branch, remote
                     ),
                 );
+                *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteRemoteBranch(
                     remote.to_string(),
                     branch.to_string(),
@@ -6756,6 +6953,7 @@ fn apply_screenshot_state(app: &mut App) {
     match state_str.as_str() {
         "open-dialog" => {
             app.repo_dialog.show();
+            app.active_modal = Some(ActiveModal::RepoDialog);
         }
         "search" => {
             if let Some((_, view_state)) = app.tabs.get_mut(app.active_tab) {
@@ -6803,21 +7001,27 @@ fn apply_screenshot_state(app: &mut App) {
                 "Delete Branch",
                 "Delete branch 'feature'? This cannot be undone.",
             );
+            app.active_modal = Some(ActiveModal::Confirm);
         }
         "merge-dialog" => {
             app.merge_dialog.show("feature", "main", 2);
+            app.active_modal = Some(ActiveModal::Merge);
         }
         "rebase-dialog" => {
             app.rebase_dialog.show("main", "feature", 1);
+            app.active_modal = Some(ActiveModal::Rebase);
         }
         "pull-dialog" => {
             app.pull_dialog.show("main", "origin");
+            app.active_modal = Some(ActiveModal::Pull);
         }
         "push-dialog" => {
             app.push_dialog.show("main", "origin");
+            app.active_modal = Some(ActiveModal::Push);
         }
         "settings-dialog" => {
             app.settings_dialog.show();
+            app.active_modal = Some(ActiveModal::Settings);
         }
         other => {
             eprintln!(
