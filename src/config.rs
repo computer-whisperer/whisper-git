@@ -3,6 +3,7 @@
 //! Manages application settings (avatars, scroll speed, row scale, etc.) via serde_json serialization.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -26,6 +27,9 @@ pub struct Config {
     pub ai_provider: String,
     #[serde(default)]
     pub github_token: Option<String>,
+    /// GitLab tokens keyed by hostname (e.g. "gitlab.com", "gitlab.company.com")
+    #[serde(default)]
+    pub gitlab_tokens: HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -55,6 +59,7 @@ impl Default for Config {
             ratchet_scroll: true,
             ai_provider: default_ai_provider(),
             github_token: None,
+            gitlab_tokens: HashMap::new(),
         }
     }
 }
@@ -90,6 +95,20 @@ impl Config {
             .map_err(|e| format!("Failed to serialize config: {e}"))?;
         fs::write(&path, json).map_err(|e| format!("Failed to save config: {e}"))?;
         Ok(())
+    }
+
+    /// Look up a GitLab token by the API base URL from a parsed remote
+    /// (e.g. "https://gitlab.com" matches key "gitlab.com").
+    pub fn gitlab_token_for_host(&self, api_base: &str) -> Option<&str> {
+        // api_base is like "https://gitlab.com" — extract host
+        let host = api_base
+            .strip_prefix("https://")
+            .or_else(|| api_base.strip_prefix("http://"))
+            .unwrap_or(api_base);
+        self.gitlab_tokens
+            .get(host)
+            .map(|s| s.as_str())
+            .filter(|t| !t.is_empty())
     }
 
     /// Add a repo path to the recent repos list (most recent first, deduped).

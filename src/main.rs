@@ -4,10 +4,12 @@
 //! (base → chrome → overlay). Handles async git operations via mpsc channels and thread spawning.
 
 mod ai;
+mod ci;
 mod config;
 mod crash_log;
 mod git;
 mod github;
+mod gitlab;
 mod input;
 mod messages;
 mod renderer;
@@ -318,10 +320,10 @@ struct TabViewState {
     /// Fingerprint of HEAD + local branch tip OIDs for periodic ref reconciliation.
     /// Compared every 5s to detect external ref changes missed by the watcher.
     ref_fingerprint: u64,
-    /// Receiver for async GitHub CI status fetch
-    ci_receiver: Option<Receiver<github::CiFetchResult>>,
-    /// Most recent CI status for this tab's repo
-    ci_status: Option<github::CiStatus>,
+    /// Receivers for async CI status fetches (one per provider)
+    ci_receivers: Vec<Receiver<ci::ProviderCiResult>>,
+    /// CI results from all providers (accumulated as receivers complete)
+    ci_results: Vec<ci::ProviderCiResult>,
     /// When CI status was last fetched (for periodic polling)
     last_ci_fetch: Instant,
     /// When the last push completed (enables fast CI polling for 5 min)
@@ -469,8 +471,8 @@ impl TabViewState {
             current_branch: String::new(),
             head_oid: None,
             ref_fingerprint: 0,
-            ci_receiver: None,
-            ci_status: None,
+            ci_receivers: Vec::new(),
+            ci_results: Vec::new(),
             last_ci_fetch: Instant::now() - Duration::from_secs(600),
             last_push_time: None,
         }
@@ -1575,7 +1577,7 @@ impl App {
     fn poll_remote_ops(&mut self) {
         use std::sync::mpsc::TryRecvError;
 
-        let github_token = self.config.github_token.clone();
+        let ci_config = self.config.clone();
         let proxy = self.proxy.clone();
         let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
             return;
@@ -1604,7 +1606,7 @@ impl App {
                         );
                         needs_repo_refresh = true;
                         // Refresh CI status after remote ops
-                        trigger_ci_fetch(github_token.as_deref(), repo_tab, view_state, &proxy);
+                        trigger_ci_fetch(&ci_config, repo_tab, view_state, &proxy);
                     }
                     AsyncOpPoll::Failed(summary, raw_stderr) => {
                         self.error_dialog.show(
@@ -1663,16 +1665,26 @@ impl App {
             view_state.last_push_time = Some(Instant::now());
         }
 
-        // Poll CI status receiver
-        if let Some(ref rx) = view_state.ci_receiver
-            && let Ok(result) = rx.try_recv()
-        {
-            view_state.ci_status = Some(result.status);
-            view_state
-                .commit_graph_view
-                .ci_commit_states
-                .clone_from(&result.per_commit);
-            view_state.ci_receiver = None;
+        // Poll CI status receivers (one per provider)
+        view_state.ci_receivers.retain(|rx| {
+            match rx.try_recv() {
+                Ok(result) => {
+                    // Replace any existing result for the same provider
+                    view_state
+                        .ci_results
+                        .retain(|r| r.provider != result.provider);
+                    view_state.ci_results.push(result);
+                    false // remove completed receiver
+                }
+                _ => true, // keep pending receivers
+            }
+        });
+        // Update per-commit states from merged provider results
+        if !view_state.ci_results.is_empty() {
+            let fetch = ci::CiFetchResult {
+                providers: view_state.ci_results.clone(),
+            };
+            view_state.commit_graph_view.ci_commit_states = fetch.merged_per_commit_states();
         }
 
         // Poll generic async ops (submodule/worktree operations)
@@ -1888,7 +1900,7 @@ impl App {
         }
 
         trigger_ci_fetch(
-            self.config.github_token.as_deref(),
+            &self.config,
             &repo_tab,
             &mut view_state,
             &self.proxy,
@@ -2578,34 +2590,58 @@ enum AsyncOpPoll {
 /// Poll a remote operation receiver (fetch/pull/push) and return what happened.
 /// On completion or disconnect, clears the receiver, header flag, and timeout flag.
 /// On timeout, sets the timeout flag.
-/// Trigger an async CI status fetch for the given tab, if a GitHub token is configured
-/// and the origin remote is a GitHub URL.
+/// Trigger async CI status fetches for all detected providers (GitHub, GitLab).
 fn trigger_ci_fetch(
-    token: Option<&str>,
+    config: &config::Config,
     repo_tab: &RepoTab,
     view_state: &mut TabViewState,
     proxy: &EventLoopProxy<()>,
 ) {
-    let Some(token) = token.filter(|t| !t.is_empty()) else {
-        return;
-    };
-    // Find the first remote with a GitHub URL (prefer "origin", then scan all)
-    let github_url = repo_tab
-        .repo
-        .remote_url("origin")
-        .filter(|u| github::parse_github_remote(u).is_some())
-        .or_else(|| {
-            repo_tab
-                .repo
-                .remote_names()
-                .into_iter()
-                .filter_map(|name| repo_tab.repo.remote_url(&name))
-                .find(|u| github::parse_github_remote(u).is_some())
-        });
-    if let Some(url) = github_url
-        && let Some(rx) = github::fetch_ci_status_async(token, &url, proxy.clone())
-    {
-        view_state.ci_receiver = Some(rx);
+    // Collect all remote URLs (prefer "origin" first)
+    let mut remote_urls: Vec<String> = Vec::new();
+    if let Some(url) = repo_tab.repo.remote_url("origin") {
+        remote_urls.push(url);
+    }
+    for name in repo_tab.repo.remote_names() {
+        if name != "origin" {
+            if let Some(url) = repo_tab.repo.remote_url(&name) {
+                remote_urls.push(url);
+            }
+        }
+    }
+
+    let mut receivers = Vec::new();
+
+    // GitHub: try to find a GitHub remote and fetch CI
+    if let Some(token) = config.github_token.as_deref().filter(|t| !t.is_empty()) {
+        if let Some(url) = remote_urls
+            .iter()
+            .find(|u| github::parse_github_remote(u).is_some())
+        {
+            if let Some(rx) = github::fetch_ci_status_async(token, url, proxy.clone()) {
+                receivers.push(rx);
+            }
+        }
+    }
+
+    // GitLab: try to find a GitLab remote with a matching token
+    if !config.gitlab_tokens.is_empty() {
+        for url in &remote_urls {
+            if let Some(remote) = gitlab::parse_gitlab_remote(url) {
+                if let Some(token) = config.gitlab_token_for_host(&remote.api_base) {
+                    if let Some(rx) =
+                        gitlab::fetch_ci_status_async(token, url, proxy.clone())
+                    {
+                        receivers.push(rx);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if !receivers.is_empty() {
+        view_state.ci_receivers = receivers;
         view_state.last_ci_fetch = Instant::now();
     }
 }
@@ -3755,14 +3791,15 @@ impl ApplicationHandler for App {
                 if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
                     let now = Instant::now();
                     // Skip if a fetch is already in flight
-                    if view_state.ci_receiver.is_none() {
+                    if view_state.ci_receivers.is_empty() {
                         // Determine poll interval:
                         // - 15s if CI is pending or within 5 min of a push
                         // - 5 min otherwise
-                        let fast_poll = view_state
-                            .ci_status
-                            .as_ref()
-                            .is_some_and(|s| s.state == github::CiState::Pending)
+                        let any_pending = view_state
+                            .ci_results
+                            .iter()
+                            .any(|r| r.status.state == ci::CiState::Pending);
+                        let fast_poll = any_pending
                             || view_state
                                 .last_push_time
                                 .is_some_and(|t| now.duration_since(t).as_secs() < 300);
@@ -3772,7 +3809,7 @@ impl ApplicationHandler for App {
 
                         if elapsed_since_fetch >= interval {
                             trigger_ci_fetch(
-                                self.config.github_token.as_deref(),
+                                &self.config,
                                 repo_tab,
                                 view_state,
                                 &self.proxy,
@@ -3962,18 +3999,21 @@ impl ApplicationHandler for App {
         merge(self.last_ref_check + Duration::from_secs(5));
 
         // 6. CI status polling timer
+        let has_any_token = self
+            .config
+            .github_token
+            .as_ref()
+            .is_some_and(|t| !t.is_empty())
+            || !self.config.gitlab_tokens.is_empty();
         if let Some((_, vs)) = self.tabs.get(self.active_tab)
-            && vs.ci_receiver.is_none()
-            && self
-                .config
-                .github_token
-                .as_ref()
-                .is_some_and(|t| !t.is_empty())
+            && vs.ci_receivers.is_empty()
+            && has_any_token
         {
-            let fast_poll = vs
-                .ci_status
-                .as_ref()
-                .is_some_and(|s| s.state == github::CiState::Pending)
+            let any_pending = vs
+                .ci_results
+                .iter()
+                .any(|r| r.status.state == ci::CiState::Pending);
+            let fast_poll = any_pending
                 || vs
                     .last_push_time
                     .is_some_and(|t| now.duration_since(t).as_secs() < 300);
@@ -5660,6 +5700,7 @@ fn build_ui_output(
             bold_text_renderer,
             layout.header,
             elapsed,
+            Some(icon_renderer),
         ));
 
         // Shortcut bar (chrome layer - on top of graph) - only when visible
@@ -5976,7 +6017,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
                     let dots: String = ".".repeat(dot_count);
                     format!("{}{}", label, dots)
                 });
-        view_state.header_bar.ci_status = view_state.ci_status.clone();
+        view_state.header_bar.ci_results = view_state.ci_results.clone();
         let branch_opt = view_state.current_branch_opt().map(|s| s.to_string());
         view_state.header_bar.update_button_state(
             elapsed,

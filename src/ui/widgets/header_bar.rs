@@ -1,7 +1,8 @@
 //! Header bar widget - repo path, breadcrumbs, action buttons
 
-use crate::github::{CiState, CiStatus};
+use crate::ci::{CiState, ProviderCiResult};
 use crate::input::{EventResponse, InputEvent};
+use crate::ui::icon::IconRenderer;
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
     Widget, WidgetOutput, create_arc_vertices, create_rect_vertices, create_rounded_rect_vertices,
@@ -78,11 +79,11 @@ pub struct HeaderBar {
     pull_label_width: f32,
     /// Pre-computed width needed for push button label (including padding)
     push_label_width: f32,
-    /// Current CI status from GitHub Actions (None = not fetched / not a GitHub repo)
-    pub ci_status: Option<CiStatus>,
-    /// Cached bounds for the CI status indicator (for click hit testing)
-    ci_indicator_bounds: Option<Rect>,
-    /// Whether the CI indicator is currently hovered
+    /// CI results from all providers (empty = not fetched / no CI providers)
+    pub ci_results: Vec<ProviderCiResult>,
+    /// Cached bounds for CI status indicators (one per provider, for click hit testing)
+    ci_indicator_bounds: Vec<Rect>,
+    /// Whether any CI indicator is currently hovered
     ci_hovered: bool,
 }
 
@@ -111,8 +112,8 @@ impl HeaderBar {
             reload_button: Button::new("Reload").ghost(),
             pull_label_width: 0.0,
             push_label_width: 0.0,
-            ci_status: None,
-            ci_indicator_bounds: None,
+            ci_results: Vec::new(),
+            ci_indicator_bounds: Vec::new(),
             ci_hovered: false,
         }
     }
@@ -275,17 +276,22 @@ impl HeaderBar {
 
     /// Pre-compute CI indicator bounds (call from the pre-draw phase with text_renderer access).
     pub fn update_ci_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
+        self.ci_indicator_bounds.clear();
+
+        // Filter to providers with meaningful state
+        let active: Vec<&ProviderCiResult> = self
+            .ci_results
+            .iter()
+            .filter(|r| r.status.state != CiState::None)
+            .collect();
+
         if self.operation_state_label.is_some()
             || self.generic_op_label.is_some()
-            || self
-                .ci_status
-                .as_ref()
-                .is_none_or(|ci| ci.state == CiState::None)
+            || active.is_empty()
         {
-            self.ci_indicator_bounds = None;
             return;
         }
-        let ci = self.ci_status.as_ref().unwrap();
+
         let scale = (bounds.height / 32.0).max(1.0);
         let line_height = text_renderer.line_height();
 
@@ -299,14 +305,31 @@ impl HeaderBar {
             bounds.x + 16.0
         };
 
-        let indicator_x = after_path_x + 12.0;
-        let dot_radius = 4.0 * scale;
-        let label_x = indicator_x + dot_radius * 2.0 + 6.0 * scale;
-        let label_w = text_renderer.measure_text(&ci.summary);
-        let total_w = (label_x - indicator_x) + label_w;
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
+        let dot_radius = 4.0 * scale;
+        let multi = active.len() > 1;
+        let mut x = after_path_x + 12.0;
 
-        self.ci_indicator_bounds = Some(Rect::new(indicator_x, text_y, total_w, line_height));
+        for ci_result in &active {
+            let start_x = x;
+            if multi {
+                // Icon + dot
+                let icon_size = line_height * 0.7;
+                x += icon_size + 4.0 * scale; // icon + gap
+            }
+            // Dot
+            x += dot_radius * 2.0;
+            if !multi {
+                // Single provider: add summary text width
+                x += 6.0 * scale + text_renderer.measure_text(&ci_result.status.summary);
+            }
+            let w = x - start_x;
+            self.ci_indicator_bounds
+                .push(Rect::new(start_x, text_y, w, line_height));
+            if multi {
+                x += 10.0 * scale; // gap + separator space
+            }
+        }
     }
 
     /// Returns true if any interactive element in the header is currently hovered
@@ -398,6 +421,7 @@ impl HeaderBar {
         bold_renderer: &TextRenderer,
         bounds: Rect,
         elapsed: f32,
+        icon_renderer: Option<&IconRenderer>,
     ) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let scale = (bounds.height / 32.0).max(1.0);
@@ -537,43 +561,92 @@ impl HeaderBar {
             ));
         }
 
-        // CI status indicator (colored dot + summary text)
-        if self.operation_state_label.is_none()
-            && self.generic_op_label.is_none()
-            && let Some(ref ci) = self.ci_status
-            && ci.state != CiState::None
+        // CI status indicator(s)
         {
-            let indicator_x = after_path_x + 12.0;
-            let dot_radius = 4.0 * scale;
-            let dot_cx = indicator_x + dot_radius;
-            let dot_cy = bounds.y + bounds.height / 2.0;
+            let active: Vec<&ProviderCiResult> = self
+                .ci_results
+                .iter()
+                .filter(|r| r.status.state != CiState::None)
+                .collect();
 
-            let dot_color = match ci.state {
-                CiState::Success => [0.34, 0.80, 0.44, 1.0],  // green
-                CiState::Failure => [0.90, 0.30, 0.30, 1.0],  // red
-                CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
-                CiState::None => unreachable!(),
-            };
+            if self.operation_state_label.is_none()
+                && self.generic_op_label.is_none()
+                && !active.is_empty()
+            {
+                let dot_radius = 4.0 * scale;
+                let multi = active.len() > 1;
+                let mut x = after_path_x + 12.0;
+                let dot_cy = bounds.y + bounds.height / 2.0;
 
-            // Draw filled circle as a short full arc
-            output.spline_vertices.extend(create_arc_vertices(
-                dot_cx,
-                dot_cy,
-                dot_radius * 0.5,
-                dot_radius * 0.5,
-                0.0,
-                std::f32::consts::TAU,
-                dot_color,
-            ));
+                for (i, ci_result) in active.iter().enumerate() {
+                    // Separator between providers
+                    if multi && i > 0 {
+                        let sep_x = x - 5.0 * scale;
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            "|",
+                            sep_x,
+                            text_y,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                    }
 
-            // Summary text
-            let label_x = indicator_x + dot_radius * 2.0 + 6.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &ci.summary,
-                label_x,
-                text_y,
-                theme::TEXT_MUTED.to_array(),
-            ));
+                    // Provider icon (only in multi-provider mode)
+                    if multi {
+                        if let Some(ir) = icon_renderer {
+                            let icon_key = ci_result.provider.icon();
+                            if let Some(tc) = ir.get_tex_coords(icon_key) {
+                                let icon_size = line_height * 0.7;
+                                let icon_y =
+                                    bounds.y + (bounds.height - icon_size) * 0.5;
+                                output
+                                    .icon_vertices
+                                    .extend(crate::ui::icon::icon_quad(
+                                        x,
+                                        icon_y,
+                                        icon_size,
+                                        icon_size,
+                                        tc,
+                                        [1.0, 1.0, 1.0, 0.7],
+                                    ));
+                                x += icon_size + 4.0 * scale;
+                            }
+                        }
+                    }
+
+                    let dot_color = match ci_result.status.state {
+                        CiState::Success => [0.34, 0.80, 0.44, 1.0], // green
+                        CiState::Failure => [0.90, 0.30, 0.30, 1.0], // red
+                        CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
+                        CiState::None => unreachable!(),
+                    };
+
+                    let dot_cx = x + dot_radius;
+                    output.spline_vertices.extend(create_arc_vertices(
+                        dot_cx,
+                        dot_cy,
+                        dot_radius * 0.5,
+                        dot_radius * 0.5,
+                        0.0,
+                        std::f32::consts::TAU,
+                        dot_color,
+                    ));
+                    x += dot_radius * 2.0;
+
+                    // Summary text (only for single provider)
+                    if !multi {
+                        x += 6.0 * scale;
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            &ci_result.status.summary,
+                            x,
+                            text_y,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                        x += text_renderer.measure_text(&ci_result.status.summary);
+                    } else {
+                        x += 10.0 * scale; // gap for next provider
+                    }
+                }
+            }
         }
 
         // Button bounds
@@ -678,14 +751,21 @@ impl Widget for HeaderBar {
             self.button_bounds(bounds);
 
         // Handle CI indicator click
-        if let InputEvent::MouseDown { x, y, .. } = event
-            && let Some(ci_bounds) = self.ci_indicator_bounds
-            && ci_bounds.contains(*x, *y)
-            && let Some(ref ci) = self.ci_status
-            && let Some(ref url) = ci.url
-        {
-            self.pending_action = Some(HeaderAction::OpenCiDetails(url.clone()));
-            return EventResponse::Consumed;
+        if let InputEvent::MouseDown { x, y, .. } = event {
+            let active: Vec<&ProviderCiResult> = self
+                .ci_results
+                .iter()
+                .filter(|r| r.status.state != CiState::None)
+                .collect();
+            for (i, ci_bounds) in self.ci_indicator_bounds.iter().enumerate() {
+                if ci_bounds.contains(*x, *y)
+                    && let Some(ci_result) = active.get(i)
+                    && let Some(ref url) = ci_result.status.url
+                {
+                    self.pending_action = Some(HeaderAction::OpenCiDetails(url.clone()));
+                    return EventResponse::Consumed;
+                }
+            }
         }
 
         // Handle breadcrumb close button and segment clicks
@@ -828,8 +908,18 @@ impl Widget for HeaderBar {
         }
 
         // CI indicator hover
-        self.ci_hovered = self.ci_indicator_bounds.is_some_and(|b| b.contains(x, y))
-            && self.ci_status.as_ref().is_some_and(|ci| ci.url.is_some());
+        let active: Vec<&ProviderCiResult> = self
+            .ci_results
+            .iter()
+            .filter(|r| r.status.state != CiState::None)
+            .collect();
+        self.ci_hovered = self
+            .ci_indicator_bounds
+            .iter()
+            .enumerate()
+            .any(|(i, b)| {
+                b.contains(x, y) && active.get(i).is_some_and(|r| r.status.url.is_some())
+            });
 
         // Breadcrumb hover tracking
         if !self.breadcrumb_segments.is_empty() {

@@ -258,7 +258,7 @@ pub struct CommitGraphView {
     /// Whether ratchet (snap-to-row) scrolling is enabled vs smooth pixel scrolling
     pub ratchet_scroll: bool,
     /// Per-commit CI states keyed by full SHA (populated from GitHub Actions)
-    pub ci_commit_states: HashMap<String, crate::github::CiState>,
+    pub ci_commit_states: HashMap<String, crate::ci::CiState>,
 }
 
 impl Default for CommitGraphView {
@@ -1938,16 +1938,16 @@ impl CommitGraphView {
                     let sha = commit.id.to_string();
                     if let Some(ci_state) = self.ci_commit_states.get(&sha) {
                         let dot_color = match ci_state {
-                            crate::github::CiState::Success => {
+                            crate::ci::CiState::Success => {
                                 Color::rgba(0.34, 0.80, 0.44, dim_alpha) // green
                             }
-                            crate::github::CiState::Failure => {
+                            crate::ci::CiState::Failure => {
                                 Color::rgba(0.90, 0.30, 0.30, dim_alpha) // red
                             }
-                            crate::github::CiState::Pending => {
+                            crate::ci::CiState::Pending => {
                                 Color::rgba(1.0, 0.718, 0.302, dim_alpha) // amber
                             }
-                            crate::github::CiState::None => {
+                            crate::ci::CiState::None => {
                                 Color::rgba(0.3, 0.3, 0.3, 0.3 * dim_alpha) // dim grey
                             }
                         };

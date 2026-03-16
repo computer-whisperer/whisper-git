@@ -3,8 +3,10 @@
 //! Provides authenticated access to GitHub's API for fetching Actions build status,
 //! creating repositories, and other GitHub-specific operations.
 
+use crate::ci::{CiProvider, CiState, CiStatus, ProviderCiResult};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use winit::event_loop::EventLoopProxy;
 
@@ -198,110 +200,77 @@ pub fn fetch_repo_list_async(
     Some(rx)
 }
 
-// --- CI status summary ---
+// --- CI status computation ---
 
-/// Summarized CI status for display in the UI.
-#[derive(Debug, Clone)]
-pub struct CiStatus {
-    /// Overall status: success, failure, pending, or no runs
-    pub state: CiState,
-    /// Human-readable summary (e.g. "CI passed" or "2/3 checks passed")
-    pub summary: String,
-    /// URL to open in browser for details
-    pub url: Option<String>,
-}
+/// Summarize workflow runs into a single CI status.
+fn ci_status_from_runs(runs: &[WorkflowRun]) -> CiStatus {
+    if runs.is_empty() {
+        return CiStatus {
+            state: CiState::None,
+            summary: "No CI runs".into(),
+            url: None,
+        };
+    }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CiState {
-    Success,
-    Failure,
-    Pending,
-    None,
-}
+    // Deduplicate: keep only the latest run per workflow name
+    let mut latest: HashMap<&str, &WorkflowRun> = HashMap::new();
+    for run in runs {
+        latest
+            .entry(run.name.as_str())
+            .and_modify(|existing| {
+                if run.id > existing.id {
+                    *existing = run;
+                }
+            })
+            .or_insert(run);
+    }
 
-impl CiStatus {
-    /// Summarize workflow runs into a single CI status.
-    fn from_runs(runs: &[WorkflowRun]) -> Self {
-        if runs.is_empty() {
-            return Self {
-                state: CiState::None,
-                summary: "No CI runs".into(),
-                url: None,
-            };
+    let total = latest.len();
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut pending = 0;
+    let mut first_url = None;
+
+    for run in latest.values() {
+        if first_url.is_none() {
+            first_url = Some(run.html_url.clone());
         }
-
-        // Deduplicate: keep only the latest run per workflow name
-        let mut latest: std::collections::HashMap<&str, &WorkflowRun> =
-            std::collections::HashMap::new();
-        for run in runs {
-            latest
-                .entry(run.name.as_str())
-                .and_modify(|existing| {
-                    if run.id > existing.id {
-                        *existing = run;
-                    }
-                })
-                .or_insert(run);
-        }
-
-        let total = latest.len();
-        let mut passed = 0;
-        let mut failed = 0;
-        let mut pending = 0;
-        let mut first_url = None;
-
-        for run in latest.values() {
-            if first_url.is_none() {
+        match run.conclusion.as_deref() {
+            Some("success") => passed += 1,
+            Some("failure" | "timed_out" | "cancelled") => {
+                failed += 1;
+                // Prefer linking to the failed run
                 first_url = Some(run.html_url.clone());
             }
-            match run.conclusion.as_deref() {
-                Some("success") => passed += 1,
-                Some("failure" | "timed_out" | "cancelled") => {
-                    failed += 1;
-                    // Prefer linking to the failed run
-                    first_url = Some(run.html_url.clone());
-                }
-                _ if run.status == "completed" => passed += 1,
-                _ => pending += 1,
-            }
-        }
-
-        let (state, summary) = if failed > 0 {
-            (CiState::Failure, format!("{passed}/{total} checks passed"))
-        } else if pending > 0 {
-            (CiState::Pending, format!("{pending} check(s) in progress"))
-        } else {
-            let s = if total == 1 {
-                "CI passed".into()
-            } else {
-                format!("All {total} checks passed")
-            };
-            (CiState::Success, s)
-        };
-
-        Self {
-            state,
-            summary,
-            url: first_url,
+            _ if run.status == "completed" => passed += 1,
+            _ => pending += 1,
         }
     }
-}
 
-/// Result of a CI status fetch: both the branch-level summary and per-commit states.
-#[derive(Debug, Clone)]
-pub struct CiFetchResult {
-    /// Branch-level summary (for the header bar indicator)
-    pub status: CiStatus,
-    /// Per-commit CI state keyed by full SHA
-    pub per_commit: std::collections::HashMap<String, CiState>,
+    let (state, summary) = if failed > 0 {
+        (CiState::Failure, format!("{passed}/{total} checks passed"))
+    } else if pending > 0 {
+        (CiState::Pending, format!("{pending} check(s) in progress"))
+    } else {
+        let s = if total == 1 {
+            "CI passed".into()
+        } else {
+            format!("All {total} checks passed")
+        };
+        (CiState::Success, s)
+    };
+
+    CiStatus {
+        state,
+        summary,
+        url: first_url,
+    }
 }
 
 /// Build per-commit CI states from workflow runs.
 /// Groups runs by commit SHA, then for each SHA deduplicates by workflow name
 /// and computes an aggregate state (all pass = Success, any fail = Failure, etc.)
-fn per_commit_states(runs: &[WorkflowRun]) -> std::collections::HashMap<String, CiState> {
-    use std::collections::HashMap;
-
+fn per_commit_states(runs: &[WorkflowRun]) -> HashMap<String, CiState> {
     // Group runs by commit SHA
     let mut by_sha: HashMap<&str, Vec<&WorkflowRun>> = HashMap::new();
     for run in runs {
@@ -348,16 +317,13 @@ fn per_commit_states(runs: &[WorkflowRun]) -> std::collections::HashMap<String, 
 }
 
 /// Fetch CI status for a GitHub repo asynchronously.
-/// Returns a receiver that will produce a CiFetchResult (branch summary + per-commit states).
-/// Returns None if the origin remote isn't a GitHub URL or no token is configured.
-///
-/// Fetches all recent runs (unfiltered) for both the header summary and per-commit dots.
-/// The header shows overall repo CI status (like GitHub's repo page), not per-branch.
+/// Returns a receiver that will produce a ProviderCiResult.
+/// Returns None if the origin remote isn't a GitHub URL.
 pub fn fetch_ci_status_async(
     token: &str,
     origin_url: &str,
     proxy: EventLoopProxy<()>,
-) -> Option<Receiver<CiFetchResult>> {
+) -> Option<Receiver<ProviderCiResult>> {
     let (owner, repo) = parse_github_remote(origin_url)?;
     let token = token.to_string();
     let (tx, rx) = mpsc::channel();
@@ -365,17 +331,19 @@ pub fn fetch_ci_status_async(
     std::thread::spawn(move || {
         let client = GitHubClient::new(token);
         let result = match client.workflow_runs(&owner, &repo, None, 50) {
-            Ok(runs) => CiFetchResult {
-                status: CiStatus::from_runs(&runs),
+            Ok(runs) => ProviderCiResult {
+                provider: CiProvider::GitHub,
+                status: ci_status_from_runs(&runs),
                 per_commit: per_commit_states(&runs),
             },
-            Err(e) => CiFetchResult {
+            Err(e) => ProviderCiResult {
+                provider: CiProvider::GitHub,
                 status: CiStatus {
                     state: CiState::None,
                     summary: format!("CI fetch failed: {e}"),
                     url: None,
                 },
-                per_commit: std::collections::HashMap::new(),
+                per_commit: HashMap::new(),
             },
         };
         let _ = tx.send(result);
@@ -433,7 +401,7 @@ mod tests {
             make_run(1, "CI", "completed", Some("success")),
             make_run(2, "Lint", "completed", Some("success")),
         ];
-        let status = CiStatus::from_runs(&runs);
+        let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);
     }
 
@@ -443,7 +411,7 @@ mod tests {
             make_run(1, "CI", "completed", Some("success")),
             make_run(2, "Lint", "completed", Some("failure")),
         ];
-        let status = CiStatus::from_runs(&runs);
+        let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Failure);
         assert!(status.summary.contains("1/2"));
     }
@@ -451,13 +419,13 @@ mod tests {
     #[test]
     fn ci_status_pending() {
         let runs = vec![make_run(1, "CI", "in_progress", None)];
-        let status = CiStatus::from_runs(&runs);
+        let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Pending);
     }
 
     #[test]
     fn ci_status_empty() {
-        let status = CiStatus::from_runs(&[]);
+        let status = ci_status_from_runs(&[]);
         assert_eq!(status.state, CiState::None);
     }
 
@@ -467,7 +435,7 @@ mod tests {
             make_run(1, "CI", "completed", Some("failure")),
             make_run(2, "CI", "completed", Some("success")), // newer run replaces old
         ];
-        let status = CiStatus::from_runs(&runs);
+        let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);
     }
 }
