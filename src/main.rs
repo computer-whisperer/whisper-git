@@ -5866,6 +5866,7 @@ fn build_ui_output(
     tab_bar: &TabBar,
     toast_manager: &mut ToastManager,
     tooltip: &mut Tooltip,
+    active_modal: Option<ActiveModal>,
     repo_dialog: &RepoDialog,
     clone_dialog: &CloneDialog,
     settings_dialog: &SettingsDialog,
@@ -5965,19 +5966,10 @@ fn build_ui_output(
 
         // Offer tooltips for truncated commit subjects (uses current frame's data).
         // Suppress when any dialog or context menu is open.
-        let any_modal_open = repo_dialog.is_visible()
-            || clone_dialog.is_visible()
-            || settings_dialog.is_visible()
-            || confirm_dialog.is_visible()
-            || branch_name_dialog.is_visible()
-            || remote_dialog.is_visible()
-            || merge_dialog.is_visible()
-            || rebase_dialog.is_visible()
-            || pull_dialog.is_visible()
-            || push_dialog.is_visible()
-            || view_state.context_menu.is_visible();
+        let any_overlay_open =
+            active_modal.is_some() || view_state.context_menu.is_visible();
         tooltip.begin_frame();
-        if !any_modal_open {
+        if !any_overlay_open {
             let (mx, my) = mouse_pos;
             if layout.graph.contains(mx, my) {
                 for (text_bounds, full_text) in &view_state.commit_graph_view.truncated_subjects {
@@ -6454,6 +6446,7 @@ fn draw_frame(app: &mut App) -> Result<()> {
         &app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
+        app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
@@ -6674,6 +6667,7 @@ fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         &app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
+        app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
@@ -6830,6 +6824,7 @@ fn capture_screenshot_offscreen(
         &app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
+        app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
         &app.settings_dialog,
