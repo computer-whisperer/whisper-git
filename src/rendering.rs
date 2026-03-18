@@ -85,6 +85,13 @@ pub(crate) fn handle_context_menu_action(
 ) {
     // Actions may be in format "action:param" or just "action"
     let (action, param) = action_id.split_once(':').unwrap_or((action_id, ""));
+    let operation_scope = if let Some(focus) = &view_state.submodule_focus {
+        format!("submodule '{}'", focus.current_name)
+    } else if let Some(path) = view_state.worktree_state.selected_path.as_ref() {
+        format!("worktree '{}'", path.display())
+    } else {
+        "current repository".to_string()
+    };
 
     match action {
         // Commit graph actions
@@ -130,6 +137,21 @@ pub(crate) fn handle_context_menu_action(
                     .push(AppMessage::CheckoutBranch(param.to_string()));
             }
         }
+        "checkout_commit" => {
+            if let Some(oid) = view_state.context_menu_commit {
+                let short = &oid.to_string()[..7];
+                let target_dir = view_state.worktree_state.selected_path.clone();
+                confirm_dialog.show(
+                    "Checkout Commit (Detached)",
+                    &format!(
+                        "Checkout commit {} as detached HEAD in {}?",
+                        short, operation_scope
+                    ),
+                );
+                *active_modal = Some(ActiveModal::Confirm);
+                *pending_confirm_action = Some(AppMessage::CheckoutCommit(oid, target_dir));
+            }
+        }
         "checkout_remote" => {
             if let Some((remote, branch)) = param.split_once('/') {
                 view_state
@@ -150,7 +172,7 @@ pub(crate) fn handle_context_menu_action(
             if !param.is_empty() {
                 confirm_dialog.show(
                     "Delete Branch",
-                    &format!("Delete local branch '{}'?", param),
+                    &format!("Delete local branch '{}' in {}?", param, operation_scope),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DeleteBranch(param.to_string()));
@@ -269,7 +291,10 @@ pub(crate) fn handle_context_menu_action(
             if !param.is_empty() {
                 confirm_dialog.show(
                     "Discard Changes",
-                    &format!("Discard changes to '{}'? This cannot be undone.", param),
+                    &format!(
+                        "Discard changes to '{}' in {}? This cannot be undone.",
+                        param, operation_scope
+                    ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
@@ -293,8 +318,8 @@ pub(crate) fn handle_context_menu_action(
                 confirm_dialog.show(
                     "Delete Submodule",
                     &format!(
-                        "Remove submodule '{}'? This will deinit and remove it.",
-                        sm_label
+                        "Remove submodule '{}' in {}? This will deinit and remove it.",
+                        sm_label, operation_scope
                     ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
@@ -446,7 +471,10 @@ pub(crate) fn handle_context_menu_action(
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show(
                     "Cherry-pick",
-                    &format!("Cherry-pick commit {} into '{}'?", short, branch),
+                    &format!(
+                        "Cherry-pick commit {} into '{}' in {}?",
+                        short, branch, operation_scope
+                    ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::CherryPick(oid, target_dir));
@@ -459,7 +487,10 @@ pub(crate) fn handle_context_menu_action(
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
                 confirm_dialog.show(
                     "Revert Commit",
-                    &format!("Create a revert of {} on '{}'?", short, branch),
+                    &format!(
+                        "Create a revert of {} on '{}' in {}?",
+                        short, branch, operation_scope
+                    ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::RevertCommit(oid, target_dir));
@@ -473,8 +504,8 @@ pub(crate) fn handle_context_menu_action(
                 confirm_dialog.show(
                     "Reset (Soft)",
                     &format!(
-                        "Reset '{}' to {}? Changes will be kept staged.",
-                        branch, short
+                        "Reset '{}' to {} in {}? Changes will be kept staged.",
+                        branch, short, operation_scope
                     ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
@@ -493,8 +524,8 @@ pub(crate) fn handle_context_menu_action(
                 confirm_dialog.show(
                     "Reset (Mixed)",
                     &format!(
-                        "Reset '{}' to {}? Changes will be kept unstaged.",
-                        branch, short
+                        "Reset '{}' to {} in {}? Changes will be kept unstaged.",
+                        branch, short, operation_scope
                     ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
@@ -510,7 +541,13 @@ pub(crate) fn handle_context_menu_action(
                 let short = &oid.to_string()[..7];
                 let target_dir = view_state.worktree_state.selected_path.clone();
                 let branch = view_state.current_branch_opt().unwrap_or("HEAD");
-                confirm_dialog.show("Reset (Hard)", &format!("Reset '{}' to {}?\n\nALL changes will be DISCARDED. This cannot be undone.", branch, short));
+                confirm_dialog.show(
+                    "Reset (Hard)",
+                    &format!(
+                        "Reset '{}' to {} in {}?\n\nALL changes will be DISCARDED. This cannot be undone.",
+                        branch, short, operation_scope
+                    ),
+                );
                 *active_modal = Some(ActiveModal::Confirm);
                 *pending_confirm_action = Some(AppMessage::ResetToCommit(
                     oid,

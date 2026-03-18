@@ -120,6 +120,28 @@ impl GitRepo {
         Ok(())
     }
 
+    /// Checkout a specific commit as detached HEAD.
+    pub fn checkout_commit_detached(&self, oid: Oid) -> Result<()> {
+        let commit = self
+            .repo
+            .find_commit(oid)
+            .with_context(|| format!("Commit '{}' not found", oid))?;
+        let tree = commit.tree().context("Failed to get commit tree")?;
+
+        self.repo
+            .checkout_tree(
+                tree.as_object(),
+                Some(git2::build::CheckoutBuilder::new().safe()),
+            )
+            .context("Failed to checkout commit tree")?;
+
+        self.repo
+            .set_head_detached(oid)
+            .context("Failed to set HEAD detached")?;
+
+        Ok(())
+    }
+
     /// Checkout a remote branch, creating a local tracking branch
     pub fn checkout_remote_branch(&self, remote: &str, branch: &str) -> Result<()> {
         // Check if local branch already exists

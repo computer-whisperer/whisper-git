@@ -68,6 +68,7 @@ pub enum AppMessage {
     ViewDiff(String, bool), // (path, staged)
     CheckoutBranch(String),
     CheckoutRemoteBranch(String, String),
+    CheckoutCommit(Oid, Option<PathBuf>), // (commit_oid, target_worktree_dir)
     DeleteBranch(String),
     RenameBranch(String, String), // (old_name, new_name)
     StageHunk(String, usize),     // (file_path, hunk_index)
@@ -737,6 +738,17 @@ pub fn handle_app_message(
             handle_repo_mutation(
                 staging_repo.checkout_remote_branch(&remote, &branch),
                 format!("Switched to {}/{}", remote, branch),
+                "Checkout failed",
+                view_state,
+                toast_manager,
+            );
+        }
+        AppMessage::CheckoutCommit(oid, target_dir) => {
+            let target_repo = target_dir.as_ref().and_then(|d| GitRepo::open(d).ok());
+            let checkout_repo = target_repo.as_ref().unwrap_or(staging_repo);
+            handle_repo_mutation(
+                checkout_repo.checkout_commit_detached(oid),
+                format!("Checked out {} (detached HEAD)", &oid.to_string()[..7]),
                 "Checkout failed",
                 view_state,
                 toast_manager,

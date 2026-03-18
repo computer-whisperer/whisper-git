@@ -818,6 +818,10 @@ impl CommitGraphView {
             if has_branch {
                 items.push(MenuItem::new("Checkout", "checkout"));
             }
+            items.push(MenuItem::new(
+                "Checkout Commit (Detached)",
+                "checkout_commit",
+            ));
 
             // Merge/rebase for non-HEAD local branches at this commit
             let head_branch = self
