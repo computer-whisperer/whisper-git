@@ -5,6 +5,7 @@ use git2::Oid;
 use crate::git::{BranchTip, CommitInfo, TagInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::avatar::{self, AvatarCache, AvatarRenderer};
+use crate::ui::icon::IconRenderer;
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
     create_rect_vertices, create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
@@ -249,6 +250,8 @@ pub struct CommitGraphView {
     /// Overflow pill badge tooltips (rebuilt each layout_text call).
     /// Each entry: (badge_rect, newline-joined hidden pill labels)
     pub(crate) overflow_pill_tooltips: Vec<(Rect, String)>,
+    /// CI tooltip zones for compact provider/pipeline indicators.
+    pub(crate) ci_tooltips: Vec<(Rect, String)>,
     /// Ratchet scroll: index of the topmost visible row
     pub top_row_index: usize,
     /// Ratchet scroll: accumulates fractional trackpad deltas until they cross the row threshold
@@ -257,8 +260,8 @@ pub struct CommitGraphView {
     pub fast_scroll: bool,
     /// Whether ratchet (snap-to-row) scrolling is enabled vs smooth pixel scrolling
     pub ratchet_scroll: bool,
-    /// Per-commit CI states keyed by full SHA (populated from GitHub Actions)
-    pub ci_commit_states: HashMap<String, crate::ci::CiState>,
+    /// Per-commit provider rollups keyed by full SHA.
+    pub ci_commit_rollups: HashMap<String, Vec<crate::ci::ProviderCommitRollup>>,
 }
 
 impl Default for CommitGraphView {
@@ -290,11 +293,12 @@ impl Default for CommitGraphView {
             time_spacing_strength: 1.0,
             truncated_subjects: Vec::new(),
             overflow_pill_tooltips: Vec::new(),
+            ci_tooltips: Vec::new(),
             top_row_index: 0,
             scroll_accumulator: 0.0,
             fast_scroll: false,
             ratchet_scroll: true,
-            ci_commit_states: HashMap::new(),
+            ci_commit_rollups: HashMap::new(),
         }
     }
 }
@@ -1464,6 +1468,85 @@ impl CommitGraphView {
         vertices
     }
 
+    fn ci_state_color(state: crate::ci::CiState, alpha: f32) -> Color {
+        match state {
+            crate::ci::CiState::Success => Color::rgba(0.34, 0.80, 0.44, alpha), // green
+            crate::ci::CiState::Failure => Color::rgba(0.90, 0.30, 0.30, alpha), // red
+            crate::ci::CiState::Pending => Color::rgba(1.0, 0.718, 0.302, alpha), // amber
+            crate::ci::CiState::None => Color::rgba(0.3, 0.3, 0.3, 0.3 * alpha), // dim grey
+        }
+    }
+
+    fn ci_dot_radius(line_height: f32) -> f32 {
+        (line_height * 0.16).max(2.0)
+    }
+
+    fn ci_icon_size(line_height: f32) -> f32 {
+        (line_height * 0.60).max(8.0)
+    }
+
+    fn ci_provider_gap(line_height: f32) -> f32 {
+        (line_height * 0.35).max(4.0)
+    }
+
+    fn ci_max_dots_per_provider() -> usize {
+        5
+    }
+
+    fn ci_provider_token_width(
+        text_renderer: &TextRenderer,
+        line_height: f32,
+        rollup: &crate::ci::ProviderCommitRollup,
+    ) -> f32 {
+        let icon_size = Self::ci_icon_size(line_height);
+        let dot_radius = Self::ci_dot_radius(line_height);
+        let dot_d = dot_radius * 2.0;
+        let dot_gap = dot_radius;
+        let max_dots = Self::ci_max_dots_per_provider();
+        let visible = rollup.rollup.checks.len().min(max_dots);
+
+        let mut width = icon_size;
+        if visible > 0 {
+            width += 3.0 + visible as f32 * dot_d + (visible.saturating_sub(1) as f32) * dot_gap;
+        }
+        let overflow = rollup.rollup.checks.len().saturating_sub(max_dots);
+        if overflow > 0 {
+            let plus = format!("+{}", overflow);
+            width += 3.0 + text_renderer.measure_text_scaled(&plus, 0.75);
+        }
+        width
+    }
+
+    fn ci_row_total_width(
+        text_renderer: &TextRenderer,
+        line_height: f32,
+        rollups: &[crate::ci::ProviderCommitRollup],
+    ) -> f32 {
+        let mut width = 0.0;
+        for (i, rollup) in rollups.iter().enumerate() {
+            if i > 0 {
+                width += Self::ci_provider_gap(line_height);
+            }
+            width += Self::ci_provider_token_width(text_renderer, line_height, rollup);
+        }
+        width
+    }
+
+    fn ci_column_width(&self, text_renderer: &TextRenderer, line_height: f32) -> f32 {
+        if self.ci_commit_rollups.is_empty() {
+            return 0.0;
+        }
+        let max_row = self
+            .ci_commit_rollups
+            .values()
+            .map(|rollups| Self::ci_row_total_width(text_renderer, line_height, rollups))
+            .fold(0.0, f32::max);
+        max_row.clamp(
+            (line_height * 1.2).max(14.0),
+            (line_height * 9.0).max(100.0),
+        )
+    }
+
     /// Create vertices for a diamond shape (rotated square) — used for orphaned commit nodes
     fn create_diamond_vertices(
         cx: f32,
@@ -1520,13 +1603,21 @@ impl CommitGraphView {
         avatar_renderer: &AvatarRenderer,
         head_oid: Option<Oid>,
         worktrees: &[WorktreeInfo],
-    ) -> (Vec<TextVertex>, Vec<SplineVertex>, Vec<TextVertex>) {
+        icon_renderer: Option<&IconRenderer>,
+    ) -> (
+        Vec<TextVertex>,
+        Vec<SplineVertex>,
+        Vec<TextVertex>,
+        Vec<TextVertex>,
+    ) {
         let mut vertices = Vec::new();
         let mut pill_vertices = Vec::new();
         let mut avatar_vertices = Vec::new();
+        let mut icon_vertices = Vec::new();
         self.pill_click_targets.clear();
         self.truncated_subjects.clear();
         self.overflow_pill_tooltips.clear();
+        self.ci_tooltips.clear();
         let header_offset = self.header_offset();
         let line_height = text_renderer.line_height();
         let scrollbar_width = self.scrollbar_width();
@@ -1537,20 +1628,16 @@ impl CommitGraphView {
 
         // Column layout: scale-proportional widths derived from line_height
         let time_col_width = (line_height * 2.0).max(52.0);
-        let ci_col_width = if self.ci_commit_states.is_empty() {
-            0.0
-        } else {
-            (line_height * 0.8).max(12.0)
-        };
+        let ci_col_width = self.ci_column_width(text_renderer, line_height);
         let stats_col_width = (line_height * 4.5).max(68.0);
         let right_margin = (line_height * 0.4).max(4.0);
         let col_gap = (line_height * 0.25).max(4.0);
         let time_col_right = bounds.right() - right_margin - scrollbar_width;
-        let ci_col_center_x = time_col_right - time_col_width - col_gap - ci_col_width / 2.0;
-        let stats_col_right = time_col_right - time_col_width - col_gap - ci_col_width - col_gap;
+        let ci_col_right = time_col_right - time_col_width - col_gap;
+        let ci_col_left = ci_col_right - ci_col_width;
+        let stats_col_right = ci_col_left - col_gap;
         let stats_col_left = stats_col_right - stats_col_width;
         let time_col_left = time_col_right - time_col_width;
-        let ci_dot_radius = (line_height * 0.22).max(3.0);
 
         // Branch tip lookup
         let branch_tips_by_oid: HashMap<Oid, Vec<&BranchTip>> =
@@ -1937,31 +2024,107 @@ impl CommitGraphView {
                     &mut vertices,
                 );
 
-                // === CI status dot (between stats and time columns) ===
-                if !self.ci_commit_states.is_empty() {
+                // === Compact CI strip (provider icon + one dot per workflow/pipeline) ===
+                if ci_col_width > 0.0 {
                     let sha = commit.id.to_string();
-                    if let Some(ci_state) = self.ci_commit_states.get(&sha) {
-                        let dot_color = match ci_state {
-                            crate::ci::CiState::Success => {
-                                Color::rgba(0.34, 0.80, 0.44, dim_alpha) // green
-                            }
-                            crate::ci::CiState::Failure => {
-                                Color::rgba(0.90, 0.30, 0.30, dim_alpha) // red
-                            }
-                            crate::ci::CiState::Pending => {
-                                Color::rgba(1.0, 0.718, 0.302, dim_alpha) // amber
-                            }
-                            crate::ci::CiState::None => {
-                                Color::rgba(0.3, 0.3, 0.3, 0.3 * dim_alpha) // dim grey
-                            }
-                        };
+                    if let Some(provider_rollups) = self.ci_commit_rollups.get(&sha) {
+                        let icon_size = Self::ci_icon_size(line_height);
+                        let dot_radius = Self::ci_dot_radius(line_height);
+                        let dot_d = dot_radius * 2.0;
+                        let dot_gap = dot_radius;
+                        let provider_gap = Self::ci_provider_gap(line_height);
+                        let max_dots = Self::ci_max_dots_per_provider();
                         let dot_cy = y + line_height / 2.0;
-                        pill_vertices.extend(self.create_circle_vertices(
-                            ci_col_center_x,
-                            dot_cy,
-                            ci_dot_radius,
-                            dot_color.to_array(),
-                        ));
+
+                        let row_width =
+                            Self::ci_row_total_width(text_renderer, line_height, provider_rollups);
+                        let mut ci_x = ci_col_left + (ci_col_width - row_width).max(0.0);
+                        let ci_start_x = ci_x;
+                        let mut tooltip_lines: Vec<String> = Vec::new();
+
+                        for (idx, provider_rollup) in provider_rollups.iter().enumerate() {
+                            if idx > 0 {
+                                ci_x += provider_gap;
+                            }
+                            let token_start = ci_x;
+                            let provider = provider_rollup.provider;
+                            let rollup = &provider_rollup.rollup;
+
+                            if let Some(ir) = icon_renderer {
+                                let icon_key = provider.icon();
+                                if let Some(tc) = ir.get_tex_coords(icon_key) {
+                                    let icon_y = y + (line_height - icon_size) * 0.5;
+                                    icon_vertices.extend(crate::ui::icon::icon_quad(
+                                        ci_x,
+                                        icon_y,
+                                        icon_size,
+                                        icon_size,
+                                        tc,
+                                        [1.0, 1.0, 1.0, 0.80 * dim_alpha],
+                                    ));
+                                    ci_x += icon_size;
+                                }
+                            }
+                            if (ci_x - token_start).abs() < f32::EPSILON {
+                                // Fallback when icon atlas entry is missing.
+                                let short = provider.short_label();
+                                vertices.extend(text_renderer.layout_text_small(
+                                    short,
+                                    ci_x,
+                                    y + (line_height - text_renderer.line_height_small()) * 0.5,
+                                    theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
+                                ));
+                                ci_x += text_renderer.measure_text_scaled(short, 0.85);
+                            }
+
+                            if !rollup.checks.is_empty() {
+                                ci_x += 3.0;
+                            }
+                            for check in rollup.checks.iter().take(max_dots) {
+                                let cx = ci_x + dot_radius;
+                                let color = Self::ci_state_color(check.state, dim_alpha);
+                                pill_vertices.extend(self.create_circle_vertices(
+                                    cx,
+                                    dot_cy,
+                                    dot_radius,
+                                    color.to_array(),
+                                ));
+                                ci_x += dot_d + dot_gap;
+                            }
+                            if !rollup.checks.is_empty() {
+                                ci_x -= dot_gap;
+                            }
+                            let overflow = rollup.checks.len().saturating_sub(max_dots);
+                            if overflow > 0 {
+                                let plus = format!("+{}", overflow);
+                                ci_x += 3.0;
+                                vertices.extend(text_renderer.layout_text_small(
+                                    &plus,
+                                    ci_x,
+                                    y + (line_height - text_renderer.line_height_small()) * 0.5,
+                                    theme::TEXT_MUTED.with_alpha(dim_alpha).to_array(),
+                                ));
+                                ci_x += text_renderer.measure_text_scaled(&plus, 0.75);
+                            }
+
+                            tooltip_lines.push(format!(
+                                "{}: {}F {}P {}S",
+                                provider.short_label(),
+                                rollup.counts.failure,
+                                rollup.counts.pending,
+                                rollup.counts.success
+                            ));
+                        }
+
+                        let ci_bounds = Rect::new(
+                            ci_start_x,
+                            y - (self.row_height - line_height) / 2.0,
+                            (ci_x - ci_start_x).max(0.0),
+                            self.row_height,
+                        );
+                        if ci_bounds.width > 0.0 && !tooltip_lines.is_empty() {
+                            self.ci_tooltips.push((ci_bounds, tooltip_lines.join("\n")));
+                        }
                     }
                 }
 
@@ -2011,7 +2174,7 @@ impl CommitGraphView {
             vertices.extend(search_output.text_vertices);
         }
 
-        (vertices, pill_vertices, avatar_vertices)
+        (vertices, pill_vertices, avatar_vertices, icon_vertices)
     }
 
     /// Render author avatar or identicon fallback. Returns updated current_x.

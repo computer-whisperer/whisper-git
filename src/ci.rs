@@ -20,15 +20,87 @@ impl CiProvider {
             CiProvider::GitLab => crate::ui::icon::ICON_GITLAB,
         }
     }
+
+    /// Short provider label used in compact UI badges.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            CiProvider::GitHub => "GH",
+            CiProvider::GitLab => "GL",
+        }
+    }
+
+    /// Stable provider sort key for deterministic UI ordering.
+    pub fn sort_key(&self) -> u8 {
+        match self {
+            CiProvider::GitHub => 0,
+            CiProvider::GitLab => 1,
+        }
+    }
 }
 
 /// Aggregate CI state for a branch or single commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CiState {
     Success,
     Failure,
     Pending,
+    #[default]
     None,
+}
+
+/// Simple CI state counters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CiCounts {
+    pub success: usize,
+    pub failure: usize,
+    pub pending: usize,
+}
+
+impl CiCounts {
+    pub fn total(&self) -> usize {
+        self.success + self.failure + self.pending
+    }
+
+    pub fn from_states(states: impl IntoIterator<Item = CiState>) -> Self {
+        let mut counts = Self::default();
+        for state in states {
+            match state {
+                CiState::Success => counts.success += 1,
+                CiState::Failure => counts.failure += 1,
+                CiState::Pending => counts.pending += 1,
+                CiState::None => {}
+            }
+        }
+        counts
+    }
+
+    pub fn overall_state(&self) -> CiState {
+        if self.failure > 0 {
+            CiState::Failure
+        } else if self.pending > 0 {
+            CiState::Pending
+        } else if self.success > 0 {
+            CiState::Success
+        } else {
+            CiState::None
+        }
+    }
+}
+
+/// One concrete pipeline/workflow check state.
+#[derive(Debug, Clone)]
+pub struct CiCheckStatus {
+    pub label: String,
+    pub state: CiState,
+    pub url: Option<String>,
+}
+
+/// Per-commit rollup for one provider.
+#[derive(Debug, Clone, Default)]
+pub struct CiCommitRollup {
+    pub state: CiState,
+    pub counts: CiCounts,
+    pub checks: Vec<CiCheckStatus>,
 }
 
 /// Summarized CI status for display in the UI.
@@ -40,6 +112,8 @@ pub struct CiStatus {
     pub summary: String,
     /// URL to open in browser for details
     pub url: Option<String>,
+    /// Structured counts for richer UI summaries
+    pub counts: Option<CiCounts>,
 }
 
 /// CI result from a single provider.
@@ -50,6 +124,15 @@ pub struct ProviderCiResult {
     pub status: CiStatus,
     /// Per-commit CI state keyed by full SHA
     pub per_commit: HashMap<String, CiState>,
+    /// Per-commit provider rollups for compact commit-row rendering.
+    pub per_commit_rollups: HashMap<String, CiCommitRollup>,
+}
+
+/// Provider-scoped CI rollup for one commit (used in graph rows).
+#[derive(Debug, Clone)]
+pub struct ProviderCommitRollup {
+    pub provider: CiProvider,
+    pub rollup: CiCommitRollup,
 }
 
 /// Combined result of CI fetches across all detected providers.
@@ -70,6 +153,26 @@ impl CiFetchResult {
             }
         }
         merged
+    }
+
+    /// Group per-commit rollups by SHA with provider attribution.
+    pub fn per_commit_provider_rollups(&self) -> HashMap<String, Vec<ProviderCommitRollup>> {
+        let mut grouped: HashMap<String, Vec<ProviderCommitRollup>> = HashMap::new();
+        for provider in &self.providers {
+            for (sha, rollup) in &provider.per_commit_rollups {
+                grouped
+                    .entry(sha.clone())
+                    .or_default()
+                    .push(ProviderCommitRollup {
+                        provider: provider.provider,
+                        rollup: rollup.clone(),
+                    });
+            }
+        }
+        for rollups in grouped.values_mut() {
+            rollups.sort_by_key(|r| r.provider.sort_key());
+        }
+        grouped
     }
 }
 
@@ -120,8 +223,10 @@ mod tests {
                         state: CiState::Success,
                         summary: "CI passed".into(),
                         url: None,
+                        counts: None,
                     },
                     per_commit: [("abc".into(), CiState::Success)].into(),
+                    per_commit_rollups: HashMap::new(),
                 },
                 ProviderCiResult {
                     provider: CiProvider::GitLab,
@@ -129,8 +234,10 @@ mod tests {
                         state: CiState::Failure,
                         summary: "Pipeline failed".into(),
                         url: None,
+                        counts: None,
                     },
                     per_commit: [("abc".into(), CiState::Failure)].into(),
+                    per_commit_rollups: HashMap::new(),
                 },
             ],
         };

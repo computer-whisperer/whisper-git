@@ -1766,7 +1766,7 @@ impl App {
             let fetch = ci::CiFetchResult {
                 providers: view_state.ci_results.clone(),
             };
-            view_state.commit_graph_view.ci_commit_states = fetch.merged_per_commit_states();
+            view_state.commit_graph_view.ci_commit_rollups = fetch.per_commit_provider_rollups();
         }
 
         // Poll generic async ops (submodule/worktree operations)

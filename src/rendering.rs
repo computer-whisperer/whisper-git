@@ -15,6 +15,7 @@ use vulkano::{
     sync::{self, GpuFuture},
 };
 
+use crate::ci::CiState;
 use crate::messages::{AppMessage, RightPanelMode};
 use crate::renderer::{OffscreenTarget, capture_to_buffer};
 use crate::ui::widget::theme;
@@ -1034,19 +1035,22 @@ pub(crate) fn build_ui_output(
             layout.graph,
             view_state.head_oid,
         );
-        let (text_vertices, pill_vertices, av_vertices) = view_state.commit_graph_view.layout_text(
-            text_renderer,
-            &repo_tab.commits,
-            layout.graph,
-            avatar_cache,
-            avatar_renderer,
-            view_state.head_oid,
-            &view_state.worktree_state.worktrees,
-        );
+        let (text_vertices, pill_vertices, av_vertices, ci_icon_vertices) =
+            view_state.commit_graph_view.layout_text(
+                text_renderer,
+                &repo_tab.commits,
+                layout.graph,
+                avatar_cache,
+                avatar_renderer,
+                view_state.head_oid,
+                &view_state.worktree_state.worktrees,
+                Some(icon_renderer),
+            );
         graph_output.spline_vertices.extend(spline_vertices);
         graph_output.spline_vertices.extend(pill_vertices);
         graph_output.text_vertices.extend(text_vertices);
         graph_output.avatar_vertices.extend(av_vertices);
+        graph_output.icon_vertices.extend(ci_icon_vertices);
 
         // Offer tooltips for truncated commit subjects (uses current frame's data).
         // Suppress when any dialog or context menu is open.
@@ -1066,6 +1070,12 @@ pub(crate) fn build_ui_output(
                 {
                     if badge_bounds.contains(mx, my) {
                         tooltip.offer(*badge_bounds, hidden_labels, mx, my);
+                        break;
+                    }
+                }
+                for (ci_bounds, ci_summary) in &view_state.commit_graph_view.ci_tooltips {
+                    if ci_bounds.contains(mx, my) {
+                        tooltip.offer(*ci_bounds, ci_summary, mx, my);
                         break;
                     }
                 }
@@ -1375,7 +1385,38 @@ pub(crate) fn build_ui_output(
     (graph_output, chrome_output, overlay_output)
 }
 
+fn worse_ci_state(a: CiState, b: CiState) -> CiState {
+    fn rank(s: CiState) -> u8 {
+        match s {
+            CiState::None => 0,
+            CiState::Success => 1,
+            CiState::Pending => 2,
+            CiState::Failure => 3,
+        }
+    }
+    if rank(b) > rank(a) { b } else { a }
+}
+
+fn summarize_tab_ci_state(view_state: &TabViewState) -> CiState {
+    view_state
+        .ci_results
+        .iter()
+        .fold(CiState::None, |acc, provider| {
+            worse_ci_state(acc, provider.status.state)
+        })
+}
+
+fn sync_tab_bar_ci_states(app: &mut App) {
+    let states: Vec<CiState> = app
+        .tabs
+        .iter()
+        .map(|(_, view_state)| summarize_tab_ci_state(view_state))
+        .collect();
+    app.tab_bar.set_tab_ci_states(states);
+}
+
 pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
+    sync_tab_bar_ci_states(app);
     let state = app.state.as_mut().unwrap();
     state
         .previous_frame_end
@@ -1794,6 +1835,7 @@ fn render_output_to_builder(
 }
 
 pub(crate) fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
+    sync_tab_bar_ci_states(app);
     let state = app.state.as_mut().unwrap();
     state
         .previous_frame_end
@@ -1943,6 +1985,7 @@ pub(crate) fn capture_screenshot_offscreen(
     width: u32,
     height: u32,
 ) -> Result<image::RgbaImage> {
+    sync_tab_bar_ci_states(app);
     let state = app.state.as_mut().unwrap();
     state
         .previous_frame_end
@@ -2123,9 +2166,12 @@ pub(crate) fn apply_screenshot_state(app: &mut App) {
                 if let Ok(info) = repo.full_commit_info(oid) {
                     let diff_files = repo.diff_for_commit(oid).unwrap_or_default();
                     let sm_entries = repo.submodules_at_commit(oid).unwrap_or_default();
-                    view_state
-                        .commit_detail_view
-                        .set_commit(info, diff_files.clone(), sm_entries);
+                    view_state.commit_detail_view.set_commit(
+                        info,
+                        diff_files.clone(),
+                        sm_entries,
+                        None,
+                    );
                     if let Some(first_file) = diff_files.first() {
                         let title = first_file.path.clone();
                         view_state

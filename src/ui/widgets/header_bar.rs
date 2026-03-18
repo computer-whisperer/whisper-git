@@ -1,6 +1,6 @@
 //! Header bar widget - repo path, breadcrumbs, action buttons
 
-use crate::ci::{CiState, ProviderCiResult};
+use crate::ci::{CiCounts, CiState, ProviderCiResult};
 use crate::input::{EventResponse, InputEvent};
 use crate::ui::icon::IconRenderer;
 use crate::ui::text_util::truncate_to_width;
@@ -274,6 +274,82 @@ impl HeaderBar {
         self.abort_button_bounds = Some(Rect::new(abort_x, button_y, abort_w, button_height));
     }
 
+    fn ci_tokens(counts: CiCounts) -> Vec<(usize, CiState)> {
+        let mut tokens = Vec::new();
+        if counts.success > 0 {
+            tokens.push((counts.success, CiState::Success));
+        }
+        if counts.failure > 0 {
+            tokens.push((counts.failure, CiState::Failure));
+        }
+        if counts.pending > 0 {
+            tokens.push((counts.pending, CiState::Pending));
+        }
+        tokens
+    }
+
+    fn ci_start_gap(scale: f32) -> f32 {
+        18.0 * scale
+    }
+
+    fn ci_provider_gap(scale: f32) -> f32 {
+        18.0 * scale
+    }
+
+    fn ci_icon_gap(scale: f32) -> f32 {
+        5.0 * scale
+    }
+
+    fn ci_token_separator_pad(scale: f32) -> f32 {
+        1.0 * scale
+    }
+
+    fn ci_count_dot_gap(scale: f32) -> f32 {
+        2.0 * scale
+    }
+
+    fn ci_token_separator_width(text_renderer: &TextRenderer, scale: f32) -> f32 {
+        let sep_w = text_renderer.measure_text("|");
+        Self::ci_token_separator_pad(scale) * 2.0 + sep_w
+    }
+
+    fn ci_token_dot_color(state: CiState) -> [f32; 4] {
+        match state {
+            CiState::Success => [0.34, 0.80, 0.44, 1.0],  // green
+            CiState::Failure => [0.90, 0.30, 0.30, 1.0],  // red
+            CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
+            CiState::None => [0.5, 0.5, 0.5, 1.0],
+        }
+    }
+
+    fn ci_compact_width(
+        text_renderer: &TextRenderer,
+        ci_result: &ProviderCiResult,
+        scale: f32,
+    ) -> f32 {
+        let line_height = text_renderer.line_height();
+        let icon_size = line_height * 0.7;
+        let mut width = icon_size;
+        let dot_radius = 3.0 * scale;
+        if let Some(counts) = ci_result.status.counts {
+            let tokens = Self::ci_tokens(counts);
+            if !tokens.is_empty() {
+                width += Self::ci_icon_gap(scale);
+            }
+            for (idx, (count, _)) in tokens.iter().enumerate() {
+                if idx > 0 {
+                    width += Self::ci_token_separator_width(text_renderer, scale);
+                }
+                width += text_renderer.measure_text(&count.to_string());
+                width += Self::ci_count_dot_gap(scale) + dot_radius * 2.0;
+            }
+        } else {
+            width +=
+                Self::ci_icon_gap(scale) + text_renderer.measure_text(&ci_result.status.summary);
+        }
+        width
+    }
+
     /// Pre-compute CI indicator bounds (call from the pre-draw phase with text_renderer access).
     pub fn update_ci_bounds(&mut self, text_renderer: &TextRenderer, bounds: Rect) {
         self.ci_indicator_bounds.clear();
@@ -306,29 +382,17 @@ impl HeaderBar {
         };
 
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
-        let dot_radius = 4.0 * scale;
-        let multi = active.len() > 1;
-        let mut x = after_path_x + 12.0;
+        let mut x = after_path_x + Self::ci_start_gap(scale);
 
-        for ci_result in &active {
+        for (i, ci_result) in active.iter().enumerate() {
             let start_x = x;
-            if multi {
-                // Icon + dot
-                let icon_size = line_height * 0.7;
-                x += icon_size + 4.0 * scale; // icon + gap
+            if i > 0 {
+                x += Self::ci_provider_gap(scale);
             }
-            // Dot
-            x += dot_radius * 2.0;
-            if !multi {
-                // Single provider: add summary text width
-                x += 6.0 * scale + text_renderer.measure_text(&ci_result.status.summary);
-            }
+            x += Self::ci_compact_width(text_renderer, ci_result, scale);
             let w = x - start_x;
             self.ci_indicator_bounds
                 .push(Rect::new(start_x, text_y, w, line_height));
-            if multi {
-                x += 10.0 * scale; // gap + separator space
-            }
         }
     }
 
@@ -573,28 +637,20 @@ impl HeaderBar {
                 && self.generic_op_label.is_none()
                 && !active.is_empty()
             {
-                let dot_radius = 4.0 * scale;
-                let multi = active.len() > 1;
-                let mut x = after_path_x + 12.0;
+                let dot_radius = 3.0 * scale;
+                let mut x = after_path_x + Self::ci_start_gap(scale);
                 let dot_cy = bounds.y + bounds.height / 2.0;
 
                 for (i, ci_result) in active.iter().enumerate() {
-                    // Separator between providers
-                    if multi && i > 0 {
-                        let sep_x = x - 5.0 * scale;
-                        output.text_vertices.extend(text_renderer.layout_text(
-                            "|",
-                            sep_x,
-                            text_y,
-                            theme::TEXT_MUTED.to_array(),
-                        ));
+                    if i > 0 {
+                        x += Self::ci_provider_gap(scale);
                     }
 
-                    // Provider icon (only in multi-provider mode)
-                    if multi && let Some(ir) = icon_renderer {
+                    // Provider icon
+                    let icon_size = line_height * 0.7;
+                    if let Some(ir) = icon_renderer {
                         let icon_key = ci_result.provider.icon();
                         if let Some(tc) = ir.get_tex_coords(icon_key) {
-                            let icon_size = line_height * 0.7;
                             let icon_y = bounds.y + (bounds.height - icon_size) * 0.5;
                             output.icon_vertices.extend(crate::ui::icon::icon_quad(
                                 x,
@@ -604,32 +660,52 @@ impl HeaderBar {
                                 tc,
                                 [1.0, 1.0, 1.0, 0.7],
                             ));
-                            x += icon_size + 4.0 * scale;
+                            x += icon_size;
                         }
+                    } else {
+                        x += icon_size;
                     }
 
-                    let dot_color = match ci_result.status.state {
-                        CiState::Success => [0.34, 0.80, 0.44, 1.0],  // green
-                        CiState::Failure => [0.90, 0.30, 0.30, 1.0],  // red
-                        CiState::Pending => [1.0, 0.718, 0.302, 1.0], // amber
-                        CiState::None => unreachable!(),
-                    };
-
-                    let dot_cx = x + dot_radius;
-                    output.spline_vertices.extend(create_arc_vertices(
-                        dot_cx,
-                        dot_cy,
-                        dot_radius * 0.5,
-                        dot_radius * 0.5,
-                        0.0,
-                        std::f32::consts::TAU,
-                        dot_color,
-                    ));
-                    x += dot_radius * 2.0;
-
-                    // Summary text (only for single provider)
-                    if !multi {
-                        x += 6.0 * scale;
+                    if let Some(counts) = ci_result.status.counts {
+                        let tokens = Self::ci_tokens(counts);
+                        if !tokens.is_empty() {
+                            x += Self::ci_icon_gap(scale);
+                        }
+                        for (idx, (count, state)) in tokens.iter().enumerate() {
+                            if idx > 0 {
+                                x += Self::ci_token_separator_pad(scale);
+                                output.text_vertices.extend(text_renderer.layout_text(
+                                    "|",
+                                    x,
+                                    text_y,
+                                    theme::TEXT_MUTED.with_alpha(0.8).to_array(),
+                                ));
+                                x += text_renderer.measure_text("|");
+                                x += Self::ci_token_separator_pad(scale);
+                            }
+                            let count_text = count.to_string();
+                            output.text_vertices.extend(text_renderer.layout_text(
+                                &count_text,
+                                x,
+                                text_y,
+                                theme::TEXT_MUTED.to_array(),
+                            ));
+                            x += text_renderer.measure_text(&count_text);
+                            x += Self::ci_count_dot_gap(scale);
+                            let dot_cx = x + dot_radius;
+                            output.spline_vertices.extend(create_arc_vertices(
+                                dot_cx,
+                                dot_cy,
+                                dot_radius * 0.5,
+                                dot_radius * 0.5,
+                                0.0,
+                                std::f32::consts::TAU,
+                                Self::ci_token_dot_color(*state),
+                            ));
+                            x += dot_radius * 2.0;
+                        }
+                    } else {
+                        x += Self::ci_icon_gap(scale);
                         output.text_vertices.extend(text_renderer.layout_text(
                             &ci_result.status.summary,
                             x,
@@ -637,8 +713,6 @@ impl HeaderBar {
                             theme::TEXT_MUTED.to_array(),
                         ));
                         x += text_renderer.measure_text(&ci_result.status.summary);
-                    } else {
-                        x += 10.0 * scale; // gap for next provider
                     }
                 }
             }

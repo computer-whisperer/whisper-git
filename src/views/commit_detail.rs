@@ -24,6 +24,8 @@ pub struct CommitDetailView {
     changed_files: Vec<DiffFile>,
     /// Submodule entries at this commit
     submodule_entries: Vec<CommitSubmoduleEntry>,
+    /// Compact CI summary for this commit, if available.
+    ci_summary: Option<String>,
     /// Hit-test bounds for submodule rows: (rect, submodule_path)
     submodule_bounds: Vec<(Rect, String)>,
     /// Currently selected file index
@@ -46,6 +48,7 @@ impl CommitDetailView {
             commit_info: None,
             changed_files: Vec::new(),
             submodule_entries: Vec::new(),
+            ci_summary: None,
             submodule_bounds: Vec::new(),
             selected_file: None,
             file_scroll_offset: 0.0,
@@ -62,10 +65,12 @@ impl CommitDetailView {
         info: FullCommitInfo,
         diff_files: Vec<DiffFile>,
         submodule_entries: Vec<CommitSubmoduleEntry>,
+        ci_summary: Option<String>,
     ) {
         self.commit_info = Some(info);
         self.changed_files = diff_files;
         self.submodule_entries = submodule_entries;
+        self.ci_summary = ci_summary;
         self.submodule_bounds.clear();
         self.selected_file = if self.changed_files.is_empty() {
             None
@@ -80,6 +85,7 @@ impl CommitDetailView {
         self.commit_info = None;
         self.changed_files.clear();
         self.submodule_entries.clear();
+        self.ci_summary = None;
         self.submodule_bounds.clear();
         self.selected_file = None;
         self.file_scroll_offset = 0.0;
@@ -257,6 +263,9 @@ impl CommitDetailView {
         if !info.parent_short_ids.is_empty() {
             meta_lines += 1.0; // Parents
         }
+        if self.ci_summary.is_some() {
+            meta_lines += 1.0; // CI summary
+        }
         let gap = 4.0;
         let msg_line_count =
             self.count_message_lines(&info.full_message, text_renderer, inner_width);
@@ -327,6 +336,18 @@ impl CommitDetailView {
             let parents_str = format!("Parents: {}", info.parent_short_ids.join(", "));
             output.text_vertices.extend(text_renderer.layout_text(
                 &parents_str,
+                meta_inner_x,
+                y,
+                theme::TEXT_MUTED.to_array(),
+            ));
+            y += line_height;
+        }
+
+        if let Some(ci_summary) = &self.ci_summary {
+            let display =
+                truncate_to_width(&format!("CI: {ci_summary}"), text_renderer, inner_width);
+            output.text_vertices.extend(text_renderer.layout_text(
+                &display,
                 meta_inner_x,
                 y,
                 theme::TEXT_MUTED.to_array(),

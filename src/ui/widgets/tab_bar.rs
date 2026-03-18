@@ -1,7 +1,8 @@
 //! Tab bar widget - horizontal tabs for switching between open repositories
 
+use crate::ci::CiState;
 use crate::input::{EventResponse, InputEvent, MouseButton};
-use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, theme};
+use crate::ui::widget::{Widget, WidgetOutput, create_arc_vertices, create_rect_vertices, theme};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions emitted by the tab bar
@@ -18,6 +19,7 @@ pub enum TabAction {
 /// Data for a single tab
 struct Tab {
     name: String,
+    ci_state: CiState,
 }
 
 /// Cached bounds from the last layout pass, used for hit-testing
@@ -53,7 +55,17 @@ impl TabBar {
     }
 
     pub fn add_tab(&mut self, name: String) {
-        self.tabs.push(Tab { name });
+        self.tabs.push(Tab {
+            name,
+            ci_state: CiState::None,
+        });
+    }
+
+    /// Update per-tab aggregate CI states. Missing entries default to `None`.
+    pub fn set_tab_ci_states(&mut self, states: Vec<CiState>) {
+        for (idx, tab) in self.tabs.iter_mut().enumerate() {
+            tab.ci_state = states.get(idx).copied().unwrap_or(CiState::None);
+        }
     }
 
     pub fn set_active(&mut self, index: usize) {
@@ -92,6 +104,8 @@ impl TabBar {
     fn compute_bounds(&self, bounds: Rect, text_renderer: &TextRenderer) -> CachedBounds {
         let scale = (bounds.height / 28.0).max(1.0);
         let tab_padding = 12.0 * scale;
+        let ci_dot_size = 8.0 * scale;
+        let ci_dot_gap = 6.0 * scale;
         let close_size = 14.0 * scale;
         let close_gap = 6.0 * scale;
         let new_button_width = 28.0 * scale;
@@ -103,7 +117,12 @@ impl TabBar {
 
         for tab in &self.tabs {
             let text_width = text_renderer.measure_text(&tab.name);
-            let tab_width = text_width + tab_padding * 2.0 + close_size + close_gap;
+            let ci_space = if tab.ci_state == CiState::None {
+                0.0
+            } else {
+                ci_dot_size + ci_dot_gap
+            };
+            let tab_width = text_width + tab_padding * 2.0 + ci_space + close_size + close_gap;
             let tab_rect = Rect::new(x, bounds.y, tab_width, bounds.height);
 
             let close_rect = Rect::new(
@@ -303,7 +322,31 @@ impl Widget for TabBar {
             };
             let text_y = tab_rect.y + (tab_rect.height - line_height) / 2.0;
             let scale = (bounds.height / 28.0).max(1.0);
-            let text_x = tab_rect.x + 12.0 * scale;
+            let ci_dot_size = 8.0 * scale;
+            let ci_dot_gap = 6.0 * scale;
+            let mut text_x = tab_rect.x + 12.0 * scale;
+
+            if self.tabs[i].ci_state != CiState::None {
+                let dot_radius = ci_dot_size * 0.5;
+                let dot_cx = text_x + dot_radius;
+                let dot_cy = tab_rect.y + tab_rect.height * 0.5;
+                let dot_color = match self.tabs[i].ci_state {
+                    CiState::Success => theme::STATUS_CLEAN,
+                    CiState::Failure => theme::STATUS_DIRTY,
+                    CiState::Pending => theme::BRANCH_RELEASE,
+                    CiState::None => theme::TEXT_MUTED,
+                };
+                output.spline_vertices.extend(create_arc_vertices(
+                    dot_cx,
+                    dot_cy,
+                    dot_radius,
+                    dot_radius,
+                    0.0,
+                    std::f32::consts::TAU,
+                    dot_color.to_array(),
+                ));
+                text_x += ci_dot_size + ci_dot_gap;
+            }
             output.text_vertices.extend(text_renderer.layout_text(
                 &self.tabs[i].name,
                 text_x,

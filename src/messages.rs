@@ -658,6 +658,25 @@ pub fn handle_app_message(
         AppMessage::SelectedCommit(oid) => {
             let full_info = repo.full_commit_info(oid);
             let submodule_entries = repo.submodules_at_commit(oid).unwrap_or_default();
+            let ci_summary = view_state
+                .commit_graph_view
+                .ci_commit_rollups
+                .get(&oid.to_string())
+                .map(|rollups| {
+                    rollups
+                        .iter()
+                        .map(|r| {
+                            format!(
+                                "{} {}F {}P {}S",
+                                r.provider.short_label(),
+                                r.rollup.counts.failure,
+                                r.rollup.counts.pending,
+                                r.rollup.counts.success
+                            )
+                        })
+                        .collect::<Vec<String>>()
+                        .join("  ")
+                });
             match repo.diff_for_commit(oid) {
                 Ok(diff_files) => {
                     if let Ok(info) = full_info {
@@ -665,6 +684,7 @@ pub fn handle_app_message(
                             info,
                             diff_files.clone(),
                             submodule_entries,
+                            ci_summary,
                         );
                     }
                     if let Some(first_file) = diff_files.first() {

@@ -4,7 +4,9 @@
 //! Supports both gitlab.com and self-hosted GitLab instances by deriving the
 //! API base URL from the remote URL.
 
-use crate::ci::{CiProvider, CiState, CiStatus, ProviderCiResult};
+use crate::ci::{
+    CiCheckStatus, CiCommitRollup, CiCounts, CiProvider, CiState, CiStatus, ProviderCiResult,
+};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -145,6 +147,7 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
             state: CiState::None,
             summary: "No pipelines".into(),
             url: None,
+            counts: Some(CiCounts::default()),
         };
     }
 
@@ -171,45 +174,63 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
         }
     }
 
-    let total = passed + failed + pending;
-    let (state, summary) = if failed > 0 {
-        (
-            CiState::Failure,
-            format!("{passed}/{total} pipelines passed"),
-        )
-    } else if pending > 0 {
-        (
-            CiState::Pending,
-            format!("{pending} pipeline(s) in progress"),
-        )
-    } else {
-        let s = if total == 1 {
-            "Pipeline passed".into()
-        } else {
-            format!("All {total} pipelines passed")
-        };
-        (CiState::Success, s)
+    let counts = CiCounts {
+        success: passed,
+        failure: failed,
+        pending,
+    };
+    let total = counts.total();
+    let state = counts.overall_state();
+    let summary = match state {
+        CiState::Failure => format!(
+            "{} failed, {} pending, {} passed",
+            counts.failure, counts.pending, counts.success
+        ),
+        CiState::Pending => format!("{} pending, {} passed", counts.pending, counts.success),
+        CiState::Success => {
+            if total == 1 {
+                "Pipeline passed".into()
+            } else {
+                format!("All {total} pipelines passed")
+            }
+        }
+        CiState::None => "No pipelines".into(),
     };
 
     CiStatus {
         state,
         summary,
         url: first_url,
+        counts: Some(counts),
     }
 }
 
 /// Build per-commit CI states from pipelines.
-fn per_commit_states(pipelines: &[Pipeline]) -> HashMap<String, CiState> {
+fn per_commit_rollups(pipelines: &[Pipeline]) -> HashMap<String, CiCommitRollup> {
     let mut by_sha: HashMap<&str, Vec<&Pipeline>> = HashMap::new();
     for p in pipelines {
         by_sha.entry(p.sha.as_str()).or_default().push(p);
     }
 
-    let mut result = HashMap::new();
+    let mut result: HashMap<String, CiCommitRollup> = HashMap::new();
     for (sha, sha_pipelines) in &by_sha {
         // Take the latest pipeline per SHA (highest id)
         if let Some(latest) = sha_pipelines.iter().max_by_key(|p| p.id) {
-            result.insert(sha.to_string(), pipeline_state(&latest.status));
+            let check_state = pipeline_state(&latest.status);
+            let checks = vec![CiCheckStatus {
+                label: format!("Pipeline #{}", latest.id),
+                state: check_state,
+                url: Some(latest.web_url.clone()),
+            }];
+            let counts = CiCounts::from_states(checks.iter().map(|c| c.state));
+            result.insert(
+                sha.to_string(),
+                CiCommitRollup {
+                    state: counts.overall_state(),
+                    counts,
+                    checks,
+                },
+            );
         }
     }
     result
@@ -220,19 +241,29 @@ fn per_commit_states(pipelines: &[Pipeline]) -> HashMap<String, CiState> {
 fn fetch_ci_result(token: &str, remote: &GitLabRemote) -> ProviderCiResult {
     let client = GitLabClient::new(token.to_string(), remote.api_base.clone());
     match client.pipelines(&remote.project_path, None, 50) {
-        Ok(pipelines) => ProviderCiResult {
-            provider: CiProvider::GitLab,
-            status: ci_status_from_pipelines(&pipelines),
-            per_commit: per_commit_states(&pipelines),
-        },
+        Ok(pipelines) => {
+            let per_commit_rollups = per_commit_rollups(&pipelines);
+            let per_commit = per_commit_rollups
+                .iter()
+                .map(|(sha, rollup)| (sha.clone(), rollup.state))
+                .collect();
+            ProviderCiResult {
+                provider: CiProvider::GitLab,
+                status: ci_status_from_pipelines(&pipelines),
+                per_commit,
+                per_commit_rollups,
+            }
+        }
         Err(e) => ProviderCiResult {
             provider: CiProvider::GitLab,
             status: CiStatus {
                 state: CiState::None,
                 summary: format!("GitLab CI fetch failed: {e}"),
                 url: None,
+                counts: None,
             },
             per_commit: HashMap::new(),
+            per_commit_rollups: HashMap::new(),
         },
     }
 }
@@ -346,7 +377,7 @@ mod tests {
             make_pipeline(1, "abc", "failed"),
             make_pipeline(2, "abc", "success"), // newer
         ];
-        let states = per_commit_states(&pipelines);
-        assert_eq!(states["abc"], CiState::Success);
+        let rollups = per_commit_rollups(&pipelines);
+        assert_eq!(rollups["abc"].state, CiState::Success);
     }
 }
