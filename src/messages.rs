@@ -941,7 +941,7 @@ pub fn handle_app_message(
         }
         AppMessage::CreateWorktree(name, source, init_submodules, checkout_lfs) => {
             let cmd_dir = repo.git_command_dir();
-            // Compute worktree path: sibling directory to the current workdir
+            // Compute worktree path: peer directory next to the current workdir
             let wt_path_buf = cmd_dir.parent().unwrap_or(&cmd_dir).join(&name);
             let wt_path = wt_path_buf.to_string_lossy().to_string();
             // Heuristic: if source looks like a hex SHA (7+ hex chars), use detached mode

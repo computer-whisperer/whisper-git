@@ -68,8 +68,6 @@ pub enum StagingAction {
     PreviewDiff(String, bool),
     /// Open (drill into) a submodule by name
     OpenSubmodule(String),
-    /// Switch to a sibling submodule (exit current, then enter sibling)
-    SwitchToSibling(String),
     /// Stage all untracked (new) files
     StageAllUntracked,
     /// Request AI-generated commit message from staged diff
@@ -124,10 +122,6 @@ pub struct StagingWell {
     pub submodules: Vec<SubmoduleInfo>,
     /// Hit-test bounds for submodule rows: (rect, submodule_name)
     submodule_bounds: Vec<(Rect, String)>,
-    /// Sibling submodules (parent's submodules for lateral navigation when inside a submodule)
-    pub sibling_submodules: Vec<SubmoduleInfo>,
-    /// Hit-test bounds for sibling submodule rows: (rect, submodule_name)
-    sibling_bounds: Vec<(Rect, String)>,
     /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
     pub repo_state_label: Option<&'static str>,
     /// AI generate commit message button
@@ -147,8 +141,6 @@ struct StagingRegions {
     staged: Rect,
     /// Area for the submodule section (between staged and commit area, zero-height if none)
     submodules: Rect,
-    /// Area for the sibling submodules section (after submodules, zero-height if none)
-    siblings: Rect,
     commit_area: Rect,
     subject: Rect,
     body: Rect,
@@ -205,8 +197,6 @@ impl StagingWell {
             status_refresh_needed: false,
             submodules: Vec::new(),
             submodule_bounds: Vec::new(),
-            sibling_submodules: Vec::new(),
-            sibling_bounds: Vec::new(),
             repo_state_label: None,
             ai_generate_btn: Button::new("AI"),
             ai_generating: false,
@@ -247,11 +237,6 @@ impl StagingWell {
     /// Set the submodule list for the current repo/worktree.
     pub fn set_submodules(&mut self, subs: Vec<SubmoduleInfo>) {
         self.submodules = subs;
-    }
-
-    /// Set the sibling submodule list (parent's submodules for lateral navigation).
-    pub fn set_sibling_submodules(&mut self, siblings: Vec<SubmoduleInfo>) {
-        self.sibling_submodules = siblings;
     }
 
     /// Returns true if any button in the staging well is hovered
@@ -331,6 +316,22 @@ impl StagingWell {
     pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect) -> Option<Vec<MenuItem>> {
         if !bounds.contains(x, y) {
             return None;
+        }
+
+        // Check submodule rows first
+        if let Some((_, name)) = self
+            .submodule_bounds
+            .iter()
+            .find(|(rect, _)| rect.contains(x, y))
+        {
+            let items = vec![
+                MenuItem::new("Enter Submodule", format!("enter_submodule:{}", name)),
+                MenuItem::new("Open in Terminal", format!("open_submodule:{}", name)),
+                MenuItem::separator(),
+                MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
+                MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
+            ];
+            return Some(items);
         }
 
         let regions = self.compute_regions_full(bounds);
@@ -1019,13 +1020,6 @@ impl StagingWell {
                     return EventResponse::Consumed;
                 }
             }
-            // Check clicks on sibling submodule rows
-            for (rect, name) in &self.sibling_bounds {
-                if rect.contains(*x, *y) {
-                    self.pending_action = Some(StagingAction::SwitchToSibling(name.clone()));
-                    return EventResponse::Consumed;
-                }
-            }
         }
 
         // For MouseDown, determine focus section before routing
@@ -1137,7 +1131,7 @@ impl StagingWell {
 
     /// Compute all regions for the layout order:
     /// unstaged header + list, untracked header + list, staged header + list,
-    /// submodules, siblings, commit area, buttons.
+    /// submodules, commit area, buttons.
     /// When file lists are empty, they collapse to just the header row and the saved
     /// space is given to the commit message body area.
     fn compute_regions_full(&self, bounds: Rect) -> StagingRegions {
@@ -1178,25 +1172,11 @@ impl StagingWell {
             divider_gap + sm_section_header_h + sm_max_rows * sm_row_h + 4.0 * s
         };
 
-        // Sibling submodule section: allocate height if siblings exist
-        let sib_section_header_h = if self.sibling_submodules.is_empty() {
-            0.0
-        } else {
-            22.0 * s
-        };
-        let sib_max_rows = self.sibling_submodules.len().min(8) as f32;
-        let sib_total_h = if self.sibling_submodules.is_empty() {
-            0.0
-        } else {
-            divider_gap + sib_section_header_h + sib_max_rows * sm_row_h + 4.0 * s
-        };
-
         // File lists: when empty, collapse to zero height (header-only).
         let file_area_budget = (inner.height
             - section_header_height * num_headers as f32
             - divider_gap * num_dividers as f32
             - sm_total_h
-            - sib_total_h
             - commit_title_height
             - subject_height
             - gap_small
@@ -1253,10 +1233,7 @@ impl StagingWell {
         // --- Submodule section (between staged and commit, only if submodules exist) ---
         let (submodules, remaining) = remaining.take_top(sm_total_h);
 
-        // --- Sibling submodule section (after submodules, only if siblings exist) ---
-        let (siblings, remaining) = remaining.take_top(sib_total_h);
-
-        // Divider between staged/submodules/siblings and commit area
+        // Divider between staged/submodules and commit area
         let (_div2, remaining) = remaining.take_top(divider_gap);
 
         // --- Commit message area ---
@@ -1340,7 +1317,6 @@ impl StagingWell {
             staged_header,
             staged,
             submodules,
-            siblings,
             commit_area,
             subject,
             body,
@@ -1799,88 +1775,6 @@ impl StagingWell {
             }
         }
 
-        // =============================================================
-        // 6. SIBLINGS SECTION (sibling submodules for lateral navigation)
-        // =============================================================
-        self.sibling_bounds.clear();
-        if !self.sibling_submodules.is_empty() && regions.siblings.height > 0.0 {
-            let sib_rect = regions.siblings;
-            let sib_row_h = text_renderer.line_height() * 1.2;
-            let sib_left = sib_rect.x;
-            let sib_width = sib_rect.width;
-
-            // Divider at top of sibling section
-            output.spline_vertices.extend(create_rect_vertices(
-                &Rect::new(sib_left, sib_rect.y, sib_width, 1.0),
-                theme::BORDER.to_array(),
-            ));
-
-            // Section header
-            let header_y = sib_rect.y + 4.0 * s;
-            let sib_header_h = 22.0 * s;
-            let sib_title = format!("Siblings ({})", self.sibling_submodules.len());
-            output.text_vertices.extend(text_renderer.layout_text(
-                &sib_title,
-                sib_left + 4.0 * s,
-                header_y + 2.0 * s,
-                theme::TEXT_MUTED.to_array(),
-            ));
-
-            // Sibling rows
-            let mut row_y = header_y + sib_header_h;
-            let sib_bottom = sib_rect.bottom();
-            for sib in &self.sibling_submodules {
-                if row_y + sib_row_h > sib_bottom {
-                    break;
-                }
-
-                let row_rect = Rect::new(sib_left, row_y, sib_width, sib_row_h);
-                self.sibling_bounds.push((row_rect, sib.name.clone()));
-
-                // Status dot color
-                let dot_color = if sib.is_dirty {
-                    theme::STATUS_BEHIND // amber
-                } else if sib.branch == "detached" {
-                    theme::STATUS_DIRTY // red
-                } else {
-                    theme::STATUS_CLEAN // green
-                };
-
-                // Status dot
-                let dot = "\u{25CF}"; // ●
-                let dot_x = sib_left + 4.0 * s;
-                output.text_vertices.extend(text_renderer.layout_text(
-                    dot,
-                    dot_x,
-                    row_y + 2.0,
-                    dot_color.to_array(),
-                ));
-                let dot_w = text_renderer.measure_text(dot) + 4.0;
-
-                // Name
-                output.text_vertices.extend(text_renderer.layout_text(
-                    &sib.name,
-                    dot_x + dot_w,
-                    row_y + 2.0,
-                    theme::TEXT.to_array(),
-                ));
-
-                // Short pinned SHA on right
-                if let Some(oid) = sib.head_oid {
-                    let short_sha = &oid.to_string()[..7];
-                    let sha_w = text_renderer.measure_text(short_sha);
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        short_sha,
-                        sib_left + sib_width - sha_w - 4.0 * s,
-                        row_y + 2.0,
-                        theme::TEXT_MUTED.to_array(),
-                    ));
-                }
-
-                row_y += sib_row_h;
-            }
-        }
-
         output
     }
 }
@@ -1888,5 +1782,27 @@ impl StagingWell {
 impl Default for StagingWell {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn submodule_row_context_menu_has_submodule_actions() {
+        let mut well = StagingWell::new();
+        well.submodule_bounds
+            .push((Rect::new(10.0, 20.0, 140.0, 22.0), "vendor-lib".to_string()));
+
+        let items = well
+            .context_menu_items_at(20.0, 30.0, Rect::new(0.0, 0.0, 300.0, 300.0))
+            .expect("expected context menu");
+
+        let actions: Vec<String> = items.into_iter().map(|i| i.action_id).collect();
+        assert!(actions.contains(&"enter_submodule:vendor-lib".to_string()));
+        assert!(actions.contains(&"open_submodule:vendor-lib".to_string()));
+        assert!(actions.contains(&"update_submodule:vendor-lib".to_string()));
+        assert!(actions.contains(&"delete_submodule:vendor-lib".to_string()));
     }
 }

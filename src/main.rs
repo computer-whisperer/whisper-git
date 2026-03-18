@@ -429,11 +429,6 @@ impl TabViewState {
             StagingAction::OpenSubmodule(name) => {
                 self.pending_messages.push(AppMessage::EnterSubmodule(name));
             }
-            StagingAction::SwitchToSibling(name) => {
-                // Exit current submodule, then enter the sibling
-                self.pending_messages.push(AppMessage::ExitSubmodule);
-                self.pending_messages.push(AppMessage::EnterSubmodule(name));
-            }
             StagingAction::GenerateAiCommitMessage => {
                 self.pending_messages
                     .push(AppMessage::AiGenerateCommitMessage);
@@ -1014,14 +1009,22 @@ impl App {
     fn refresh_status(&mut self) {
         if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
             let repo = &repo_tab.repo;
-            let repo_git_dir = repo.git_dir().to_path_buf();
+            let repo_context_path = repo
+                .workdir()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| repo.git_dir().to_path_buf());
             let is_bare = repo.is_effectively_bare();
 
-            // Determine staging repo git dir (worktree-specific or same as main)
-            let staging_git_dir = view_state
+            // Determine staging repo context path (selected worktree or same as main)
+            let staging_context_path = view_state
                 .worktree_state
                 .staging_repo()
-                .map(|r| r.git_dir().to_path_buf());
+                .map(|r| {
+                    r.workdir()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| r.git_dir().to_path_buf())
+                })
+                .or_else(|| Some(repo_context_path.clone()));
 
             let worktree_paths: Vec<String> = view_state
                 .worktree_state
@@ -1031,8 +1034,8 @@ impl App {
                 .collect();
 
             self.status_receiver = Some(spawn_status_refresh(
-                repo_git_dir,
-                staging_git_dir,
+                repo_context_path,
+                staging_context_path,
                 worktree_paths,
                 is_bare,
                 self.proxy.clone(),
@@ -1062,15 +1065,24 @@ impl App {
     /// Spawn an async repo state refresh for the active tab.
     fn trigger_repo_state_refresh(&mut self) {
         if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
-            let repo_git_dir = repo_tab.repo.git_dir().to_path_buf();
-            let staging_git_dir = view_state
+            let repo_context_path = repo_tab
+                .repo
+                .workdir()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| repo_tab.repo.git_dir().to_path_buf());
+            let staging_context_path = view_state
                 .worktree_state
                 .staging_repo()
-                .map(|r| r.git_dir().to_path_buf());
+                .map(|r| {
+                    r.workdir()
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|| r.git_dir().to_path_buf())
+                })
+                .or_else(|| Some(repo_context_path.clone()));
 
             self.repo_state_receiver = Some(spawn_repo_state_refresh(
-                repo_git_dir,
-                staging_git_dir,
+                repo_context_path,
+                staging_context_path,
                 self.config.show_orphaned_commits,
                 self.proxy.clone(),
             ));

@@ -42,8 +42,17 @@ pub(crate) fn init_tab_view(
     // worktree_state.selected_path stays None until explicitly set.
 
     // Spawn async repo state refresh
-    let repo_git_dir = repo_tab.repo.git_dir().to_path_buf();
-    let rx = spawn_repo_state_refresh(repo_git_dir, None, show_orphaned_commits, proxy.clone());
+    let repo_context_path = repo_tab
+        .repo
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| repo_tab.repo.git_dir().to_path_buf());
+    let rx = spawn_repo_state_refresh(
+        repo_context_path,
+        None,
+        show_orphaned_commits,
+        proxy.clone(),
+    );
 
     // Start filesystem watcher for auto-refresh
     start_watcher(repo_tab, view_state, toast_manager, proxy);
@@ -117,11 +126,29 @@ pub(crate) fn enter_submodule(
         return None;
     };
 
-    // Resolve submodule path relative to the active worktree's workdir
-    let parent_workdir = match view_state.staging_well.active_worktree_path() {
+    // Resolve submodule path relative to the active staging context.
+    // Priority:
+    // 1) Current repo frame workdir (root repo or currently focused submodule)
+    // 2) Selected staging worktree repo workdir
+    // 3) Selected worktree path itself
+    let parent_workdir = repo_tab
+        .repo
+        .workdir()
+        .map(|p| p.to_path_buf())
+        .or_else(|| {
+            view_state
+                .worktree_state
+                .staging_repo()
+                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+        })
+        .or_else(|| view_state.worktree_state.selected_path.clone());
+    let parent_workdir = match parent_workdir {
         Some(path) => path,
         None => {
-            toast_manager.push("No active worktree".to_string(), ToastSeverity::Error);
+            toast_manager.push(
+                "No active worktree context for submodule navigation".to_string(),
+                ToastSeverity::Error,
+            );
             return None;
         }
     };
@@ -253,7 +280,7 @@ pub(crate) fn exit_submodule(
     view_state.commit_graph_view.selected_commit = selected;
     view_state.branch_sidebar.scroll_offset = sidebar_scroll;
 
-    // Restore submodule siblings in staging well
+    // Restore parent repo submodule list in staging well.
     view_state.staging_well.set_submodules(parent_submodules);
 
     // If stack is now empty, clear focus entirely

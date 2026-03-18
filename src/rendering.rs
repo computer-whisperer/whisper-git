@@ -304,14 +304,32 @@ pub(crate) fn handle_context_menu_action(
         }
         "open_submodule" => {
             if !param.is_empty() {
-                let path = view_state
+                let rel_path = view_state
                     .staging_well
                     .submodules
                     .iter()
                     .find(|s| s.name == param)
                     .map(|s| s.path.clone());
-                if let Some(path) = path {
-                    open_terminal_at(&path, param, toast_manager);
+                if let Some(rel_path) = rel_path {
+                    let base_dir = repo
+                        .workdir()
+                        .map(|p| p.to_path_buf())
+                        .or_else(|| {
+                            view_state
+                                .worktree_state
+                                .staging_repo()
+                                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+                        })
+                        .or_else(|| view_state.worktree_state.selected_path.clone());
+                    if let Some(base_dir) = base_dir {
+                        let abs_path = base_dir.join(rel_path);
+                        open_terminal_at(&abs_path.to_string_lossy(), param, toast_manager);
+                    } else {
+                        toast_manager.push(
+                            "No active worktree context for submodule terminal".to_string(),
+                            ToastSeverity::Error,
+                        );
+                    }
                 } else {
                     toast_manager.push(
                         format!("Submodule '{}' not found", param),

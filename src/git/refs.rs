@@ -458,13 +458,14 @@ impl GitRepo {
     /// Collect all submodule pin entries (ObjectType::Commit) from a tree.
     fn collect_submodule_pins(tree: &git2::Tree) -> HashMap<String, Oid> {
         let mut pins = HashMap::new();
-        for entry in tree.iter() {
+        let _ = tree.walk(git2::TreeWalkMode::PreOrder, |root, entry| {
             if entry.kind() == Some(git2::ObjectType::Commit)
                 && let Some(name) = entry.name()
             {
-                pins.insert(name.to_string(), entry.id());
+                pins.insert(format!("{}{}", root, name), entry.id());
             }
-        }
+            git2::TreeWalkResult::Ok
+        });
         pins
     }
 
@@ -578,5 +579,105 @@ impl GitRepo {
             .remote_set_url(name, url)
             .with_context(|| format!("Failed to set URL for remote '{}'", name))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitRepo;
+    use git2::Oid;
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("failed to run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn submodules_at_commit_includes_nested_gitlink_paths() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let repo_dir = std::env::temp_dir().join(format!("whisper-git-refs-test-{unique}"));
+        fs::create_dir_all(&repo_dir).expect("create temp repo dir");
+
+        run_git(&repo_dir, &["init"]);
+        fs::write(repo_dir.join("README.md"), "root\n").expect("write README");
+        run_git(&repo_dir, &["add", "README.md"]);
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+        let target_oid = run_git(&repo_dir, &["rev-parse", "HEAD"]);
+
+        let gitmodules = r#"[submodule "nested-lib"]
+	path = libs/nested
+	url = ../nested-lib
+"#;
+        fs::create_dir_all(repo_dir.join("libs")).expect("create libs dir");
+        fs::write(repo_dir.join(".gitmodules"), gitmodules).expect("write .gitmodules");
+        run_git(&repo_dir, &["add", ".gitmodules"]);
+        run_git(
+            &repo_dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000",
+                &target_oid,
+                "libs/nested",
+            ],
+        );
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "add nested gitlink",
+            ],
+        );
+
+        let repo = GitRepo::open(&repo_dir).expect("open repo");
+        let oid = repo.head_oid().expect("head oid");
+        let entries = repo
+            .submodules_at_commit(oid)
+            .expect("submodules_at_commit should succeed");
+
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.name, "nested-lib");
+        assert_eq!(
+            entry.pinned_oid,
+            Oid::from_str(&target_oid).expect("parse oid")
+        );
+        assert!(entry.changed);
+
+        let _ = fs::remove_dir_all(&repo_dir);
     }
 }

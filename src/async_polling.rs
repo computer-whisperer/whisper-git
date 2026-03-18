@@ -159,6 +159,8 @@ pub(crate) struct StatusResult {
     pub staging_status: Option<WorkingDirStatus>,
     /// Staging repo state (merge/rebase in progress, etc.)
     pub staging_repo_state: git2::RepositoryState,
+    /// Submodules for the active staging context.
+    pub submodules: Vec<SubmoduleInfo>,
     /// Per-worktree dirty flags: (path, is_dirty, dirty_file_count)
     pub worktree_dirty: Vec<(String, bool, usize)>,
     /// Pre-computed diff stats for the main repo working tree (insertions, deletions).
@@ -173,15 +175,15 @@ pub(crate) struct StatusResult {
 
 /// Spawn a background thread to compute working directory status.
 pub(crate) fn spawn_status_refresh(
-    repo_git_dir: PathBuf,
-    staging_git_dir: Option<PathBuf>,
+    repo_context_path: PathBuf,
+    staging_context_path: Option<PathBuf>,
     worktree_paths: Vec<String>,
     is_bare: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<StatusResult> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let main_repo = git2::Repository::open(&repo_git_dir).ok();
+        let main_repo = git2::Repository::open(&repo_context_path).ok();
 
         let main_status = if !is_bare {
             main_repo.as_ref().and_then(|repo| {
@@ -194,7 +196,7 @@ pub(crate) fn spawn_status_refresh(
             Some(WorkingDirStatus::default())
         };
 
-        let (staging_status, staging_repo_state) = match staging_git_dir
+        let (staging_status, staging_repo_state) = match staging_context_path
             .as_ref()
             .and_then(|dir| git2::Repository::open(dir).ok())
         {
@@ -213,6 +215,12 @@ pub(crate) fn spawn_status_refresh(
             }
             None => (None, git2::RepositoryState::Clean),
         };
+
+        let submodules = staging_context_path
+            .as_ref()
+            .and_then(|dir| GitRepo::open(dir).ok())
+            .and_then(|repo| repo.submodules().ok())
+            .unwrap_or_default();
 
         let worktree_dirty: Vec<(String, bool, usize)> = worktree_paths
             .into_iter()
@@ -263,6 +271,7 @@ pub(crate) fn spawn_status_refresh(
             main_status,
             staging_status,
             staging_repo_state,
+            submodules,
             worktree_dirty,
             main_diff_stats,
             worktree_diff_stats,
@@ -285,6 +294,7 @@ pub(crate) fn apply_status_result(
     }
     view_state.staging_well.repo_state_label =
         crate::git::repo_state_label(result.staging_repo_state);
+    view_state.staging_well.set_submodules(result.submodules);
 
     let main_dirty_count = result
         .main_status
@@ -391,7 +401,6 @@ pub(crate) struct RepoStateResult {
     pub submodules: Vec<SubmoduleInfo>,
     pub stashes: Vec<StashEntry>,
     pub ahead_behind: HashMap<String, (usize, usize)>,
-    pub staging_repo_state: git2::RepositoryState,
     pub ref_fingerprint: u64,
     /// OIDs for which diff stats should be computed
     pub real_oids: Vec<Oid>,
@@ -402,8 +411,8 @@ pub(crate) struct RepoStateResult {
 
 /// Spawn a background thread to compute the full repo state refresh.
 pub(crate) fn spawn_repo_state_refresh(
-    repo_git_dir: PathBuf,
-    staging_git_dir: Option<PathBuf>,
+    repo_context_path: PathBuf,
+    staging_context_path: Option<PathBuf>,
     show_orphaned_commits: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<RepoStateResult> {
@@ -411,7 +420,7 @@ pub(crate) fn spawn_repo_state_refresh(
     std::thread::spawn(move || {
         let mut errors = Vec::new();
 
-        let repo = match GitRepo::open(&repo_git_dir) {
+        let repo = match GitRepo::open(&repo_context_path) {
             Ok(r) => r,
             Err(e) => {
                 errors.push(format!("Failed to open repo: {e}"));
@@ -428,7 +437,6 @@ pub(crate) fn spawn_repo_state_refresh(
                     submodules: Vec::new(),
                     stashes: Vec::new(),
                     ahead_behind: HashMap::new(),
-                    staging_repo_state: git2::RepositoryState::Clean,
                     ref_fingerprint: 0,
                     real_oids: Vec::new(),
                     worktree_repos: HashMap::new(),
@@ -439,7 +447,7 @@ pub(crate) fn spawn_repo_state_refresh(
             }
         };
 
-        let staging_repo = staging_git_dir
+        let staging_repo = staging_context_path
             .as_ref()
             .and_then(|dir| GitRepo::open(dir).ok());
         let staging = staging_repo.as_ref().unwrap_or(&repo);
@@ -508,8 +516,8 @@ pub(crate) fn spawn_repo_state_refresh(
             .filter_map(|name| repo.remote_url(name).map(|url| (name.clone(), url)))
             .collect();
 
-        // Submodules
-        let submodules = repo.submodules().unwrap_or_else(|e| {
+        // Submodules for the active staging context (selected worktree or current repo)
+        let submodules = staging.submodules().unwrap_or_else(|e| {
             errors.push(format!("Failed to load submodules: {e}"));
             Vec::new()
         });
@@ -519,9 +527,6 @@ pub(crate) fn spawn_repo_state_refresh(
 
         // Ahead/behind for all branches
         let ahead_behind = repo.all_branches_ahead_behind();
-
-        // Staging repo state
-        let staging_repo_state = staging.repo_state();
 
         // Ref fingerprint
         let ref_fingerprint = git::ref_fingerprint(repo.git_dir());
@@ -546,7 +551,6 @@ pub(crate) fn spawn_repo_state_refresh(
             submodules,
             stashes,
             ahead_behind,
-            staging_repo_state,
             ref_fingerprint,
             real_oids,
             worktree_repos,
@@ -628,18 +632,35 @@ pub(crate) fn apply_repo_state_result(
         .repo_cache
         .retain(|p, _| valid.contains(p));
 
-    view_state.staging_well.set_submodules(result.submodules);
-
-    // Sibling submodules for lateral navigation
-    if let Some(focus) = view_state.submodule_focus.as_ref() {
-        if let Some(parent) = focus.parent_stack.last() {
-            view_state
-                .staging_well
-                .set_sibling_submodules(parent.parent_submodules.clone());
-        }
-    } else {
-        view_state.staging_well.sibling_submodules.clear();
+    // Keep staging context aligned with the staging well's active worktree pill.
+    // This makes submodule state worktree-scoped instead of repo-global.
+    match view_state.staging_well.active_worktree_path() {
+        Some(path) => view_state.worktree_state.select(path),
+        None => view_state.worktree_state.selected_path = None,
     }
+
+    let fallback_submodules = result.submodules;
+    let fallback_branch = result.current_branch;
+    let fallback_head = result.head_oid;
+    let (submodules, current_branch, head_oid, staging_repo_state) = {
+        let staging_repo = view_state.worktree_state.staging_repo_or(&repo_tab.repo);
+        let submodules = staging_repo.submodules().unwrap_or_else(|e| {
+            toast_manager.push(
+                format!("Failed to load submodules: {}", e),
+                ToastSeverity::Error,
+            );
+            fallback_submodules
+        });
+        let current_branch = staging_repo.current_branch().unwrap_or(fallback_branch);
+        let head_oid = staging_repo.head_oid().ok().or(fallback_head);
+        (
+            submodules,
+            current_branch,
+            head_oid,
+            staging_repo.repo_state(),
+        )
+    };
+    view_state.staging_well.set_submodules(submodules);
 
     view_state.branch_sidebar.stashes = result.stashes;
     view_state
@@ -657,11 +678,11 @@ pub(crate) fn apply_repo_state_result(
     view_state.header_bar.set_repo_path(&repo_path_str);
 
     // Operation state
-    view_state.header_bar.operation_state_label = git::repo_state_label(result.staging_repo_state);
+    view_state.header_bar.operation_state_label = git::repo_state_label(staging_repo_state);
 
     // Derive HEAD from worktree state
-    view_state.current_branch = result.current_branch;
-    view_state.head_oid = result.head_oid;
+    view_state.current_branch = current_branch;
+    view_state.head_oid = head_oid;
     for tip in &mut view_state.commit_graph_view.branch_tips {
         tip.is_head = !tip.is_remote && tip.name == view_state.current_branch;
     }
