@@ -287,17 +287,47 @@ pub(crate) fn handle_context_menu_action(
                     .push(AppMessage::ViewDiff(param.to_string(), staged));
             }
         }
+        "view_diff_staged" => {
+            if !param.is_empty() {
+                view_state
+                    .pending_messages
+                    .push(AppMessage::ViewDiff(param.to_string(), true));
+            }
+        }
+        "view_diff_unstaged" => {
+            if !param.is_empty() {
+                view_state
+                    .pending_messages
+                    .push(AppMessage::ViewDiff(param.to_string(), false));
+            }
+        }
         "discard" => {
             if !param.is_empty() {
-                confirm_dialog.show(
-                    "Discard Changes",
-                    &format!(
-                        "Discard changes to '{}' in {}? This cannot be undone.",
-                        param, operation_scope
-                    ),
-                );
+                let is_submodule = view_state
+                    .staging_well
+                    .submodules
+                    .iter()
+                    .any(|sm| sm.path == param);
+                if is_submodule {
+                    confirm_dialog.show(
+                        "Reset Submodule Checkout",
+                        &format!(
+                            "Force-reset submodule '{}' in {} to the recorded pin? Local submodule changes will be lost.",
+                            param, operation_scope
+                        ),
+                    );
+                    *pending_confirm_action = Some(AppMessage::ResetSubmodule(param.to_string()));
+                } else {
+                    confirm_dialog.show(
+                        "Discard Changes",
+                        &format!(
+                            "Discard changes to '{}' in {}? This cannot be undone.",
+                            param, operation_scope
+                        ),
+                    );
+                    *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
+                }
                 *active_modal = Some(ActiveModal::Confirm);
-                *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
             }
         }
         "delete_submodule" => {
@@ -331,6 +361,19 @@ pub(crate) fn handle_context_menu_action(
                 view_state
                     .pending_messages
                     .push(AppMessage::UpdateSubmodule(param.to_string()));
+            }
+        }
+        "reset_submodule" => {
+            if !param.is_empty() {
+                confirm_dialog.show(
+                    "Reset Submodule Checkout",
+                    &format!(
+                        "Force-reset submodule '{}' in {} to the recorded pin? Local submodule changes will be lost.",
+                        param, operation_scope
+                    ),
+                );
+                *active_modal = Some(ActiveModal::Confirm);
+                *pending_confirm_action = Some(AppMessage::ResetSubmodule(param.to_string()));
             }
         }
         "enter_submodule" => {

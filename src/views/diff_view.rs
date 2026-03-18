@@ -53,6 +53,8 @@ pub struct DiffView {
     title: String,
     /// Whether this is showing staged changes (affects stage/unstage button labels)
     showing_staged: bool,
+    /// Whether per-hunk stage/discard actions are enabled for the current diff.
+    hunk_actions_enabled: bool,
     /// Pending action from a click
     pending_action: Option<DiffAction>,
     /// Hunk button bounds for click detection: (file_idx, hunk_idx, Rect)
@@ -83,6 +85,7 @@ impl DiffView {
             content_width: 0.0,
             title: String::new(),
             showing_staged: false,
+            hunk_actions_enabled: true,
             pending_action: None,
             hunk_button_bounds: Vec::new(),
             hovered_hunk_button: None,
@@ -102,6 +105,7 @@ impl DiffView {
         self.h_scroll_offset = 0.0;
         self.title = title;
         self.showing_staged = false;
+        self.hunk_actions_enabled = true;
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
         self.discard_button_bounds.clear();
@@ -122,12 +126,24 @@ impl DiffView {
         self.scroll_offset = 0.0;
         self.h_scroll_offset = 0.0;
         self.title.clear();
+        self.hunk_actions_enabled = true;
         self.hunk_button_bounds.clear();
         self.hovered_hunk_button = None;
         self.discard_button_bounds.clear();
         self.hovered_discard_button = None;
         self.file_y_offsets.clear();
         self.hunk_y_offsets.clear();
+    }
+
+    /// Enable or disable per-hunk stage/discard controls.
+    pub fn set_hunk_actions_enabled(&mut self, enabled: bool) {
+        self.hunk_actions_enabled = enabled;
+        if !enabled {
+            self.hunk_button_bounds.clear();
+            self.hovered_hunk_button = None;
+            self.discard_button_bounds.clear();
+            self.hovered_discard_button = None;
+        }
     }
 
     /// Whether the diff view has content to show
@@ -182,28 +198,30 @@ impl DiffView {
                 if !bounds.contains(*x, *y) {
                     return EventResponse::Ignored;
                 }
-                // Check if a discard hunk button was clicked
-                for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
-                    if btn_rect.contains(*x, *y)
-                        && let Some(file) = self.diff_files.get(file_idx)
-                    {
-                        let path = file.path.clone();
-                        self.pending_action = Some(DiffAction::Discard(path, hunk_idx));
-                        return EventResponse::Consumed;
-                    }
-                }
-                // Check if a hunk stage button was clicked
-                for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
-                    if btn_rect.contains(*x, *y)
-                        && let Some(file) = self.diff_files.get(file_idx)
-                    {
-                        let path = file.path.clone();
-                        if self.showing_staged {
-                            self.pending_action = Some(DiffAction::Unstage(path, hunk_idx));
-                        } else {
-                            self.pending_action = Some(DiffAction::Stage(path, hunk_idx));
+                if self.hunk_actions_enabled {
+                    // Check if a discard hunk button was clicked
+                    for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
+                        if btn_rect.contains(*x, *y)
+                            && let Some(file) = self.diff_files.get(file_idx)
+                        {
+                            let path = file.path.clone();
+                            self.pending_action = Some(DiffAction::Discard(path, hunk_idx));
+                            return EventResponse::Consumed;
                         }
-                        return EventResponse::Consumed;
+                    }
+                    // Check if a hunk stage button was clicked
+                    for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
+                        if btn_rect.contains(*x, *y)
+                            && let Some(file) = self.diff_files.get(file_idx)
+                        {
+                            let path = file.path.clone();
+                            if self.showing_staged {
+                                self.pending_action = Some(DiffAction::Unstage(path, hunk_idx));
+                            } else {
+                                self.pending_action = Some(DiffAction::Stage(path, hunk_idx));
+                            }
+                            return EventResponse::Consumed;
+                        }
                     }
                 }
                 EventResponse::Ignored
@@ -214,14 +232,19 @@ impl DiffView {
                     self.hovered_discard_button = None;
                     return EventResponse::Ignored;
                 }
-                let mut found = None;
+                if !self.hunk_actions_enabled {
+                    self.hovered_hunk_button = None;
+                    self.hovered_discard_button = None;
+                    return EventResponse::Ignored;
+                }
+                let mut hunk_found = None;
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.hunk_button_bounds {
                     if btn_rect.contains(*x, *y) {
-                        found = Some((file_idx, hunk_idx));
+                        hunk_found = Some((file_idx, hunk_idx));
                         break;
                     }
                 }
-                self.hovered_hunk_button = found;
+                self.hovered_hunk_button = hunk_found;
                 let mut discard_found = None;
                 for &(file_idx, hunk_idx, ref btn_rect) in &self.discard_button_bounds {
                     if btn_rect.contains(*x, *y) {
@@ -461,7 +484,7 @@ impl DiffView {
                     ));
 
                     // Stage/Unstage hunk button (only for working directory diffs with a header)
-                    if !hunk.header.is_empty() {
+                    if self.hunk_actions_enabled && !hunk.header.is_empty() {
                         let btn_label = if self.showing_staged {
                             "Unstage Hunk"
                         } else {

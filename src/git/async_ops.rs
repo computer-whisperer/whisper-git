@@ -101,7 +101,11 @@ define_async_git_op! {
 
     /// Spawn a background thread to update a submodule
     update_submodule_async(name: String) =>
-        ["submodule", "update", "--init", "--recursive", name], "submodule update";
+        ["submodule", "update", "--init", "--recursive", "--", name], "submodule update";
+
+    /// Spawn a background thread to force-reset a submodule checkout to the recorded pin
+    reset_submodule_async(name: String) =>
+        ["submodule", "update", "--init", "--recursive", "--force", "--", name], "submodule reset";
 
     /// Spawn a background thread to create a worktree for a branch
     create_worktree_async(path: String, branch: String) =>

@@ -78,6 +78,7 @@ pub enum AppMessage {
     LoadMoreCommits,
     DeleteSubmodule(String),
     UpdateSubmodule(String),
+    ResetSubmodule(String),
     JumpToWorktreeBranch(String),
     RemoveWorktree(String),
     MergeBranch(String, Option<PathBuf>), // (branch, target_worktree_dir)
@@ -705,7 +706,34 @@ pub fn handle_app_message(
         AppMessage::ViewDiff(path, staged) => match staging_repo.diff_working_file(&path, staged) {
             Ok(hunks) => {
                 let diff_file = DiffFile::from_hunks(path.clone(), hunks);
-                let title = if staged {
+                let submodule = view_state
+                    .staging_well
+                    .submodules
+                    .iter()
+                    .find(|sm| sm.path == path);
+                let short = |oid: Option<Oid>| match oid {
+                    Some(oid) => oid.to_string()[..7].to_string(),
+                    None => "-".to_string(),
+                };
+                let title = if let Some(sm) = submodule {
+                    if staged {
+                        format!(
+                            "Staged Submodule: {} (HEAD {} -> INDEX {})",
+                            path,
+                            short(sm.head_oid),
+                            short(sm.index_oid)
+                        )
+                    } else {
+                        let dirty_suffix = if sm.is_dirty { ", dirty" } else { "" };
+                        format!(
+                            "Unstaged Submodule: {} (INDEX {} -> WORKDIR {}{})",
+                            path,
+                            short(sm.index_oid),
+                            short(sm.workdir_oid),
+                            dirty_suffix
+                        )
+                    }
+                } else if staged {
                     format!("Staged: {}", path)
                 } else {
                     format!("Unstaged: {}", path)
@@ -715,6 +743,9 @@ pub fn handle_app_message(
                 } else {
                     view_state.diff_view.set_diff(vec![diff_file], title);
                 }
+                view_state
+                    .diff_view
+                    .set_hunk_actions_enabled(submodule.is_none());
                 *view_state.last_diff_commit = None;
             }
             Err(e) => {
@@ -906,6 +937,17 @@ pub fn handle_app_message(
                 rx,
                 format!("Update submodule '{}'", submodule_path),
                 format!("Updating submodule '{}'...", submodule_path),
+                toast_manager,
+            );
+        }
+        AppMessage::ResetSubmodule(submodule_path) => {
+            let cmd_dir = staging_repo.git_command_dir();
+            let rx = git::reset_submodule_async(cmd_dir, submodule_path.clone(), proxy.clone());
+            queue_async_op(
+                view_state.generic_op_receiver,
+                rx,
+                format!("Reset submodule '{}'", submodule_path),
+                format!("Resetting submodule '{}' checkout...", submodule_path),
                 toast_manager,
             );
         }

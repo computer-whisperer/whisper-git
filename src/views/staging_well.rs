@@ -332,6 +332,33 @@ impl StagingWell {
         self.clear_message();
     }
 
+    fn is_submodule_path(&self, path: &str) -> bool {
+        let candidate = path.trim_end_matches('/');
+        self.submodules
+            .iter()
+            .any(|sm| sm.path.trim_end_matches('/') == candidate)
+    }
+
+    fn submodule_context_items(&self, path: &str, allow_delete: bool) -> Vec<MenuItem> {
+        let mut items = vec![
+            MenuItem::new("Enter Submodule", format!("enter_submodule:{}", path)),
+            MenuItem::new("Open in Terminal", format!("open_submodule:{}", path)),
+            MenuItem::separator(),
+            MenuItem::new("Update Submodule", format!("update_submodule:{}", path)),
+            MenuItem::new(
+                "Reset Submodule Checkout",
+                format!("reset_submodule:{}", path),
+            ),
+        ];
+        if allow_delete {
+            items.push(MenuItem::new(
+                "Delete Submodule",
+                format!("delete_submodule:{}", path),
+            ));
+        }
+        items
+    }
+
     /// Get context menu items for the file at (x, y) in the staging area.
     /// Returns Some((items, is_staged_file)) if a file was right-clicked.
     pub fn context_menu_items_at(&self, x: f32, y: f32, bounds: Rect) -> Option<Vec<MenuItem>> {
@@ -345,14 +372,7 @@ impl StagingWell {
             .iter()
             .find(|(rect, _)| rect.contains(x, y))
         {
-            let items = vec![
-                MenuItem::new("Enter Submodule", format!("enter_submodule:{}", path)),
-                MenuItem::new("Open in Terminal", format!("open_submodule:{}", path)),
-                MenuItem::separator(),
-                MenuItem::new("Update Submodule", format!("update_submodule:{}", path)),
-                MenuItem::new("Delete Submodule", format!("delete_submodule:{}", path)),
-            ];
-            return Some(items);
+            return Some(self.submodule_context_items(path, true));
         }
 
         let regions = self.compute_regions_full(bounds);
@@ -361,10 +381,23 @@ impl StagingWell {
         if regions.staged.contains(x, y)
             && let Some(file) = self.staged_list.file_at_y(y, regions.staged)
         {
-            let items = vec![
-                MenuItem::new("Unstage File", format!("unstage:{}", file)),
-                MenuItem::new("View Diff", format!("view_diff:{}", file)),
-            ];
+            let items = if self.is_submodule_path(&file) {
+                let mut items = vec![
+                    MenuItem::new("Unstage Submodule Pointer", format!("unstage:{}", file)),
+                    MenuItem::new(
+                        "View Staged Submodule Diff",
+                        format!("view_diff_staged:{}", file),
+                    ),
+                    MenuItem::separator(),
+                ];
+                items.extend(self.submodule_context_items(&file, false));
+                items
+            } else {
+                vec![
+                    MenuItem::new("Unstage File", format!("unstage:{}", file)),
+                    MenuItem::new("View Diff", format!("view_diff_staged:{}", file)),
+                ]
+            };
             return Some(items);
         }
 
@@ -372,11 +405,24 @@ impl StagingWell {
         if regions.unstaged.contains(x, y)
             && let Some(file) = self.unstaged_list.file_at_y(y, regions.unstaged)
         {
-            let items = vec![
-                MenuItem::new("Stage File", format!("stage:{}", file)),
-                MenuItem::new("View Diff", format!("view_diff:{}", file)),
-                MenuItem::new("Discard Changes", format!("discard:{}", file)),
-            ];
+            let items = if self.is_submodule_path(&file) {
+                let mut items = vec![
+                    MenuItem::new("Stage Submodule Pointer", format!("stage:{}", file)),
+                    MenuItem::new(
+                        "View Unstaged Submodule Diff",
+                        format!("view_diff_unstaged:{}", file),
+                    ),
+                    MenuItem::separator(),
+                ];
+                items.extend(self.submodule_context_items(&file, false));
+                items
+            } else {
+                vec![
+                    MenuItem::new("Stage File", format!("stage:{}", file)),
+                    MenuItem::new("View Diff", format!("view_diff_unstaged:{}", file)),
+                    MenuItem::new("Discard Changes", format!("discard:{}", file)),
+                ]
+            };
             return Some(items);
         }
 
@@ -2028,7 +2074,77 @@ mod tests {
         assert!(actions.contains(&"enter_submodule:libs/vendor-lib".to_string()));
         assert!(actions.contains(&"open_submodule:libs/vendor-lib".to_string()));
         assert!(actions.contains(&"update_submodule:libs/vendor-lib".to_string()));
+        assert!(actions.contains(&"reset_submodule:libs/vendor-lib".to_string()));
         assert!(actions.contains(&"delete_submodule:libs/vendor-lib".to_string()));
+    }
+
+    #[test]
+    fn unstaged_submodule_file_menu_uses_submodule_actions() {
+        let mut well = StagingWell::new();
+        let path = "libs/vendor-lib".to_string();
+        well.submodules.push(SubmoduleInfo {
+            name: "vendor-lib".to_string(),
+            path: path.clone(),
+            branch: "main".to_string(),
+            is_dirty: true,
+            head_oid: None,
+            index_oid: None,
+            workdir_oid: None,
+        });
+        well.unstaged_list.set_files(vec![FileEntry {
+            path: path.clone(),
+            status: FileStatusKind::Modified,
+            additions: 0,
+            deletions: 0,
+        }]);
+
+        let bounds = Rect::new(0.0, 0.0, 360.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+        let items = well
+            .context_menu_items_at(regions.unstaged.x + 10.0, regions.unstaged.y + 10.0, bounds)
+            .expect("expected context menu");
+        let actions: Vec<String> = items.into_iter().map(|i| i.action_id).collect();
+
+        assert!(actions.contains(&format!("stage:{}", path)));
+        assert!(actions.contains(&format!("view_diff_unstaged:{}", path)));
+        assert!(actions.contains(&format!("enter_submodule:{}", path)));
+        assert!(actions.contains(&format!("open_submodule:{}", path)));
+        assert!(actions.contains(&format!("update_submodule:{}", path)));
+        assert!(actions.contains(&format!("reset_submodule:{}", path)));
+        assert!(!actions.contains(&format!("discard:{}", path)));
+    }
+
+    #[test]
+    fn staged_submodule_file_menu_uses_staged_submodule_diff_action() {
+        let mut well = StagingWell::new();
+        let path = "libs/vendor-lib".to_string();
+        well.submodules.push(SubmoduleInfo {
+            name: "vendor-lib".to_string(),
+            path: path.clone(),
+            branch: "main".to_string(),
+            is_dirty: false,
+            head_oid: None,
+            index_oid: None,
+            workdir_oid: None,
+        });
+        well.staged_list.set_files(vec![FileEntry {
+            path: path.clone(),
+            status: FileStatusKind::Modified,
+            additions: 0,
+            deletions: 0,
+        }]);
+
+        let bounds = Rect::new(0.0, 0.0, 360.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+        let items = well
+            .context_menu_items_at(regions.staged.x + 10.0, regions.staged.y + 10.0, bounds)
+            .expect("expected context menu");
+        let actions: Vec<String> = items.into_iter().map(|i| i.action_id).collect();
+
+        assert!(actions.contains(&format!("unstage:{}", path)));
+        assert!(actions.contains(&format!("view_diff_staged:{}", path)));
+        assert!(actions.contains(&format!("reset_submodule:{}", path)));
+        assert!(!actions.contains(&format!("view_diff:{}", path)));
     }
 
     #[test]
