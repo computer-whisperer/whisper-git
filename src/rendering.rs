@@ -1408,27 +1408,88 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
         if let Some(ref focus) = view_state.submodule_focus {
             let home = std::env::var("HOME").unwrap_or_default();
             let mut segs: Vec<String> = Vec::new();
-            for (i, s) in focus.parent_stack.iter().enumerate() {
-                if i == 0 {
-                    // First segment: show abbreviated repo path for the root repo
-                    let root_path = s
-                        .repo
-                        .workdir()
-                        .or_else(|| Some(s.repo.git_dir()))
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| s.repo_name.clone());
-                    let root_path = root_path.trim_end_matches('/').to_string();
-                    if !home.is_empty() && root_path.starts_with(&home) {
-                        segs.push(format!("~{}", &root_path[home.len()..]));
-                    } else {
-                        segs.push(root_path);
-                    }
+            if let Some(root) = focus.parent_stack.first() {
+                // First segment: abbreviated root repo path.
+                let root_path = root
+                    .repo
+                    .workdir()
+                    .or_else(|| Some(root.repo.git_dir()))
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.repo_name.clone());
+                let root_path = root_path.trim_end_matches('/').to_string();
+                if !home.is_empty() && root_path.starts_with(&home) {
+                    segs.push(format!("~{}", &root_path[home.len()..]));
                 } else {
-                    // Intermediate segments: submodule names
-                    segs.push(s.submodule_name.clone());
+                    segs.push(root_path);
                 }
             }
-            segs.push(focus.current_name.clone());
+
+            let short_oid = |oid: Option<git2::Oid>| oid.map(|o| o.to_string()[..7].to_string());
+            let branch_context = |pin_branches: &[String], active_branch: &str| -> Option<String> {
+                if pin_branches.is_empty() {
+                    if active_branch.is_empty() {
+                        None
+                    } else {
+                        Some(format!("[{}]", active_branch))
+                    }
+                } else {
+                    let mut names: Vec<String> = pin_branches.to_vec();
+                    names.sort();
+                    let summary = if names.len() <= 3 {
+                        names.join(",")
+                    } else {
+                        format!("{},{},+{}", names[0], names[1], names.len() - 2)
+                    };
+                    if active_branch.is_empty() || names.iter().any(|b| b == active_branch) {
+                        Some(format!("[pins:{}]", summary))
+                    } else {
+                        Some(format!("[pins:{}; at:{}]", summary, active_branch))
+                    }
+                }
+            };
+
+            for (idx, s) in focus.parent_stack.iter().enumerate() {
+                let is_current = idx + 1 == focus.parent_stack.len();
+                let pin = short_oid(s.parent_pinned_oid);
+                let index_pin = short_oid(s.parent_index_oid);
+                let workdir = short_oid(s.parent_workdir_oid);
+
+                let mut segment = s.submodule_name.clone();
+                if let Some(pin_short) = pin.as_deref() {
+                    segment.push('@');
+                    segment.push_str(pin_short);
+                }
+
+                let mut extras: Vec<String> = Vec::new();
+                if index_pin != pin
+                    && let Some(idx_short) = index_pin.as_deref()
+                {
+                    extras.push(format!("i:{}", idx_short));
+                }
+                let workdir_baseline = index_pin.as_ref().or(pin.as_ref());
+                if workdir.as_ref() != workdir_baseline
+                    && let Some(wd_short) = workdir.as_deref()
+                {
+                    extras.push(format!("w:{}", wd_short));
+                }
+                if is_current
+                    && let Some(head_short) = short_oid(view_state.head_oid)
+                    && Some(head_short.as_str()) != workdir.as_deref()
+                {
+                    extras.push(format!("h:{}", head_short));
+                }
+                if !extras.is_empty() {
+                    segment.push('[');
+                    segment.push_str(&extras.join(","));
+                    segment.push(']');
+                }
+                if let Some(ctx) = branch_context(&s.parent_pin_branches, &s.parent_branch) {
+                    segment.push(' ');
+                    segment.push_str(&ctx);
+                }
+                segs.push(segment);
+            }
+
             view_state.header_bar.breadcrumb_segments = segs;
         } else {
             view_state.header_bar.breadcrumb_segments.clear();

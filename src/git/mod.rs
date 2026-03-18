@@ -895,6 +895,8 @@ impl GitRepo {
             let path = sm.path().to_string_lossy().to_string();
 
             let head_oid = sm.head_id();
+            let index_oid = sm.index_id();
+            let workdir_oid = sm.workdir_id();
 
             // Try to open the submodule to get more info
             let (branch, is_dirty) = if let Ok(sub_repo) = sm.open() {
@@ -917,6 +919,8 @@ impl GitRepo {
                 branch,
                 is_dirty,
                 head_oid,
+                index_oid,
+                workdir_oid,
             });
         }
 
@@ -1058,7 +1062,9 @@ pub struct SubmoduleInfo {
     pub path: String,
     pub branch: String,
     pub is_dirty: bool,
-    pub head_oid: Option<Oid>, // what parent's HEAD pins (sm.head_id())
+    pub head_oid: Option<Oid>,    // what parent's HEAD pins (sm.head_id())
+    pub index_oid: Option<Oid>,   // what parent's index currently pins (sm.index_id())
+    pub workdir_oid: Option<Oid>, // what submodule workdir currently has checked out
 }
 
 /// Per-commit submodule entry: what a commit tree pins for each submodule.

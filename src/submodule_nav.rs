@@ -114,24 +114,31 @@ pub(crate) fn enter_submodule(
     // Find the submodule info by path first, then by name.
     // If not found, treat the target as a direct path fallback (useful for
     // commit-detail entries from historical commits).
-    let (submodule_name, submodule_path) = match view_state
-        .staging_well
-        .submodules
-        .iter()
-        .find(|s| s.path == target || s.name == target)
-    {
-        Some(sm) => (sm.name.clone(), sm.path.clone()),
-        None => {
-            toast_manager.push(
-                format!(
-                    "Submodule '{}' is not listed in current checkout; trying path fallback",
-                    target
-                ),
-                ToastSeverity::Info,
-            );
-            (target.to_string(), target.to_string())
-        }
-    };
+    let (submodule_name, submodule_path, parent_pinned_oid, parent_index_oid, parent_workdir_oid) =
+        match view_state
+            .staging_well
+            .submodules
+            .iter()
+            .find(|s| s.path == target || s.name == target)
+        {
+            Some(sm) => (
+                sm.name.clone(),
+                sm.path.clone(),
+                sm.head_oid,
+                sm.index_oid,
+                sm.workdir_oid,
+            ),
+            None => {
+                toast_manager.push(
+                    format!(
+                        "Submodule '{}' is not listed in current checkout; trying path fallback",
+                        target
+                    ),
+                    ToastSeverity::Info,
+                );
+                (target.to_string(), target.to_string(), None, None, None)
+            }
+        };
 
     // Resolve submodule path relative to the active staging context.
     // Root mode: selected staging worktree has priority.
@@ -159,7 +166,7 @@ pub(crate) fn enter_submodule(
             return None;
         }
     };
-    let sub_path = parent_workdir.join(submodule_path);
+    let sub_path = parent_workdir.join(&submodule_path);
 
     // Open the submodule as a repo
     let sub_repo = match GitRepo::open(sub_path) {
@@ -173,16 +180,31 @@ pub(crate) fn enter_submodule(
         }
     };
 
+    let parent_pin_branches = parent_pinned_oid
+        .and_then(|pin| {
+            repo_tab
+                .repo
+                .local_branches_with_submodule_pin(&submodule_path, pin)
+                .ok()
+        })
+        .unwrap_or_default();
+
     // Save parent state — use std::mem::replace for atomic swap (repo is non-optional)
     let parent_repo = std::mem::replace(&mut repo_tab.repo, sub_repo);
     let parent_commits = std::mem::take(&mut repo_tab.commits);
     let parent_name = repo_tab.name.clone();
+    let parent_branch = view_state.current_branch.clone();
     let parent_submodules = view_state.staging_well.submodules.clone();
 
     let saved = SavedParentState {
         repo: parent_repo,
         commits: parent_commits,
         repo_name: parent_name,
+        parent_branch,
+        parent_pinned_oid,
+        parent_index_oid,
+        parent_workdir_oid,
+        parent_pin_branches,
         graph_scroll_offset: view_state.commit_graph_view.scroll_offset,
         graph_top_row_index: view_state.commit_graph_view.top_row_index,
         selected_commit: view_state.commit_graph_view.selected_commit,

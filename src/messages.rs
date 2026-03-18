@@ -1342,7 +1342,7 @@ pub struct RepoStateSnapshot {
     pub untracked_count: usize,
     pub conflicted_count: usize,
     pub ahead_behind: HashMap<String, (usize, usize)>,
-    pub submodules: Vec<(String, bool, Option<Oid>)>, // (path, is_dirty, pinned_oid)
+    pub submodules: Vec<(String, bool, Option<Oid>, Option<Oid>, Option<Oid>)>, // (path, is_dirty, head_pin_oid, index_pin_oid, workdir_oid)
 }
 
 impl RepoStateSnapshot {
@@ -1393,11 +1393,19 @@ impl RepoStateSnapshot {
 
         let ahead_behind = view_state.branch_sidebar.ahead_behind_cache();
 
-        let submodules: Vec<(String, bool, Option<Oid>)> = view_state
+        let submodules: Vec<(String, bool, Option<Oid>, Option<Oid>, Option<Oid>)> = view_state
             .staging_well
             .submodules
             .iter()
-            .map(|s| (s.path.clone(), s.is_dirty, s.head_oid))
+            .map(|s| {
+                (
+                    s.path.clone(),
+                    s.is_dirty,
+                    s.head_oid,
+                    s.index_oid,
+                    s.workdir_oid,
+                )
+            })
             .collect();
 
         let current_branch = current_branch.to_string();
@@ -1600,16 +1608,32 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
                     after_sm.0, before_sm.1, after_sm.1
                 ));
             }
+            let fmt = |oid: Option<Oid>| {
+                oid.map(|o| o.to_string()[..7].to_string())
+                    .unwrap_or_else(|| "None".to_string())
+            };
             if before_sm.2 != after_sm.2 {
-                let fmt = |oid: Option<Oid>| {
-                    oid.map(|o| o.to_string()[..7].to_string())
-                        .unwrap_or_else(|| "None".to_string())
-                };
                 deltas.push(format!(
-                    "Submodule '{}': pin {} -> {}",
+                    "Submodule '{}': HEAD pin {} -> {}",
                     after_sm.0,
                     fmt(before_sm.2),
                     fmt(after_sm.2)
+                ));
+            }
+            if before_sm.3 != after_sm.3 {
+                deltas.push(format!(
+                    "Submodule '{}': index pin {} -> {}",
+                    after_sm.0,
+                    fmt(before_sm.3),
+                    fmt(after_sm.3)
+                ));
+            }
+            if before_sm.4 != after_sm.4 {
+                deltas.push(format!(
+                    "Submodule '{}': workdir {} -> {}",
+                    after_sm.0,
+                    fmt(before_sm.4),
+                    fmt(after_sm.4)
                 ));
             }
         } else {

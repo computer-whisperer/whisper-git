@@ -421,6 +421,52 @@ impl GitRepo {
         })
     }
 
+    /// Find local branches whose tip commit pins `submodule_path` to `pin_oid`.
+    ///
+    /// This is used for submodule drill-down breadcrumbs to show where a parent
+    /// repo's submodule pointer is represented at branch tips.
+    pub fn local_branches_with_submodule_pin(
+        &self,
+        submodule_path: &str,
+        pin_oid: Oid,
+    ) -> Result<Vec<String>> {
+        let mut matches = Vec::new();
+        if submodule_path.is_empty() {
+            return Ok(matches);
+        }
+        let sub_path = Path::new(submodule_path);
+
+        let branches = self
+            .repo
+            .branches(Some(git2::BranchType::Local))
+            .context("Failed to enumerate local branches")?;
+        for branch_result in branches {
+            let Ok((branch, _)) = branch_result else {
+                continue;
+            };
+            let Ok(Some(name)) = branch.name() else {
+                continue;
+            };
+            let Some(tip_oid) = branch.get().resolve().ok().and_then(|r| r.target()) else {
+                continue;
+            };
+            let Ok(commit) = self.repo.find_commit(tip_oid) else {
+                continue;
+            };
+            let Ok(tree) = commit.tree() else {
+                continue;
+            };
+            let Ok(entry) = tree.get_path(sub_path) else {
+                continue;
+            };
+            if entry.kind() == Some(git2::ObjectType::Commit) && entry.id() == pin_oid {
+                matches.push(name.to_string());
+            }
+        }
+        matches.sort();
+        Ok(matches)
+    }
+
     /// Get submodule entries pinned by a specific commit's tree.
     ///
     /// Walks the tree for entries with `ObjectType::Commit` (git's representation
@@ -701,6 +747,126 @@ mod tests {
             Oid::from_str(&target_oid).expect("parse oid")
         );
         assert!(entry.changed);
+
+        let _ = fs::remove_dir_all(&repo_dir);
+    }
+
+    #[test]
+    fn local_branches_with_submodule_pin_matches_branch_tips() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let repo_dir = std::env::temp_dir().join(format!("whisper-git-refs-test-{unique}"));
+        fs::create_dir_all(&repo_dir).expect("create temp repo dir");
+
+        run_git(&repo_dir, &["init"]);
+        fs::write(repo_dir.join("README.md"), "root\n").expect("write README");
+        run_git(&repo_dir, &["add", "README.md"]);
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+        let pin_v1 = run_git(&repo_dir, &["rev-parse", "HEAD"]);
+
+        let gitmodules = r#"[submodule "nested-lib"]
+	path = libs/nested
+	url = ../nested-lib
+"#;
+        fs::create_dir_all(repo_dir.join("libs")).expect("create libs dir");
+        fs::write(repo_dir.join(".gitmodules"), gitmodules).expect("write .gitmodules");
+        run_git(&repo_dir, &["add", ".gitmodules"]);
+        run_git(
+            &repo_dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "160000",
+                &pin_v1,
+                "libs/nested",
+            ],
+        );
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "pin v1",
+            ],
+        );
+
+        run_git(&repo_dir, &["branch", "also-pins"]);
+
+        fs::write(repo_dir.join("README.md"), "next\n").expect("write README");
+        run_git(&repo_dir, &["add", "README.md"]);
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "next commit",
+            ],
+        );
+        let pin_v2 = run_git(&repo_dir, &["rev-parse", "HEAD"]);
+
+        run_git(
+            &repo_dir,
+            &[
+                "update-index",
+                "--cacheinfo",
+                "160000",
+                &pin_v2,
+                "libs/nested",
+            ],
+        );
+        run_git(
+            &repo_dir,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "pin v2",
+            ],
+        );
+
+        let current_branch = run_git(&repo_dir, &["branch", "--show-current"]);
+
+        let repo = GitRepo::open(&repo_dir).expect("open repo");
+        let v1_branches = repo
+            .local_branches_with_submodule_pin(
+                "libs/nested",
+                Oid::from_str(&pin_v1).expect("parse v1 oid"),
+            )
+            .expect("list branches for pin v1");
+        assert_eq!(v1_branches, vec!["also-pins"]);
+
+        let v2_branches = repo
+            .local_branches_with_submodule_pin(
+                "libs/nested",
+                Oid::from_str(&pin_v2).expect("parse v2 oid"),
+            )
+            .expect("list branches for pin v2");
+        assert_eq!(v2_branches, vec![current_branch]);
 
         let _ = fs::remove_dir_all(&repo_dir);
     }

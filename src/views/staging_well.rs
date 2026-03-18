@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
+use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
     WidgetOutput, create_rect_outline_vertices, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
@@ -1882,21 +1883,60 @@ impl StagingWell {
                     ));
                     let dot_w = text_renderer.measure_text(dot) + 4.0;
 
-                    // Name
+                    // Revision summary shown on the right:
+                    // pin=<HEAD tree> idx=<index gitlink> wd=<checked out gitlink>.
+                    let short_oid =
+                        |oid: Option<git2::Oid>| oid.map(|o| o.to_string()[..7].to_string());
+                    let mut rev_parts: Vec<String> = Vec::new();
+                    if let Some(pin) = short_oid(sm.head_oid) {
+                        rev_parts.push(format!("pin {}", pin));
+                    }
+                    if sm.index_oid.is_some()
+                        && sm.index_oid != sm.head_oid
+                        && let Some(idx) = short_oid(sm.index_oid)
+                    {
+                        rev_parts.push(format!("idx {}", idx));
+                    }
+                    let baseline = sm.index_oid.or(sm.head_oid);
+                    if sm.workdir_oid.is_some()
+                        && sm.workdir_oid != baseline
+                        && let Some(wd) = short_oid(sm.workdir_oid)
+                    {
+                        rev_parts.push(format!("wd {}", wd));
+                    }
+                    if rev_parts.is_empty()
+                        && let Some(wd) = short_oid(sm.workdir_oid)
+                    {
+                        rev_parts.push(format!("wd {}", wd));
+                    }
+                    let rev_text = rev_parts.join("  ");
+
+                    let rev_col_w = 180.0 * s;
+                    let rev_x = sm_left + sm_width - rev_col_w - 4.0 * s;
+                    let name_x = dot_x + dot_w;
+                    let name_w = (rev_x - name_x - 6.0 * s).max(40.0 * s);
+                    let name_text = if sm.branch == "detached" || sm.branch == "unknown" {
+                        sm.name.clone()
+                    } else {
+                        format!("{} ({})", sm.name, sm.branch)
+                    };
+                    let name_display = truncate_to_width(&name_text, text_renderer, name_w);
+
+                    // Name + branch on left
                     output.text_vertices.extend(text_renderer.layout_text(
-                        &sm.name,
-                        dot_x + dot_w,
+                        &name_display,
+                        name_x,
                         row_y + 2.0,
                         theme::TEXT.to_array(),
                     ));
 
-                    // Short pinned SHA on right
-                    if let Some(oid) = sm.head_oid {
-                        let short_sha = &oid.to_string()[..7];
-                        let sha_w = text_renderer.measure_text(short_sha);
+                    // Revision state summary on right
+                    if !rev_text.is_empty() {
+                        let rev_display = truncate_to_width(&rev_text, text_renderer, rev_col_w);
+                        let rev_w = text_renderer.measure_text(&rev_display);
                         output.text_vertices.extend(text_renderer.layout_text(
-                            short_sha,
-                            sm_left + sm_width - sha_w - 4.0 * s,
+                            &rev_display,
+                            sm_left + sm_width - rev_w - 4.0 * s,
                             row_y + 2.0,
                             theme::TEXT_MUTED.to_array(),
                         ));
@@ -1958,6 +1998,8 @@ mod tests {
             branch: "main".to_string(),
             is_dirty: false,
             head_oid: None,
+            index_oid: None,
+            workdir_oid: None,
         }
     }
 
