@@ -395,15 +395,7 @@ fn per_commit_rollups(runs: &[WorkflowRun]) -> HashMap<String, CiCommitRollup> {
         });
 
         let counts = CiCounts::from_states(checks.iter().map(|c| c.state));
-        let state = counts.overall_state();
-        result.insert(
-            sha.to_string(),
-            CiCommitRollup {
-                state,
-                counts,
-                checks,
-            },
-        );
+        result.insert(sha.to_string(), CiCommitRollup { counts, checks });
     }
 
     result
@@ -426,14 +418,9 @@ pub fn fetch_ci_status_async(
         let result = match client.workflow_runs(&owner, &repo, None, 50) {
             Ok(runs) => {
                 let per_commit_rollups = per_commit_rollups(&runs);
-                let per_commit = per_commit_rollups
-                    .iter()
-                    .map(|(sha, rollup)| (sha.clone(), rollup.state))
-                    .collect();
                 ProviderCiResult {
                     provider: CiProvider::GitHub,
                     status: ci_status_from_runs(&runs),
-                    per_commit,
                     per_commit_rollups,
                 }
             }
@@ -445,7 +432,6 @@ pub fn fetch_ci_status_async(
                     url: None,
                     counts: None,
                 },
-                per_commit: HashMap::new(),
                 per_commit_rollups: HashMap::new(),
             },
         };

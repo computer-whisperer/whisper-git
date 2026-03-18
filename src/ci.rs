@@ -98,7 +98,6 @@ pub struct CiCheckStatus {
 /// Per-commit rollup for one provider.
 #[derive(Debug, Clone, Default)]
 pub struct CiCommitRollup {
-    pub state: CiState,
     pub counts: CiCounts,
     pub checks: Vec<CiCheckStatus>,
 }
@@ -122,8 +121,6 @@ pub struct ProviderCiResult {
     pub provider: CiProvider,
     /// Branch-level summary (for the header bar indicator)
     pub status: CiStatus,
-    /// Per-commit CI state keyed by full SHA
-    pub per_commit: HashMap<String, CiState>,
     /// Per-commit provider rollups for compact commit-row rendering.
     pub per_commit_rollups: HashMap<String, CiCommitRollup>,
 }
@@ -142,19 +139,6 @@ pub struct CiFetchResult {
 }
 
 impl CiFetchResult {
-    /// Merge per-commit states from all providers.
-    /// For each SHA, returns the worst state (Failure > Pending > Success > None).
-    pub fn merged_per_commit_states(&self) -> HashMap<String, CiState> {
-        let mut merged: HashMap<String, CiState> = HashMap::new();
-        for provider in &self.providers {
-            for (sha, state) in &provider.per_commit {
-                let entry = merged.entry(sha.clone()).or_insert(CiState::None);
-                *entry = worse_state(*entry, *state);
-            }
-        }
-        merged
-    }
-
     /// Group per-commit rollups by SHA with provider attribution.
     pub fn per_commit_provider_rollups(&self) -> HashMap<String, Vec<ProviderCommitRollup>> {
         let mut grouped: HashMap<String, Vec<ProviderCommitRollup>> = HashMap::new();
@@ -176,58 +160,14 @@ impl CiFetchResult {
     }
 }
 
-/// Return the "worse" of two CI states (Failure > Pending > Success > None).
-fn worse_state(a: CiState, b: CiState) -> CiState {
-    fn rank(s: CiState) -> u8 {
-        match s {
-            CiState::None => 0,
-            CiState::Success => 1,
-            CiState::Pending => 2,
-            CiState::Failure => 3,
-        }
-    }
-    if rank(b) > rank(a) { b } else { a }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn worse_state_ordering() {
-        assert_eq!(
-            worse_state(CiState::Success, CiState::Failure),
-            CiState::Failure
-        );
-        assert_eq!(
-            worse_state(CiState::Pending, CiState::Success),
-            CiState::Pending
-        );
-        assert_eq!(
-            worse_state(CiState::None, CiState::Success),
-            CiState::Success
-        );
-        assert_eq!(
-            worse_state(CiState::Failure, CiState::Pending),
-            CiState::Failure
-        );
-    }
-
-    #[test]
-    fn merged_per_commit_takes_worst() {
+    fn per_commit_provider_rollups_are_sorted_by_provider() {
         let result = CiFetchResult {
             providers: vec![
-                ProviderCiResult {
-                    provider: CiProvider::GitHub,
-                    status: CiStatus {
-                        state: CiState::Success,
-                        summary: "CI passed".into(),
-                        url: None,
-                        counts: None,
-                    },
-                    per_commit: [("abc".into(), CiState::Success)].into(),
-                    per_commit_rollups: HashMap::new(),
-                },
                 ProviderCiResult {
                     provider: CiProvider::GitLab,
                     status: CiStatus {
@@ -236,12 +176,47 @@ mod tests {
                         url: None,
                         counts: None,
                     },
-                    per_commit: [("abc".into(), CiState::Failure)].into(),
-                    per_commit_rollups: HashMap::new(),
+                    per_commit_rollups: [(
+                        "abc".into(),
+                        CiCommitRollup {
+                            counts: CiCounts {
+                                success: 0,
+                                failure: 1,
+                                pending: 0,
+                            },
+                            checks: Vec::new(),
+                        },
+                    )]
+                    .into(),
+                },
+                ProviderCiResult {
+                    provider: CiProvider::GitHub,
+                    status: CiStatus {
+                        state: CiState::Success,
+                        summary: "Workflow passed".into(),
+                        url: None,
+                        counts: None,
+                    },
+                    per_commit_rollups: [(
+                        "abc".into(),
+                        CiCommitRollup {
+                            counts: CiCounts {
+                                success: 1,
+                                failure: 0,
+                                pending: 0,
+                            },
+                            checks: Vec::new(),
+                        },
+                    )]
+                    .into(),
                 },
             ],
         };
-        let merged = result.merged_per_commit_states();
-        assert_eq!(merged["abc"], CiState::Failure);
+
+        let grouped = result.per_commit_provider_rollups();
+        let rollups = grouped.get("abc").unwrap();
+        assert_eq!(rollups.len(), 2);
+        assert_eq!(rollups[0].provider, CiProvider::GitHub);
+        assert_eq!(rollups[1].provider, CiProvider::GitLab);
     }
 }

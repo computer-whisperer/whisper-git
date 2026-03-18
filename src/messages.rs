@@ -1391,6 +1391,8 @@ pub struct MessageViewState<'a> {
 }
 
 /// Lightweight snapshot of diffable repo state for diagnostic reload comparison.
+type SubmoduleSnapshot = (String, bool, Option<Oid>, Option<Oid>, Option<Oid>);
+
 pub struct RepoStateSnapshot {
     pub commit_oids: Vec<Oid>,
     pub head_oid: Option<Oid>,
@@ -1404,7 +1406,7 @@ pub struct RepoStateSnapshot {
     pub untracked_count: usize,
     pub conflicted_count: usize,
     pub ahead_behind: HashMap<String, (usize, usize)>,
-    pub submodules: Vec<(String, bool, Option<Oid>, Option<Oid>, Option<Oid>)>, // (path, is_dirty, head_pin_oid, index_pin_oid, workdir_oid)
+    pub submodules: Vec<SubmoduleSnapshot>, // (path, is_dirty, head_pin_oid, index_pin_oid, workdir_oid)
 }
 
 impl RepoStateSnapshot {
@@ -1455,7 +1457,7 @@ impl RepoStateSnapshot {
 
         let ahead_behind = view_state.branch_sidebar.ahead_behind_cache();
 
-        let submodules: Vec<(String, bool, Option<Oid>, Option<Oid>, Option<Oid>)> = view_state
+        let submodules: Vec<SubmoduleSnapshot> = view_state
             .staging_well
             .submodules
             .iter()

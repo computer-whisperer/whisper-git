@@ -223,14 +223,7 @@ fn per_commit_rollups(pipelines: &[Pipeline]) -> HashMap<String, CiCommitRollup>
                 url: Some(latest.web_url.clone()),
             }];
             let counts = CiCounts::from_states(checks.iter().map(|c| c.state));
-            result.insert(
-                sha.to_string(),
-                CiCommitRollup {
-                    state: counts.overall_state(),
-                    counts,
-                    checks,
-                },
-            );
+            result.insert(sha.to_string(), CiCommitRollup { counts, checks });
         }
     }
     result
@@ -243,14 +236,9 @@ fn fetch_ci_result(token: &str, remote: &GitLabRemote) -> ProviderCiResult {
     match client.pipelines(&remote.project_path, None, 50) {
         Ok(pipelines) => {
             let per_commit_rollups = per_commit_rollups(&pipelines);
-            let per_commit = per_commit_rollups
-                .iter()
-                .map(|(sha, rollup)| (sha.clone(), rollup.state))
-                .collect();
             ProviderCiResult {
                 provider: CiProvider::GitLab,
                 status: ci_status_from_pipelines(&pipelines),
-                per_commit,
                 per_commit_rollups,
             }
         }
@@ -262,7 +250,6 @@ fn fetch_ci_result(token: &str, remote: &GitLabRemote) -> ProviderCiResult {
                 url: None,
                 counts: None,
             },
-            per_commit: HashMap::new(),
             per_commit_rollups: HashMap::new(),
         },
     }
@@ -378,6 +365,6 @@ mod tests {
             make_pipeline(2, "abc", "success"), // newer
         ];
         let rollups = per_commit_rollups(&pipelines);
-        assert_eq!(rollups["abc"].state, CiState::Success);
+        assert_eq!(rollups["abc"].counts.overall_state(), CiState::Success);
     }
 }
