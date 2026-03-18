@@ -977,6 +977,34 @@ impl StagingWell {
             }
         }
 
+        // Hover-based wheel scrolling for other staging sections.
+        // This keeps scroll behavior consistent with the submodule section.
+        if let InputEvent::Scroll { x, y, .. } = event {
+            if unstaged_bounds.contains(*x, *y) {
+                let response = self.unstaged_list.handle_event(event, unstaged_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            } else if untracked_bounds.contains(*x, *y) {
+                let response = self.untracked_list.handle_event(event, untracked_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            } else if staged_bounds.contains(*x, *y) {
+                let response = self.staged_list.handle_event(event, staged_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            } else if body_bounds.contains(*x, *y) {
+                self.focus_section = 4;
+                self.update_focus_state();
+                let response = self.body_area.handle_event(event, body_bounds);
+                if response.is_consumed() {
+                    return response;
+                }
+            }
+        }
+
         // Tab to cycle focus within staging sections.
         // When cycling past the last section, return Ignored so Tab bubbles up
         // to the panel-level cycling in main.rs.
@@ -1919,7 +1947,9 @@ impl Default for StagingWell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::FileStatusKind;
     use crate::input::Modifiers;
+    use crate::ui::widgets::file_list::FileEntry;
 
     fn make_submodule(i: usize) -> SubmoduleInfo {
         SubmoduleInfo {
@@ -1928,6 +1958,15 @@ mod tests {
             branch: "main".to_string(),
             is_dirty: false,
             head_oid: None,
+        }
+    }
+
+    fn make_file_entry(i: usize) -> FileEntry {
+        FileEntry {
+            path: format!("src/file-{i}.rs"),
+            status: FileStatusKind::Modified,
+            additions: 0,
+            deletions: 0,
         }
     }
 
@@ -2018,5 +2057,50 @@ mod tests {
         let r2 = well.handle_event(&home, bounds);
         assert_eq!(r2, EventResponse::Consumed);
         assert_eq!(well.submodule_scroll_offset, 0.0);
+    }
+
+    #[test]
+    fn staged_list_wheel_scroll_works_without_focus_switch() {
+        let mut well = StagingWell::new();
+        well.unstaged_list
+            .set_files((0..2).map(make_file_entry).collect());
+        well.staged_list
+            .set_files((0..80).map(|i| make_file_entry(i + 100)).collect());
+        let bounds = Rect::new(0.0, 0.0, 420.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+
+        // Default focus is unstaged (0). Wheel over staged list should still scroll/consume.
+        assert_eq!(well.focus_section, 0);
+        let scroll = InputEvent::Scroll {
+            delta_x: 0.0,
+            delta_y: -400.0,
+            x: regions.staged.x + 10.0,
+            y: regions.staged.y + 10.0,
+            modifiers: Modifiers::empty(),
+        };
+        let resp = well.handle_event(&scroll, bounds);
+        assert_eq!(resp, EventResponse::Consumed);
+        assert_eq!(well.focus_section, 0);
+    }
+
+    #[test]
+    fn body_area_wheel_scroll_focuses_body_and_consumes() {
+        let mut well = StagingWell::new();
+        well.body_area
+            .set_text("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9");
+        let bounds = Rect::new(0.0, 0.0, 420.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+
+        assert_eq!(well.focus_section, 0);
+        let scroll = InputEvent::Scroll {
+            delta_x: 0.0,
+            delta_y: -120.0,
+            x: regions.body.x + 10.0,
+            y: regions.body.y + 10.0,
+            modifiers: Modifiers::empty(),
+        };
+        let resp = well.handle_event(&scroll, bounds);
+        assert_eq!(resp, EventResponse::Consumed);
+        assert_eq!(well.focus_section, 4);
     }
 }
