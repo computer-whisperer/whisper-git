@@ -122,6 +122,12 @@ pub struct StagingWell {
     pub submodules: Vec<SubmoduleInfo>,
     /// Hit-test bounds for submodule rows: (rect, submodule_path)
     submodule_bounds: Vec<(Rect, String)>,
+    /// Scroll offset for the submodule section viewport.
+    submodule_scroll_offset: f32,
+    /// Hover state for the submodule section viewport.
+    submodule_section_hovered: bool,
+    /// Hover state for clickable submodule rows.
+    submodule_row_hovered: bool,
     /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
     pub repo_state_label: Option<&'static str>,
     /// AI generate commit message button
@@ -151,6 +157,14 @@ struct StagingRegions {
     ai_btn: Rect,
     amend_btn: Rect,
     commit_btn: Rect,
+}
+
+/// Derived metrics for submodule section scrolling.
+struct SubmoduleScrollMetrics {
+    row_h: f32,
+    viewport_top: f32,
+    viewport_h: f32,
+    max_scroll: f32,
 }
 
 impl StagingWell {
@@ -197,6 +211,9 @@ impl StagingWell {
             status_refresh_needed: false,
             submodules: Vec::new(),
             submodule_bounds: Vec::new(),
+            submodule_scroll_offset: 0.0,
+            submodule_section_hovered: false,
+            submodule_row_hovered: false,
             repo_state_label: None,
             ai_generate_btn: Button::new("AI"),
             ai_generating: false,
@@ -237,6 +254,8 @@ impl StagingWell {
     /// Set the submodule list for the current repo/worktree.
     pub fn set_submodules(&mut self, subs: Vec<SubmoduleInfo>) {
         self.submodules = subs;
+        // Re-clamp on next layout/event pass.
+        self.submodule_scroll_offset = self.submodule_scroll_offset.max(0.0);
     }
 
     /// Returns true if any button in the staging well is hovered
@@ -253,6 +272,7 @@ impl StagingWell {
         self.staged_list.is_item_hovered()
             || self.unstaged_list.is_item_hovered()
             || self.untracked_list.is_item_hovered()
+            || self.submodule_row_hovered
     }
 
     /// Get and clear any pending action
@@ -885,6 +905,12 @@ impl StagingWell {
         self.ai_generate_btn.update_hover(x, y, regions.ai_btn);
         self.amend_btn.update_hover(x, y, regions.amend_btn);
         self.commit_btn.update_hover(x, y, regions.commit_btn);
+
+        self.submodule_section_hovered = regions.submodules.contains(x, y);
+        self.submodule_row_hovered = self
+            .submodule_bounds
+            .iter()
+            .any(|(rect, _)| rect.contains(x, y));
     }
 
     /// Handle input events
@@ -896,6 +922,60 @@ impl StagingWell {
         let staged_bounds = regions.staged;
         let subject_bounds = regions.subject;
         let body_bounds = regions.body;
+
+        // Mouse wheel scrolling for submodule section viewport.
+        if let InputEvent::Scroll { delta_y, x, y, .. } = event
+            && regions.submodules.contains(*x, *y)
+            && let Some(metrics) = self.submodule_scroll_metrics(regions.submodules)
+        {
+            let old = self.submodule_scroll_offset;
+            self.submodule_scroll_offset =
+                (self.submodule_scroll_offset - delta_y * 2.0).clamp(0.0, metrics.max_scroll);
+            // Keep wheel captured by the section even when already at limits.
+            if metrics.max_scroll > 0.0 || (old - self.submodule_scroll_offset).abs() > f32::EPSILON
+            {
+                return EventResponse::Consumed;
+            }
+        }
+
+        // Keyboard scrolling for submodule section when hovered.
+        if self.submodule_section_hovered
+            && !self.has_text_focus()
+            && let InputEvent::KeyDown { key, modifiers, .. } = event
+            && !modifiers.any()
+            && let Some(metrics) = self.submodule_scroll_metrics(regions.submodules)
+        {
+            let old = self.submodule_scroll_offset;
+            let page = (metrics.viewport_h * 0.9).max(metrics.row_h);
+            match key {
+                Key::J | Key::Down => {
+                    self.submodule_scroll_offset = (self.submodule_scroll_offset + metrics.row_h)
+                        .clamp(0.0, metrics.max_scroll);
+                }
+                Key::K | Key::Up => {
+                    self.submodule_scroll_offset = (self.submodule_scroll_offset - metrics.row_h)
+                        .clamp(0.0, metrics.max_scroll);
+                }
+                Key::PageDown => {
+                    self.submodule_scroll_offset =
+                        (self.submodule_scroll_offset + page).clamp(0.0, metrics.max_scroll);
+                }
+                Key::PageUp => {
+                    self.submodule_scroll_offset =
+                        (self.submodule_scroll_offset - page).clamp(0.0, metrics.max_scroll);
+                }
+                Key::Home => {
+                    self.submodule_scroll_offset = 0.0;
+                }
+                Key::End => {
+                    self.submodule_scroll_offset = metrics.max_scroll;
+                }
+                _ => {}
+            }
+            if (old - self.submodule_scroll_offset).abs() > f32::EPSILON {
+                return EventResponse::Consumed;
+            }
+        }
 
         // Tab to cycle focus within staging sections.
         // When cycling past the last section, return Ignored so Tab bubbles up
@@ -1330,6 +1410,26 @@ impl StagingWell {
         }
     }
 
+    fn submodule_scroll_metrics(&self, section: Rect) -> Option<SubmoduleScrollMetrics> {
+        if self.submodules.is_empty() || section.height <= 0.0 {
+            return None;
+        }
+        let s = self.scale;
+        let header_pad = 4.0 * s;
+        let header_h = 22.0 * s;
+        let row_h = 20.0 * s;
+        let viewport_top = section.y + header_pad + header_h;
+        let viewport_h = (section.bottom() - viewport_top).max(0.0);
+        let content_h = self.submodules.len() as f32 * row_h;
+        let max_scroll = (content_h - viewport_h).max(0.0);
+        Some(SubmoduleScrollMetrics {
+            row_h,
+            viewport_top,
+            viewport_h,
+            max_scroll,
+        })
+    }
+
     /// Public region accessor for external callers.
     /// Returns (unstaged, staged, subject, body, buttons) to match the new layout order.
     pub fn compute_regions(&self, bounds: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
@@ -1699,7 +1799,6 @@ impl StagingWell {
         self.submodule_bounds.clear();
         if !self.submodules.is_empty() && regions.submodules.height > 0.0 {
             let sm_rect = regions.submodules;
-            let sm_row_h = text_renderer.line_height() * 1.2;
             let sm_left = sm_rect.x;
             let sm_width = sm_rect.width;
 
@@ -1711,7 +1810,6 @@ impl StagingWell {
 
             // Section header
             let header_y = sm_rect.y + 4.0 * s;
-            let sm_header_h = 22.0 * s;
             let sm_title = format!("Submodules ({})", self.submodules.len());
             output.text_vertices.extend(text_renderer.layout_text(
                 &sm_title,
@@ -1720,58 +1818,91 @@ impl StagingWell {
                 theme::TEXT_MUTED.to_array(),
             ));
 
-            // Submodule rows
-            let mut row_y = header_y + sm_header_h;
-            let sm_bottom = sm_rect.bottom();
-            for sm in &self.submodules {
-                if row_y + sm_row_h > sm_bottom {
-                    break;
+            if let Some(metrics) = self.submodule_scroll_metrics(sm_rect) {
+                self.submodule_scroll_offset =
+                    self.submodule_scroll_offset.clamp(0.0, metrics.max_scroll);
+                let viewport_bottom = metrics.viewport_top + metrics.viewport_h;
+
+                // Submodule rows (virtualized by scroll offset).
+                for (i, sm) in self.submodules.iter().enumerate() {
+                    let row_y = metrics.viewport_top + i as f32 * metrics.row_h
+                        - self.submodule_scroll_offset;
+                    if row_y + metrics.row_h <= metrics.viewport_top || row_y >= viewport_bottom {
+                        continue;
+                    }
+
+                    let row_rect = Rect::new(sm_left, row_y, sm_width, metrics.row_h);
+                    self.submodule_bounds.push((row_rect, sm.path.clone()));
+
+                    // Status dot color
+                    let dot_color = if sm.is_dirty {
+                        theme::STATUS_BEHIND // amber
+                    } else if sm.branch == "detached" {
+                        theme::STATUS_DIRTY // red
+                    } else {
+                        theme::STATUS_CLEAN // green
+                    };
+
+                    // Status dot
+                    let dot = "\u{25CF}"; // ●
+                    let dot_x = sm_left + 4.0 * s;
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        dot,
+                        dot_x,
+                        row_y + 2.0,
+                        dot_color.to_array(),
+                    ));
+                    let dot_w = text_renderer.measure_text(dot) + 4.0;
+
+                    // Name
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        &sm.name,
+                        dot_x + dot_w,
+                        row_y + 2.0,
+                        theme::TEXT.to_array(),
+                    ));
+
+                    // Short pinned SHA on right
+                    if let Some(oid) = sm.head_oid {
+                        let short_sha = &oid.to_string()[..7];
+                        let sha_w = text_renderer.measure_text(short_sha);
+                        output.text_vertices.extend(text_renderer.layout_text(
+                            short_sha,
+                            sm_left + sm_width - sha_w - 4.0 * s,
+                            row_y + 2.0,
+                            theme::TEXT_MUTED.to_array(),
+                        ));
+                    }
                 }
 
-                let row_rect = Rect::new(sm_left, row_y, sm_width, sm_row_h);
-                self.submodule_bounds.push((row_rect, sm.path.clone()));
+                // Scrollbar for overflowing sections.
+                if metrics.max_scroll > 0.0 && metrics.viewport_h > 0.0 {
+                    let track_w = 4.0 * s;
+                    let track_x = sm_left + sm_width - track_w - 2.0 * s;
+                    let track =
+                        Rect::new(track_x, metrics.viewport_top, track_w, metrics.viewport_h);
+                    output.spline_vertices.extend(create_rect_vertices(
+                        &track,
+                        theme::BORDER.with_alpha(0.30).to_array(),
+                    ));
 
-                // Status dot color
-                let dot_color = if sm.is_dirty {
-                    theme::STATUS_BEHIND // amber
-                } else if sm.branch == "detached" {
-                    theme::STATUS_DIRTY // red
-                } else {
-                    theme::STATUS_CLEAN // green
-                };
-
-                // Status dot
-                let dot = "\u{25CF}"; // ●
-                let dot_x = sm_left + 4.0 * s;
-                output.text_vertices.extend(text_renderer.layout_text(
-                    dot,
-                    dot_x,
-                    row_y + 2.0,
-                    dot_color.to_array(),
-                ));
-                let dot_w = text_renderer.measure_text(dot) + 4.0;
-
-                // Name
-                output.text_vertices.extend(text_renderer.layout_text(
-                    &sm.name,
-                    dot_x + dot_w,
-                    row_y + 2.0,
-                    theme::TEXT.to_array(),
-                ));
-
-                // Short pinned SHA on right
-                if let Some(oid) = sm.head_oid {
-                    let short_sha = &oid.to_string()[..7];
-                    let sha_w = text_renderer.measure_text(short_sha);
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        short_sha,
-                        sm_left + sm_width - sha_w - 4.0 * s,
-                        row_y + 2.0,
-                        theme::TEXT_MUTED.to_array(),
+                    let thumb_h = (metrics.viewport_h
+                        * (metrics.viewport_h / (metrics.viewport_h + metrics.max_scroll)))
+                        .max(12.0 * s)
+                        .min(metrics.viewport_h);
+                    let thumb_range = (metrics.viewport_h - thumb_h).max(0.0);
+                    let thumb_y = track.y
+                        + if metrics.max_scroll > 0.0 {
+                            (self.submodule_scroll_offset / metrics.max_scroll) * thumb_range
+                        } else {
+                            0.0
+                        };
+                    let thumb = Rect::new(track_x, thumb_y, track_w, thumb_h);
+                    output.spline_vertices.extend(create_rect_vertices(
+                        &thumb,
+                        theme::TEXT_MUTED.with_alpha(0.70).to_array(),
                     ));
                 }
-
-                row_y += sm_row_h;
             }
         }
 
@@ -1788,6 +1919,17 @@ impl Default for StagingWell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::Modifiers;
+
+    fn make_submodule(i: usize) -> SubmoduleInfo {
+        SubmoduleInfo {
+            name: format!("sm-{i}"),
+            path: format!("libs/sm-{i}"),
+            branch: "main".to_string(),
+            is_dirty: false,
+            head_oid: None,
+        }
+    }
 
     #[test]
     fn submodule_row_context_menu_has_submodule_actions() {
@@ -1806,5 +1948,75 @@ mod tests {
         assert!(actions.contains(&"open_submodule:libs/vendor-lib".to_string()));
         assert!(actions.contains(&"update_submodule:libs/vendor-lib".to_string()));
         assert!(actions.contains(&"delete_submodule:libs/vendor-lib".to_string()));
+    }
+
+    #[test]
+    fn submodule_wheel_scroll_is_clamped() {
+        let mut well = StagingWell::new();
+        well.submodules = (0..20).map(make_submodule).collect();
+        let bounds = Rect::new(0.0, 0.0, 360.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+
+        // Large negative wheel delta => scroll down.
+        let down = InputEvent::Scroll {
+            delta_x: 0.0,
+            delta_y: -10_000.0,
+            x: regions.submodules.x + 5.0,
+            y: regions.submodules.y + 5.0,
+            modifiers: Modifiers::empty(),
+        };
+        let r1 = well.handle_event(&down, bounds);
+        assert_eq!(r1, EventResponse::Consumed);
+        assert!(well.submodule_scroll_offset > 0.0);
+        let max_scroll = well
+            .submodule_scroll_metrics(regions.submodules)
+            .expect("metrics")
+            .max_scroll;
+        assert!((well.submodule_scroll_offset - max_scroll).abs() < 0.001);
+
+        // Large positive wheel delta => clamp back to top.
+        let up = InputEvent::Scroll {
+            delta_x: 0.0,
+            delta_y: 10_000.0,
+            x: regions.submodules.x + 5.0,
+            y: regions.submodules.y + 5.0,
+            modifiers: Modifiers::empty(),
+        };
+        let r2 = well.handle_event(&up, bounds);
+        assert_eq!(r2, EventResponse::Consumed);
+        assert_eq!(well.submodule_scroll_offset, 0.0);
+    }
+
+    #[test]
+    fn submodule_keyboard_scroll_when_hovered() {
+        let mut well = StagingWell::new();
+        well.submodules = (0..20).map(make_submodule).collect();
+        let bounds = Rect::new(0.0, 0.0, 360.0, 520.0);
+        let regions = well.compute_regions_full(bounds);
+
+        // Hover over submodule section so keyboard scrolling is active.
+        well.update_hover(
+            regions.submodules.x + 5.0,
+            regions.submodules.y + 5.0,
+            bounds,
+        );
+
+        let down = InputEvent::KeyDown {
+            key: Key::Down,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
+        let r1 = well.handle_event(&down, bounds);
+        assert_eq!(r1, EventResponse::Consumed);
+        assert!(well.submodule_scroll_offset > 0.0);
+
+        let home = InputEvent::KeyDown {
+            key: Key::Home,
+            modifiers: Modifiers::empty(),
+            text: None,
+        };
+        let r2 = well.handle_event(&home, bounds);
+        assert_eq!(r2, EventResponse::Consumed);
+        assert_eq!(well.submodule_scroll_offset, 0.0);
     }
 }
