@@ -1065,6 +1065,7 @@ pub struct SubmoduleInfo {
 #[derive(Clone, Debug)]
 pub struct CommitSubmoduleEntry {
     pub name: String,
+    pub path: String,
     pub pinned_oid: Oid,
     pub changed: bool,
     pub parent_oid: Option<Oid>,

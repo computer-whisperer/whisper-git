@@ -875,25 +875,25 @@ pub fn handle_app_message(
             }
             view_state.commit_graph_view.finish_loading();
         }
-        AppMessage::DeleteSubmodule(name) => {
+        AppMessage::DeleteSubmodule(submodule_path) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::remove_submodule_async(cmd_dir, name.clone(), proxy.clone());
+            let rx = git::remove_submodule_async(cmd_dir, submodule_path.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
-                format!("Delete submodule '{}'", name),
-                format!("Removing submodule '{}'...", name),
+                format!("Delete submodule '{}'", submodule_path),
+                format!("Removing submodule '{}'...", submodule_path),
                 toast_manager,
             );
         }
-        AppMessage::UpdateSubmodule(name) => {
+        AppMessage::UpdateSubmodule(submodule_path) => {
             let cmd_dir = staging_repo.git_command_dir();
-            let rx = git::update_submodule_async(cmd_dir, name.clone(), proxy.clone());
+            let rx = git::update_submodule_async(cmd_dir, submodule_path.clone(), proxy.clone());
             queue_async_op(
                 view_state.generic_op_receiver,
                 rx,
-                format!("Update submodule '{}'", name),
-                format!("Updating submodule '{}'...", name),
+                format!("Update submodule '{}'", submodule_path),
+                format!("Updating submodule '{}'...", submodule_path),
                 toast_manager,
             );
         }
@@ -1330,7 +1330,7 @@ pub struct RepoStateSnapshot {
     pub untracked_count: usize,
     pub conflicted_count: usize,
     pub ahead_behind: HashMap<String, (usize, usize)>,
-    pub submodules: Vec<(String, bool)>,
+    pub submodules: Vec<(String, bool, Option<Oid>)>, // (path, is_dirty, pinned_oid)
 }
 
 impl RepoStateSnapshot {
@@ -1381,11 +1381,11 @@ impl RepoStateSnapshot {
 
         let ahead_behind = view_state.branch_sidebar.ahead_behind_cache();
 
-        let submodules: Vec<(String, bool)> = view_state
+        let submodules: Vec<(String, bool, Option<Oid>)> = view_state
             .staging_well
             .submodules
             .iter()
-            .map(|s| (s.name.clone(), s.is_dirty))
+            .map(|s| (s.path.clone(), s.is_dirty, s.head_oid))
             .collect();
 
         let current_branch = current_branch.to_string();
@@ -1586,6 +1586,18 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
                 deltas.push(format!(
                     "Submodule '{}': dirty {} -> {}",
                     after_sm.0, before_sm.1, after_sm.1
+                ));
+            }
+            if before_sm.2 != after_sm.2 {
+                let fmt = |oid: Option<Oid>| {
+                    oid.map(|o| o.to_string()[..7].to_string())
+                        .unwrap_or_else(|| "None".to_string())
+                };
+                deltas.push(format!(
+                    "Submodule '{}': pin {} -> {}",
+                    after_sm.0,
+                    fmt(before_sm.2),
+                    fmt(after_sm.2)
                 ));
             }
         } else {

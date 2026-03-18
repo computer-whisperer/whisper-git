@@ -66,7 +66,7 @@ pub enum StagingAction {
     SwitchWorktree(usize),
     /// Preview diff in the preview panel (file_path, is_staged)
     PreviewDiff(String, bool),
-    /// Open (drill into) a submodule by name
+    /// Open (drill into) a submodule by path or name
     OpenSubmodule(String),
     /// Stage all untracked (new) files
     StageAllUntracked,
@@ -120,7 +120,7 @@ pub struct StagingWell {
     pub status_refresh_needed: bool,
     /// Submodule info for the current worktree/repo
     pub submodules: Vec<SubmoduleInfo>,
-    /// Hit-test bounds for submodule rows: (rect, submodule_name)
+    /// Hit-test bounds for submodule rows: (rect, submodule_path)
     submodule_bounds: Vec<(Rect, String)>,
     /// Current repo state label (e.g. "MERGE IN PROGRESS"), None when clean
     pub repo_state_label: Option<&'static str>,
@@ -319,17 +319,17 @@ impl StagingWell {
         }
 
         // Check submodule rows first
-        if let Some((_, name)) = self
+        if let Some((_, path)) = self
             .submodule_bounds
             .iter()
             .find(|(rect, _)| rect.contains(x, y))
         {
             let items = vec![
-                MenuItem::new("Enter Submodule", format!("enter_submodule:{}", name)),
-                MenuItem::new("Open in Terminal", format!("open_submodule:{}", name)),
+                MenuItem::new("Enter Submodule", format!("enter_submodule:{}", path)),
+                MenuItem::new("Open in Terminal", format!("open_submodule:{}", path)),
                 MenuItem::separator(),
-                MenuItem::new("Update Submodule", format!("update_submodule:{}", name)),
-                MenuItem::new("Delete Submodule", format!("delete_submodule:{}", name)),
+                MenuItem::new("Update Submodule", format!("update_submodule:{}", path)),
+                MenuItem::new("Delete Submodule", format!("delete_submodule:{}", path)),
             ];
             return Some(items);
         }
@@ -1014,9 +1014,9 @@ impl StagingWell {
 
         // Check clicks on submodule rows
         if let InputEvent::MouseDown { x, y, .. } = event {
-            for (rect, name) in &self.submodule_bounds {
+            for (rect, path) in &self.submodule_bounds {
                 if rect.contains(*x, *y) {
-                    self.pending_action = Some(StagingAction::OpenSubmodule(name.clone()));
+                    self.pending_action = Some(StagingAction::OpenSubmodule(path.clone()));
                     return EventResponse::Consumed;
                 }
             }
@@ -1729,7 +1729,7 @@ impl StagingWell {
                 }
 
                 let row_rect = Rect::new(sm_left, row_y, sm_width, sm_row_h);
-                self.submodule_bounds.push((row_rect, sm.name.clone()));
+                self.submodule_bounds.push((row_rect, sm.path.clone()));
 
                 // Status dot color
                 let dot_color = if sm.is_dirty {
@@ -1792,17 +1792,19 @@ mod tests {
     #[test]
     fn submodule_row_context_menu_has_submodule_actions() {
         let mut well = StagingWell::new();
-        well.submodule_bounds
-            .push((Rect::new(10.0, 20.0, 140.0, 22.0), "vendor-lib".to_string()));
+        well.submodule_bounds.push((
+            Rect::new(10.0, 20.0, 140.0, 22.0),
+            "libs/vendor-lib".to_string(),
+        ));
 
         let items = well
             .context_menu_items_at(20.0, 30.0, Rect::new(0.0, 0.0, 300.0, 300.0))
             .expect("expected context menu");
 
         let actions: Vec<String> = items.into_iter().map(|i| i.action_id).collect();
-        assert!(actions.contains(&"enter_submodule:vendor-lib".to_string()));
-        assert!(actions.contains(&"open_submodule:vendor-lib".to_string()));
-        assert!(actions.contains(&"update_submodule:vendor-lib".to_string()));
-        assert!(actions.contains(&"delete_submodule:vendor-lib".to_string()));
+        assert!(actions.contains(&"enter_submodule:libs/vendor-lib".to_string()));
+        assert!(actions.contains(&"open_submodule:libs/vendor-lib".to_string()));
+        assert!(actions.contains(&"update_submodule:libs/vendor-lib".to_string()));
+        assert!(actions.contains(&"delete_submodule:libs/vendor-lib".to_string()));
     }
 }

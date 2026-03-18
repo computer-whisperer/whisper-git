@@ -277,11 +277,24 @@ pub(crate) fn handle_context_menu_action(
         }
         "delete_submodule" => {
             if !param.is_empty() {
+                let sm_label = view_state
+                    .staging_well
+                    .submodules
+                    .iter()
+                    .find(|s| s.path == param || s.name == param)
+                    .map(|sm| {
+                        if sm.name != sm.path {
+                            format!("{} ({})", sm.name, sm.path)
+                        } else {
+                            sm.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| param.to_string());
                 confirm_dialog.show(
                     "Delete Submodule",
                     &format!(
                         "Remove submodule '{}'? This will deinit and remove it.",
-                        param
+                        sm_label
                     ),
                 );
                 *active_modal = Some(ActiveModal::Confirm);
@@ -304,26 +317,30 @@ pub(crate) fn handle_context_menu_action(
         }
         "open_submodule" => {
             if !param.is_empty() {
-                let rel_path = view_state
+                if let Some(sm) = view_state
                     .staging_well
                     .submodules
                     .iter()
-                    .find(|s| s.name == param)
-                    .map(|s| s.path.clone());
-                if let Some(rel_path) = rel_path {
-                    let base_dir = repo
-                        .workdir()
-                        .map(|p| p.to_path_buf())
-                        .or_else(|| {
-                            view_state
-                                .worktree_state
-                                .staging_repo()
-                                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-                        })
-                        .or_else(|| view_state.worktree_state.selected_path.clone());
+                    .find(|s| s.path == param || s.name == param)
+                {
+                    let rel_path = sm.path.clone();
+                    let label = sm.name.clone();
+                    let selected_worktree_dir = || {
+                        view_state
+                            .worktree_state
+                            .staging_repo()
+                            .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+                            .or_else(|| view_state.worktree_state.selected_path.clone())
+                    };
+                    let current_repo_dir = || repo.workdir().map(|p| p.to_path_buf());
+                    let base_dir = if view_state.submodule_focus.is_some() {
+                        current_repo_dir().or_else(selected_worktree_dir)
+                    } else {
+                        selected_worktree_dir().or_else(current_repo_dir)
+                    };
                     if let Some(base_dir) = base_dir {
                         let abs_path = base_dir.join(rel_path);
-                        open_terminal_at(&abs_path.to_string_lossy(), param, toast_manager);
+                        open_terminal_at(&abs_path.to_string_lossy(), &label, toast_manager);
                     } else {
                         toast_manager.push(
                             "No active worktree context for submodule terminal".to_string(),

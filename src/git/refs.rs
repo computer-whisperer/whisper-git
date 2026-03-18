@@ -443,6 +443,7 @@ impl GitRepo {
 
             entries.push(CommitSubmoduleEntry {
                 name,
+                path: path.clone(),
                 pinned_oid: *pinned_oid,
                 changed,
                 parent_oid,
@@ -672,6 +673,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let entry = &entries[0];
         assert_eq!(entry.name, "nested-lib");
+        assert_eq!(entry.path, "libs/nested");
         assert_eq!(
             entry.pinned_oid,
             Oid::from_str(&target_oid).expect("parse oid")

@@ -3539,10 +3539,10 @@ impl App {
                                     .pending_messages
                                     .push(AppMessage::ViewCommitFileDiff(oid, path));
                             }
-                            CommitDetailAction::OpenSubmodule(name) => {
+                            CommitDetailAction::OpenSubmodule(path_or_name) => {
                                 view_state
                                     .pending_messages
-                                    .push(AppMessage::EnterSubmodule(name));
+                                    .push(AppMessage::EnterSubmodule(path_or_name));
                             }
                         }
                     }

@@ -98,11 +98,11 @@ pub(crate) fn start_watcher(
     }
 }
 
-/// Drill into a named submodule: saves parent state and swaps repo to the submodule.
+/// Drill into a submodule (matched by path or name): saves parent state and swaps repo.
 /// Returns true on success.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn enter_submodule(
-    name: &str,
+    target: &str,
     repo_tab: &mut RepoTab,
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
@@ -111,37 +111,38 @@ pub(crate) fn enter_submodule(
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
 ) -> Option<Receiver<RepoStateResult>> {
-    // Find the submodule info by name
+    // Find the submodule info by path first, then by name.
     let sm = view_state
         .staging_well
         .submodules
         .iter()
-        .find(|s| s.name == name)
+        .find(|s| s.path == target || s.name == target)
         .cloned();
     let Some(sm) = sm else {
         toast_manager.push(
-            format!("Submodule '{}' not found", name),
+            format!("Submodule '{}' not found in current checkout", target),
             ToastSeverity::Error,
         );
         return None;
     };
+    let submodule_name = sm.name.clone();
 
     // Resolve submodule path relative to the active staging context.
-    // Priority:
-    // 1) Current repo frame workdir (root repo or currently focused submodule)
-    // 2) Selected staging worktree repo workdir
-    // 3) Selected worktree path itself
-    let parent_workdir = repo_tab
-        .repo
-        .workdir()
-        .map(|p| p.to_path_buf())
-        .or_else(|| {
-            view_state
-                .worktree_state
-                .staging_repo()
-                .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
-        })
-        .or_else(|| view_state.worktree_state.selected_path.clone());
+    // Root mode: selected staging worktree has priority.
+    // Drill-down mode: focused repo frame has priority.
+    let selected_worktree_dir = || {
+        view_state
+            .worktree_state
+            .staging_repo()
+            .and_then(|r| r.workdir().map(|p| p.to_path_buf()))
+            .or_else(|| view_state.worktree_state.selected_path.clone())
+    };
+    let current_repo_dir = || repo_tab.repo.workdir().map(|p| p.to_path_buf());
+    let parent_workdir = if view_state.submodule_focus.is_some() {
+        current_repo_dir().or_else(selected_worktree_dir)
+    } else {
+        selected_worktree_dir().or_else(current_repo_dir)
+    };
     let parent_workdir = match parent_workdir {
         Some(path) => path,
         None => {
@@ -159,7 +160,7 @@ pub(crate) fn enter_submodule(
         Ok(r) => r,
         Err(e) => {
             toast_manager.push(
-                format!("Cannot open submodule '{}': {}", name, e),
+                format!("Cannot open submodule '{}': {}", submodule_name, e),
                 ToastSeverity::Error,
             );
             return None;
@@ -180,7 +181,7 @@ pub(crate) fn enter_submodule(
         graph_top_row_index: view_state.commit_graph_view.top_row_index,
         selected_commit: view_state.commit_graph_view.selected_commit,
         sidebar_scroll_offset: view_state.branch_sidebar.scroll_offset,
-        submodule_name: name.to_string(),
+        submodule_name: submodule_name.clone(),
         parent_submodules,
         worktree_state: view_state.worktree_state.save(),
     };
@@ -196,19 +197,19 @@ pub(crate) fn enter_submodule(
 
     // Swap in submodule data (repo already swapped via std::mem::replace above)
     let sub_commits = repo_tab.repo.commit_graph(MAX_COMMITS).unwrap_or_default();
-    repo_tab.name = name.to_string();
+    repo_tab.name = submodule_name.clone();
     repo_tab.commits = sub_commits;
 
     // Build/extend focus state
     match &mut view_state.submodule_focus {
         Some(focus) => {
             focus.parent_stack.push(saved);
-            focus.current_name = name.to_string();
+            focus.current_name = submodule_name.clone();
         }
         None => {
             view_state.submodule_focus = Some(SubmoduleFocus {
                 parent_stack: vec![saved],
-                current_name: name.to_string(),
+                current_name: submodule_name.clone(),
             });
         }
     }

@@ -12,6 +12,7 @@ use crate::ui::{Rect, TextRenderer};
 #[derive(Clone, Debug)]
 pub enum CommitDetailAction {
     ViewFileDiff(Oid, String),
+    /// Open submodule from commit detail by path (preferred) or name fallback.
     OpenSubmodule(String),
 }
 
@@ -23,7 +24,7 @@ pub struct CommitDetailView {
     changed_files: Vec<DiffFile>,
     /// Submodule entries at this commit
     submodule_entries: Vec<CommitSubmoduleEntry>,
-    /// Hit-test bounds for submodule rows: (rect, name)
+    /// Hit-test bounds for submodule rows: (rect, submodule_path)
     submodule_bounds: Vec<(Rect, String)>,
     /// Currently selected file index
     selected_file: Option<usize>,
@@ -128,9 +129,9 @@ impl CommitDetailView {
             ..
         } = event
         {
-            for (rect, name) in &self.submodule_bounds {
+            for (rect, path) in &self.submodule_bounds {
                 if rect.contains(*x, *y) {
-                    self.pending_action = Some(CommitDetailAction::OpenSubmodule(name.clone()));
+                    self.pending_action = Some(CommitDetailAction::OpenSubmodule(path.clone()));
                     return EventResponse::Consumed;
                 }
             }
@@ -569,7 +570,7 @@ impl CommitDetailView {
                         theme::TEXT_MUTED.to_array(),
                     ));
 
-                    self.submodule_bounds.push((row_rect, entry.name.clone()));
+                    self.submodule_bounds.push((row_rect, entry.path.clone()));
                 }
                 fy += line_height;
             }
