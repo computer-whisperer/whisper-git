@@ -78,6 +78,12 @@ struct WorkflowRunsResponse {
     workflow_runs: Vec<WorkflowRun>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubApiErrorBody {
+    message: Option<String>,
+    documentation_url: Option<String>,
+}
+
 // --- Repository creation ---
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,6 +99,71 @@ impl GitHubClient {
         Self { token }
     }
 
+    fn classify_http_error(status: u16, body: &str) -> String {
+        let parsed = serde_json::from_str::<GitHubApiErrorBody>(body).ok();
+        let api_message = parsed
+            .as_ref()
+            .and_then(|p| p.message.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let docs_url = parsed
+            .as_ref()
+            .and_then(|p| p.documentation_url.as_ref())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let api_message_lc = api_message
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+
+        let mut message = match status {
+            401 => "GitHub API unauthorized (401): token is invalid or expired.".to_string(),
+            403 => {
+                if api_message_lc.contains("sso")
+                    || api_message_lc.contains("saml")
+                    || api_message_lc.contains("organization")
+                        && api_message_lc.contains("authorize")
+                    || api_message_lc.contains("organization")
+                        && api_message_lc.contains("grant")
+                        && api_message_lc.contains("access")
+                {
+                    "GitHub API forbidden (403): token is not authorized for organization SSO."
+                        .to_string()
+                } else if api_message_lc.contains("rate limit") {
+                    "GitHub API rate limit exceeded (403).".to_string()
+                } else {
+                    "GitHub API forbidden (403): token may lack required repository/actions permissions."
+                        .to_string()
+                }
+            }
+            404 => {
+                "GitHub API returned 404 for this repository. For private or organization repos, this usually means the token does not have access (or is not SSO-authorized).".to_string()
+            }
+            _ => format!("GitHub API request failed (HTTP {status})."),
+        };
+
+        if let Some(api_message) = api_message
+            && !api_message.eq_ignore_ascii_case("Not Found")
+        {
+            message.push_str(&format!(" GitHub says: {api_message}"));
+        }
+        if let Some(url) = docs_url {
+            message.push_str(&format!(" See: {url}"));
+        }
+        message
+    }
+
+    fn map_ureq_error(err: ureq::Error) -> anyhow::Error {
+        match err {
+            ureq::Error::Status(status, resp) => {
+                let body = resp.into_string().unwrap_or_default();
+                anyhow::anyhow!(Self::classify_http_error(status, &body))
+            }
+            ureq::Error::Transport(e) => anyhow::anyhow!("GitHub API transport error: {e}"),
+        }
+    }
+
     fn get(&self, path: &str) -> Result<ureq::Response> {
         ureq::get(&format!("{API_BASE}{path}"))
             .set("Authorization", &format!("Bearer {}", self.token))
@@ -100,7 +171,7 @@ impl GitHubClient {
             .set("User-Agent", "whisper-git")
             .set("X-GitHub-Api-Version", "2022-11-28")
             .call()
-            .context("GitHub API request failed")
+            .map_err(Self::map_ureq_error)
     }
 
     #[allow(dead_code)]
@@ -111,7 +182,7 @@ impl GitHubClient {
             .set("User-Agent", "whisper-git")
             .set("X-GitHub-Api-Version", "2022-11-28")
             .send_json(body.clone())
-            .context("GitHub API request failed")
+            .map_err(Self::map_ureq_error)
     }
 
     /// Fetch the most recent workflow runs for a repo, optionally filtered by branch.
@@ -126,7 +197,9 @@ impl GitHubClient {
         if let Some(branch) = branch {
             path.push_str(&format!("&branch={branch}"));
         }
-        let resp = self.get(&path)?;
+        let resp = self
+            .get(&path)
+            .with_context(|| format!("Failed to fetch workflow runs for {owner}/{repo}"))?;
         let body: WorkflowRunsResponse = resp.into_json().context("Failed to parse runs")?;
         Ok(body.workflow_runs)
     }
@@ -437,5 +510,21 @@ mod tests {
         ];
         let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);
+    }
+
+    #[test]
+    fn classify_404_mentions_private_org_access() {
+        let body = r#"{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}"#;
+        let msg = GitHubClient::classify_http_error(404, body);
+        assert!(msg.contains("private or organization repos"));
+        assert!(msg.contains("token does not have access"));
+        assert!(msg.contains("docs.github.com/rest"));
+    }
+
+    #[test]
+    fn classify_403_sso_message_is_explicit() {
+        let body = r#"{"message":"Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization.","documentation_url":"https://docs.github.com/rest"}"#;
+        let msg = GitHubClient::classify_http_error(403, body);
+        assert!(msg.contains("organization SSO"));
     }
 }
