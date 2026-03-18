@@ -112,20 +112,26 @@ pub(crate) fn enter_submodule(
     proxy: &EventLoopProxy<()>,
 ) -> Option<Receiver<RepoStateResult>> {
     // Find the submodule info by path first, then by name.
-    let sm = view_state
+    // If not found, treat the target as a direct path fallback (useful for
+    // commit-detail entries from historical commits).
+    let (submodule_name, submodule_path) = match view_state
         .staging_well
         .submodules
         .iter()
         .find(|s| s.path == target || s.name == target)
-        .cloned();
-    let Some(sm) = sm else {
-        toast_manager.push(
-            format!("Submodule '{}' not found in current checkout", target),
-            ToastSeverity::Error,
-        );
-        return None;
+    {
+        Some(sm) => (sm.name.clone(), sm.path.clone()),
+        None => {
+            toast_manager.push(
+                format!(
+                    "Submodule '{}' is not listed in current checkout; trying path fallback",
+                    target
+                ),
+                ToastSeverity::Info,
+            );
+            (target.to_string(), target.to_string())
+        }
     };
-    let submodule_name = sm.name.clone();
 
     // Resolve submodule path relative to the active staging context.
     // Root mode: selected staging worktree has priority.
@@ -153,7 +159,7 @@ pub(crate) fn enter_submodule(
             return None;
         }
     };
-    let sub_path = parent_workdir.join(sm.path);
+    let sub_path = parent_workdir.join(submodule_path);
 
     // Open the submodule as a repo
     let sub_repo = match GitRepo::open(sub_path) {
