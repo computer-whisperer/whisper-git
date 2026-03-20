@@ -141,6 +141,10 @@ fn pipeline_state(status: &str) -> CiState {
 }
 
 /// Summarize pipelines into a CiStatus (branch-level summary).
+///
+/// Pipelines arrive sorted by ID descending (most recent first). We only
+/// count pipelines for the most recent commit SHA — older commits' pipelines
+/// are historical and shouldn't inflate the pass/fail counts.
 fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
     if pipelines.is_empty() {
         return CiStatus {
@@ -151,15 +155,16 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
         };
     }
 
-    // GitLab pipelines are already one-per-push (unlike GitHub workflow runs),
-    // so just look at the most recent pipeline for the overall status.
-    // But count all for a summary.
+    // Only consider pipelines for the most recent commit (first pipeline's SHA).
+    let head_sha = &pipelines[0].sha;
+    let head_pipelines: Vec<&Pipeline> = pipelines.iter().filter(|p| p.sha == *head_sha).collect();
+
     let mut passed = 0;
     let mut failed = 0;
     let mut pending = 0;
     let mut first_url = None;
 
-    for p in pipelines {
+    for p in &head_pipelines {
         if first_url.is_none() {
             first_url = Some(p.web_url.clone());
         }
@@ -333,23 +338,30 @@ mod tests {
     }
 
     #[test]
-    fn ci_status_all_passed() {
+    fn ci_status_head_commit_passed() {
+        // Pipelines sorted by ID descending (most recent first), as the API returns them.
+        // Only the head commit (highest ID's SHA) should be counted.
         let pipelines = vec![
-            make_pipeline(1, "abc", "success"),
+            make_pipeline(3, "def", "success"),
             make_pipeline(2, "def", "success"),
+            make_pipeline(1, "abc", "failed"), // older commit — ignored
         ];
         let status = ci_status_from_pipelines(&pipelines);
         assert_eq!(status.state, CiState::Success);
+        assert_eq!(status.counts.unwrap().success, 2);
     }
 
     #[test]
-    fn ci_status_one_failed() {
+    fn ci_status_head_commit_failed() {
+        // Head commit has a failure; older commit's success is ignored.
         let pipelines = vec![
-            make_pipeline(1, "abc", "success"),
-            make_pipeline(2, "def", "failed"),
+            make_pipeline(3, "def", "failed"),
+            make_pipeline(2, "abc", "success"), // older commit — ignored
+            make_pipeline(1, "abc", "success"), // older commit — ignored
         ];
         let status = ci_status_from_pipelines(&pipelines);
         assert_eq!(status.state, CiState::Failure);
+        assert_eq!(status.counts.unwrap().failure, 1);
     }
 
     #[test]
