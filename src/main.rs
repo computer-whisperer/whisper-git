@@ -1345,7 +1345,9 @@ impl App {
                 let default_remote = repo
                     .default_remote()
                     .unwrap_or_else(|_| "origin".to_string());
-                self.pull_dialog.show(branch, &default_remote);
+                let remote_names = repo.remote_names();
+                self.pull_dialog
+                    .show(branch, &default_remote, remote_names);
                 self.active_modal = Some(ActiveModal::Pull);
                 false
             } else if let AppMessage::ShowPushDialog(branch) = msg {
@@ -1353,7 +1355,9 @@ impl App {
                 let default_remote = repo
                     .default_remote()
                     .unwrap_or_else(|_| "origin".to_string());
-                self.push_dialog.show(branch, &default_remote);
+                let remote_names = repo.remote_names();
+                self.push_dialog
+                    .show(branch, &default_remote, remote_names);
                 self.active_modal = Some(ActiveModal::Push);
                 false
             } else if matches!(msg, AppMessage::AiGenerateCommitMessage) {

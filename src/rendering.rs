@@ -977,7 +977,7 @@ pub(crate) fn build_ui_output(
     shortcut_bar_visible: bool,
     mouse_pos: (f32, f32),
     elapsed: f32,
-) -> (WidgetOutput, WidgetOutput, WidgetOutput) {
+) -> (WidgetOutput, WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
 
@@ -997,10 +997,11 @@ pub(crate) fn build_ui_output(
         shortcut_bar_visible,
     );
 
-    // Three layers: graph content renders first, chrome on top, overlay on top of everything
+    // Four layers: graph content renders first, chrome on top, overlay on top, popover last
     let mut graph_output = WidgetOutput::new();
     let mut chrome_output = WidgetOutput::new();
     let mut overlay_output = WidgetOutput::new();
+    let mut popover_output = WidgetOutput::new();
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs
@@ -1354,6 +1355,7 @@ pub(crate) fn build_ui_output(
             bold_text_renderer,
             screen_bounds,
         ));
+        popover_output.extend(pull_dialog.layout_popup(text_renderer, screen_bounds));
     }
 
     if push_dialog.is_visible() {
@@ -1362,6 +1364,7 @@ pub(crate) fn build_ui_output(
             bold_text_renderer,
             screen_bounds,
         ));
+        popover_output.extend(push_dialog.layout_popup(text_renderer, screen_bounds));
     }
 
     // Merge dialog (overlay layer - on top of everything)
@@ -1382,7 +1385,7 @@ pub(crate) fn build_ui_output(
         ));
     }
 
-    (graph_output, chrome_output, overlay_output)
+    (graph_output, chrome_output, overlay_output, popover_output)
 }
 
 fn worse_ci_state(a: CiState, b: CiState) -> CiState {
@@ -1625,7 +1628,7 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
     let mouse_pos = state.input_state.mouse.position();
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
-    let (graph_output, chrome_output, overlay_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
         &app.tab_bar,
@@ -1720,7 +1723,8 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
     render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, popover_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -1847,7 +1851,7 @@ pub(crate) fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let scale_factor = state.scale_factor;
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
-    let (graph_output, chrome_output, overlay_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
         &app.tab_bar,
@@ -1948,7 +1952,8 @@ pub(crate) fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
     render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, popover_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -2005,7 +2010,7 @@ pub(crate) fn capture_screenshot_offscreen(
     let scale_factor = state.scale_factor;
     let (sidebar_ratio, graph_ratio) = (app.sidebar_ratio, app.graph_ratio);
     let elapsed = app.app_start.elapsed().as_secs_f32();
-    let (graph_output, chrome_output, overlay_output) = build_ui_output(
+    let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
         &app.tab_bar,
@@ -2095,7 +2100,8 @@ pub(crate) fn capture_screenshot_offscreen(
 
     render_output_to_builder(&mut builder, state, graph_output, viewport.clone())?;
     render_output_to_builder(&mut builder, state, chrome_output, viewport.clone())?;
-    render_output_to_builder(&mut builder, state, overlay_output, viewport)?;
+    render_output_to_builder(&mut builder, state, overlay_output, viewport.clone())?;
+    render_output_to_builder(&mut builder, state, popover_output, viewport)?;
 
     builder
         .end_render_pass(Default::default())
@@ -2197,11 +2203,13 @@ pub(crate) fn apply_screenshot_state(app: &mut App) {
             app.active_modal = Some(ActiveModal::Rebase);
         }
         "pull-dialog" => {
-            app.pull_dialog.show("main", "origin");
+            app.pull_dialog
+                .show("main", "origin", vec!["origin".to_string()]);
             app.active_modal = Some(ActiveModal::Pull);
         }
         "push-dialog" => {
-            app.push_dialog.show("main", "origin");
+            app.push_dialog
+                .show("main", "origin", vec!["origin".to_string()]);
             app.active_modal = Some(ActiveModal::Push);
         }
         "settings-dialog" => {

@@ -5,7 +5,7 @@ use crate::ui::widget::{
     Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
-use crate::ui::widgets::{Button, TextInput};
+use crate::ui::widgets::{Button, Dropdown, TextInput};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the push dialog
@@ -26,7 +26,7 @@ pub enum PushDialogAction {
 pub struct PushDialog {
     visible: bool,
     local_branch_input: TextInput,
-    remote_input: TextInput,
+    remote_dropdown: Dropdown,
     remote_branch_input: TextInput,
     force_push: bool,
     push_button: Button,
@@ -41,7 +41,7 @@ impl PushDialog {
         Self {
             visible: false,
             local_branch_input: TextInput::new().with_placeholder("feature-branch"),
-            remote_input: TextInput::new().with_placeholder("origin"),
+            remote_dropdown: Dropdown::new().with_placeholder("origin"),
             remote_branch_input: TextInput::new().with_placeholder("feature-branch"),
             force_push: false,
             push_button: Button::new("Push").primary(),
@@ -52,14 +52,20 @@ impl PushDialog {
     }
 
     /// Show the dialog with pre-filled defaults
-    pub fn show(&mut self, current_branch: &str, default_remote: &str) {
+    pub fn show(
+        &mut self,
+        current_branch: &str,
+        default_remote: &str,
+        remote_names: Vec<String>,
+    ) {
         self.visible = true;
         self.local_branch_input = TextInput::new().with_placeholder("feature-branch");
         self.local_branch_input.set_text(current_branch);
         self.local_branch_input.set_focused(true);
-        self.remote_input = TextInput::new().with_placeholder("origin");
-        self.remote_input.set_text(default_remote);
-        self.remote_input.set_focused(false);
+        self.remote_dropdown = Dropdown::new().with_placeholder("origin");
+        self.remote_dropdown
+            .set_options(remote_names, default_remote);
+        self.remote_dropdown.set_focused(false);
         self.remote_branch_input = TextInput::new().with_placeholder("feature-branch");
         self.remote_branch_input.set_text(current_branch);
         self.remote_branch_input.set_focused(false);
@@ -71,7 +77,7 @@ impl PushDialog {
     pub fn hide(&mut self) {
         self.visible = false;
         self.local_branch_input.set_focused(false);
-        self.remote_input.set_focused(false);
+        self.remote_dropdown.set_focused(false);
         self.remote_branch_input.set_focused(false);
     }
 
@@ -85,7 +91,7 @@ impl PushDialog {
 
     fn try_confirm(&mut self) {
         let local_branch = self.local_branch_input.text().trim().to_string();
-        let remote = self.remote_input.text().trim().to_string();
+        let remote = self.remote_dropdown.selected_value().to_string();
         let remote_branch = self.remote_branch_input.text().trim().to_string();
 
         if local_branch.is_empty() || remote.is_empty() || remote_branch.is_empty() {
@@ -110,10 +116,10 @@ impl PushDialog {
         Rect::new(dialog_x, dialog_y, dialog_w, dialog_h)
     }
 
-    /// Update focus between the three text inputs
+    /// Update focus between the input fields
     fn update_focus(&mut self) {
         self.local_branch_input.set_focused(self.focused_field == 0);
-        self.remote_input.set_focused(self.focused_field == 1);
+        self.remote_dropdown.set_focused(self.focused_field == 1);
         self.remote_branch_input
             .set_focused(self.focused_field == 2);
     }
@@ -163,7 +169,17 @@ impl Widget for PushDialog {
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        // Handle keyboard shortcuts first
+        // When the dropdown is open, it gets first priority on all events
+        if self.remote_dropdown.is_open()
+            && self
+                .remote_dropdown
+                .handle_event(event, remote_input_bounds)
+                .is_consumed()
+        {
+            return EventResponse::Consumed;
+        }
+
+        // Handle keyboard shortcuts
         if let InputEvent::KeyDown { key, .. } = event {
             match key {
                 Key::Escape => {
@@ -207,7 +223,7 @@ impl Widget for PushDialog {
             }
         }
 
-        // Route to text inputs
+        // Route to inputs
         if self
             .local_branch_input
             .handle_event(event, local_input_bounds)
@@ -216,7 +232,7 @@ impl Widget for PushDialog {
             return EventResponse::Consumed;
         }
         if self
-            .remote_input
+            .remote_dropdown
             .handle_event(event, remote_input_bounds)
             .is_consumed()
         {
@@ -341,7 +357,7 @@ impl PushDialog {
         ));
         let remote_input_y = remote_label_y + label_h;
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
-        output.extend(self.remote_input.layout(text_renderer, remote_input_bounds));
+        output.extend(self.remote_dropdown.layout(text_renderer, remote_input_bounds));
 
         // Remote branch label + input
         let remote_branch_label_y = remote_input_y + line_h + 8.0 * scale;
@@ -443,5 +459,29 @@ impl PushDialog {
         output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
 
         output
+    }
+
+    /// Compute the bounds of the remote dropdown (for popup rendering).
+    fn remote_dropdown_bounds(&self, bounds: Rect) -> Rect {
+        let scale = (bounds.height / 720.0).max(1.0);
+        let dialog = self.dialog_bounds(bounds, scale);
+        let padding = 16.0 * scale;
+        let line_h = 32.0 * scale;
+        let label_h = 18.0 * scale;
+        let local_label_y = dialog.y + 44.0 * scale;
+        let local_input_y = local_label_y + label_h;
+        let input_w = dialog.width - padding * 2.0;
+        let remote_label_y = local_input_y + line_h + 8.0 * scale;
+        let remote_input_y = remote_label_y + label_h;
+        Rect::new(dialog.x + padding, remote_input_y, input_w, line_h)
+    }
+
+    /// Render the dropdown popup in a separate layer so it draws on top of all dialog text.
+    pub fn layout_popup(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+        if !self.visible {
+            return WidgetOutput::new();
+        }
+        let dropdown_bounds = self.remote_dropdown_bounds(bounds);
+        self.remote_dropdown.layout_popup(text_renderer, dropdown_bounds)
     }
 }

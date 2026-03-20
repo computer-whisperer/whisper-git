@@ -3,6 +3,7 @@
 mod branch_name_dialog;
 mod button;
 mod clone_dialog;
+mod dropdown;
 pub mod confirm_dialog;
 pub mod context_menu;
 mod error_dialog;
@@ -28,6 +29,7 @@ mod tooltip;
 pub use branch_name_dialog::{BranchNameDialog, BranchNameDialogAction};
 pub use button::Button;
 pub use clone_dialog::{CloneDialog, CloneDialogAction};
+pub use dropdown::Dropdown;
 pub use confirm_dialog::{ConfirmDialog, ConfirmDialogAction};
 pub use context_menu::{ContextMenu, MenuAction, MenuItem};
 pub use error_dialog::ErrorDialog;
