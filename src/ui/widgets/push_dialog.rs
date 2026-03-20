@@ -52,12 +52,7 @@ impl PushDialog {
     }
 
     /// Show the dialog with pre-filled defaults
-    pub fn show(
-        &mut self,
-        current_branch: &str,
-        default_remote: &str,
-        remote_names: Vec<String>,
-    ) {
+    pub fn show(&mut self, current_branch: &str, default_remote: &str, remote_names: Vec<String>) {
         self.visible = true;
         self.local_branch_input = TextInput::new().with_placeholder("feature-branch");
         self.local_branch_input.set_text(current_branch);
@@ -357,7 +352,10 @@ impl PushDialog {
         ));
         let remote_input_y = remote_label_y + label_h;
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
-        output.extend(self.remote_dropdown.layout(text_renderer, remote_input_bounds));
+        output.extend(
+            self.remote_dropdown
+                .layout(text_renderer, remote_input_bounds),
+        );
 
         // Remote branch label + input
         let remote_branch_label_y = remote_input_y + line_h + 8.0 * scale;
@@ -482,6 +480,7 @@ impl PushDialog {
             return WidgetOutput::new();
         }
         let dropdown_bounds = self.remote_dropdown_bounds(bounds);
-        self.remote_dropdown.layout_popup(text_renderer, dropdown_bounds)
+        self.remote_dropdown
+            .layout_popup(text_renderer, dropdown_bounds)
     }
 }

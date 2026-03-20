@@ -49,12 +49,7 @@ impl PullDialog {
     }
 
     /// Show the dialog with pre-filled defaults
-    pub fn show(
-        &mut self,
-        current_branch: &str,
-        default_remote: &str,
-        remote_names: Vec<String>,
-    ) {
+    pub fn show(&mut self, current_branch: &str, default_remote: &str, remote_names: Vec<String>) {
         self.visible = true;
         self.remote_dropdown = Dropdown::new().with_placeholder("origin");
         self.remote_dropdown
@@ -315,7 +310,10 @@ impl PullDialog {
         let remote_input_y = remote_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
-        output.extend(self.remote_dropdown.layout(text_renderer, remote_input_bounds));
+        output.extend(
+            self.remote_dropdown
+                .layout(text_renderer, remote_input_bounds),
+        );
 
         // Remote branch label + input
         let branch_label_y = remote_input_y + line_h + 8.0 * scale;
@@ -423,6 +421,7 @@ impl PullDialog {
             return WidgetOutput::new();
         }
         let dropdown_bounds = self.remote_dropdown_bounds(bounds);
-        self.remote_dropdown.layout_popup(text_renderer, dropdown_bounds)
+        self.remote_dropdown
+            .layout_popup(text_renderer, dropdown_bounds)
     }
 }

@@ -176,10 +176,7 @@ impl Widget for Dropdown {
                         return EventResponse::Consumed;
                     }
                     Key::Up | Key::K => {
-                        let prev = self
-                            .hovered_index
-                            .map(|i| i.saturating_sub(1))
-                            .or(Some(0));
+                        let prev = self.hovered_index.map(|i| i.saturating_sub(1)).or(Some(0));
                         self.hovered_index = prev;
                         return EventResponse::Consumed;
                     }
@@ -325,12 +322,7 @@ impl Dropdown {
 
         let padding = 12.0;
         let line_height = text_renderer.line_height();
-        let popup = Rect::new(
-            bounds.x,
-            bounds.bottom(),
-            bounds.width,
-            self.popup_height(),
-        );
+        let popup = Rect::new(bounds.x, bounds.bottom(), bounds.width, self.popup_height());
         let popup_radius = 4.0;
 
         // Shadow
