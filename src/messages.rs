@@ -80,6 +80,7 @@ pub enum AppMessage {
     UpdateSubmodule(String),
     ResetSubmodule(String),
     JumpToWorktreeBranch(String),
+    JumpToCommit(Oid),
     RemoveWorktree(String),
     MergeBranch(String, Option<PathBuf>), // (branch, target_worktree_dir)
     MergeNoFf(String, String, Option<PathBuf>), // (branch, commit_message, target_worktree_dir)
@@ -1000,6 +1001,74 @@ pub fn handle_app_message(
                     format!("Worktree '{}' not found", name),
                     ToastSeverity::Error,
                 );
+            }
+        }
+        AppMessage::JumpToCommit(oid) => {
+            // Check if the commit is already in the loaded set
+            if commits.iter().any(|c| c.id == oid) {
+                view_state.commit_graph_view.selected_commit = Some(oid);
+                view_state
+                    .commit_graph_view
+                    .scroll_to_selection(commits, ctx.graph_bounds);
+            } else {
+                // Find how far back this commit is in the topological walk
+                const MAX_SEARCH: usize = 50_000;
+                match repo.commit_position_in_walk(oid, MAX_SEARCH) {
+                    Ok(Some(position)) => {
+                        let needed = position + 10; // small padding
+                        // Preserve existing diff stats
+                        let prev_stats: HashMap<Oid, (usize, usize)> = commits
+                            .iter()
+                            .filter(|c| c.insertions > 0 || c.deletions > 0)
+                            .map(|c| (c.id, (c.insertions, c.deletions)))
+                            .collect();
+                        let graph_result = if ctx.show_orphaned_commits {
+                            repo.commit_graph_with_orphans(needed)
+                        } else {
+                            repo.commit_graph(needed)
+                        };
+                        match graph_result {
+                            Ok(new_commits) => {
+                                *commits = new_commits;
+                                for commit in commits.iter_mut() {
+                                    if let Some(&(ins, del)) = prev_stats.get(&commit.id) {
+                                        commit.insertions = ins;
+                                        commit.deletions = del;
+                                    }
+                                }
+                                let worktrees = repo.worktrees().unwrap_or_default();
+                                let synthetics =
+                                    git::create_synthetic_entries(repo, &worktrees, commits);
+                                if !synthetics.is_empty() {
+                                    git::insert_synthetics_sorted(commits, synthetics);
+                                }
+                                view_state.commit_graph_view.update_layout(commits);
+                                view_state.commit_graph_view.selected_commit = Some(oid);
+                                view_state
+                                    .commit_graph_view
+                                    .scroll_to_selection(commits, ctx.graph_bounds);
+                            }
+                            Err(e) => {
+                                toast_manager.push(
+                                    format!("Failed to load commits: {}", e),
+                                    ToastSeverity::Error,
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        toast_manager.push(
+                            "Commit is too far back in history to jump to",
+                            ToastSeverity::Error,
+                        );
+                    }
+                    Err(e) => {
+                        toast_manager.push(
+                            format!("Failed to find commit: {}", e),
+                            ToastSeverity::Error,
+                        );
+                    }
+                }
             }
         }
         AppMessage::RemoveWorktree(name) => {

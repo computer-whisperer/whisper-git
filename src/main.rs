@@ -2882,6 +2882,28 @@ impl App {
             SidebarAction::SwitchWorktree(wt_name) => {
                 view_state.switch_to_worktree_by_name(&wt_name, &repo_tab.repo);
             }
+            SidebarAction::JumpToRef(ref_name) => {
+                // Look up OID from branch tips or tags
+                let oid = view_state
+                    .commit_graph_view
+                    .branch_tips
+                    .iter()
+                    .find(|t| t.name == ref_name)
+                    .map(|t| t.oid)
+                    .or_else(|| {
+                        view_state
+                            .commit_graph_view
+                            .tags
+                            .iter()
+                            .find(|t| t.name == ref_name)
+                            .map(|t| t.oid)
+                    });
+                if let Some(oid) = oid {
+                    view_state
+                        .pending_messages
+                        .push(AppMessage::JumpToCommit(oid));
+                }
+            }
         }
     }
 }

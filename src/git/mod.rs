@@ -556,6 +556,35 @@ impl GitRepo {
         Ok(commits)
     }
 
+    /// Find the position of a commit in the topological walk (same ordering as `commit_graph`).
+    /// Returns `None` if the commit is not reachable within `max_search` steps.
+    pub fn commit_position_in_walk(&self, target: Oid, max_search: usize) -> Result<Option<usize>> {
+        let mut revwalk = self.repo.revwalk().context("Failed to create revwalk")?;
+
+        for branch in self.repo.branches(None)? {
+            if let Ok((branch, _)) = branch
+                && let Ok(reference) = branch.get().resolve()
+                && let Some(oid) = reference.target()
+            {
+                let _ = revwalk.push(oid);
+            }
+        }
+
+        revwalk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+
+        for (i, oid_result) in revwalk.enumerate() {
+            if i >= max_search {
+                break;
+            }
+            if let Ok(oid) = oid_result
+                && oid == target
+            {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
     /// Discover orphaned commits via reflogs that aren't reachable from any branch tip.
     /// Returns commits marked with `is_orphaned = true` and a reflog source label.
     pub fn orphaned_commits_from_reflogs(

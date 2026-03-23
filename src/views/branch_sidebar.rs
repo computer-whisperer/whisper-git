@@ -23,6 +23,9 @@ pub enum SidebarAction {
     DropStash(usize),
     DeleteTag(String),
     SwitchWorktree(String), // worktree name to switch to
+    /// Jump to a ref's commit in the graph. The string is the ref name
+    /// as it appears in branch_tips (e.g. "main" or "origin/main") or tags.
+    JumpToRef(String),
 }
 
 /// Represents a single navigable item in the flattened sidebar list
@@ -1077,8 +1080,21 @@ impl BranchSidebar {
                                 self.build_visible_items();
                                 return EventResponse::Consumed;
                             }
-                            _ => {
+                            item => {
                                 self.focused_index = Some(idx);
+                                // Jump to this ref's commit in the graph
+                                let ref_name = match item {
+                                    SidebarItem::LocalBranch(name) => Some(name.clone()),
+                                    SidebarItem::RemoteBranch(remote, branch) => {
+                                        Some(format!("{}/{}", remote, branch))
+                                    }
+                                    SidebarItem::Tag(name) => Some(name.clone()),
+                                    _ => None,
+                                };
+                                if let Some(name) = ref_name {
+                                    self.pending_action =
+                                        Some(SidebarAction::JumpToRef(name));
+                                }
                                 return EventResponse::Consumed;
                             }
                         }
