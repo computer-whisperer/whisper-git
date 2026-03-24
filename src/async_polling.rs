@@ -602,7 +602,10 @@ pub(crate) fn apply_repo_state_result(
         .commit_graph_view
         .update_layout(&repo_tab.commits);
     if diag {
-        eprintln!("[frame_diag]   update_layout: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[frame_diag]   update_layout: {:.1}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        );
     }
     view_state.commit_graph_view.branch_tips = result.branch_tips;
     view_state.commit_graph_view.tags = result.tags.clone();
@@ -617,7 +620,10 @@ pub(crate) fn apply_repo_state_result(
         result.is_bare,
     );
     if diag {
-        eprintln!("[frame_diag]   set_branch_data: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[frame_diag]   set_branch_data: {:.1}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        );
     }
     view_state.staging_well.set_worktrees(&result.worktrees);
 
@@ -673,7 +679,10 @@ pub(crate) fn apply_repo_state_result(
         )
     };
     if diag {
-        eprintln!("[frame_diag]   staging_repo queries: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[frame_diag]   staging_repo queries: {:.1}ms",
+            t.elapsed().as_secs_f64() * 1000.0
+        );
     }
     view_state.staging_well.set_submodules(submodules);
 
@@ -706,7 +715,10 @@ pub(crate) fn apply_repo_state_result(
     view_state.ref_fingerprint = result.ref_fingerprint;
 
     if diag {
-        eprintln!("[frame_diag]   apply_repo_state_result total: {:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[frame_diag]   apply_repo_state_result total: {:.1}ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     // Spawn async diff stats

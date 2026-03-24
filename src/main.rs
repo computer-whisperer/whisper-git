@@ -528,7 +528,10 @@ fn main() -> Result<()> {
         eprintln!("  Consecutive draw errors: {}", app.consecutive_draw_errors);
         if let Some(state) = &app.state {
             eprintln!("  Frame count: {}", state.frame_count);
-            eprintln!("  Swapchain needs_recreate: {}", state.surface.needs_recreate);
+            eprintln!(
+                "  Swapchain needs_recreate: {}",
+                state.surface.needs_recreate
+            );
         }
         if let Some((_, vs)) = app.tabs.get(app.active_tab) {
             eprintln!(
@@ -3080,7 +3083,10 @@ impl ApplicationHandler for App {
                 if frame_diag {
                     let d = t.elapsed();
                     if d.as_millis() > 0 {
-                        eprintln!("[frame_diag] poll_repo_state: {:.1}ms", d.as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[frame_diag] poll_repo_state: {:.1}ms",
+                            d.as_secs_f64() * 1000.0
+                        );
                     }
                 }
                 // Poll filesystem watcher for external changes
@@ -3099,7 +3105,10 @@ impl ApplicationHandler for App {
                 if frame_diag {
                     let d = t.elapsed();
                     if d.as_millis() > 0 {
-                        eprintln!("[frame_diag] process_messages: {:.1}ms", d.as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[frame_diag] process_messages: {:.1}ms",
+                            d.as_secs_f64() * 1000.0
+                        );
                     }
                 }
                 // Check if staging well requested an immediate status refresh (e.g., worktree switch)
@@ -3238,7 +3247,10 @@ impl ApplicationHandler for App {
                             let t = Instant::now();
                             self.finish_open_repo_tab(repo, name);
                             if frame_diag {
-                                eprintln!("[frame_diag] finish_open_repo_tab: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+                                eprintln!(
+                                    "[frame_diag] finish_open_repo_tab: {:.1}ms",
+                                    t.elapsed().as_secs_f64() * 1000.0
+                                );
                             }
                         }
                         Ok(Err(err)) => {
@@ -3280,7 +3292,10 @@ impl ApplicationHandler for App {
                 if frame_diag {
                     let total = frame_t0.elapsed();
                     if total.as_millis() > 2 {
-                        eprintln!("[frame_diag] === total frame: {:.1}ms ===", total.as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[frame_diag] === total frame: {:.1}ms ===",
+                            total.as_secs_f64() * 1000.0
+                        );
                     }
                 }
 

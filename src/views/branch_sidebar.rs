@@ -1092,8 +1092,7 @@ impl BranchSidebar {
                                     _ => None,
                                 };
                                 if let Some(name) = ref_name {
-                                    self.pending_action =
-                                        Some(SidebarAction::JumpToRef(name));
+                                    self.pending_action = Some(SidebarAction::JumpToRef(name));
                                 }
                                 return EventResponse::Consumed;
                             }
