@@ -507,7 +507,37 @@ fn main() -> Result<()> {
     // (e.g. broken pipe during flush). Treat this as a clean exit rather than
     // propagating a confusing error to the user.
     if let Err(e) = event_loop.run_app(&mut app) {
+        let since_frame = app.last_completed_frame.elapsed();
+        let since_start = app.app_start.elapsed();
         eprintln!("Event loop exited: {e}");
+        eprintln!(
+            "  Time since last completed frame: {:.3}s (app uptime: {:.1}s)",
+            since_frame.as_secs_f64(),
+            since_start.as_secs_f64(),
+        );
+        eprintln!("  Tabs: {} (active: {})", app.tabs.len(), app.active_tab);
+        eprintln!(
+            "  In-flight: repo_state={} status={} diff_stats={} open={} clone={} text_rebuild={}",
+            app.repo_state_receiver.is_some(),
+            app.status_receiver.is_some(),
+            app.diff_stats_receiver.is_some(),
+            app.open_receiver.is_some(),
+            app.clone_receiver.is_some(),
+            app.text_rebuild_receiver.is_some(),
+        );
+        eprintln!("  Consecutive draw errors: {}", app.consecutive_draw_errors);
+        if let Some(state) = &app.state {
+            eprintln!("  Frame count: {}", state.frame_count);
+            eprintln!("  Swapchain needs_recreate: {}", state.surface.needs_recreate);
+        }
+        if let Some((_, vs)) = app.tabs.get(app.active_tab) {
+            eprintln!(
+                "  Active tab: ci_receivers={} generic_op={} watcher={}",
+                vs.ci_receivers.len(),
+                vs.generic_op_receiver.is_some(),
+                vs.watcher.is_some(),
+            );
+        }
     }
 
     Ok(())
@@ -597,6 +627,11 @@ pub(crate) struct App {
     pub(crate) proxy: EventLoopProxy<()>,
     /// Timestamp of the last frame render, for animation scheduling
     pub(crate) last_frame_time: Instant,
+    /// Timestamp of the last successfully completed RedrawRequested cycle.
+    /// Used to report how long the main thread was unresponsive on crash.
+    pub(crate) last_completed_frame: Instant,
+    /// Count of consecutive draw_frame errors (reset to 0 on success).
+    pub(crate) consecutive_draw_errors: u32,
     /// Timestamp of the last periodic ref fingerprint check
     pub(crate) last_ref_check: Instant,
     /// Receiver for async git clone operation (success = destination path)
@@ -794,6 +829,8 @@ impl App {
             ai_provider,
             proxy,
             last_frame_time: Instant::now(),
+            last_completed_frame: Instant::now(),
+            consecutive_draw_errors: 0,
             last_ref_check: Instant::now(),
             clone_receiver: None,
             open_receiver: None,
@@ -3007,6 +3044,8 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 self.last_frame_time = Instant::now();
+                let frame_diag = std::env::var_os("WHISPER_FRAME_DIAG").is_some();
+                let frame_t0 = Instant::now();
 
                 // Poll background text renderer rebuild (HiDPI monitor switch)
                 if let Some(ref rx) = self.text_rebuild_receiver
@@ -3036,7 +3075,14 @@ impl ApplicationHandler for App {
                 // Poll background status refresh
                 self.poll_status();
                 // Poll background repo state refresh
+                let t = Instant::now();
                 self.poll_repo_state();
+                if frame_diag {
+                    let d = t.elapsed();
+                    if d.as_millis() > 0 {
+                        eprintln!("[frame_diag] poll_repo_state: {:.1}ms", d.as_secs_f64() * 1000.0);
+                    }
+                }
                 // Poll filesystem watcher for external changes
                 self.poll_watcher();
                 // Poll background remote operations
@@ -3048,7 +3094,14 @@ impl ApplicationHandler for App {
                     self.finalize_diagnostic_reload();
                 }
                 // Process any pending messages
+                let t = Instant::now();
                 self.process_messages();
+                if frame_diag {
+                    let d = t.elapsed();
+                    if d.as_millis() > 0 {
+                        eprintln!("[frame_diag] process_messages: {:.1}ms", d.as_secs_f64() * 1000.0);
+                    }
+                }
                 // Check if staging well requested an immediate status refresh (e.g., worktree switch)
                 if let Some((_rt, vs)) = self.tabs.get_mut(self.active_tab)
                     && vs.staging_well.status_refresh_needed
@@ -3182,7 +3235,11 @@ impl ApplicationHandler for App {
                     match rx.try_recv() {
                         Ok(Ok((repo, name))) => {
                             self.open_receiver = None;
+                            let t = Instant::now();
                             self.finish_open_repo_tab(repo, name);
+                            if frame_diag {
+                                eprintln!("[frame_diag] finish_open_repo_tab: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+                            }
                         }
                         Ok(Err(err)) => {
                             self.open_receiver = None;
@@ -3200,9 +3257,31 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                if let Err(e) = draw_frame(self) {
-                    crash_log::breadcrumb(format!("draw_frame error: {e:?}"));
-                    eprintln!("Draw error: {e:?}");
+                let t = Instant::now();
+                match draw_frame(self) {
+                    Ok(()) => {
+                        self.consecutive_draw_errors = 0;
+                    }
+                    Err(e) => {
+                        self.consecutive_draw_errors += 1;
+                        crash_log::breadcrumb(format!("draw_frame error: {e:?}"));
+                        eprintln!("Draw error (#{}):{e:?}", self.consecutive_draw_errors);
+                    }
+                }
+                if frame_diag {
+                    let d = t.elapsed();
+                    if d.as_millis() > 0 {
+                        eprintln!("[frame_diag] draw_frame: {:.1}ms", d.as_secs_f64() * 1000.0);
+                    }
+                }
+
+                self.last_completed_frame = Instant::now();
+
+                if frame_diag {
+                    let total = frame_t0.elapsed();
+                    if total.as_millis() > 2 {
+                        eprintln!("[frame_diag] === total frame: {:.1}ms ===", total.as_secs_f64() * 1000.0);
+                    }
                 }
 
                 // Screenshot mode

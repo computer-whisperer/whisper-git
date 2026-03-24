@@ -570,6 +570,9 @@ pub(crate) fn apply_repo_state_result(
     toast_manager: &mut ToastManager,
     proxy: &EventLoopProxy<()>,
 ) -> Option<Receiver<Vec<(Oid, usize, usize)>>> {
+    let diag = std::env::var_os("WHISPER_FRAME_DIAG").is_some();
+    let t0 = std::time::Instant::now();
+
     // Report errors as toasts
     for err in &result.errors {
         toast_manager.push(err.clone(), ToastSeverity::Error);
@@ -594,12 +597,17 @@ pub(crate) fn apply_repo_state_result(
     }
 
     // Update views
+    let t = std::time::Instant::now();
     view_state
         .commit_graph_view
         .update_layout(&repo_tab.commits);
+    if diag {
+        eprintln!("[frame_diag]   update_layout: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
     view_state.commit_graph_view.branch_tips = result.branch_tips;
     view_state.commit_graph_view.tags = result.tags.clone();
 
+    let t = std::time::Instant::now();
     view_state.branch_sidebar.set_branch_data(
         &view_state.commit_graph_view.branch_tips,
         &result.tags,
@@ -608,6 +616,9 @@ pub(crate) fn apply_repo_state_result(
         &result.worktrees,
         result.is_bare,
     );
+    if diag {
+        eprintln!("[frame_diag]   set_branch_data: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
     view_state.staging_well.set_worktrees(&result.worktrees);
 
     // Update worktree state
@@ -642,6 +653,7 @@ pub(crate) fn apply_repo_state_result(
     let fallback_submodules = result.submodules;
     let fallback_branch = result.current_branch;
     let fallback_head = result.head_oid;
+    let t = std::time::Instant::now();
     let (submodules, current_branch, head_oid, staging_repo_state) = {
         let staging_repo = view_state.worktree_state.staging_repo_or(&repo_tab.repo);
         let submodules = staging_repo.submodules().unwrap_or_else(|e| {
@@ -660,6 +672,9 @@ pub(crate) fn apply_repo_state_result(
             staging_repo.repo_state(),
         )
     };
+    if diag {
+        eprintln!("[frame_diag]   staging_repo queries: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
     view_state.staging_well.set_submodules(submodules);
 
     view_state.branch_sidebar.stashes = result.stashes;
@@ -689,6 +704,10 @@ pub(crate) fn apply_repo_state_result(
 
     // Update ref fingerprint
     view_state.ref_fingerprint = result.ref_fingerprint;
+
+    if diag {
+        eprintln!("[frame_diag]   apply_repo_state_result total: {:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
+    }
 
     // Spawn async diff stats
     if !result.real_oids.is_empty() {
