@@ -287,6 +287,10 @@ fn run_state(run: &WorkflowRun) -> CiState {
 }
 
 /// Summarize workflow runs into a single CI status.
+///
+/// Runs arrive sorted by ID descending (most recent first). We only
+/// consider runs for the most recent commit SHA — older commits' runs
+/// are historical and shouldn't inflate the pass/fail counts.
 fn ci_status_from_runs(runs: &[WorkflowRun]) -> CiStatus {
     if runs.is_empty() {
         return CiStatus {
@@ -297,9 +301,13 @@ fn ci_status_from_runs(runs: &[WorkflowRun]) -> CiStatus {
         };
     }
 
+    // Only consider runs for the most recent commit (first run's SHA).
+    let head_sha = &runs[0].head_sha;
+    let head_runs: Vec<&WorkflowRun> = runs.iter().filter(|r| r.head_sha == *head_sha).collect();
+
     // Deduplicate: keep only the latest run per workflow name
     let mut latest: HashMap<&str, &WorkflowRun> = HashMap::new();
-    for run in runs {
+    for run in &head_runs {
         latest
             .entry(run.name.as_str())
             .and_modify(|existing| {
@@ -526,6 +534,22 @@ mod tests {
         ];
         let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);
+    }
+
+    #[test]
+    fn ci_status_ignores_older_commit_runs() {
+        // Runs from an older commit (lower ID) should not affect the summary.
+        // The first run in the list (highest ID) determines the head SHA.
+        let mut old_fail = make_run(1, "CI", "completed", Some("failure"));
+        old_fail.head_sha = "old_sha".to_string();
+        let runs = vec![
+            make_run(3, "CI", "completed", Some("success")), // head commit
+            make_run(2, "Lint", "completed", Some("success")), // head commit
+            old_fail,                                        // different commit — ignored
+        ];
+        let status = ci_status_from_runs(&runs);
+        assert_eq!(status.state, CiState::Success);
+        assert_eq!(status.counts.unwrap().success, 2);
     }
 
     #[test]
