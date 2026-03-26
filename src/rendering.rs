@@ -1449,7 +1449,7 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
         Err(e) => anyhow::bail!("Failed to acquire next image: {e:?}"),
     };
 
-    if suboptimal {
+    if suboptimal && app.resize_debounce.is_none() {
         state.surface.needs_recreate = true;
     }
 

@@ -650,6 +650,11 @@ pub(crate) struct App {
     pub(crate) diagnostic_before: Option<RepoStateSnapshot>,
     /// Receiver for async text renderer rebuild (HiDPI monitor switch)
     pub(crate) text_rebuild_receiver: Option<Receiver<(TextRenderer, TextRenderer)>>,
+    /// Timestamp of last window resize event, for debouncing swapchain recreation.
+    /// While set, the swapchain is rendered at its existing size (the compositor
+    /// scales it) to avoid expensive per-frame swapchain + MSAA reallocation
+    /// during compositor-animated resizes (e.g. KDE tile/snap).
+    pub(crate) resize_debounce: Option<Instant>,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -841,6 +846,7 @@ impl App {
             repo_state_receiver: None,
             diagnostic_before: None,
             text_rebuild_receiver: None,
+            resize_debounce: None,
         })
     }
 
@@ -2980,7 +2986,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::Resized(_) => {
-                state.surface.needs_recreate = true;
+                self.resize_debounce = Some(Instant::now());
                 state.window.request_redraw();
             }
 
@@ -3269,6 +3275,17 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Debounce swapchain recreation during rapid resizes (e.g. KDE
+                // animated window geometry changes).  Render at the old swapchain
+                // size until resizes settle, then recreate once.
+                if let Some(last_resize) = self.resize_debounce {
+                    if last_resize.elapsed() >= Duration::from_millis(100) {
+                        let state = self.state.as_mut().unwrap();
+                        state.surface.needs_recreate = true;
+                        self.resize_debounce = None;
+                    }
+                }
+
                 let t = Instant::now();
                 match draw_frame(self) {
                     Ok(()) => {
@@ -3391,7 +3408,12 @@ impl ApplicationHandler for App {
         // 5. Periodic ref reconciliation timer (5s)
         merge(self.last_ref_check + Duration::from_secs(5));
 
-        // 6. CI status polling timer
+        // 6. Pending resize debounce
+        if let Some(last_resize) = self.resize_debounce {
+            merge(last_resize + Duration::from_millis(100));
+        }
+
+        // 7. CI status polling timer
         // Continue polling if we already have CI results (tokens may be in keychain, not config)
         if let Some((_, vs)) = self.tabs.get(self.active_tab)
             && vs.ci_receivers.is_empty()
