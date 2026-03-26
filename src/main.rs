@@ -3278,12 +3278,12 @@ impl ApplicationHandler for App {
                 // Debounce swapchain recreation during rapid resizes (e.g. KDE
                 // animated window geometry changes).  Render at the old swapchain
                 // size until resizes settle, then recreate once.
-                if let Some(last_resize) = self.resize_debounce {
-                    if last_resize.elapsed() >= Duration::from_millis(100) {
-                        let state = self.state.as_mut().unwrap();
-                        state.surface.needs_recreate = true;
-                        self.resize_debounce = None;
-                    }
+                if let Some(last_resize) = self.resize_debounce
+                    && last_resize.elapsed() >= Duration::from_millis(100)
+                {
+                    let state = self.state.as_mut().unwrap();
+                    state.surface.needs_recreate = true;
+                    self.resize_debounce = None;
                 }
 
                 let t = Instant::now();
