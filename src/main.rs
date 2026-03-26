@@ -1804,6 +1804,9 @@ impl App {
                         .ci_results
                         .retain(|r| r.provider != result.provider);
                     view_state.ci_results.push(result);
+                    view_state
+                        .ci_results
+                        .sort_by_key(|r| r.provider.sort_key());
                     false // remove completed receiver
                 }
                 _ => true, // keep pending receivers

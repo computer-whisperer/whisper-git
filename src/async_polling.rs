@@ -578,6 +578,12 @@ pub(crate) fn apply_repo_state_result(
         toast_manager.push(err.clone(), ToastSeverity::Error);
     }
 
+    // Guard: don't replace existing commits with an empty result from a failed
+    // refresh — preserve what we had so the graph doesn't go blank.
+    if result.commits.is_empty() && !repo_tab.commits.is_empty() {
+        return None;
+    }
+
     // Preserve existing diff stats so they don't flicker away during refresh
     let prev_stats: HashMap<Oid, (usize, usize)> = repo_tab
         .commits
