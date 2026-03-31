@@ -74,6 +74,7 @@ pub enum AppMessage {
     StageHunk(String, usize),     // (file_path, hunk_index)
     UnstageHunk(String, usize),   // (file_path, hunk_index)
     DiscardFile(String),
+    DiscardFiles(Vec<String>),
     DiscardHunk(String, usize), // (file_path, hunk_index)
     LoadMoreCommits,
     DeleteSubmodule(String),
@@ -872,6 +873,26 @@ pub fn handle_app_message(
                 toast_manager.push(format!("Discard failed: {}", e), ToastSeverity::Error);
             }
         },
+        AppMessage::DiscardFiles(paths) => {
+            let total = paths.len();
+            let mut failed = 0;
+            for path in &paths {
+                if staging_repo.discard_file(path).is_err() {
+                    failed += 1;
+                }
+            }
+            if failed == 0 {
+                toast_manager.push(
+                    format!("Discarded {} files", total),
+                    ToastSeverity::Info,
+                );
+            } else {
+                toast_manager.push(
+                    format!("Discarded {}/{} files ({} failed)", total - failed, total, failed),
+                    ToastSeverity::Error,
+                );
+            }
+        }
         AppMessage::DiscardHunk(path, hunk_idx) => {
             match staging_repo.discard_hunk(&path, hunk_idx) {
                 Ok(()) => {

@@ -396,6 +396,16 @@ impl TabViewState {
             StagingAction::UnstageFile(path) => {
                 self.pending_messages.push(AppMessage::UnstageFile(path));
             }
+            StagingAction::StageFiles(paths) => {
+                for path in paths {
+                    self.pending_messages.push(AppMessage::StageFile(path));
+                }
+            }
+            StagingAction::UnstageFiles(paths) => {
+                for path in paths {
+                    self.pending_messages.push(AppMessage::UnstageFile(path));
+                }
+            }
             StagingAction::StageAll => {
                 self.pending_messages.push(AppMessage::StageAll);
             }

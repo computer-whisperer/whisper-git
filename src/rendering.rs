@@ -260,19 +260,27 @@ pub(crate) fn handle_context_menu_action(
                     .push(AppMessage::Fetch(Some(param.to_string())));
             }
         }
-        // Staging actions
+        // Staging actions (param may contain multiple newline-separated paths)
         "stage" => {
             if !param.is_empty() {
-                view_state
-                    .pending_messages
-                    .push(AppMessage::StageFile(param.to_string()));
+                for path in param.split('\n') {
+                    if !path.is_empty() {
+                        view_state
+                            .pending_messages
+                            .push(AppMessage::StageFile(path.to_string()));
+                    }
+                }
             }
         }
         "unstage" => {
             if !param.is_empty() {
-                view_state
-                    .pending_messages
-                    .push(AppMessage::UnstageFile(param.to_string()));
+                for path in param.split('\n') {
+                    if !path.is_empty() {
+                        view_state
+                            .pending_messages
+                            .push(AppMessage::UnstageFile(path.to_string()));
+                    }
+                }
             }
         }
         "view_diff" => {
@@ -304,29 +312,47 @@ pub(crate) fn handle_context_menu_action(
         }
         "discard" => {
             if !param.is_empty() {
-                let is_submodule = view_state
-                    .staging_well
-                    .submodules
-                    .iter()
-                    .any(|sm| sm.path == param);
-                if is_submodule {
-                    confirm_dialog.show(
-                        "Reset Submodule Checkout",
-                        &format!(
-                            "Force-reset submodule '{}' in {} to the recorded pin? Local submodule changes will be lost.",
-                            param, operation_scope
-                        ),
-                    );
-                    *pending_confirm_action = Some(AppMessage::ResetSubmodule(param.to_string()));
+                let paths: Vec<&str> = param.split('\n').filter(|p| !p.is_empty()).collect();
+                if paths.len() == 1 {
+                    let file = paths[0];
+                    let is_submodule = view_state
+                        .staging_well
+                        .submodules
+                        .iter()
+                        .any(|sm| sm.path == file);
+                    if is_submodule {
+                        confirm_dialog.show(
+                            "Reset Submodule Checkout",
+                            &format!(
+                                "Force-reset submodule '{}' in {} to the recorded pin? Local submodule changes will be lost.",
+                                file, operation_scope
+                            ),
+                        );
+                        *pending_confirm_action =
+                            Some(AppMessage::ResetSubmodule(file.to_string()));
+                    } else {
+                        confirm_dialog.show(
+                            "Discard Changes",
+                            &format!(
+                                "Discard changes to '{}' in {}? This cannot be undone.",
+                                file, operation_scope
+                            ),
+                        );
+                        *pending_confirm_action =
+                            Some(AppMessage::DiscardFile(file.to_string()));
+                    }
                 } else {
                     confirm_dialog.show(
                         "Discard Changes",
                         &format!(
-                            "Discard changes to '{}' in {}? This cannot be undone.",
-                            param, operation_scope
+                            "Discard changes to {} files in {}? This cannot be undone.",
+                            paths.len(),
+                            operation_scope
                         ),
                     );
-                    *pending_confirm_action = Some(AppMessage::DiscardFile(param.to_string()));
+                    *pending_confirm_action = Some(AppMessage::DiscardFiles(
+                        paths.into_iter().map(String::from).collect(),
+                    ));
                 }
                 *active_modal = Some(ActiveModal::Confirm);
             }

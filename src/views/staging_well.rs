@@ -58,6 +58,8 @@ pub(crate) fn compute_display_names(names: &[String]) -> Vec<String> {
 pub enum StagingAction {
     StageFile(String),
     UnstageFile(String),
+    StageFiles(Vec<String>),
+    UnstageFiles(Vec<String>),
     StageAll,
     UnstageAll,
     Commit(String),
@@ -393,10 +395,24 @@ impl StagingWell {
                 items.extend(self.submodule_context_items(&file, false));
                 items
             } else {
-                vec![
-                    MenuItem::new("Unstage File", format!("unstage:{}", file)),
-                    MenuItem::new("View Diff", format!("view_diff_staged:{}", file)),
-                ]
+                let paths = self.staged_list.context_paths(&file);
+                let param = paths.join("\n");
+                let n = paths.len();
+                let mut items = vec![MenuItem::new(
+                    if n > 1 {
+                        format!("Unstage {} Files", n)
+                    } else {
+                        "Unstage File".to_string()
+                    },
+                    format!("unstage:{}", param),
+                )];
+                if n == 1 {
+                    items.push(MenuItem::new(
+                        "View Diff",
+                        format!("view_diff_staged:{}", file),
+                    ));
+                }
+                items
             };
             return Some(items);
         }
@@ -417,11 +433,32 @@ impl StagingWell {
                 items.extend(self.submodule_context_items(&file, false));
                 items
             } else {
-                vec![
-                    MenuItem::new("Stage File", format!("stage:{}", file)),
-                    MenuItem::new("View Diff", format!("view_diff_unstaged:{}", file)),
-                    MenuItem::new("Discard Changes", format!("discard:{}", file)),
-                ]
+                let paths = self.unstaged_list.context_paths(&file);
+                let param = paths.join("\n");
+                let n = paths.len();
+                let mut items = vec![MenuItem::new(
+                    if n > 1 {
+                        format!("Stage {} Files", n)
+                    } else {
+                        "Stage File".to_string()
+                    },
+                    format!("stage:{}", param),
+                )];
+                if n == 1 {
+                    items.push(MenuItem::new(
+                        "View Diff",
+                        format!("view_diff_unstaged:{}", file),
+                    ));
+                }
+                items.push(MenuItem::new(
+                    if n > 1 {
+                        format!("Discard {} Files", n)
+                    } else {
+                        "Discard Changes".to_string()
+                    },
+                    format!("discard:{}", param),
+                ));
+                items
             };
             return Some(items);
         }
@@ -430,9 +467,26 @@ impl StagingWell {
         if regions.untracked.contains(x, y)
             && let Some(file) = self.untracked_list.file_at_y(y, regions.untracked)
         {
+            let paths = self.untracked_list.context_paths(&file);
+            let param = paths.join("\n");
+            let n = paths.len();
             let items = vec![
-                MenuItem::new("Stage File", format!("stage:{}", file)),
-                MenuItem::new("Discard File", format!("discard:{}", file)),
+                MenuItem::new(
+                    if n > 1 {
+                        format!("Stage {} Files", n)
+                    } else {
+                        "Stage File".to_string()
+                    },
+                    format!("stage:{}", param),
+                ),
+                MenuItem::new(
+                    if n > 1 {
+                        format!("Discard {} Files", n)
+                    } else {
+                        "Discard File".to_string()
+                    },
+                    format!("discard:{}", param),
+                ),
             ];
             return Some(items);
         }
@@ -1205,8 +1259,13 @@ impl StagingWell {
                 if response.is_consumed() {
                     if let Some(action) = self.unstaged_list.take_action() {
                         match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::StageFile(path));
+                            FileListAction::ToggleStage(paths) => {
+                                if paths.len() == 1 {
+                                    self.pending_action =
+                                        Some(StagingAction::StageFile(paths.into_iter().next().unwrap()));
+                                } else {
+                                    self.pending_action = Some(StagingAction::StageFiles(paths));
+                                }
                             }
                             FileListAction::ViewDiff(path) => {
                                 self.pending_action = Some(StagingAction::ViewDiff(path));
@@ -1228,8 +1287,13 @@ impl StagingWell {
                 if response.is_consumed() {
                     if let Some(action) = self.untracked_list.take_action() {
                         match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::StageFile(path));
+                            FileListAction::ToggleStage(paths) => {
+                                if paths.len() == 1 {
+                                    self.pending_action =
+                                        Some(StagingAction::StageFile(paths.into_iter().next().unwrap()));
+                                } else {
+                                    self.pending_action = Some(StagingAction::StageFiles(paths));
+                                }
                             }
                             FileListAction::StageAll => {
                                 self.pending_action = Some(StagingAction::StageAll);
@@ -1248,8 +1312,13 @@ impl StagingWell {
                 if response.is_consumed() {
                     if let Some(action) = self.staged_list.take_action() {
                         match action {
-                            FileListAction::ToggleStage(path) => {
-                                self.pending_action = Some(StagingAction::UnstageFile(path));
+                            FileListAction::ToggleStage(paths) => {
+                                if paths.len() == 1 {
+                                    self.pending_action =
+                                        Some(StagingAction::UnstageFile(paths.into_iter().next().unwrap()));
+                                } else {
+                                    self.pending_action = Some(StagingAction::UnstageFiles(paths));
+                                }
                             }
                             FileListAction::ViewDiff(path) => {
                                 self.pending_action = Some(StagingAction::ViewDiff(path));

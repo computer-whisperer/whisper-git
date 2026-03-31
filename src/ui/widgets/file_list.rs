@@ -1,5 +1,6 @@
 //! File list widget for staging area
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::git::{FileStatus, FileStatusKind};
@@ -42,8 +43,8 @@ impl From<&FileStatus> for FileEntry {
 /// Actions from the file list
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileListAction {
-    /// Toggle staging state of selected file
-    ToggleStage(String),
+    /// Toggle staging state of selected file(s)
+    ToggleStage(Vec<String>),
     /// View diff of selected file
     ViewDiff(String),
     /// Stage all files
@@ -61,8 +62,12 @@ pub struct FileList {
     pub title: String,
     /// Files in the list
     pub files: Vec<FileEntry>,
-    /// Selected file index
+    /// Selected file index (cursor position)
     selected: Option<usize>,
+    /// Multi-selection set (all highlighted indices)
+    selection: BTreeSet<usize>,
+    /// Anchor index for shift-click range selection
+    anchor: Option<usize>,
     /// Scroll offset
     scroll_offset: usize,
     /// Whether these are staged files
@@ -90,6 +95,8 @@ impl FileList {
             title: title.into(),
             files: Vec::new(),
             selected: None,
+            selection: BTreeSet::new(),
+            anchor: None,
             scroll_offset: 0,
             is_staged,
             pending_action: None,
@@ -110,15 +117,25 @@ impl FileList {
     /// Set the files to display
     pub fn set_files(&mut self, files: Vec<FileEntry>) {
         self.files = files;
-        // Adjust selection if needed
-        if let Some(idx) = self.selected
-            && idx >= self.files.len()
-        {
-            self.selected = if self.files.is_empty() {
-                None
-            } else {
-                Some(self.files.len() - 1)
-            };
+        let len = self.files.len();
+        // Clamp selection state to new file count
+        if len == 0 {
+            self.selected = None;
+            self.anchor = None;
+            self.selection.clear();
+        } else {
+            if let Some(idx) = self.selected
+                && idx >= len
+            {
+                self.selected = Some(len - 1);
+            }
+            if let Some(idx) = self.anchor
+                && idx >= len
+            {
+                self.anchor = Some(len - 1);
+            }
+            // Remove any selection indices that are now out of bounds
+            self.selection.retain(|&idx| idx < len);
         }
     }
 
@@ -126,6 +143,47 @@ impl FileList {
     pub fn selected_file(&self) -> Option<&str> {
         self.selected
             .and_then(|idx| self.files.get(idx).map(|f| f.path.as_str()))
+    }
+
+    /// Get all selected file paths (multi-selection aware)
+    pub fn selected_files(&self) -> Vec<String> {
+        if self.selection.is_empty() {
+            // Fall back to single cursor selection
+            self.selected
+                .and_then(|idx| self.files.get(idx))
+                .map(|f| vec![f.path.clone()])
+                .unwrap_or_default()
+        } else {
+            self.selection
+                .iter()
+                .filter_map(|&idx| self.files.get(idx).map(|f| f.path.clone()))
+                .collect()
+        }
+    }
+
+    /// Returns true if the given file index is part of the current selection
+    fn is_in_selection(&self, idx: usize) -> bool {
+        if self.selection.is_empty() {
+            self.selected == Some(idx)
+        } else {
+            self.selection.contains(&idx)
+        }
+    }
+
+    /// Returns the effective set of paths for a context menu action.
+    /// If the clicked path is part of a multi-selection, returns all selected
+    /// paths. Otherwise returns just the clicked path.
+    pub fn context_paths(&self, clicked_path: &str) -> Vec<String> {
+        let in_selection = self.selection.iter().any(|&idx| {
+            self.files
+                .get(idx)
+                .is_some_and(|f| f.path == clicked_path)
+        });
+        if in_selection && self.selection.len() > 1 {
+            self.selected_files()
+        } else {
+            vec![clicked_path.to_string()]
+        }
     }
 
     /// Check for pending action and clear it
@@ -278,7 +336,7 @@ impl Widget for FileList {
                 button: MouseButton::Left,
                 x,
                 y,
-                ..
+                modifiers,
             } => {
                 if bounds.contains(*x, *y) {
                     self.state.focused = true;
@@ -292,23 +350,43 @@ impl Widget for FileList {
                         let clicked_line = ((*y - content_y) / entry_height) as usize;
                         let file_idx = self.scroll_offset + clicked_line;
                         if file_idx < self.files.len() {
-                            // Double-click detection
+                            // Double-click detection (only without shift)
                             let now = Instant::now();
-                            if self.last_click_index == Some(file_idx)
+                            if !modifiers.shift
+                                && self.last_click_index == Some(file_idx)
                                 && self
                                     .last_click_time
                                     .is_some_and(|t| now.duration_since(t).as_millis() < 400)
                             {
-                                // Double-click: toggle stage
-                                let path = self.files[file_idx].path.clone();
-                                self.pending_action = Some(FileListAction::ToggleStage(path));
+                                // Double-click: toggle stage for all selected files
+                                let paths = if self.is_in_selection(file_idx) {
+                                    self.selected_files()
+                                } else {
+                                    vec![self.files[file_idx].path.clone()]
+                                };
+                                self.pending_action =
+                                    Some(FileListAction::ToggleStage(paths));
                                 self.last_click_time = None;
                                 self.last_click_index = None;
                                 return EventResponse::Consumed;
                             }
 
-                            // Single click: select and record for double-click
-                            self.selected = Some(file_idx);
+                            if modifiers.shift {
+                                // Shift-click: range select from anchor to clicked index
+                                let anchor = self.anchor.unwrap_or(file_idx);
+                                let lo = anchor.min(file_idx);
+                                let hi = anchor.max(file_idx);
+                                self.selection = (lo..=hi).collect();
+                                self.selected = Some(file_idx);
+                                // Don't update anchor — it stays at the original click
+                            } else {
+                                // Plain click: single selection, set anchor
+                                self.selection.clear();
+                                self.selection.insert(file_idx);
+                                self.selected = Some(file_idx);
+                                self.anchor = Some(file_idx);
+                            }
+
                             self.last_click_time = Some(now);
                             self.last_click_index = Some(file_idx);
                             // Emit selection changed for auto-preview
@@ -319,18 +397,34 @@ impl Widget for FileList {
                     }
                 }
             }
-            InputEvent::KeyDown { key, .. } if self.state.focused => {
+            InputEvent::KeyDown { key, modifiers, .. } if self.state.focused => {
                 match key {
                     Key::J | Key::Down => {
                         if let Some(idx) = self.selected {
                             if idx + 1 < self.files.len() {
-                                self.selected = Some(idx + 1);
+                                let new_idx = idx + 1;
+                                self.selected = Some(new_idx);
+                                if modifiers.shift {
+                                    // Extend selection from anchor
+                                    let anchor = self.anchor.unwrap_or(idx);
+                                    let lo = anchor.min(new_idx);
+                                    let hi = anchor.max(new_idx);
+                                    self.selection = (lo..=hi).collect();
+                                } else {
+                                    // Reset to single selection
+                                    self.selection.clear();
+                                    self.selection.insert(new_idx);
+                                    self.anchor = Some(new_idx);
+                                }
                                 self.ensure_selection_visible(&bounds);
-                                let path = self.files[idx + 1].path.clone();
+                                let path = self.files[new_idx].path.clone();
                                 self.pending_action = Some(FileListAction::SelectionChanged(path));
                             }
                         } else if !self.files.is_empty() {
                             self.selected = Some(0);
+                            self.selection.clear();
+                            self.selection.insert(0);
+                            self.anchor = Some(0);
                             let path = self.files[0].path.clone();
                             self.pending_action = Some(FileListAction::SelectionChanged(path));
                         }
@@ -339,23 +433,39 @@ impl Widget for FileList {
                     Key::K | Key::Up => {
                         if let Some(idx) = self.selected {
                             if idx > 0 {
-                                self.selected = Some(idx - 1);
+                                let new_idx = idx - 1;
+                                self.selected = Some(new_idx);
+                                if modifiers.shift {
+                                    // Extend selection from anchor
+                                    let anchor = self.anchor.unwrap_or(idx);
+                                    let lo = anchor.min(new_idx);
+                                    let hi = anchor.max(new_idx);
+                                    self.selection = (lo..=hi).collect();
+                                } else {
+                                    // Reset to single selection
+                                    self.selection.clear();
+                                    self.selection.insert(new_idx);
+                                    self.anchor = Some(new_idx);
+                                }
                                 self.ensure_selection_visible(&bounds);
-                                let path = self.files[idx - 1].path.clone();
+                                let path = self.files[new_idx].path.clone();
                                 self.pending_action = Some(FileListAction::SelectionChanged(path));
                             }
                         } else if !self.files.is_empty() {
                             self.selected = Some(0);
+                            self.selection.clear();
+                            self.selection.insert(0);
+                            self.anchor = Some(0);
                             let path = self.files[0].path.clone();
                             self.pending_action = Some(FileListAction::SelectionChanged(path));
                         }
                         return EventResponse::Consumed;
                     }
                     Key::Space => {
-                        // Toggle staging
-                        if let Some(path) = self.selected_file() {
-                            self.pending_action =
-                                Some(FileListAction::ToggleStage(path.to_string()));
+                        // Toggle staging for all selected files
+                        let paths = self.selected_files();
+                        if !paths.is_empty() {
+                            self.pending_action = Some(FileListAction::ToggleStage(paths));
                             return EventResponse::Consumed;
                         }
                     }
@@ -603,7 +713,7 @@ impl Widget for FileList {
         {
             let file = &self.files[file_idx];
             let y = content_y + i as f32 * entry_height;
-            let is_selected = self.selected == Some(file_idx);
+            let is_selected = self.is_in_selection(file_idx);
             let is_hovered = self.hovered_index == Some(file_idx);
 
             // Hover highlight (subtle, below selection highlight)

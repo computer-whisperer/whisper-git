@@ -118,6 +118,30 @@ impl InputState {
             WindowEvent::KeyboardInput { event, .. } => {
                 let key = Key::from_winit(&event.physical_key, &event.logical_key);
 
+                // Update modifier state from keyboard events directly.
+                // On some Wayland compositors, ModifiersChanged may not fire
+                // before MouseInput, so we redundantly track modifier keys here
+                // to ensure modifiers are correct for subsequent mouse events.
+                let pressed = event.state == winit::event::ElementState::Pressed;
+                {
+                    use winit::keyboard::{KeyCode, PhysicalKey};
+                    match &event.physical_key {
+                        PhysicalKey::Code(KeyCode::ShiftLeft | KeyCode::ShiftRight) => {
+                            self.modifiers.shift = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::ControlLeft | KeyCode::ControlRight) => {
+                            self.modifiers.ctrl = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::AltLeft | KeyCode::AltRight) => {
+                            self.modifiers.alt = pressed;
+                        }
+                        PhysicalKey::Code(KeyCode::SuperLeft | KeyCode::SuperRight) => {
+                            self.modifiers.super_key = pressed;
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Extract character text from winit's logical key for text insertion fallback.
                 // This handles keyboard layouts correctly without a manual mapping table.
                 let text = if let winit::keyboard::Key::Character(s) = &event.logical_key {
