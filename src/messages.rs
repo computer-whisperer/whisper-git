@@ -882,13 +882,15 @@ pub fn handle_app_message(
                 }
             }
             if failed == 0 {
-                toast_manager.push(
-                    format!("Discarded {} files", total),
-                    ToastSeverity::Info,
-                );
+                toast_manager.push(format!("Discarded {} files", total), ToastSeverity::Info);
             } else {
                 toast_manager.push(
-                    format!("Discarded {}/{} files ({} failed)", total - failed, total, failed),
+                    format!(
+                        "Discarded {}/{} files ({} failed)",
+                        total - failed,
+                        total,
+                        failed
+                    ),
                     ToastSeverity::Error,
                 );
             }

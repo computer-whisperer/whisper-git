@@ -338,8 +338,7 @@ pub(crate) fn handle_context_menu_action(
                                 file, operation_scope
                             ),
                         );
-                        *pending_confirm_action =
-                            Some(AppMessage::DiscardFile(file.to_string()));
+                        *pending_confirm_action = Some(AppMessage::DiscardFile(file.to_string()));
                     }
                 } else {
                     confirm_dialog.show(

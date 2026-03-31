@@ -174,11 +174,10 @@ impl FileList {
     /// If the clicked path is part of a multi-selection, returns all selected
     /// paths. Otherwise returns just the clicked path.
     pub fn context_paths(&self, clicked_path: &str) -> Vec<String> {
-        let in_selection = self.selection.iter().any(|&idx| {
-            self.files
-                .get(idx)
-                .is_some_and(|f| f.path == clicked_path)
-        });
+        let in_selection = self
+            .selection
+            .iter()
+            .any(|&idx| self.files.get(idx).is_some_and(|f| f.path == clicked_path));
         if in_selection && self.selection.len() > 1 {
             self.selected_files()
         } else {
@@ -364,8 +363,7 @@ impl Widget for FileList {
                                 } else {
                                     vec![self.files[file_idx].path.clone()]
                                 };
-                                self.pending_action =
-                                    Some(FileListAction::ToggleStage(paths));
+                                self.pending_action = Some(FileListAction::ToggleStage(paths));
                                 self.last_click_time = None;
                                 self.last_click_index = None;
                                 return EventResponse::Consumed;

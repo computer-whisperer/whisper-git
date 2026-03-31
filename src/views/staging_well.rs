@@ -1261,8 +1261,9 @@ impl StagingWell {
                         match action {
                             FileListAction::ToggleStage(paths) => {
                                 if paths.len() == 1 {
-                                    self.pending_action =
-                                        Some(StagingAction::StageFile(paths.into_iter().next().unwrap()));
+                                    self.pending_action = Some(StagingAction::StageFile(
+                                        paths.into_iter().next().unwrap(),
+                                    ));
                                 } else {
                                     self.pending_action = Some(StagingAction::StageFiles(paths));
                                 }
@@ -1289,8 +1290,9 @@ impl StagingWell {
                         match action {
                             FileListAction::ToggleStage(paths) => {
                                 if paths.len() == 1 {
-                                    self.pending_action =
-                                        Some(StagingAction::StageFile(paths.into_iter().next().unwrap()));
+                                    self.pending_action = Some(StagingAction::StageFile(
+                                        paths.into_iter().next().unwrap(),
+                                    ));
                                 } else {
                                     self.pending_action = Some(StagingAction::StageFiles(paths));
                                 }
@@ -1314,8 +1316,9 @@ impl StagingWell {
                         match action {
                             FileListAction::ToggleStage(paths) => {
                                 if paths.len() == 1 {
-                                    self.pending_action =
-                                        Some(StagingAction::UnstageFile(paths.into_iter().next().unwrap()));
+                                    self.pending_action = Some(StagingAction::UnstageFile(
+                                        paths.into_iter().next().unwrap(),
+                                    ));
                                 } else {
                                     self.pending_action = Some(StagingAction::UnstageFiles(paths));
                                 }
