@@ -844,7 +844,7 @@ impl StagingWell {
             // Dirty count suffix: " *N" from canonical worktree data
             let dirty_count = wt_by_name
                 .get(name.as_str())
-                .map(|wt| wt.dirty_file_count)
+                .and_then(|wt| wt.dirty_file_count)
                 .unwrap_or(0);
             let dirty_suffix = if dirty_count > 0 {
                 format!(" *{}", dirty_count)
@@ -1982,12 +1982,11 @@ impl StagingWell {
                     self.submodule_bounds.push((row_rect, sm.path.clone()));
 
                     // Status dot color
-                    let dot_color = if sm.is_dirty {
-                        theme::STATUS_BEHIND // amber
-                    } else if sm.branch == "detached" {
-                        theme::STATUS_DIRTY // red
-                    } else {
-                        theme::STATUS_CLEAN // green
+                    let dot_color = match sm.is_dirty {
+                        Some(true) => theme::STATUS_BEHIND,   // amber
+                        Some(false) if sm.branch == "detached" => theme::STATUS_DIRTY, // red
+                        Some(false) => theme::STATUS_CLEAN,   // green
+                        None => theme::TEXT_MUTED,             // grey — pending
                     };
 
                     // Status dot
@@ -2114,7 +2113,7 @@ mod tests {
             name: format!("sm-{i}"),
             path: format!("libs/sm-{i}"),
             branch: "main".to_string(),
-            is_dirty: false,
+            is_dirty: Some(false),
             head_oid: None,
             index_oid: None,
             workdir_oid: None,
@@ -2158,7 +2157,7 @@ mod tests {
             name: "vendor-lib".to_string(),
             path: path.clone(),
             branch: "main".to_string(),
-            is_dirty: true,
+            is_dirty: Some(true),
             head_oid: None,
             index_oid: None,
             workdir_oid: None,
@@ -2194,7 +2193,7 @@ mod tests {
             name: "vendor-lib".to_string(),
             path: path.clone(),
             branch: "main".to_string(),
-            is_dirty: false,
+            is_dirty: Some(false),
             head_oid: None,
             index_oid: None,
             workdir_oid: None,

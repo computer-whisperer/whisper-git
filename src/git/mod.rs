@@ -14,7 +14,7 @@ pub use diff::DiffFile;
 pub use status::{FileStatus, FileStatusKind, WorkingDirStatus, working_dir_status_from_statuses};
 
 use anyhow::{Context, Result};
-use git2::{Commit, Oid, Repository, RepositoryState, Status};
+use git2::{Commit, Oid, Repository, RepositoryState};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -168,7 +168,7 @@ pub fn create_synthetic_entries(
         }
     } else {
         for wt in worktrees {
-            if wt.is_dirty {
+            if wt.is_dirty == Some(true) {
                 // Find parent commit time
                 let parent_time = wt
                     .head_oid
@@ -307,12 +307,13 @@ impl CommitInfo {
         // Bound: never earlier than the parent commit
         let time = mtime.max(parent_time);
 
-        let summary = if wt.dirty_file_count == 1 {
+        let count = wt.dirty_file_count.unwrap_or(0);
+        let summary = if count == 1 {
             format!("Uncommitted changes ({}): 1 file", wt.name)
         } else {
             format!(
                 "Uncommitted changes ({}): {} files",
-                wt.name, wt.dirty_file_count
+                wt.name, count
             )
         };
 
@@ -909,7 +910,11 @@ impl GitRepo {
         Ok(commit_oid)
     }
 
-    /// Get submodules
+    /// Get submodule metadata (lightweight — no dirty checks).
+    ///
+    /// Returns names, paths, branch info, and OIDs without opening each
+    /// submodule repo or running status scans.  Dirty state is computed
+    /// asynchronously via per-submodule background checks.
     pub fn submodules(&self) -> Result<Vec<SubmoduleInfo>> {
         // Submodules are scoped to the current working tree context.
         // For effectively bare repos with no selected worktree context, return none.
@@ -927,26 +932,23 @@ impl GitRepo {
             let index_oid = sm.index_id();
             let workdir_oid = sm.workdir_id();
 
-            // Try to open the submodule to get more info
-            let (branch, is_dirty) = if let Ok(sub_repo) = sm.open() {
-                let branch = sub_repo
-                    .head()
-                    .ok()
-                    .and_then(|h| h.shorthand().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "detached".to_string());
-
-                let is_dirty = sub_repo.statuses(None).is_ok_and(|s| !s.is_empty());
-
-                (branch, is_dirty)
-            } else {
-                ("unknown".to_string(), false)
-            };
+            // Read branch from the submodule HEAD ref — cheap (no status scan).
+            let branch = sm
+                .open()
+                .ok()
+                .and_then(|sub_repo| {
+                    sub_repo
+                        .head()
+                        .ok()
+                        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+                })
+                .unwrap_or_else(|| "unknown".to_string());
 
             infos.push(SubmoduleInfo {
                 name,
                 path,
                 branch,
-                is_dirty,
+                is_dirty: None, // computed asynchronously
                 head_oid,
                 index_oid,
                 workdir_oid,
@@ -956,7 +958,11 @@ impl GitRepo {
         Ok(infos)
     }
 
-    /// Get worktrees
+    /// Get worktree metadata (lightweight — no dirty checks).
+    ///
+    /// Returns names, paths, branch info, and HEAD OIDs without running
+    /// status scans.  Dirty state is computed asynchronously via
+    /// per-worktree background checks.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         let worktrees = self.repo.worktrees().context("Failed to get worktrees")?;
 
@@ -968,39 +974,26 @@ impl GitRepo {
                 let wt_path = wt.path();
                 let path = wt_path.to_string_lossy().to_string();
 
-                // Try to get branch info, HEAD oid, and dirty status
-                let (branch, head_oid, is_dirty, dirty_file_count) =
-                    if let Ok(wt_repo) = Repository::open(wt_path) {
-                        let head_ref = wt_repo.head().ok();
-                        let branch = head_ref
-                            .as_ref()
-                            .and_then(|h| h.shorthand().map(|s| s.to_string()))
-                            .unwrap_or_else(|| "detached".to_string());
-                        let head_oid = head_ref.and_then(|h| h.target());
-
-                        let (is_dirty, dirty_file_count) = wt_repo
-                            .statuses(None)
-                            .map(|statuses| {
-                                let count = statuses
-                                    .iter()
-                                    .filter(|entry| !entry.status().intersects(Status::IGNORED))
-                                    .count();
-                                (count > 0, count)
-                            })
-                            .unwrap_or((false, 0));
-
-                        (branch, head_oid, is_dirty, dirty_file_count)
-                    } else {
-                        ("unknown".to_string(), None, false, 0)
-                    };
+                // Read branch and HEAD OID — cheap (no status scan).
+                let (branch, head_oid) = if let Ok(wt_repo) = Repository::open(wt_path) {
+                    let head_ref = wt_repo.head().ok();
+                    let branch = head_ref
+                        .as_ref()
+                        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "detached".to_string());
+                    let head_oid = head_ref.and_then(|h| h.target());
+                    (branch, head_oid)
+                } else {
+                    ("unknown".to_string(), None)
+                };
 
                 infos.push(WorktreeInfo {
                     name: name.to_string(),
                     path,
                     branch,
                     head_oid,
-                    is_dirty,
-                    dirty_file_count,
+                    is_dirty: None,         // computed asynchronously
+                    dirty_file_count: None,  // computed asynchronously
                 });
             }
         }
@@ -1090,7 +1083,8 @@ pub struct SubmoduleInfo {
     pub name: String,
     pub path: String,
     pub branch: String,
-    pub is_dirty: bool,
+    /// None = not yet checked (async dirty check pending), Some(bool) = known state
+    pub is_dirty: Option<bool>,
     pub head_oid: Option<Oid>,    // what parent's HEAD pins (sm.head_id())
     pub index_oid: Option<Oid>,   // what parent's index currently pins (sm.index_id())
     pub workdir_oid: Option<Oid>, // what submodule workdir currently has checked out
@@ -1113,8 +1107,9 @@ pub struct WorktreeInfo {
     pub path: String,
     pub branch: String,
     pub head_oid: Option<Oid>,
-    pub is_dirty: bool,
-    pub dirty_file_count: usize,
+    /// None = not yet checked (async dirty check pending), Some(bool) = known state
+    pub is_dirty: Option<bool>,
+    pub dirty_file_count: Option<usize>,
 }
 
 /// Stash entry information

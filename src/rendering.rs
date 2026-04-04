@@ -485,7 +485,7 @@ pub(crate) fn handle_context_menu_action(
                     .worktree_state
                     .worktrees
                     .iter()
-                    .any(|w| w.name == param && w.is_dirty);
+                    .any(|w| w.name == param && w.is_dirty == Some(true));
                 let msg = if is_dirty {
                     format!(
                         "Remove worktree '{}'? This worktree has uncommitted changes that will be lost.",

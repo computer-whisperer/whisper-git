@@ -133,7 +133,9 @@ impl GitRepo {
             return Ok(WorkingDirStatus::default());
         }
         let mut opts = StatusOptions::new();
-        opts.include_untracked(true).recurse_untracked_dirs(true);
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .exclude_submodules(true);
 
         let statuses = self
             .repo

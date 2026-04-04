@@ -746,7 +746,7 @@ pub fn handle_app_message(
                             short(sm.index_oid)
                         )
                     } else {
-                        let dirty_suffix = if sm.is_dirty { ", dirty" } else { "" };
+                        let dirty_suffix = if sm.is_dirty == Some(true) { ", dirty" } else { "" };
                         format!(
                             "Unstaged Submodule: {} (INDEX {} -> WORKDIR {}{})",
                             path,
@@ -1483,7 +1483,7 @@ pub struct MessageViewState<'a> {
 }
 
 /// Lightweight snapshot of diffable repo state for diagnostic reload comparison.
-type SubmoduleSnapshot = (String, bool, Option<Oid>, Option<Oid>, Option<Oid>);
+type SubmoduleSnapshot = (String, Option<bool>, Option<Oid>, Option<Oid>, Option<Oid>);
 
 pub struct RepoStateSnapshot {
     pub commit_oids: Vec<Oid>,
@@ -1492,7 +1492,7 @@ pub struct RepoStateSnapshot {
     pub branch_tips: Vec<(String, Oid, bool)>,
     pub tags: Vec<(String, Oid)>,
     pub stashes: Vec<(usize, String)>,
-    pub worktrees: Vec<(String, bool, usize)>,
+    pub worktrees: Vec<(String, Option<bool>, Option<usize>)>,
     pub staged_count: usize,
     pub unstaged_count: usize,
     pub untracked_count: usize,
@@ -1536,7 +1536,7 @@ impl RepoStateSnapshot {
             .map(|s| (s.index, s.message.clone()))
             .collect();
 
-        let worktrees: Vec<(String, bool, usize)> = view_state
+        let worktrees: Vec<(String, Option<bool>, Option<usize>)> = view_state
             .worktrees
             .iter()
             .map(|w| (w.name.clone(), w.is_dirty, w.dirty_file_count))
@@ -1694,7 +1694,7 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
         if let Some(before_wt) = before.worktrees.iter().find(|w| w.0 == after_wt.0) {
             if before_wt.1 != after_wt.1 || before_wt.2 != after_wt.2 {
                 deltas.push(format!(
-                    "Worktree '{}': dirty {}({}) -> {}({})",
+                    "Worktree '{}': dirty {:?}({:?}) -> {:?}({:?})",
                     after_wt.0, before_wt.1, before_wt.2, after_wt.1, after_wt.2
                 ));
             }
@@ -1760,7 +1760,7 @@ pub fn compute_reload_deltas(before: &RepoStateSnapshot, after: &RepoStateSnapsh
         if let Some(before_sm) = before.submodules.iter().find(|s| s.0 == after_sm.0) {
             if before_sm.1 != after_sm.1 {
                 deltas.push(format!(
-                    "Submodule '{}': dirty {} -> {}",
+                    "Submodule '{}': dirty {:?} -> {:?}",
                     after_sm.0, before_sm.1, after_sm.1
                 ));
             }

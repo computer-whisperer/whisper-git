@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Instant;
 
 use git2::Oid;
@@ -159,14 +159,8 @@ pub(crate) struct StatusResult {
     pub staging_status: Option<WorkingDirStatus>,
     /// Staging repo state (merge/rebase in progress, etc.)
     pub staging_repo_state: git2::RepositoryState,
-    /// Submodules for the active staging context.
-    pub submodules: Vec<SubmoduleInfo>,
-    /// Per-worktree dirty flags: (path, is_dirty, dirty_file_count)
-    pub worktree_dirty: Vec<(String, bool, usize)>,
     /// Pre-computed diff stats for the main repo working tree (insertions, deletions).
     pub main_diff_stats: Option<(usize, usize)>,
-    /// Pre-computed diff stats for each dirty worktree: (path, insertions, deletions)
-    pub worktree_diff_stats: Vec<(String, usize, usize)>,
     /// HEAD OID of the main repo (for synthetic entry parent linkage)
     pub head_oid: Option<Oid>,
     /// Workdir path of the main repo
@@ -177,7 +171,6 @@ pub(crate) struct StatusResult {
 pub(crate) fn spawn_status_refresh(
     repo_context_path: PathBuf,
     staging_context_path: Option<PathBuf>,
-    worktree_paths: Vec<String>,
     is_bare: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<StatusResult> {
@@ -188,7 +181,9 @@ pub(crate) fn spawn_status_refresh(
         let main_status = if !is_bare {
             main_repo.as_ref().and_then(|repo| {
                 let mut opts = git2::StatusOptions::new();
-                opts.include_untracked(true).recurse_untracked_dirs(true);
+                opts.include_untracked(true)
+                    .recurse_untracked_dirs(true)
+                    .exclude_submodules(true);
                 let statuses = repo.statuses(Some(&mut opts)).ok()?;
                 Some(crate::git::working_dir_status_from_statuses(&statuses))
             })
@@ -196,15 +191,19 @@ pub(crate) fn spawn_status_refresh(
             Some(WorkingDirStatus::default())
         };
 
-        let (staging_status, staging_repo_state) = match staging_context_path
+        // Open the staging repo once (often same as main, but may be a worktree).
+        let staging_repo = staging_context_path
             .as_ref()
-            .and_then(|dir| git2::Repository::open(dir).ok())
-        {
+            .and_then(|dir| git2::Repository::open(dir).ok());
+
+        let (staging_status, staging_repo_state) = match staging_repo.as_ref() {
             Some(repo) => {
                 let state = repo.state();
                 let status = if !is_bare {
                     let mut opts = git2::StatusOptions::new();
-                    opts.include_untracked(true).recurse_untracked_dirs(true);
+                    opts.include_untracked(true)
+                        .recurse_untracked_dirs(true)
+                        .exclude_submodules(true);
                     repo.statuses(Some(&mut opts))
                         .ok()
                         .map(|s| crate::git::working_dir_status_from_statuses(&s))
@@ -216,32 +215,7 @@ pub(crate) fn spawn_status_refresh(
             None => (None, git2::RepositoryState::Clean),
         };
 
-        let submodules = staging_context_path
-            .as_ref()
-            .and_then(|dir| GitRepo::open(dir).ok())
-            .and_then(|repo| repo.submodules().ok())
-            .unwrap_or_default();
-
-        let worktree_dirty: Vec<(String, bool, usize)> = worktree_paths
-            .into_iter()
-            .filter_map(|path| {
-                let repo = git2::Repository::open(&path).ok()?;
-                let (dirty, count) = repo
-                    .statuses(None)
-                    .map(|statuses| {
-                        let c = statuses
-                            .iter()
-                            .filter(|e| !e.status().intersects(git2::Status::IGNORED))
-                            .count();
-                        (c > 0, c)
-                    })
-                    .unwrap_or((false, 0));
-                Some((path, dirty, count))
-            })
-            .collect();
-
-        // Pre-compute diff stats for synthetic entries (expensive git operations
-        // that must not run on the main thread to avoid Wayland disconnects).
+        // Pre-compute diff stats for the main repo synthetic entry.
         let (head_oid, workdir, main_diff_stats) = match main_repo.as_ref() {
             Some(repo) => {
                 let head = repo.head().ok().and_then(|r| r.target());
@@ -257,24 +231,11 @@ pub(crate) fn spawn_status_refresh(
             None => (None, None, None),
         };
 
-        let worktree_diff_stats: Vec<(String, usize, usize)> = worktree_dirty
-            .iter()
-            .filter(|(_, dirty, _)| *dirty)
-            .filter_map(|(path, _, _)| {
-                let repo = git2::Repository::open(path).ok()?;
-                let (ins, del) = crate::git::GitRepo::diff_stats_raw(&repo);
-                Some((path.clone(), ins, del))
-            })
-            .collect();
-
         let _ = tx.send(StatusResult {
             main_status,
             staging_status,
             staging_repo_state,
-            submodules,
-            worktree_dirty,
             main_diff_stats,
-            worktree_diff_stats,
             head_oid,
             workdir,
         });
@@ -284,6 +245,10 @@ pub(crate) fn spawn_status_refresh(
 }
 
 /// Apply a completed status result to the UI state.
+///
+/// Handles parent/staging working directory status and single-worktree synthetic
+/// entries.  Per-worktree and per-submodule dirty state is handled separately by
+/// `apply_dirty_check_result`.
 pub(crate) fn apply_status_result(
     result: StatusResult,
     repo_tab: &mut RepoTab,
@@ -294,7 +259,6 @@ pub(crate) fn apply_status_result(
     }
     view_state.staging_well.repo_state_label =
         crate::git::repo_state_label(result.staging_repo_state);
-    view_state.staging_well.set_submodules(result.submodules);
 
     let main_dirty_count = result
         .main_status
@@ -305,81 +269,30 @@ pub(crate) fn apply_status_result(
         view_state.commit_graph_view.working_dir_status = Some(status);
     }
 
-    let mut dirty_changed = false;
-    for (path, dirty, count) in &result.worktree_dirty {
-        if let Some(wt) = view_state
-            .worktree_state
-            .worktrees
-            .iter_mut()
-            .find(|w| &w.path == path)
-        {
-            if wt.is_dirty != *dirty || wt.dirty_file_count != *count {
-                dirty_changed = true;
-            }
-            wt.is_dirty = *dirty;
-            wt.dirty_file_count = *count;
-        }
-    }
-
-    if dirty_changed {
-        view_state
-            .staging_well
-            .set_worktrees(&view_state.worktree_state.worktrees);
-
-        // Build synthetic entries from pre-computed background data (no git calls here).
+    // Single-worktree synthetic entry (no worktrees → parent repo is the only context).
+    // Multi-worktree synthetics are handled by apply_dirty_check_result.
+    if view_state.worktree_state.worktrees.is_empty() {
         repo_tab.commits.retain(|c| !c.is_synthetic);
-        let mut synthetics = Vec::new();
-
-        if view_state.worktree_state.worktrees.is_empty() {
-            // Single-worktree: use main repo diff stats
-            if let (Some(head), Some(wd)) = (result.head_oid, &result.workdir)
-                && main_dirty_count > 0
-            {
-                let count = main_dirty_count;
-                let parent_time = repo_tab
-                    .commits
-                    .iter()
-                    .find(|c| c.id == head)
-                    .map(|c| c.time)
-                    .unwrap_or(0);
-                let mut entry = CommitInfo::synthetic_for_working_dir(head, count, wd, parent_time);
-                if let Some((ins, del)) = result.main_diff_stats {
-                    entry.insertions = ins;
-                    entry.deletions = del;
-                }
-                synthetics.push(entry);
+        if let (Some(head), Some(wd)) = (result.head_oid, &result.workdir)
+            && main_dirty_count > 0
+        {
+            let parent_time = repo_tab
+                .commits
+                .iter()
+                .find(|c| c.id == head)
+                .map(|c| c.time)
+                .unwrap_or(0);
+            let mut entry =
+                CommitInfo::synthetic_for_working_dir(head, main_dirty_count, wd, parent_time);
+            if let Some((ins, del)) = result.main_diff_stats {
+                entry.insertions = ins;
+                entry.deletions = del;
             }
-        } else {
-            // Multi-worktree: use per-worktree diff stats
-            for wt in &view_state.worktree_state.worktrees {
-                if wt.is_dirty {
-                    let parent_time = wt
-                        .head_oid
-                        .and_then(|oid| repo_tab.commits.iter().find(|c| c.id == oid))
-                        .map(|c| c.time)
-                        .unwrap_or(0);
-                    if let Some(mut synthetic) = CommitInfo::synthetic_for_worktree(wt, parent_time)
-                    {
-                        if let Some((_, ins, del)) = result
-                            .worktree_diff_stats
-                            .iter()
-                            .find(|(p, _, _)| *p == wt.path)
-                        {
-                            synthetic.insertions = *ins;
-                            synthetic.deletions = *del;
-                        }
-                        synthetics.push(synthetic);
-                    }
-                }
-            }
+            git::insert_synthetics_sorted(&mut repo_tab.commits, vec![entry]);
+            view_state
+                .commit_graph_view
+                .update_layout(&repo_tab.commits);
         }
-
-        if !synthetics.is_empty() {
-            git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
-        }
-        view_state
-            .commit_graph_view
-            .update_layout(&repo_tab.commits);
     }
 }
 
@@ -736,5 +649,198 @@ pub(crate) fn apply_repo_state_result(
         )
     } else {
         None
+    }
+}
+
+// ============================================================================
+// Per-entity async dirty checks
+// ============================================================================
+
+/// Result of a single per-entity dirty check (submodule or worktree).
+pub(crate) enum DirtyCheckResult {
+    Submodule {
+        name: String,
+        is_dirty: bool,
+    },
+    Worktree {
+        path: String,
+        is_dirty: bool,
+        dirty_file_count: usize,
+        diff_stats: Option<(usize, usize)>,
+    },
+}
+
+/// Spawn independent background dirty checks for all submodules and worktrees.
+///
+/// Each entity gets its own thread, so a slow submodule (e.g. esp-idf with 25K
+/// files) doesn't block fast ones.  Results arrive individually through `tx`
+/// and are polled in the event loop.
+///
+/// Returns the number of checks spawned (for in-flight tracking).
+pub(crate) fn spawn_dirty_checks(
+    submodules: &[SubmoduleInfo],
+    worktrees: &[WorktreeInfo],
+    repo_workdir: Option<PathBuf>,
+    tx: &Sender<DirtyCheckResult>,
+    proxy: &EventLoopProxy<()>,
+) -> usize {
+    let mut count = 0;
+
+    for sm in submodules {
+        // Resolve the submodule's absolute path from the repo workdir.
+        let sm_path = match repo_workdir.as_ref() {
+            Some(wd) => wd.join(&sm.path),
+            None => continue,
+        };
+        if !sm_path.is_dir() {
+            continue;
+        }
+        let name = sm.name.clone();
+        let tx = tx.clone();
+        let proxy = proxy.clone();
+        std::thread::spawn(move || {
+            let is_dirty = check_dirty(&sm_path);
+            let _ = tx.send(DirtyCheckResult::Submodule { name, is_dirty });
+            let _ = proxy.send_event(());
+        });
+        count += 1;
+    }
+
+    for wt in worktrees {
+        let wt_path = PathBuf::from(&wt.path);
+        if !wt_path.is_dir() {
+            continue;
+        }
+        let path_str = wt.path.clone();
+        let tx = tx.clone();
+        let proxy = proxy.clone();
+        std::thread::spawn(move || {
+            let (is_dirty, dirty_file_count, diff_stats) = check_worktree_dirty(&wt_path);
+            let _ = tx.send(DirtyCheckResult::Worktree {
+                path: path_str,
+                is_dirty,
+                dirty_file_count,
+                diff_stats,
+            });
+            let _ = proxy.send_event(());
+        });
+        count += 1;
+    }
+
+    count
+}
+
+/// Lightweight dirty check for a single repo path.
+/// Uses scoped StatusOptions: excludes submodules, skips untracked dir recursion.
+fn check_dirty(path: &PathBuf) -> bool {
+    let Ok(repo) = git2::Repository::open(path) else {
+        return false;
+    };
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).exclude_submodules(true);
+    repo.statuses(Some(&mut opts))
+        .is_ok_and(|s| s.iter().any(|e| !e.status().intersects(git2::Status::IGNORED)))
+}
+
+/// Dirty check + file count + diff stats for a single worktree.
+fn check_worktree_dirty(path: &PathBuf) -> (bool, usize, Option<(usize, usize)>) {
+    let Ok(repo) = git2::Repository::open(path) else {
+        return (false, 0, None);
+    };
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true).exclude_submodules(true);
+    let (is_dirty, count) = repo
+        .statuses(Some(&mut opts))
+        .map(|statuses| {
+            let c = statuses
+                .iter()
+                .filter(|e| !e.status().intersects(git2::Status::IGNORED))
+                .count();
+            (c > 0, c)
+        })
+        .unwrap_or((false, 0));
+
+    let diff_stats = if is_dirty {
+        Some(crate::git::GitRepo::diff_stats_raw(&repo))
+    } else {
+        None
+    };
+
+    (is_dirty, count, diff_stats)
+}
+
+/// Apply a single dirty check result to the UI state.
+/// Returns `true` if a worktree dirty state changed (caller should rebuild synthetics).
+pub(crate) fn apply_dirty_check_result(
+    result: DirtyCheckResult,
+    repo_tab: &mut RepoTab,
+    view_state: &mut TabViewState,
+) -> bool {
+    match result {
+        DirtyCheckResult::Submodule { name, is_dirty } => {
+            // Update submodule in the staging well's list.
+            if let Some(sm) = view_state
+                .staging_well
+                .submodules
+                .iter_mut()
+                .find(|s| s.name == name)
+            {
+                sm.is_dirty = Some(is_dirty);
+            }
+            false // submodule dirty doesn't affect synthetics
+        }
+        DirtyCheckResult::Worktree {
+            path,
+            is_dirty,
+            dirty_file_count,
+            diff_stats,
+        } => {
+            let wt = view_state
+                .worktree_state
+                .worktrees
+                .iter_mut()
+                .find(|w| w.path == path);
+            let Some(wt) = wt else { return false };
+            let changed =
+                wt.is_dirty != Some(is_dirty) || wt.dirty_file_count != Some(dirty_file_count);
+            wt.is_dirty = Some(is_dirty);
+            wt.dirty_file_count = Some(dirty_file_count);
+
+            if changed {
+                // Update staging well pills
+                view_state
+                    .staging_well
+                    .set_worktrees(&view_state.worktree_state.worktrees);
+
+                // Rebuild synthetic entries
+                repo_tab.commits.retain(|c| !c.is_synthetic);
+                let mut synthetics = Vec::new();
+                for wt in &view_state.worktree_state.worktrees {
+                    if wt.is_dirty == Some(true) {
+                        let parent_time = wt
+                            .head_oid
+                            .and_then(|oid| repo_tab.commits.iter().find(|c| c.id == oid))
+                            .map(|c| c.time)
+                            .unwrap_or(0);
+                        if let Some(mut synthetic) =
+                            CommitInfo::synthetic_for_worktree(wt, parent_time)
+                        {
+                            if let Some((ins, del)) = diff_stats {
+                                synthetic.insertions = ins;
+                                synthetic.deletions = del;
+                            }
+                            synthetics.push(synthetic);
+                        }
+                    }
+                }
+                if !synthetics.is_empty() {
+                    git::insert_synthetics_sorted(&mut repo_tab.commits, synthetics);
+                }
+                view_state
+                    .commit_graph_view
+                    .update_layout(&repo_tab.commits);
+            }
+            changed
+        }
     }
 }

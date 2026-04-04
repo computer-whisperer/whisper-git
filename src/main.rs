@@ -74,8 +74,9 @@ use crate::views::{
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
 use crate::async_polling::{
-    AsyncOpPoll, RepoStateResult, StatusResult, apply_repo_state_result, apply_status_result,
-    poll_remote_op, spawn_repo_state_refresh, spawn_status_refresh, trigger_ci_fetch,
+    AsyncOpPoll, RepoStateResult, StatusResult, apply_dirty_check_result,
+    apply_repo_state_result, apply_status_result, poll_remote_op, spawn_dirty_checks,
+    spawn_repo_state_refresh, spawn_status_refresh, trigger_ci_fetch,
 };
 use crate::rendering::{
     apply_screenshot_state, capture_screenshot, capture_screenshot_offscreen, draw_frame,
@@ -665,6 +666,12 @@ pub(crate) struct App {
     /// scales it) to avoid expensive per-frame swapchain + MSAA reallocation
     /// during compositor-animated resizes (e.g. KDE tile/snap).
     pub(crate) resize_debounce: Option<Instant>,
+    /// Persistent channel for per-entity dirty check results (submodule/worktree).
+    /// The sender is cloned to each spawned dirty check thread.
+    pub(crate) dirty_check_tx: std::sync::mpsc::Sender<async_polling::DirtyCheckResult>,
+    pub(crate) dirty_check_rx: std::sync::mpsc::Receiver<async_polling::DirtyCheckResult>,
+    /// Number of dirty checks currently in flight (decremented as results arrive).
+    pub(crate) dirty_checks_in_flight: usize,
 }
 
 /// Initialized render state (after window creation) - shared across all tabs
@@ -809,6 +816,7 @@ impl App {
             }
         }
 
+        let (dirty_check_tx, dirty_check_rx) = std::sync::mpsc::channel();
         Ok(Self {
             cli_args,
             config,
@@ -857,6 +865,9 @@ impl App {
             diagnostic_before: None,
             text_rebuild_receiver: None,
             resize_debounce: None,
+            dirty_check_tx,
+            dirty_check_rx,
+            dirty_checks_in_flight: 0,
         })
     }
 
@@ -1087,17 +1098,9 @@ impl App {
                 })
                 .or_else(|| Some(repo_context_path.clone()));
 
-            let worktree_paths: Vec<String> = view_state
-                .worktree_state
-                .worktrees
-                .iter()
-                .map(|wt| wt.path.clone())
-                .collect();
-
             self.status_receiver = Some(spawn_status_refresh(
                 repo_context_path,
                 staging_context_path,
-                worktree_paths,
                 is_bare,
                 self.proxy.clone(),
             ));
@@ -1182,12 +1185,44 @@ impl App {
                             &common_dir,
                         );
                     }
+                    // Kick off per-entity dirty checks for submodules and worktrees
+                    let repo_workdir = repo_tab.repo.workdir().map(|p| p.to_path_buf());
+                    self.dirty_checks_in_flight += spawn_dirty_checks(
+                        &view_state.staging_well.submodules,
+                        &view_state.worktree_state.worktrees,
+                        repo_workdir,
+                        &self.dirty_check_tx,
+                        &self.proxy,
+                    );
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.repo_state_receiver = None;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// Poll per-entity dirty check results and apply them individually.
+    fn poll_dirty_checks(&mut self) {
+        if self.dirty_checks_in_flight == 0 {
+            return;
+        }
+        loop {
+            match self.dirty_check_rx.try_recv() {
+                Ok(result) => {
+                    self.dirty_checks_in_flight = self.dirty_checks_in_flight.saturating_sub(1);
+                    if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                        apply_dirty_check_result(result, repo_tab, view_state);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Channel closed — should never happen since we hold the sender
+                    self.dirty_checks_in_flight = 0;
+                    break;
+                }
+            }
         }
     }
 
@@ -1662,6 +1697,14 @@ impl App {
             Some(FsChangeKind::WorkingTree) => {
                 // Lightweight: just mark status dirty, no commit graph rebuild
                 self.status_dirty = true;
+                // Re-check worktree dirty state (file may have changed in a worktree)
+                self.dirty_checks_in_flight += spawn_dirty_checks(
+                    &[], // skip submodules for working tree changes
+                    &view_state.worktree_state.worktrees,
+                    repo_tab.repo.workdir().map(|p| p.to_path_buf()),
+                    &self.dirty_check_tx,
+                    &self.proxy,
+                );
             }
             Some(FsChangeKind::GitMetadata) => {
                 self.status_dirty = true;
@@ -3106,6 +3149,8 @@ impl ApplicationHandler for App {
                         );
                     }
                 }
+                // Poll per-entity dirty check results (submodule/worktree)
+                self.poll_dirty_checks();
                 // Poll filesystem watcher for external changes
                 self.poll_watcher();
                 // Poll background remote operations
