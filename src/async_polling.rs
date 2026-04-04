@@ -738,8 +738,10 @@ fn check_dirty(path: &PathBuf) -> bool {
     };
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true).exclude_submodules(true);
-    repo.statuses(Some(&mut opts))
-        .is_ok_and(|s| s.iter().any(|e| !e.status().intersects(git2::Status::IGNORED)))
+    repo.statuses(Some(&mut opts)).is_ok_and(|s| {
+        s.iter()
+            .any(|e| !e.status().intersects(git2::Status::IGNORED))
+    })
 }
 
 /// Dirty check + file count + diff stats for a single worktree.

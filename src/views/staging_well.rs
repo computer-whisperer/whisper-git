@@ -1983,10 +1983,10 @@ impl StagingWell {
 
                     // Status dot color
                     let dot_color = match sm.is_dirty {
-                        Some(true) => theme::STATUS_BEHIND,   // amber
+                        Some(true) => theme::STATUS_BEHIND, // amber
                         Some(false) if sm.branch == "detached" => theme::STATUS_DIRTY, // red
-                        Some(false) => theme::STATUS_CLEAN,   // green
-                        None => theme::TEXT_MUTED,             // grey — pending
+                        Some(false) => theme::STATUS_CLEAN, // green
+                        None => theme::TEXT_MUTED,          // grey — pending
                     };
 
                     // Status dot

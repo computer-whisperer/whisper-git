@@ -746,7 +746,11 @@ pub fn handle_app_message(
                             short(sm.index_oid)
                         )
                     } else {
-                        let dirty_suffix = if sm.is_dirty == Some(true) { ", dirty" } else { "" };
+                        let dirty_suffix = if sm.is_dirty == Some(true) {
+                            ", dirty"
+                        } else {
+                            ""
+                        };
                         format!(
                             "Unstaged Submodule: {} (INDEX {} -> WORKDIR {}{})",
                             path,

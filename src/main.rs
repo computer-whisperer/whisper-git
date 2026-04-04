@@ -74,9 +74,9 @@ use crate::views::{
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
 use crate::async_polling::{
-    AsyncOpPoll, RepoStateResult, StatusResult, apply_dirty_check_result,
-    apply_repo_state_result, apply_status_result, poll_remote_op, spawn_dirty_checks,
-    spawn_repo_state_refresh, spawn_status_refresh, trigger_ci_fetch,
+    AsyncOpPoll, RepoStateResult, StatusResult, apply_dirty_check_result, apply_repo_state_result,
+    apply_status_result, poll_remote_op, spawn_dirty_checks, spawn_repo_state_refresh,
+    spawn_status_refresh, trigger_ci_fetch,
 };
 use crate::rendering::{
     apply_screenshot_state, capture_screenshot, capture_screenshot_offscreen, draw_frame,

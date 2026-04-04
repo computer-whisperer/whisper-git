@@ -311,10 +311,7 @@ impl CommitInfo {
         let summary = if count == 1 {
             format!("Uncommitted changes ({}): 1 file", wt.name)
         } else {
-            format!(
-                "Uncommitted changes ({}): {} files",
-                wt.name, count
-            )
+            format!("Uncommitted changes ({}): {} files", wt.name, count)
         };
 
         Some(Self {
@@ -993,7 +990,7 @@ impl GitRepo {
                     branch,
                     head_oid,
                     is_dirty: None,         // computed asynchronously
-                    dirty_file_count: None,  // computed asynchronously
+                    dirty_file_count: None, // computed asynchronously
                 });
             }
         }
