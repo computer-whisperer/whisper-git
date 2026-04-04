@@ -3180,10 +3180,12 @@ impl ApplicationHandler for App {
                     self.status_dirty = true;
                     vs.staging_well.status_refresh_needed = false;
                 }
-                // Refresh working directory status only when dirty or on a periodic timer
+                // Refresh working directory status when dirty (watcher-driven) or on
+                // a long safety-net interval (catches cases where the watcher misses
+                // events, e.g. NFS, FUSE, or watcher init failure).
                 {
                     let now = Instant::now();
-                    if now.duration_since(self.last_status_refresh).as_millis() >= 3000 {
+                    if now.duration_since(self.last_status_refresh).as_secs() >= 30 {
                         self.status_dirty = true;
                     }
                     if self.status_dirty {

@@ -66,11 +66,16 @@ impl RepoWatcher {
     /// `worktrees` provides the initial list of worktree metadata dirs to watch.
     /// Returns the watcher handle and a receiver that yields `FsChangeKind` after
     /// a debounced period of quiet following filesystem changes.
+    /// `submodule_paths` are absolute paths to submodule workdirs.  Events
+    /// inside these directories are silently dropped — the parent repo's status
+    /// (with `exclude_submodules`) is unaffected, and submodule dirty state is
+    /// checked independently via the per-entity dirty check system.
     pub fn new(
         workdir: &Path,
         git_dir: &Path,
         common_dir: &Path,
         worktrees: &[WorktreeInfo],
+        submodule_paths: &[PathBuf],
         proxy: EventLoopProxy<()>,
     ) -> notify::Result<(Self, Receiver<FsChangeKind>)> {
         let (debounce_tx, debounce_rx) = mpsc::channel::<FsChangeKind>();
@@ -84,15 +89,19 @@ impl RepoWatcher {
         // are recognised as git metadata changes.
         let git_dir_owned = git_dir.to_path_buf();
         let common_dir_owned = common_dir.to_path_buf();
+        let submodule_paths_owned: Vec<PathBuf> = submodule_paths.to_vec();
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 match res {
                     Ok(event) => {
-                        if let Some(kind) =
-                            classify_event(&event, &git_dir_owned, &common_dir_owned)
-                        {
+                        if let Some(kind) = classify_event(
+                            &event,
+                            &git_dir_owned,
+                            &common_dir_owned,
+                            &submodule_paths_owned,
+                        ) {
                             let _ = watcher_tx.send(kind);
                         }
                     }
@@ -243,7 +252,13 @@ impl RepoWatcher {
 
 /// Classifies a filesystem event into a change kind, or None if irrelevant.
 /// Checks against both git_dir (worktree-specific) and common_dir (shared).
-fn classify_event(event: &Event, git_dir: &Path, common_dir: &Path) -> Option<FsChangeKind> {
+/// Events inside submodule workdirs are silently dropped (return None).
+fn classify_event(
+    event: &Event,
+    git_dir: &Path,
+    common_dir: &Path,
+    submodule_paths: &[PathBuf],
+) -> Option<FsChangeKind> {
     // Only care about data-changing events
     match event.kind {
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
@@ -253,6 +268,11 @@ fn classify_event(event: &Event, git_dir: &Path, common_dir: &Path) -> Option<Fs
     let mut result: Option<FsChangeKind> = None;
 
     for path in &event.paths {
+        // Skip events inside submodule workdirs — these don't affect parent
+        // repo status and submodule dirty state is checked independently.
+        if submodule_paths.iter().any(|sm| path.starts_with(sm)) {
+            continue;
+        }
         // Try to classify against common_dir first (has refs, packed-refs, worktrees),
         // then git_dir (has worktree-specific HEAD, index).
         // For non-worktree repos these are the same path.

@@ -78,11 +78,20 @@ pub(crate) fn start_watcher(
     let git_dir = repo.git_dir();
     let common_dir = repo.common_dir();
 
+    // Build absolute submodule paths for the watcher to filter out.
+    let submodule_paths: Vec<std::path::PathBuf> = view_state
+        .staging_well
+        .submodules
+        .iter()
+        .map(|sm| workdir.join(&sm.path))
+        .collect();
+
     match RepoWatcher::new(
         workdir,
         git_dir,
         common_dir,
         &view_state.worktree_state.worktrees,
+        &submodule_paths,
         proxy.clone(),
     ) {
         Ok((watcher, rx)) => {
