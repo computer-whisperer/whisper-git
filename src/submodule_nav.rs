@@ -10,7 +10,10 @@ use crate::ui::TextRenderer;
 use crate::ui::widgets::{ToastManager, ToastSeverity};
 use crate::watcher::RepoWatcher;
 
-use super::{MAX_COMMITS, RepoTab, SavedParentState, SubmoduleFocus, TabViewState, WorktreeState};
+use super::{
+    MAX_COMMITS, RepoTab, SavedParentState, SubmoduleFocus, TabViewState, WatcherInitResult,
+    WorktreeState,
+};
 
 /// Initialize a tab's view state from its repo data
 pub(crate) fn init_tab_view(
@@ -18,7 +21,6 @@ pub(crate) fn init_tab_view(
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
     scale: f32,
-    toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
 ) -> Receiver<RepoStateResult> {
@@ -55,7 +57,7 @@ pub(crate) fn init_tab_view(
     );
 
     // Start filesystem watcher for auto-refresh
-    start_watcher(repo_tab, view_state, toast_manager, proxy);
+    start_watcher(repo_tab, view_state, proxy);
 
     rx
 }
@@ -64,19 +66,21 @@ pub(crate) fn init_tab_view(
 pub(crate) fn start_watcher(
     repo_tab: &RepoTab,
     view_state: &mut TabViewState,
-    toast_manager: &mut ToastManager,
     proxy: &EventLoopProxy<()>,
 ) {
     // Drop any existing watcher first
     view_state.watcher = None;
     view_state.watcher_rx = None;
+    view_state.watcher_init_receiver = None;
 
     let repo = &repo_tab.repo;
     let Some(workdir) = repo.workdir() else {
         return;
     };
-    let git_dir = repo.git_dir();
-    let common_dir = repo.common_dir();
+    let workdir = workdir.to_path_buf();
+    let git_dir = repo.git_dir().to_path_buf();
+    let common_dir = repo.common_dir().to_path_buf();
+    let worktrees = view_state.worktree_state.worktrees.clone();
 
     // Build absolute submodule paths for the watcher to filter out.
     let submodule_paths: Vec<std::path::PathBuf> = view_state
@@ -86,25 +90,22 @@ pub(crate) fn start_watcher(
         .map(|sm| workdir.join(&sm.path))
         .collect();
 
-    match RepoWatcher::new(
-        workdir,
-        git_dir,
-        common_dir,
-        &view_state.worktree_state.worktrees,
-        &submodule_paths,
-        proxy.clone(),
-    ) {
-        Ok((watcher, rx)) => {
-            view_state.watcher = Some(watcher);
-            view_state.watcher_rx = Some(rx);
-        }
-        Err(e) => {
-            toast_manager.push(
-                format!("Filesystem watcher failed: {}", e),
-                ToastSeverity::Error,
-            );
-        }
-    }
+    let (tx, rx) = std::sync::mpsc::channel::<WatcherInitResult>();
+    let proxy = proxy.clone();
+    std::thread::spawn(move || {
+        let result = RepoWatcher::new(
+            &workdir,
+            &git_dir,
+            &common_dir,
+            &worktrees,
+            &submodule_paths,
+            proxy.clone(),
+        )
+        .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+        let _ = proxy.send_event(());
+    });
+    view_state.watcher_init_receiver = Some(rx);
 }
 
 /// Drill into a submodule (matched by path or name): saves parent state and swaps repo.
@@ -257,7 +258,6 @@ pub(crate) fn enter_submodule(
         view_state,
         text_renderer,
         scale,
-        toast_manager,
         show_orphaned_commits,
         proxy,
     );
@@ -272,7 +272,6 @@ pub(crate) fn exit_submodule(
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
     scale: f32,
-    toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
 ) -> Option<Receiver<RepoStateResult>> {
@@ -307,7 +306,6 @@ pub(crate) fn exit_submodule(
         view_state,
         text_renderer,
         scale,
-        toast_manager,
         show_orphaned_commits,
         proxy,
     );
@@ -349,7 +347,6 @@ pub(crate) fn exit_to_depth(
     view_state: &mut TabViewState,
     text_renderer: &TextRenderer,
     scale: f32,
-    toast_manager: &mut ToastManager,
     show_orphaned_commits: bool,
     proxy: &EventLoopProxy<()>,
 ) -> Option<Receiver<RepoStateResult>> {
@@ -369,7 +366,6 @@ pub(crate) fn exit_to_depth(
             view_state,
             text_renderer,
             scale,
-            toast_manager,
             show_orphaned_commits,
             proxy,
         ) {

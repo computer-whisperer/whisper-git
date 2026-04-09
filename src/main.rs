@@ -88,6 +88,7 @@ use crate::submodule_nav::{
 
 /// Maximum number of commits to load into the graph view.
 pub(crate) const MAX_COMMITS: usize = 50;
+pub(crate) type WatcherInitResult = Result<(RepoWatcher, Receiver<FsChangeKind>), String>;
 
 // ============================================================================
 // CLI
@@ -326,6 +327,8 @@ pub(crate) struct TabViewState {
     /// Filesystem watcher for auto-refresh on external changes
     pub(crate) watcher: Option<RepoWatcher>,
     pub(crate) watcher_rx: Option<Receiver<FsChangeKind>>,
+    /// Receiver for async watcher initialization to avoid blocking the event loop.
+    pub(crate) watcher_init_receiver: Option<Receiver<WatcherInitResult>>,
     /// Current branch name — derived from the active worktree's staging repo.
     /// Single source of truth; views read this instead of keeping their own copies.
     pub(crate) current_branch: String,
@@ -488,6 +491,7 @@ impl TabViewState {
             submodule_focus: None,
             watcher: None,
             watcher_rx: None,
+            watcher_init_receiver: None,
             current_branch: String::new(),
             head_oid: None,
             ref_fingerprint: 0,
@@ -1030,7 +1034,6 @@ impl App {
                 view_state,
                 &text_renderer,
                 scale,
-                &mut self.toast_manager,
                 self.config.show_orphaned_commits,
                 &self.proxy,
             ));
@@ -1530,7 +1533,6 @@ impl App {
                                 view_state,
                                 &state.text_renderer,
                                 scale,
-                                &mut self.toast_manager,
                                 show_orphans,
                                 &self.proxy,
                             ) {
@@ -1544,7 +1546,6 @@ impl App {
                                 view_state,
                                 &state.text_renderer,
                                 scale,
-                                &mut self.toast_manager,
                                 show_orphans,
                                 &self.proxy,
                             ) {
@@ -1667,6 +1668,42 @@ impl App {
         if !needs_stats.is_empty() {
             self.diff_stats_receiver =
                 Some(repo.compute_diff_stats_async(needs_stats, self.proxy.clone()));
+        }
+    }
+
+    fn poll_watcher_init(&mut self) {
+        let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        let Some(ref rx) = view_state.watcher_init_receiver else {
+            return;
+        };
+
+        match rx.try_recv() {
+            Ok(Ok((watcher, watcher_rx))) => {
+                view_state.watcher_init_receiver = None;
+                view_state.watcher = Some(watcher);
+                view_state.watcher_rx = Some(watcher_rx);
+            }
+            Ok(Err(err)) => {
+                view_state.watcher_init_receiver = None;
+                view_state.watcher = None;
+                view_state.watcher_rx = None;
+                self.toast_manager.push(
+                    format!("Filesystem watcher failed: {}", err),
+                    ToastSeverity::Error,
+                );
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                view_state.watcher_init_receiver = None;
+                view_state.watcher = None;
+                view_state.watcher_rx = None;
+                self.toast_manager.push(
+                    "Filesystem watcher failed: background thread terminated".to_string(),
+                    ToastSeverity::Error,
+                );
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -2081,7 +2118,6 @@ impl App {
                 &mut view_state,
                 &render_state.text_renderer,
                 render_state.scale_factor as f32,
-                &mut self.toast_manager,
                 self.config.show_orphaned_commits,
                 &self.proxy,
             ));
@@ -3151,6 +3187,8 @@ impl ApplicationHandler for App {
                 }
                 // Poll per-entity dirty check results (submodule/worktree)
                 self.poll_dirty_checks();
+                // Poll asynchronous watcher initialization (repo open / submodule navigation).
+                self.poll_watcher_init();
                 // Poll filesystem watcher for external changes
                 self.poll_watcher();
                 // Poll background remote operations
