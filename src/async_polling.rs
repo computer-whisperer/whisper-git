@@ -659,10 +659,12 @@ pub(crate) fn apply_repo_state_result(
 /// Result of a single per-entity dirty check (submodule or worktree).
 pub(crate) enum DirtyCheckResult {
     Submodule {
+        tab_id: u64,
         name: String,
         is_dirty: bool,
     },
     Worktree {
+        tab_id: u64,
         path: String,
         is_dirty: bool,
         dirty_file_count: usize,
@@ -670,14 +672,25 @@ pub(crate) enum DirtyCheckResult {
     },
 }
 
+impl DirtyCheckResult {
+    pub(crate) fn tab_id(&self) -> u64 {
+        match self {
+            DirtyCheckResult::Submodule { tab_id, .. } => *tab_id,
+            DirtyCheckResult::Worktree { tab_id, .. } => *tab_id,
+        }
+    }
+}
+
 /// Spawn independent background dirty checks for all submodules and worktrees.
 ///
 /// Each entity gets its own thread, so a slow submodule (e.g. esp-idf with 25K
 /// files) doesn't block fast ones.  Results arrive individually through `tx`
-/// and are polled in the event loop.
+/// and are polled in the event loop. `tab_id` scopes results to the originating
+/// tab so they can be safely ignored after tab switches/closes.
 ///
 /// Returns the number of checks spawned (for in-flight tracking).
 pub(crate) fn spawn_dirty_checks(
+    tab_id: u64,
     submodules: &[SubmoduleInfo],
     worktrees: &[WorktreeInfo],
     repo_workdir: Option<PathBuf>,
@@ -700,7 +713,11 @@ pub(crate) fn spawn_dirty_checks(
         let proxy = proxy.clone();
         std::thread::spawn(move || {
             let is_dirty = check_dirty(&sm_path);
-            let _ = tx.send(DirtyCheckResult::Submodule { name, is_dirty });
+            let _ = tx.send(DirtyCheckResult::Submodule {
+                tab_id,
+                name,
+                is_dirty,
+            });
             let _ = proxy.send_event(());
         });
         count += 1;
@@ -717,6 +734,7 @@ pub(crate) fn spawn_dirty_checks(
         std::thread::spawn(move || {
             let (is_dirty, dirty_file_count, diff_stats) = check_worktree_dirty(&wt_path);
             let _ = tx.send(DirtyCheckResult::Worktree {
+                tab_id,
                 path: path_str,
                 is_dirty,
                 dirty_file_count,
@@ -779,7 +797,11 @@ pub(crate) fn apply_dirty_check_result(
     view_state: &mut TabViewState,
 ) -> bool {
     match result {
-        DirtyCheckResult::Submodule { name, is_dirty } => {
+        DirtyCheckResult::Submodule {
+            tab_id: _,
+            name,
+            is_dirty,
+        } => {
             // Update submodule in the staging well's list.
             if let Some(sm) = view_state
                 .staging_well
@@ -792,6 +814,7 @@ pub(crate) fn apply_dirty_check_result(
             false // submodule dirty doesn't affect synthetics
         }
         DirtyCheckResult::Worktree {
+            tab_id: _,
             path,
             is_dirty,
             dirty_file_count,

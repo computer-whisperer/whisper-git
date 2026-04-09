@@ -292,6 +292,7 @@ pub(crate) struct SubmoduleFocus {
 
 /// Per-tab repository data
 pub(crate) struct RepoTab {
+    pub(crate) id: u64,
     pub(crate) repo: GitRepo,
     pub(crate) commits: Vec<CommitInfo>,
     pub(crate) name: String,
@@ -594,6 +595,8 @@ pub(crate) struct App {
     pub(crate) cli_args: CliArgs,
     pub(crate) config: Config,
     pub(crate) tabs: Vec<(RepoTab, TabViewState)>,
+    /// Monotonic ID source for new tabs (stable across index shifts/removals).
+    pub(crate) next_tab_id: u64,
     pub(crate) active_tab: usize,
     pub(crate) tab_bar: TabBar,
     pub(crate) repo_dialog: RepoDialog,
@@ -671,6 +674,8 @@ pub(crate) struct App {
     /// during compositor-animated resizes (e.g. KDE tile/snap).
     pub(crate) resize_debounce: Option<Instant>,
     /// Persistent channel for per-entity dirty check results (submodule/worktree).
+    /// Results carry `tab_id` and are routed to the matching tab, so updates
+    /// remain correct even when tabs are switched or closed mid-flight.
     /// The sender is cloned to each spawned dirty check thread.
     pub(crate) dirty_check_tx: std::sync::mpsc::Sender<async_polling::DirtyCheckResult>,
     pub(crate) dirty_check_rx: std::sync::mpsc::Receiver<async_polling::DirtyCheckResult>,
@@ -753,6 +758,7 @@ impl App {
         let mut config = Config::load();
         let mut tabs = Vec::new();
         let mut tab_bar = TabBar::new();
+        let mut next_tab_id = 1_u64;
 
         // Determine repo paths to open
         let repo_paths: Vec<PathBuf> = if cli_args.repos.is_empty() {
@@ -768,12 +774,14 @@ impl App {
                     tab_bar.add_tab(name.clone());
                     tabs.push((
                         RepoTab {
+                            id: next_tab_id,
                             repo,
                             commits: Vec::new(),
                             name,
                         },
                         TabViewState::new(),
                     ));
+                    next_tab_id = next_tab_id.saturating_add(1);
                 }
                 Err(e) => {
                     eprintln!("Warning: Could not open repository at {:?}: {e}", repo_path);
@@ -825,6 +833,7 @@ impl App {
             cli_args,
             config,
             tabs,
+            next_tab_id,
             active_tab: 0,
             tab_bar,
             repo_dialog: RepoDialog::new(),
@@ -1191,6 +1200,7 @@ impl App {
                     // Kick off per-entity dirty checks for submodules and worktrees
                     let repo_workdir = repo_tab.repo.workdir().map(|p| p.to_path_buf());
                     self.dirty_checks_in_flight += spawn_dirty_checks(
+                        repo_tab.id,
                         &view_state.staging_well.submodules,
                         &view_state.worktree_state.worktrees,
                         repo_workdir,
@@ -1215,7 +1225,12 @@ impl App {
             match self.dirty_check_rx.try_recv() {
                 Ok(result) => {
                     self.dirty_checks_in_flight = self.dirty_checks_in_flight.saturating_sub(1);
-                    if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    let target_tab_id = result.tab_id();
+                    if let Some((repo_tab, view_state)) = self
+                        .tabs
+                        .iter_mut()
+                        .find(|(repo_tab, _)| repo_tab.id == target_tab_id)
+                    {
                         apply_dirty_check_result(result, repo_tab, view_state);
                     }
                 }
@@ -1736,6 +1751,7 @@ impl App {
                 self.status_dirty = true;
                 // Re-check worktree dirty state (file may have changed in a worktree)
                 self.dirty_checks_in_flight += spawn_dirty_checks(
+                    repo_tab.id,
                     &[], // skip submodules for working tree changes
                     &view_state.worktree_state.worktrees,
                     repo_tab.repo.workdir().map(|p| p.to_path_buf()),
@@ -2098,8 +2114,11 @@ impl App {
     fn finish_open_repo_tab(&mut self, repo: GitRepo, name: String) {
         self.tab_bar.add_tab(name.clone());
         let mut view_state = TabViewState::new();
+        let tab_id = self.next_tab_id;
+        self.next_tab_id = self.next_tab_id.saturating_add(1);
 
         let mut repo_tab = RepoTab {
+            id: tab_id,
             repo,
             commits: Vec::new(),
             name,
