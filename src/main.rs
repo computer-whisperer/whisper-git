@@ -89,6 +89,10 @@ use crate::submodule_nav::{
 /// Maximum number of commits to load into the graph view.
 pub(crate) const MAX_COMMITS: usize = 50;
 pub(crate) type WatcherInitResult = Result<(RepoWatcher, Receiver<FsChangeKind>), String>;
+/// Rebuild text atlases when display scale drifts too far from atlas build scale.
+/// Hysteresis avoids rebuild churn from tiny fractional-scale fluctuations.
+const TEXT_REBUILD_SCALE_UP_RATIO: f64 = 1.10;
+const TEXT_REBUILD_SCALE_DOWN_RATIO: f64 = 0.80;
 
 // ============================================================================
 // CLI
@@ -3108,12 +3112,18 @@ impl ApplicationHandler for App {
                 state.bold_text_renderer.set_render_scale(scale_factor);
 
                 let atlas_build_scale = state.text_renderer.atlas_build_scale() as f64;
-                let needs_rebuild = scale_factor > atlas_build_scale + 0.05;
+                let scale_ratio = if atlas_build_scale > 0.0 {
+                    scale_factor / atlas_build_scale
+                } else {
+                    1.0
+                };
+                let needs_rebuild = scale_ratio >= TEXT_REBUILD_SCALE_UP_RATIO
+                    || scale_ratio <= TEXT_REBUILD_SCALE_DOWN_RATIO;
                 if needs_rebuild {
                     if std::env::var_os("WHISPER_TEXT_DIAG").is_some() {
                         eprintln!(
-                            "text_diag scale_change: rebuilding atlas from {:.2} -> {:.2}",
-                            atlas_build_scale, scale_factor
+                            "text_diag scale_change: rebuilding atlas from {:.2} -> {:.2} (ratio {:.3})",
+                            atlas_build_scale, scale_factor, scale_ratio
                         );
                     }
                     // Spawn atlas rebuild on background thread to avoid blocking

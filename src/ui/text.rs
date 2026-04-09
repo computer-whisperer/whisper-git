@@ -714,6 +714,14 @@ impl TextRenderer {
         v.round()
     }
 
+    /// Snap only on near-integer display scales. On fractional DPI scales,
+    /// per-glyph snapping can introduce visible stair-stepping/jitter.
+    #[inline]
+    fn should_snap_to_pixel(&self) -> bool {
+        const EPS: f32 = 0.01;
+        (self.render_scale - self.render_scale.round()).abs() <= EPS
+    }
+
     fn measure_text_internal(&self, text: &str, ratio: f32) -> f32 {
         let mut width = 0.0;
         let mut prev_char: Option<char> = None;
@@ -749,9 +757,14 @@ impl TextRenderer {
     ) -> Vec<TextVertex> {
         let ratio = self.scale_ratio() * text_scale;
         let mut vertices = Vec::new();
-        let mut cursor_x = Self::snap_to_pixel(x);
+        let snap = self.should_snap_to_pixel();
+        let mut cursor_x = if snap { Self::snap_to_pixel(x) } else { x };
         // Compute baseline from top of line: baseline = top + ascent (scaled)
-        let baseline_y = Self::snap_to_pixel(y + self.ascent * ratio);
+        let baseline_y = if snap {
+            Self::snap_to_pixel(y + self.ascent * ratio)
+        } else {
+            y + self.ascent * ratio
+        };
         let mut prev_char: Option<char> = None;
 
         for c in text.chars() {
@@ -769,8 +782,12 @@ impl TextRenderer {
             }
 
             if glyph.width > 0.0 {
-                // Snap only the glyph origin to avoid spacing distortion at fractional DPI scales.
-                let x0 = Self::snap_to_pixel(cursor_x + glyph.bearing_x * ratio);
+                // Snap glyph origin on integer-scale displays for crisp edges.
+                let x0 = if snap {
+                    Self::snap_to_pixel(cursor_x + glyph.bearing_x * ratio)
+                } else {
+                    cursor_x + glyph.bearing_x * ratio
+                };
                 let y0 = baseline_y + glyph.bearing_y * ratio;
                 let x1 = x0 + glyph.width * ratio;
                 let y1 = y0 + glyph.height * ratio;
