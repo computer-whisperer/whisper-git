@@ -2399,70 +2399,9 @@ impl ApplicationHandler for App {
                     self.status_dirty = true;
                     vs.staging_well.status_refresh_needed = false;
                 }
-                // Refresh working directory status when dirty (watcher-driven) or on
-                // a long safety-net interval (catches cases where the watcher misses
-                // events, e.g. NFS, FUSE, or watcher init failure).
-                {
-                    let now = Instant::now();
-                    if now.duration_since(self.last_status_refresh).as_secs() >= 30 {
-                        self.status_dirty = true;
-                    }
-                    if self.status_dirty {
-                        self.refresh_status();
-                        self.status_dirty = false;
-                        self.last_status_refresh = now;
-                    }
-                }
-
-                // Periodic ref reconciliation: every 5s, check if branch tips / HEAD
-                // changed externally (safety net for missed watcher events or libgit2 cache staleness)
-                {
-                    let now = Instant::now();
-                    if now.duration_since(self.last_ref_check).as_secs() >= 5 {
-                        self.last_ref_check = now;
-                        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                            let fresh = git::ref_fingerprint(repo_tab.repo.git_dir());
-                            if fresh != 0 && fresh != view_state.ref_fingerprint {
-                                view_state.ref_fingerprint = fresh;
-                                // Refs changed — reopen handles and do full refresh
-                                let _ = repo_tab.repo.reopen();
-                                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
-                                    let _ = wt_repo.reopen();
-                                }
-                                self.status_dirty = true;
-                                self.trigger_repo_state_refresh();
-                            }
-                        }
-                    }
-                }
-
-                // Periodic CI status polling (all tabs)
-                let ci_config = self.config.clone();
-                let ci_proxy = self.proxy.clone();
-                let now = Instant::now();
-                for (repo_tab, view_state) in &mut self.tabs {
-                    // Skip if a fetch is already in flight
-                    if !view_state.ci_receivers.is_empty() {
-                        continue;
-                    }
-                    // Determine poll interval:
-                    // - 15s if CI is pending or within 5 min of a push
-                    // - 5 min otherwise
-                    let any_pending = view_state
-                        .ci_results
-                        .iter()
-                        .any(|r| r.status.state == ci::CiState::Pending);
-                    let fast_poll = any_pending
-                        || view_state
-                            .last_push_time
-                            .is_some_and(|t| now.duration_since(t).as_secs() < 300);
-                    let interval = if fast_poll { 15 } else { 300 };
-                    let elapsed_since_fetch =
-                        now.duration_since(view_state.last_ci_fetch).as_secs();
-                    if elapsed_since_fetch >= interval {
-                        trigger_ci_fetch(&ci_config, repo_tab, view_state, &ci_proxy);
-                    }
-                }
+                self.poll_status_refresh_timer();
+                self.poll_ref_reconciliation();
+                self.poll_ci_refresh();
 
                 self.poll_repo_dialog();
                 self.poll_clone_dialog();

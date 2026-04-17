@@ -107,6 +107,72 @@ impl App {
         }
     }
 
+    /// Refresh working directory status when dirty (watcher-driven) or on a
+    /// long safety-net interval in case watcher events were missed.
+    pub(crate) fn poll_status_refresh_timer(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_status_refresh).as_secs() >= 30 {
+            self.status_dirty = true;
+        }
+        if self.status_dirty {
+            self.refresh_status();
+            self.status_dirty = false;
+            self.last_status_refresh = now;
+        }
+    }
+
+    /// Every 5 seconds, reconcile refs in case watcher events were missed or
+    /// libgit2's cached handles became stale.
+    pub(crate) fn poll_ref_reconciliation(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_ref_check).as_secs() < 5 {
+            return;
+        }
+
+        self.last_ref_check = now;
+        if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+            let fresh = git::ref_fingerprint(repo_tab.repo.git_dir());
+            if fresh != 0 && fresh != view_state.ref_fingerprint {
+                view_state.ref_fingerprint = fresh;
+                let _ = repo_tab.repo.reopen();
+                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                    let _ = wt_repo.reopen();
+                }
+                self.status_dirty = true;
+                self.trigger_repo_state_refresh();
+            }
+        }
+    }
+
+    /// Poll CI status for all tabs on a dynamic interval:
+    /// - 15s when CI is pending or shortly after a push.
+    /// - 5m otherwise.
+    pub(crate) fn poll_ci_refresh(&mut self) {
+        let ci_config = self.config.clone();
+        let ci_proxy = self.proxy.clone();
+        let now = Instant::now();
+
+        for (repo_tab, view_state) in &mut self.tabs {
+            if !view_state.ci_receivers.is_empty() {
+                continue;
+            }
+
+            let any_pending = view_state
+                .ci_results
+                .iter()
+                .any(|r| r.status.state == ci::CiState::Pending);
+            let fast_poll = any_pending
+                || view_state
+                    .last_push_time
+                    .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+            let interval = if fast_poll { 15 } else { 300 };
+            let elapsed_since_fetch = now.duration_since(view_state.last_ci_fetch).as_secs();
+            if elapsed_since_fetch >= interval {
+                trigger_ci_fetch(&ci_config, repo_tab, view_state, &ci_proxy);
+            }
+        }
+    }
+
     /// Spawn an async repo state refresh for the active tab.
     pub(crate) fn trigger_repo_state_refresh(&mut self) {
         self.trigger_repo_state_refresh_for_tab(self.active_tab);
