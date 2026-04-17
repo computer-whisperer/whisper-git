@@ -53,6 +53,60 @@ impl App {
         }
     }
 
+    pub(crate) fn poll_ai_commit(&mut self) {
+        let (rx, started) = match self.ai_commit_receiver {
+            Some(ref inner) => inner,
+            None => return,
+        };
+        let started = *started;
+
+        match rx.try_recv() {
+            Ok(Ok(response)) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                    view_state
+                        .staging_well
+                        .subject_input
+                        .set_text(&response.subject);
+                    view_state.staging_well.body_area.set_text(&response.body);
+                }
+                self.toast_manager
+                    .push("Commit message generated".to_string(), ToastSeverity::Success);
+            }
+            Ok(Err(err)) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                }
+                self.toast_manager.push(
+                    format!("AI generation failed: {}", err),
+                    ToastSeverity::Error,
+                );
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.ai_commit_receiver = None;
+                if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                    view_state.staging_well.ai_generating = false;
+                }
+                self.toast_manager.push(
+                    "AI generation failed: thread terminated".to_string(),
+                    ToastSeverity::Error,
+                );
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if started.elapsed().as_secs() >= 30 {
+                    self.ai_commit_receiver = None;
+                    if let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) {
+                        view_state.staging_well.ai_generating = false;
+                    }
+                    self.toast_manager
+                        .push("AI generation timed out".to_string(), ToastSeverity::Error);
+                }
+            }
+        }
+    }
+
     /// Spawn an async repo state refresh for the active tab.
     pub(crate) fn trigger_repo_state_refresh(&mut self) {
         self.trigger_repo_state_refresh_for_tab(self.active_tab);
