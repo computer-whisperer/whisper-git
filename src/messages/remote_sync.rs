@@ -6,7 +6,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::git::{self, GitRepo, RemoteOpResult};
 use crate::ui::widgets::{ToastManager, ToastSeverity};
 
-use super::{AppMessage, MessageViewState};
+use super::{AppMessage, MessageViewState, TimedRemoteOpSlot};
 
 /// Start a remote operation (fetch/pull/push) with common boilerplate:
 /// check that no operation is already in progress on the given receiver,
@@ -14,7 +14,7 @@ use super::{AppMessage, MessageViewState};
 /// store the receiver. Returns `false` if the operation was already busy.
 #[allow(clippy::too_many_arguments)]
 fn start_remote_op(
-    receiver: &mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
+    receiver: &mut TimedRemoteOpSlot,
     repo: &GitRepo,
     op_name: &str,
     remote_name: String,

@@ -48,11 +48,11 @@ use winit::{
 use git2::Oid;
 
 use crate::config::Config;
-use crate::git::{CommitInfo, GitRepo, RemoteOpResult, SubmoduleInfo, WorktreeInfo};
+use crate::git::{CommitInfo, GitRepo, SubmoduleInfo, WorktreeInfo};
 use crate::input::{InputEvent, InputState, Key};
 use crate::messages::{
-    AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode,
-    compute_reload_deltas, handle_app_message,
+    AppMessage, GenericRemoteOpSlot, MessageContext, MessageViewState, RepoStateSnapshot,
+    RightPanelMode, TimedRemoteOpSlot, compute_reload_deltas, handle_app_message,
 };
 use crate::receiver_poll::{ReceiverPoll, poll_slot};
 use crate::renderer::{SurfaceManager, VulkanContext};
@@ -326,11 +326,11 @@ pub(crate) struct TabViewState {
     pub(crate) repo_state_receiver: Option<Receiver<RepoStateResult>>,
     /// Receiver for async diff stats computation
     pub(crate) diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
-    pub(crate) fetch_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
-    pub(crate) pull_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
-    pub(crate) push_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
+    pub(crate) fetch_receiver: TimedRemoteOpSlot,
+    pub(crate) pull_receiver: TimedRemoteOpSlot,
+    pub(crate) push_receiver: TimedRemoteOpSlot,
     /// Generic async receiver for submodule/worktree ops (label for toast)
-    pub(crate) generic_op_receiver: Option<(Receiver<RemoteOpResult>, String, Instant)>,
+    pub(crate) generic_op_receiver: GenericRemoteOpSlot,
     /// Track whether we already showed the "still running" toast for each op
     pub(crate) showed_timeout_toast: [bool; 4],
     /// Consolidated worktree state: metadata, repo cache, and selection

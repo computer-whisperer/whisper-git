@@ -17,6 +17,7 @@ mod reload_diagnostics;
 mod remote_sync;
 mod repo_ops;
 mod staging_commit;
+mod types;
 mod view_state;
 
 use history_diff::handle_history_diff_message;
@@ -24,6 +25,7 @@ pub use reload_diagnostics::{RepoStateSnapshot, compute_reload_deltas};
 use remote_sync::handle_remote_sync_message;
 use repo_ops::handle_repo_ops_message;
 use staging_commit::handle_staging_commit_message;
+pub use types::{GenericRemoteOpSlot, TimedRemoteOpSlot};
 pub use view_state::MessageViewState;
 
 /// What content mode the right panel is showing
@@ -133,7 +135,7 @@ pub enum AppMessage {
 /// operation was successfully queued, or `false` if another operation is
 /// already in progress (in which case a toast is shown).
 pub fn queue_async_op(
-    generic_op_receiver: &mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
+    generic_op_receiver: &mut GenericRemoteOpSlot,
     rx: Receiver<RemoteOpResult>,
     label: String,
     in_progress_msg: String,
