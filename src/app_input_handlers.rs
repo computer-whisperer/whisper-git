@@ -179,8 +179,9 @@ impl App {
                                         AppMessage::MergeBranch(branch, target_dir)
                                     }
                                     MergeStrategy::NoFastForward => {
-                                        let commit_msg = message
-                                            .unwrap_or_else(|| format!("Merge branch '{}'", branch));
+                                        let commit_msg = message.unwrap_or_else(|| {
+                                            format!("Merge branch '{}'", branch)
+                                        });
                                         AppMessage::MergeNoFf(branch, commit_msg, target_dir)
                                     }
                                     MergeStrategy::FastForwardOnly => {
@@ -416,8 +417,7 @@ impl App {
                         .staging_well
                         .pill_bar_height(&view_state.current_branch);
                     let (_, content_rect) = layout.right_panel.take_top(pill_bar_h);
-                    let split_y =
-                        content_rect.y + content_rect.height * self.staging_preview_ratio;
+                    let split_y = content_rect.y + content_rect.height * self.staging_preview_ratio;
                     if (*y - split_y).abs() < hit_tolerance {
                         self.divider_drag = Some(DividerDrag::StagingPreview);
                         return true;

@@ -146,13 +146,11 @@ impl CommitDetailView {
         let file_rect = self.file_rect(bounds);
 
         match event {
-            InputEvent::Scroll { delta_y, x, y, .. } => {
-                if bounds.contains(*x, *y) {
-                    self.file_scroll_offset = (self.file_scroll_offset - delta_y * 2.0)
-                        .max(0.0)
-                        .min((self.file_content_height - file_rect.height).max(0.0));
-                    return EventResponse::Consumed;
-                }
+            InputEvent::Scroll { delta_y, x, y, .. } if bounds.contains(*x, *y) => {
+                self.file_scroll_offset = (self.file_scroll_offset - delta_y * 2.0)
+                    .max(0.0)
+                    .min((self.file_content_height - file_rect.height).max(0.0));
+                return EventResponse::Consumed;
             }
             InputEvent::KeyDown { key, .. } => match key {
                 Key::J | Key::Down => {
@@ -187,26 +185,24 @@ impl CommitDetailView {
                 x,
                 y,
                 ..
-            } => {
-                if file_rect.contains(*x, *y) {
-                    // Find which file was clicked
-                    let line_height = self.line_height;
-                    let padding = 8.0;
-                    let mut item_y = file_rect.y + padding - self.file_scroll_offset;
+            } if file_rect.contains(*x, *y) => {
+                // Find which file was clicked
+                let line_height = self.line_height;
+                let padding = 8.0;
+                let mut item_y = file_rect.y + padding - self.file_scroll_offset;
 
-                    // Skip the "Files changed" header
-                    item_y += line_height + 4.0;
+                // Skip the "Files changed" header
+                item_y += line_height + 4.0;
 
-                    for (idx, _file) in self.changed_files.iter().enumerate() {
-                        if *y >= item_y && *y < item_y + line_height {
-                            self.selected_file = Some(idx);
-                            self.emit_file_action();
-                            return EventResponse::Consumed;
-                        }
-                        item_y += line_height;
+                for (idx, _file) in self.changed_files.iter().enumerate() {
+                    if *y >= item_y && *y < item_y + line_height {
+                        self.selected_file = Some(idx);
+                        self.emit_file_action();
+                        return EventResponse::Consumed;
                     }
-                    return EventResponse::Consumed;
+                    item_y += line_height;
                 }
+                return EventResponse::Consumed;
             }
             _ => {}
         }

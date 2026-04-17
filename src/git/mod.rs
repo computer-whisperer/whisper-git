@@ -15,6 +15,7 @@ pub use status::{FileStatus, FileStatusKind, WorkingDirStatus, working_dir_statu
 
 use anyhow::{Context, Result};
 use git2::{Commit, Oid, Repository, RepositoryState};
+use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -711,7 +712,7 @@ impl GitRepo {
         }
 
         // Sort by time descending and cap
-        orphans.sort_by(|a, b| b.time.cmp(&a.time));
+        orphans.sort_by_key(|commit| Reverse(commit.time));
         orphans.truncate(max_orphans);
         orphans
     }
@@ -727,7 +728,7 @@ impl GitRepo {
             commits.extend(orphans);
             // Re-sort by time descending (matching commit_graph's TOPOLOGICAL|TIME order)
             // Stable sort preserves topological order among non-orphans with same timestamp
-            commits.sort_by(|a, b| b.time.cmp(&a.time));
+            commits.sort_by_key(|commit| Reverse(commit.time));
         }
 
         Ok(commits)

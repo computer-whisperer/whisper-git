@@ -251,35 +251,33 @@ impl Widget for TextInput {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
-                    // Calculate cursor position from click using cached character boundaries
-                    let padding = 12.0 * self.scale;
-                    let text_x = bounds.x + padding;
-                    let click_offset = (*x - text_x).max(0.0);
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
+                // Calculate cursor position from click using cached character boundaries
+                let padding = 12.0 * self.scale;
+                let text_x = bounds.x + padding;
+                let click_offset = (*x - text_x).max(0.0);
 
-                    // Find nearest character boundary
-                    let boundaries = self.char_boundaries.borrow();
-                    if boundaries.is_empty() {
-                        self.cursor = 0;
-                    } else {
-                        let mut best_byte = 0;
-                        let mut best_dist = (click_offset - 0.0).abs();
+                // Find nearest character boundary
+                let boundaries = self.char_boundaries.borrow();
+                if boundaries.is_empty() {
+                    self.cursor = 0;
+                } else {
+                    let mut best_byte = 0;
+                    let mut best_dist = (click_offset - 0.0).abs();
 
-                        for &(byte_offset, boundary_x) in boundaries.iter() {
-                            let dist = (click_offset - boundary_x).abs();
-                            if dist < best_dist {
-                                best_dist = dist;
-                                best_byte = byte_offset;
-                            }
+                    for &(byte_offset, boundary_x) in boundaries.iter() {
+                        let dist = (click_offset - boundary_x).abs();
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_byte = byte_offset;
                         }
-                        self.cursor = best_byte;
                     }
-
-                    self.selection_start = None;
-                    return EventResponse::Consumed;
+                    self.cursor = best_byte;
                 }
+
+                self.selection_start = None;
+                return EventResponse::Consumed;
             }
             // Middle-click: paste from primary selection (X11/Wayland)
             InputEvent::MouseDown {
@@ -287,33 +285,31 @@ impl Widget for TextInput {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
-                    self.selection_start = None;
-                    #[cfg(target_os = "linux")]
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
+                self.selection_start = None;
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::{GetExtLinux, LinuxClipboardKind};
+                    if let Ok(mut clipboard) = arboard::Clipboard::new()
+                        && let Ok(pasted) = clipboard
+                            .get()
+                            .clipboard(LinuxClipboardKind::Primary)
+                            .text()
                     {
-                        use arboard::{GetExtLinux, LinuxClipboardKind};
-                        if let Ok(mut clipboard) = arboard::Clipboard::new()
-                            && let Ok(pasted) = clipboard
-                                .get()
-                                .clipboard(LinuxClipboardKind::Primary)
-                                .text()
-                        {
-                            let clean: String = pasted
-                                .chars()
-                                .filter(|c| *c != '\n' && *c != '\r')
-                                .collect();
-                            if !clean.is_empty() {
-                                self.delete_selection();
-                                self.text.insert_str(self.cursor, &clean);
-                                self.cursor += clean.len();
-                                self.modified = true;
-                            }
+                        let clean: String = pasted
+                            .chars()
+                            .filter(|c| *c != '\n' && *c != '\r')
+                            .collect();
+                        if !clean.is_empty() {
+                            self.delete_selection();
+                            self.text.insert_str(self.cursor, &clean);
+                            self.cursor += clean.len();
+                            self.modified = true;
                         }
                     }
-                    return EventResponse::Consumed;
                 }
+                return EventResponse::Consumed;
             }
             InputEvent::KeyDown {
                 key,

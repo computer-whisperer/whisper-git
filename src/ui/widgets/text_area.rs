@@ -380,38 +380,36 @@ impl Widget for TextArea {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
-                    // Calculate cursor position from click using cached layout metrics.
-                    let line_height = self.cached_line_height();
-                    let text_x = bounds.x + 8.0;
-                    let text_y = bounds.y + 4.0;
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
+                // Calculate cursor position from click using cached layout metrics.
+                let line_height = self.cached_line_height();
+                let text_x = bounds.x + 8.0;
+                let text_y = bounds.y + 4.0;
 
-                    let clicked_line =
-                        (((*y - text_y).max(0.0) / line_height) as usize) + self.scroll_offset;
-                    self.cursor_line = clicked_line.min(self.lines.len() - 1);
+                let clicked_line =
+                    (((*y - text_y).max(0.0) / line_height) as usize) + self.scroll_offset;
+                self.cursor_line = clicked_line.min(self.lines.len() - 1);
 
-                    let click_offset = (*x - text_x).max(0.0);
-                    let boundaries = self.line_boundaries.borrow();
-                    if let Some(line_bounds) = boundaries.get(self.cursor_line) {
-                        let mut best_byte = 0usize;
-                        let mut best_dist = f32::INFINITY;
-                        for &(byte_offset, x_off) in line_bounds {
-                            let dist = (click_offset - x_off).abs();
-                            if dist < best_dist {
-                                best_dist = dist;
-                                best_byte = byte_offset;
-                            }
+                let click_offset = (*x - text_x).max(0.0);
+                let boundaries = self.line_boundaries.borrow();
+                if let Some(line_bounds) = boundaries.get(self.cursor_line) {
+                    let mut best_byte = 0usize;
+                    let mut best_dist = f32::INFINITY;
+                    for &(byte_offset, x_off) in line_bounds {
+                        let dist = (click_offset - x_off).abs();
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_byte = byte_offset;
                         }
-                        self.cursor_col = best_byte;
-                    } else {
-                        self.cursor_col = 0;
                     }
-                    self.selection_start = None;
-
-                    return EventResponse::Consumed;
+                    self.cursor_col = best_byte;
+                } else {
+                    self.cursor_col = 0;
                 }
+                self.selection_start = None;
+
+                return EventResponse::Consumed;
             }
             // Middle-click: paste from primary selection (X11/Wayland)
             InputEvent::MouseDown {
@@ -419,33 +417,31 @@ impl Widget for TextArea {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
-                    self.selection_start = None;
-                    #[cfg(target_os = "linux")]
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
+                self.selection_start = None;
+                #[cfg(target_os = "linux")]
+                {
+                    use arboard::{GetExtLinux, LinuxClipboardKind};
+                    if let Ok(mut clipboard) = arboard::Clipboard::new()
+                        && let Ok(pasted) = clipboard
+                            .get()
+                            .clipboard(LinuxClipboardKind::Primary)
+                            .text()
+                        && !pasted.is_empty()
                     {
-                        use arboard::{GetExtLinux, LinuxClipboardKind};
-                        if let Ok(mut clipboard) = arboard::Clipboard::new()
-                            && let Ok(pasted) = clipboard
-                                .get()
-                                .clipboard(LinuxClipboardKind::Primary)
-                                .text()
-                            && !pasted.is_empty()
-                        {
-                            self.delete_selection();
-                            for c in pasted.chars() {
-                                if c == '\n' || c == '\r' {
-                                    self.insert_newline();
-                                } else if !c.is_control() {
-                                    self.insert_char(c);
-                                }
+                        self.delete_selection();
+                        for c in pasted.chars() {
+                            if c == '\n' || c == '\r' {
+                                self.insert_newline();
+                            } else if !c.is_control() {
+                                self.insert_char(c);
                             }
-                            self.modified = true;
                         }
+                        self.modified = true;
                     }
-                    return EventResponse::Consumed;
                 }
+                return EventResponse::Consumed;
             }
             InputEvent::KeyDown {
                 key,

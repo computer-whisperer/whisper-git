@@ -71,8 +71,10 @@ impl App {
                         .set_text(&response.subject);
                     view_state.staging_well.body_area.set_text(&response.body);
                 }
-                self.toast_manager
-                    .push("Commit message generated".to_string(), ToastSeverity::Success);
+                self.toast_manager.push(
+                    "Commit message generated".to_string(),
+                    ToastSeverity::Success,
+                );
             }
             Ok(Err(err)) => {
                 self.ai_commit_receiver = None;

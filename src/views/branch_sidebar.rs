@@ -992,13 +992,11 @@ impl BranchSidebar {
         }
 
         match event {
-            InputEvent::Scroll { delta_y, x, y, .. } => {
-                if bounds.contains(*x, *y) {
-                    self.scroll_offset = (self.scroll_offset - delta_y * 2.0)
-                        .max(0.0)
-                        .min((self.content_height - bounds.height).max(0.0));
-                    return EventResponse::Consumed;
-                }
+            InputEvent::Scroll { delta_y, x, y, .. } if bounds.contains(*x, *y) => {
+                self.scroll_offset = (self.scroll_offset - delta_y * 2.0)
+                    .max(0.0)
+                    .min((self.content_height - bounds.height).max(0.0));
+                return EventResponse::Consumed;
             }
             InputEvent::KeyDown { key, modifiers, .. } if self.focused && !self.filter_focused => {
                 match key {
@@ -1054,53 +1052,51 @@ impl BranchSidebar {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    if let Some(idx) = self.item_index_at_y(*y, bounds) {
-                        match &self.visible_items[idx] {
-                            SidebarItem::SectionHeader(name) => {
-                                // Toggle collapse
-                                match *name {
-                                    "LOCAL" => self.local_collapsed = !self.local_collapsed,
-                                    "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
-                                    "TAGS" => self.tags_collapsed = !self.tags_collapsed,
-                                    "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
-                                    _ => {}
-                                }
-                                self.build_visible_items();
-                                return EventResponse::Consumed;
+            } if bounds.contains(*x, *y) => {
+                if let Some(idx) = self.item_index_at_y(*y, bounds) {
+                    match &self.visible_items[idx] {
+                        SidebarItem::SectionHeader(name) => {
+                            // Toggle collapse
+                            match *name {
+                                "LOCAL" => self.local_collapsed = !self.local_collapsed,
+                                "REMOTE" => self.remote_collapsed = !self.remote_collapsed,
+                                "TAGS" => self.tags_collapsed = !self.tags_collapsed,
+                                "STASHES" => self.stashes_collapsed = !self.stashes_collapsed,
+                                _ => {}
                             }
-                            SidebarItem::RemoteHeader(name) => {
-                                // Toggle per-remote collapse
-                                if self.collapsed_remotes.contains(name) {
-                                    self.collapsed_remotes.remove(name);
-                                } else {
-                                    self.collapsed_remotes.insert(name.clone());
-                                }
-                                self.build_visible_items();
-                                return EventResponse::Consumed;
+                            self.build_visible_items();
+                            return EventResponse::Consumed;
+                        }
+                        SidebarItem::RemoteHeader(name) => {
+                            // Toggle per-remote collapse
+                            if self.collapsed_remotes.contains(name) {
+                                self.collapsed_remotes.remove(name);
+                            } else {
+                                self.collapsed_remotes.insert(name.clone());
                             }
-                            item => {
-                                self.focused_index = Some(idx);
-                                // Jump to this ref's commit in the graph
-                                let ref_name = match item {
-                                    SidebarItem::LocalBranch(name) => Some(name.clone()),
-                                    SidebarItem::RemoteBranch(remote, branch) => {
-                                        Some(format!("{}/{}", remote, branch))
-                                    }
-                                    SidebarItem::Tag(name) => Some(name.clone()),
-                                    _ => None,
-                                };
-                                if let Some(name) = ref_name {
-                                    self.pending_action = Some(SidebarAction::JumpToRef(name));
+                            self.build_visible_items();
+                            return EventResponse::Consumed;
+                        }
+                        item => {
+                            self.focused_index = Some(idx);
+                            // Jump to this ref's commit in the graph
+                            let ref_name = match item {
+                                SidebarItem::LocalBranch(name) => Some(name.clone()),
+                                SidebarItem::RemoteBranch(remote, branch) => {
+                                    Some(format!("{}/{}", remote, branch))
                                 }
-                                return EventResponse::Consumed;
+                                SidebarItem::Tag(name) => Some(name.clone()),
+                                _ => None,
+                            };
+                            if let Some(name) = ref_name {
+                                self.pending_action = Some(SidebarAction::JumpToRef(name));
                             }
+                            return EventResponse::Consumed;
                         }
                     }
-
-                    return EventResponse::Consumed;
                 }
+
+                return EventResponse::Consumed;
             }
             _ => {}
         }

@@ -279,17 +279,17 @@ pub(super) fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
         let origin = line.origin();
 
         match origin {
-            'F' | 'H' => {
-                // File header or hunk header
-                if origin == 'H' {
-                    let header = hunk
-                        .map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
-                        .unwrap_or_default();
-                    file.hunks.push(DiffHunk {
-                        header,
-                        lines: Vec::new(),
-                    });
-                }
+            // File header
+            'F' => {}
+            // Hunk header
+            'H' => {
+                let header = hunk
+                    .map(|h| String::from_utf8_lossy(h.header()).trim_end().to_string())
+                    .unwrap_or_default();
+                file.hunks.push(DiffHunk {
+                    header,
+                    lines: Vec::new(),
+                });
             }
             '+' | '-' | ' ' => {
                 match origin {

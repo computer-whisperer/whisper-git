@@ -214,18 +214,16 @@ impl Widget for RemoteDialog {
                     self.try_confirm();
                     return EventResponse::Consumed;
                 }
-                Key::Tab => {
-                    // Tab between fields in Add mode
-                    if self.is_two_field() {
-                        if self.first_input.is_focused() {
-                            self.first_input.set_focused(false);
-                            self.second_input.set_focused(true);
-                        } else {
-                            self.second_input.set_focused(false);
-                            self.first_input.set_focused(true);
-                        }
-                        return EventResponse::Consumed;
+                // Tab between fields in Add mode
+                Key::Tab if self.is_two_field() => {
+                    if self.first_input.is_focused() {
+                        self.first_input.set_focused(false);
+                        self.second_input.set_focused(true);
+                    } else {
+                        self.second_input.set_focused(false);
+                        self.first_input.set_focused(true);
                     }
+                    return EventResponse::Consumed;
                 }
                 _ => {}
             }

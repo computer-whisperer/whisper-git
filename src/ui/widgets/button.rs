@@ -176,24 +176,20 @@ impl Widget for Button {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.pressed = true;
-                    return EventResponse::Consumed;
-                }
+            } if bounds.contains(*x, *y) => {
+                self.state.pressed = true;
+                return EventResponse::Consumed;
             }
             InputEvent::MouseUp {
                 button: MouseButton::Left,
                 x,
                 y,
                 ..
-            } => {
-                if self.state.pressed {
-                    self.state.pressed = false;
-                    if bounds.contains(*x, *y) {
-                        self.clicked = true;
-                        return EventResponse::Consumed;
-                    }
+            } if self.state.pressed => {
+                self.state.pressed = false;
+                if bounds.contains(*x, *y) {
+                    self.clicked = true;
+                    return EventResponse::Consumed;
                 }
             }
             InputEvent::MouseMove { x, y, .. } => {

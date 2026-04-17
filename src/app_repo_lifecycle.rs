@@ -158,8 +158,10 @@ impl App {
                 }
                 Ok(Err(err)) => {
                     self.clone_receiver = None;
-                    self.toast_manager
-                        .push(format!("Clone failed: {}", err.trim()), ToastSeverity::Error);
+                    self.toast_manager.push(
+                        format!("Clone failed: {}", err.trim()),
+                        ToastSeverity::Error,
+                    );
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.clone_receiver = None;

@@ -336,62 +336,60 @@ impl Widget for FileList {
                 x,
                 y,
                 modifiers,
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
 
-                    // Check if clicking on a file
-                    let header_height = self.header_height();
-                    let entry_height = self.line_height();
-                    let content_y = bounds.y + header_height;
+                // Check if clicking on a file
+                let header_height = self.header_height();
+                let entry_height = self.line_height();
+                let content_y = bounds.y + header_height;
 
-                    if *y > content_y {
-                        let clicked_line = ((*y - content_y) / entry_height) as usize;
-                        let file_idx = self.scroll_offset + clicked_line;
-                        if file_idx < self.files.len() {
-                            // Double-click detection (only without shift)
-                            let now = Instant::now();
-                            if !modifiers.shift
-                                && self.last_click_index == Some(file_idx)
-                                && self
-                                    .last_click_time
-                                    .is_some_and(|t| now.duration_since(t).as_millis() < 400)
-                            {
-                                // Double-click: toggle stage for all selected files
-                                let paths = if self.is_in_selection(file_idx) {
-                                    self.selected_files()
-                                } else {
-                                    vec![self.files[file_idx].path.clone()]
-                                };
-                                self.pending_action = Some(FileListAction::ToggleStage(paths));
-                                self.last_click_time = None;
-                                self.last_click_index = None;
-                                return EventResponse::Consumed;
-                            }
-
-                            if modifiers.shift {
-                                // Shift-click: range select from anchor to clicked index
-                                let anchor = self.anchor.unwrap_or(file_idx);
-                                let lo = anchor.min(file_idx);
-                                let hi = anchor.max(file_idx);
-                                self.selection = (lo..=hi).collect();
-                                self.selected = Some(file_idx);
-                                // Don't update anchor — it stays at the original click
+                if *y > content_y {
+                    let clicked_line = ((*y - content_y) / entry_height) as usize;
+                    let file_idx = self.scroll_offset + clicked_line;
+                    if file_idx < self.files.len() {
+                        // Double-click detection (only without shift)
+                        let now = Instant::now();
+                        if !modifiers.shift
+                            && self.last_click_index == Some(file_idx)
+                            && self
+                                .last_click_time
+                                .is_some_and(|t| now.duration_since(t).as_millis() < 400)
+                        {
+                            // Double-click: toggle stage for all selected files
+                            let paths = if self.is_in_selection(file_idx) {
+                                self.selected_files()
                             } else {
-                                // Plain click: single selection, set anchor
-                                self.selection.clear();
-                                self.selection.insert(file_idx);
-                                self.selected = Some(file_idx);
-                                self.anchor = Some(file_idx);
-                            }
-
-                            self.last_click_time = Some(now);
-                            self.last_click_index = Some(file_idx);
-                            // Emit selection changed for auto-preview
-                            let path = self.files[file_idx].path.clone();
-                            self.pending_action = Some(FileListAction::SelectionChanged(path));
+                                vec![self.files[file_idx].path.clone()]
+                            };
+                            self.pending_action = Some(FileListAction::ToggleStage(paths));
+                            self.last_click_time = None;
+                            self.last_click_index = None;
                             return EventResponse::Consumed;
                         }
+
+                        if modifiers.shift {
+                            // Shift-click: range select from anchor to clicked index
+                            let anchor = self.anchor.unwrap_or(file_idx);
+                            let lo = anchor.min(file_idx);
+                            let hi = anchor.max(file_idx);
+                            self.selection = (lo..=hi).collect();
+                            self.selected = Some(file_idx);
+                            // Don't update anchor — it stays at the original click
+                        } else {
+                            // Plain click: single selection, set anchor
+                            self.selection.clear();
+                            self.selection.insert(file_idx);
+                            self.selected = Some(file_idx);
+                            self.anchor = Some(file_idx);
+                        }
+
+                        self.last_click_time = Some(now);
+                        self.last_click_index = Some(file_idx);
+                        // Emit selection changed for auto-preview
+                        let path = self.files[file_idx].path.clone();
+                        self.pending_action = Some(FileListAction::SelectionChanged(path));
+                        return EventResponse::Consumed;
                     }
                 }
             }

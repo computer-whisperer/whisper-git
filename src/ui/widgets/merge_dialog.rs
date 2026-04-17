@@ -209,11 +209,9 @@ impl Widget for MergeDialog {
                     self.hide();
                     return EventResponse::Consumed;
                 }
-                Key::Enter => {
-                    if !self.message_input.is_focused() {
-                        self.try_confirm();
-                        return EventResponse::Consumed;
-                    }
+                Key::Enter if !self.message_input.is_focused() => {
+                    self.try_confirm();
+                    return EventResponse::Consumed;
                 }
                 _ => {}
             }

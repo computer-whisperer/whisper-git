@@ -126,18 +126,16 @@ pub fn handle_app_message(
     }
     match msg {
         // Handled in main.rs before message dispatch (needs App-level state)
-        AppMessage::AiGenerateCommitMessage => {
-            return false;
-        }
+        AppMessage::AiGenerateCommitMessage => false,
 
         // Submodule navigation messages are handled in main.rs process_messages,
         // not here. If they leak through, just ignore them.
         AppMessage::EnterSubmodule(_) | AppMessage::ExitSubmodule | AppMessage::ExitToDepth(_) => {
-            return false;
+            false
         }
         _ => {
             debug_assert!(false, "message should have been handled by domain handler");
-            return true;
+            true
         }
     }
 }

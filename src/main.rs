@@ -1563,7 +1563,6 @@ impl App {
             self.refresh_status();
         }
     }
-
 }
 
 impl ApplicationHandler for App {

@@ -112,34 +112,30 @@ impl Scrollbar {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    let thumb = self.thumb_rect(&bounds);
-                    if thumb.contains(*x, *y) {
-                        // Start dragging the thumb
-                        self.dragging = true;
-                        self.drag_offset = *y - thumb.y;
-                    } else {
-                        // Click on track - jump to that position
-                        let thumb_height = thumb.height;
-                        let target_y = *y - thumb_height / 2.0;
-                        let new_offset = self.y_to_scroll_offset(target_y, &bounds);
-                        self.pending_action = Some(ScrollAction::ScrollTo(
-                            new_offset as f32
-                                / self.total_items.saturating_sub(self.visible_items).max(1) as f32,
-                        ));
-                    }
-                    return EventResponse::Consumed;
+            } if bounds.contains(*x, *y) => {
+                let thumb = self.thumb_rect(&bounds);
+                if thumb.contains(*x, *y) {
+                    // Start dragging the thumb
+                    self.dragging = true;
+                    self.drag_offset = *y - thumb.y;
+                } else {
+                    // Click on track - jump to that position
+                    let thumb_height = thumb.height;
+                    let target_y = *y - thumb_height / 2.0;
+                    let new_offset = self.y_to_scroll_offset(target_y, &bounds);
+                    self.pending_action = Some(ScrollAction::ScrollTo(
+                        new_offset as f32
+                            / self.total_items.saturating_sub(self.visible_items).max(1) as f32,
+                    ));
                 }
+                return EventResponse::Consumed;
             }
             InputEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.dragging {
-                    self.dragging = false;
-                    return EventResponse::Consumed;
-                }
+            } if self.dragging => {
+                self.dragging = false;
+                return EventResponse::Consumed;
             }
             InputEvent::MouseMove { x, y, .. } => {
                 self.hovered = bounds.contains(*x, *y);

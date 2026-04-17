@@ -264,19 +264,16 @@ impl SearchBar {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    // Check if clicking the clear button (right edge)
-                    let clear_rect =
-                        Rect::new(bounds.right() - 24.0, bounds.y, 24.0, bounds.height);
-                    if clear_rect.contains(*x, *y) && !self.query.is_empty() {
-                        self.query.clear();
-                        self.cursor = 0;
-                        self.pending_action = Some(SearchAction::QueryChanged(String::new()));
-                        return EventResponse::Consumed;
-                    }
+            } if bounds.contains(*x, *y) => {
+                // Check if clicking the clear button (right edge)
+                let clear_rect = Rect::new(bounds.right() - 24.0, bounds.y, 24.0, bounds.height);
+                if clear_rect.contains(*x, *y) && !self.query.is_empty() {
+                    self.query.clear();
+                    self.cursor = 0;
+                    self.pending_action = Some(SearchAction::QueryChanged(String::new()));
                     return EventResponse::Consumed;
                 }
+                return EventResponse::Consumed;
             }
             _ => {}
         }

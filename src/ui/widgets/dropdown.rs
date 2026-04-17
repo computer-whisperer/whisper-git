@@ -200,15 +200,13 @@ impl Widget for Dropdown {
                 x,
                 y,
                 ..
-            } => {
-                if bounds.contains(*x, *y) {
-                    self.state.focused = true;
-                    if !self.options.is_empty() {
-                        self.open = true;
-                        self.hovered_index = Some(self.selected);
-                    }
-                    return EventResponse::Consumed;
+            } if bounds.contains(*x, *y) => {
+                self.state.focused = true;
+                if !self.options.is_empty() {
+                    self.open = true;
+                    self.hovered_index = Some(self.selected);
                 }
+                return EventResponse::Consumed;
             }
             InputEvent::KeyDown {
                 key: Key::Enter | Key::Space | Key::Down,
