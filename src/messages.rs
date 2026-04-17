@@ -7,24 +7,24 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use git2::Oid;
-use winit::event_loop::EventLoopProxy;
 
-use crate::git::{CommitInfo, GitRepo, RemoteOpResult, WorktreeInfo};
+use crate::git::{CommitInfo, GitRepo, RemoteOpResult};
 use crate::ui::Rect;
 use crate::ui::widgets::{ToastManager, ToastSeverity};
-use crate::views::{BranchSidebar, CommitDetailView, CommitGraphView, DiffView, StagingWell};
 
 mod history_diff;
 mod reload_diagnostics;
 mod remote_sync;
 mod repo_ops;
 mod staging_commit;
+mod view_state;
 
 use history_diff::handle_history_diff_message;
 pub use reload_diagnostics::{RepoStateSnapshot, compute_reload_deltas};
 use remote_sync::handle_remote_sync_message;
 use repo_ops::handle_repo_ops_message;
 use staging_commit::handle_staging_commit_message;
+pub use view_state::MessageViewState;
 
 /// What content mode the right panel is showing
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -253,29 +253,4 @@ pub fn handle_app_message(
             return true;
         }
     }
-}
-
-/// A borrowing view into `TabViewState` fields needed by the message handler.
-///
-/// This avoids passing the entire `TabViewState` (which contains fields
-/// unrelated to message handling) and makes the required dependencies
-/// explicit.
-pub struct MessageViewState<'a> {
-    pub commit_graph_view: &'a mut CommitGraphView,
-    pub staging_well: &'a mut StagingWell,
-    pub diff_view: &'a mut DiffView,
-    pub commit_detail_view: &'a mut CommitDetailView,
-    pub branch_sidebar: &'a mut BranchSidebar,
-    pub header_bar: &'a mut crate::ui::widgets::HeaderBar,
-    pub last_diff_commit: &'a mut Option<Oid>,
-    pub fetch_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
-    pub pull_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
-    pub push_receiver: &'a mut Option<(Receiver<RemoteOpResult>, std::time::Instant, String)>,
-    pub generic_op_receiver: &'a mut Option<(Receiver<RemoteOpResult>, String, std::time::Instant)>,
-    pub right_panel_mode: &'a mut RightPanelMode,
-    pub worktrees: &'a mut Vec<WorktreeInfo>,
-    pub proxy: EventLoopProxy<()>,
-    /// Set by message handlers to request an async repo state refresh
-    /// (commit graph, branch tips, tags, etc.) after the message loop.
-    pub needs_repo_refresh: bool,
 }
