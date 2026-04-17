@@ -13,6 +13,7 @@ mod github;
 mod gitlab;
 mod input;
 mod messages;
+mod receiver_poll;
 mod renderer;
 mod rendering;
 mod submodule_nav;
@@ -53,6 +54,7 @@ use crate::messages::{
     AppMessage, MessageContext, MessageViewState, RepoStateSnapshot, RightPanelMode,
     compute_reload_deltas, handle_app_message,
 };
+use crate::receiver_poll::{ReceiverPoll, poll_slot};
 use crate::renderer::{SurfaceManager, VulkanContext};
 use crate::ui::widget::theme;
 use crate::ui::widgets::{
@@ -318,6 +320,12 @@ pub(crate) struct TabViewState {
     pub(crate) context_menu_commit: Option<Oid>,
     pub(crate) last_diff_commit: Option<Oid>,
     pub(crate) pending_messages: Vec<AppMessage>,
+    /// Receiver for async status refresh (background thread)
+    pub(crate) status_receiver: Option<Receiver<StatusResult>>,
+    /// Receiver for async repo state refresh (background thread)
+    pub(crate) repo_state_receiver: Option<Receiver<RepoStateResult>>,
+    /// Receiver for async diff stats computation
+    pub(crate) diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
     pub(crate) fetch_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
     pub(crate) pull_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
     pub(crate) push_receiver: Option<(Receiver<RemoteOpResult>, Instant, String)>,
@@ -487,6 +495,9 @@ impl TabViewState {
             context_menu_commit: None,
             last_diff_commit: None,
             pending_messages: Vec::new(),
+            status_receiver: None,
+            repo_state_receiver: None,
+            diff_stats_receiver: None,
             fetch_receiver: None,
             pull_receiver: None,
             push_receiver: None,
@@ -536,11 +547,26 @@ fn main() -> Result<()> {
             since_start.as_secs_f64(),
         );
         eprintln!("  Tabs: {} (active: {})", app.tabs.len(), app.active_tab);
+        let status_in_flight = app
+            .tabs
+            .iter()
+            .filter(|(_, vs)| vs.status_receiver.is_some())
+            .count();
+        let repo_state_in_flight = app
+            .tabs
+            .iter()
+            .filter(|(_, vs)| vs.repo_state_receiver.is_some())
+            .count();
+        let diff_stats_in_flight = app
+            .tabs
+            .iter()
+            .filter(|(_, vs)| vs.diff_stats_receiver.is_some())
+            .count();
         eprintln!(
-            "  In-flight: repo_state={} status={} diff_stats={} open={} clone={} text_rebuild={}",
-            app.repo_state_receiver.is_some(),
-            app.status_receiver.is_some(),
-            app.diff_stats_receiver.is_some(),
+            "  In-flight: repo_state_tabs={} status_tabs={} diff_stats_tabs={} open={} clone={} text_rebuild={}",
+            repo_state_in_flight,
+            status_in_flight,
+            diff_stats_in_flight,
             app.open_receiver.is_some(),
             app.clone_receiver.is_some(),
             app.text_rebuild_receiver.is_some(),
@@ -640,8 +666,6 @@ pub(crate) struct App {
     pub(crate) status_dirty: bool,
     /// Timestamp of last refresh_status() call, for periodic refresh
     pub(crate) last_status_refresh: Instant,
-    /// Receiver for async diff stats computation
-    pub(crate) diff_stats_receiver: Option<Receiver<Vec<(Oid, usize, usize)>>>,
     /// Timestamp of app creation, for animation elapsed time
     pub(crate) app_start: Instant,
     /// Receiver for async AI commit message generation
@@ -663,10 +687,6 @@ pub(crate) struct App {
     pub(crate) clone_receiver: Option<(Receiver<Result<PathBuf, String>>, Instant)>,
     /// Receiver for async repo open operation (background GitRepo::open)
     pub(crate) open_receiver: Option<Receiver<Result<(GitRepo, String), String>>>,
-    /// Receiver for async status refresh (background thread)
-    pub(crate) status_receiver: Option<Receiver<StatusResult>>,
-    /// Receiver for async repo state refresh (background thread)
-    pub(crate) repo_state_receiver: Option<Receiver<RepoStateResult>>,
     /// "Before" snapshot for async diagnostic reload (F5). When Some, a diagnostic
     /// reload is in progress; finalized when both repo state and status results arrive.
     pub(crate) diagnostic_before: Option<RepoStateSnapshot>,
@@ -866,7 +886,6 @@ impl App {
             current_cursor: CursorIcon::Default,
             status_dirty: true,
             last_status_refresh: Instant::now(),
-            diff_stats_receiver: None,
             app_start: Instant::now(),
             ai_commit_receiver: None,
             ai_provider,
@@ -877,8 +896,6 @@ impl App {
             last_ref_check: Instant::now(),
             clone_receiver: None,
             open_receiver: None,
-            status_receiver: None,
-            repo_state_receiver: None,
             diagnostic_before: None,
             text_rebuild_receiver: None,
             resize_debounce: None,
@@ -1042,7 +1059,7 @@ impl App {
             view_state.commit_graph_view.time_spacing_strength = time_strength;
             view_state.commit_graph_view.fast_scroll = fast_scroll;
             view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-            self.repo_state_receiver = Some(init_tab_view(
+            view_state.repo_state_receiver = Some(init_tab_view(
                 repo_tab,
                 view_state,
                 &text_renderer,
@@ -1095,26 +1112,33 @@ impl App {
     }
 
     fn refresh_status(&mut self) {
-        if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
-            let repo = &repo_tab.repo;
-            let repo_context_path = repo
-                .workdir()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| repo.git_dir().to_path_buf());
-            let is_bare = repo.is_effectively_bare();
+        self.refresh_status_for_tab(self.active_tab);
+    }
 
-            // Determine staging repo context path (selected worktree or same as main)
-            let staging_context_path = view_state
-                .worktree_state
-                .staging_repo()
-                .map(|r| {
-                    r.workdir()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| r.git_dir().to_path_buf())
-                })
-                .or_else(|| Some(repo_context_path.clone()));
+    fn refresh_status_for_tab(&mut self, tab_idx: usize) {
+        let Some((repo_tab, view_state)) = self.tabs.get(tab_idx) else {
+            return;
+        };
+        let repo = &repo_tab.repo;
+        let repo_context_path = repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| repo.git_dir().to_path_buf());
+        let is_bare = repo.is_effectively_bare();
 
-            self.status_receiver = Some(spawn_status_refresh(
+        // Determine staging repo context path (selected worktree or same as main)
+        let staging_context_path = view_state
+            .worktree_state
+            .staging_repo()
+            .map(|r| {
+                r.workdir()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| r.git_dir().to_path_buf())
+            })
+            .or_else(|| Some(repo_context_path.clone()));
+
+        if let Some((_, view_state)) = self.tabs.get_mut(tab_idx) {
+            view_state.status_receiver = Some(spawn_status_refresh(
                 repo_context_path,
                 staging_context_path,
                 is_bare,
@@ -1124,43 +1148,47 @@ impl App {
     }
 
     fn poll_status(&mut self) {
-        let rx = match self.status_receiver {
-            Some(ref rx) => rx,
-            None => return,
-        };
-        match rx.try_recv() {
-            Ok(result) => {
-                self.status_receiver = None;
-                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+        for tab_idx in 0..self.tabs.len() {
+            let poll = {
+                let (_, view_state) = &mut self.tabs[tab_idx];
+                poll_slot(&mut view_state.status_receiver)
+            };
+            match poll {
+                ReceiverPoll::Ready(result) => {
+                    let (repo_tab, view_state) = &mut self.tabs[tab_idx];
                     apply_status_result(result, repo_tab, view_state);
                 }
+                ReceiverPoll::Disconnected | ReceiverPoll::Pending => {}
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.status_receiver = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
     /// Spawn an async repo state refresh for the active tab.
     fn trigger_repo_state_refresh(&mut self) {
-        if let Some((repo_tab, view_state)) = self.tabs.get(self.active_tab) {
-            let repo_context_path = repo_tab
-                .repo
-                .workdir()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| repo_tab.repo.git_dir().to_path_buf());
-            let staging_context_path = view_state
-                .worktree_state
-                .staging_repo()
-                .map(|r| {
-                    r.workdir()
-                        .map(|p| p.to_path_buf())
-                        .unwrap_or_else(|| r.git_dir().to_path_buf())
-                })
-                .or_else(|| Some(repo_context_path.clone()));
+        self.trigger_repo_state_refresh_for_tab(self.active_tab);
+    }
 
-            self.repo_state_receiver = Some(spawn_repo_state_refresh(
+    fn trigger_repo_state_refresh_for_tab(&mut self, tab_idx: usize) {
+        let Some((repo_tab, view_state)) = self.tabs.get(tab_idx) else {
+            return;
+        };
+        let repo_context_path = repo_tab
+            .repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| repo_tab.repo.git_dir().to_path_buf());
+        let staging_context_path = view_state
+            .worktree_state
+            .staging_repo()
+            .map(|r| {
+                r.workdir()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| r.git_dir().to_path_buf())
+            })
+            .or_else(|| Some(repo_context_path.clone()));
+
+        if let Some((_, view_state)) = self.tabs.get_mut(tab_idx) {
+            view_state.repo_state_receiver = Some(spawn_repo_state_refresh(
                 repo_context_path,
                 staging_context_path,
                 self.config.show_orphaned_commits,
@@ -1170,19 +1198,20 @@ impl App {
     }
 
     fn poll_repo_state(&mut self) {
-        let rx = match self.repo_state_receiver {
-            Some(ref rx) => rx,
-            None => return,
-        };
-        match rx.try_recv() {
-            Ok(result) => {
-                self.repo_state_receiver = None;
-                crash_log::breadcrumb(format!(
-                    "apply_repo_state: {} commits, {} worktrees",
-                    result.commits.len(),
-                    result.worktrees.len()
-                ));
-                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
+        for tab_idx in 0..self.tabs.len() {
+            let poll = {
+                let (_, view_state) = &mut self.tabs[tab_idx];
+                poll_slot(&mut view_state.repo_state_receiver)
+            };
+            match poll {
+                ReceiverPoll::Ready(result) => {
+                    crash_log::breadcrumb(format!(
+                        "apply_repo_state(tab={}): {} commits, {} worktrees",
+                        tab_idx,
+                        result.commits.len(),
+                        result.worktrees.len()
+                    ));
+                    let (repo_tab, view_state) = &mut self.tabs[tab_idx];
                     let rx = apply_repo_state_result(
                         result,
                         repo_tab,
@@ -1191,7 +1220,7 @@ impl App {
                         &self.proxy,
                     );
                     if rx.is_some() {
-                        self.diff_stats_receiver = rx;
+                        view_state.diff_stats_receiver = rx;
                     }
                     // Update watcher paths in case worktree structure changed
                     let common_dir = repo_tab.repo.common_dir().to_path_buf();
@@ -1212,11 +1241,8 @@ impl App {
                         &self.proxy,
                     );
                 }
+                ReceiverPoll::Disconnected | ReceiverPoll::Pending => {}
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.repo_state_receiver = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -1299,7 +1325,13 @@ impl App {
     /// been applied. Captures the "after" snapshot, computes deltas, writes report.
     fn finalize_diagnostic_reload(&mut self) {
         // Only finalize when both async results have been consumed
-        if self.repo_state_receiver.is_some() || self.status_receiver.is_some() {
+        let active_pending = self
+            .tabs
+            .get(self.active_tab)
+            .is_some_and(|(_, view_state)| {
+                view_state.repo_state_receiver.is_some() || view_state.status_receiver.is_some()
+            });
+        if active_pending {
             return;
         }
         let Some(before) = self.diagnostic_before.take() else {
@@ -1576,7 +1608,7 @@ impl App {
                 }
             }
             if nav_rx.is_some() {
-                self.repo_state_receiver = nav_rx;
+                view_state.repo_state_receiver = nav_rx;
             }
             // Mark status dirty after submodule navigation to refresh staging well
             self.status_dirty = true;
@@ -1664,19 +1696,19 @@ impl App {
             needs_repo_refresh |= msg_view_state.needs_repo_refresh;
         }
         if needs_repo_refresh {
-            self.trigger_repo_state_refresh();
+            self.trigger_repo_state_refresh_for_tab(self.active_tab);
         }
     }
 
     /// Re-launch async diff stats for any commits still missing stats.
     /// Runs every frame so orphaned receivers are quickly replaced.
     fn ensure_diff_stats(&mut self) {
-        if self.diff_stats_receiver.is_some() {
-            return; // computation already in progress
-        }
-        let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) else {
+        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
             return;
         };
+        if view_state.diff_stats_receiver.is_some() {
+            return; // computation already in progress
+        }
         let repo = &repo_tab.repo;
         let needs_stats: Vec<Oid> = repo_tab
             .commits
@@ -1685,116 +1717,136 @@ impl App {
             .map(|c| c.id)
             .collect();
         if !needs_stats.is_empty() {
-            self.diff_stats_receiver =
+            view_state.diff_stats_receiver =
                 Some(repo.compute_diff_stats_async(needs_stats, self.proxy.clone()));
         }
     }
 
     fn poll_watcher_init(&mut self) {
-        let Some((_, view_state)) = self.tabs.get_mut(self.active_tab) else {
-            return;
-        };
-        let Some(ref rx) = view_state.watcher_init_receiver else {
-            return;
-        };
+        for tab_idx in 0..self.tabs.len() {
+            let poll = {
+                let (_, view_state) = &mut self.tabs[tab_idx];
+                poll_slot(&mut view_state.watcher_init_receiver)
+            };
 
-        match rx.try_recv() {
-            Ok(Ok((watcher, watcher_rx))) => {
-                view_state.watcher_init_receiver = None;
-                view_state.watcher = Some(watcher);
-                view_state.watcher_rx = Some(watcher_rx);
+            match poll {
+                ReceiverPoll::Ready(Ok((watcher, watcher_rx))) => {
+                    let (_, view_state) = &mut self.tabs[tab_idx];
+                    view_state.watcher = Some(watcher);
+                    view_state.watcher_rx = Some(watcher_rx);
+                }
+                ReceiverPoll::Ready(Err(err)) => {
+                    let (_, view_state) = &mut self.tabs[tab_idx];
+                    view_state.watcher = None;
+                    view_state.watcher_rx = None;
+                    self.toast_manager.push(
+                        format!("Filesystem watcher failed: {}", err),
+                        ToastSeverity::Error,
+                    );
+                }
+                ReceiverPoll::Disconnected => {
+                    let (_, view_state) = &mut self.tabs[tab_idx];
+                    view_state.watcher = None;
+                    view_state.watcher_rx = None;
+                    self.toast_manager.push(
+                        "Filesystem watcher failed: background thread terminated".to_string(),
+                        ToastSeverity::Error,
+                    );
+                }
+                ReceiverPoll::Pending => {}
             }
-            Ok(Err(err)) => {
-                view_state.watcher_init_receiver = None;
-                view_state.watcher = None;
-                view_state.watcher_rx = None;
-                self.toast_manager.push(
-                    format!("Filesystem watcher failed: {}", err),
-                    ToastSeverity::Error,
-                );
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                view_state.watcher_init_receiver = None;
-                view_state.watcher = None;
-                view_state.watcher_rx = None;
-                self.toast_manager.push(
-                    "Filesystem watcher failed: background thread terminated".to_string(),
-                    ToastSeverity::Error,
-                );
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
     fn poll_watcher(&mut self) {
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
-            return;
-        };
-        let Some(ref rx) = view_state.watcher_rx else {
-            return;
-        };
+        for tab_idx in 0..self.tabs.len() {
+            let max_kind = {
+                let (_, view_state) = &mut self.tabs[tab_idx];
+                let Some(ref rx) = view_state.watcher_rx else {
+                    continue;
+                };
+                // Drain all pending signals, track the highest-priority kind
+                let mut max_kind: Option<FsChangeKind> = None;
+                while let Ok(kind) = rx.try_recv() {
+                    max_kind = Some(match max_kind {
+                        Some(prev) => {
+                            if kind.priority() > prev.priority() {
+                                kind
+                            } else {
+                                prev
+                            }
+                        }
+                        None => kind,
+                    });
+                }
+                max_kind
+            };
 
-        // Drain all pending signals, track the highest-priority kind
-        let mut max_kind: Option<FsChangeKind> = None;
-        while let Ok(kind) = rx.try_recv() {
-            max_kind = Some(match max_kind {
-                Some(prev) => {
-                    if kind.priority() > prev.priority() {
-                        kind
+            match max_kind {
+                Some(FsChangeKind::WorkingTree) => {
+                    if tab_idx == self.active_tab {
+                        self.status_dirty = true;
                     } else {
-                        prev
+                        self.refresh_status_for_tab(tab_idx);
                     }
+                    let (repo_tab, view_state) = &mut self.tabs[tab_idx];
+                    // Re-check worktree dirty state (file may have changed in a worktree)
+                    self.dirty_checks_in_flight += spawn_dirty_checks(
+                        repo_tab.id,
+                        &[], // skip submodules for working tree changes
+                        &view_state.worktree_state.worktrees,
+                        repo_tab.repo.workdir().map(|p| p.to_path_buf()),
+                        &self.dirty_check_tx,
+                        &self.proxy,
+                    );
                 }
-                None => kind,
-            });
-        }
-
-        match max_kind {
-            Some(FsChangeKind::WorkingTree) => {
-                // Lightweight: just mark status dirty, no commit graph rebuild
-                self.status_dirty = true;
-                // Re-check worktree dirty state (file may have changed in a worktree)
-                self.dirty_checks_in_flight += spawn_dirty_checks(
-                    repo_tab.id,
-                    &[], // skip submodules for working tree changes
-                    &view_state.worktree_state.worktrees,
-                    repo_tab.repo.workdir().map(|p| p.to_path_buf()),
-                    &self.dirty_check_tx,
-                    &self.proxy,
-                );
-            }
-            Some(FsChangeKind::GitMetadata) => {
-                self.status_dirty = true;
-                // Force-reopen repo handles to bypass libgit2 refdb cache
-                let _ = repo_tab.repo.reopen();
-                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
-                    let _ = wt_repo.reopen();
+                Some(FsChangeKind::GitMetadata) => {
+                    if tab_idx == self.active_tab {
+                        self.status_dirty = true;
+                    } else {
+                        self.refresh_status_for_tab(tab_idx);
+                    }
+                    {
+                        let (repo_tab, view_state) = &mut self.tabs[tab_idx];
+                        // Force-reopen repo handles to bypass libgit2 refdb cache
+                        let _ = repo_tab.repo.reopen();
+                        for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                            let _ = wt_repo.reopen();
+                        }
+                    }
+                    self.trigger_repo_state_refresh_for_tab(tab_idx);
                 }
-                self.trigger_repo_state_refresh();
-            }
-            Some(FsChangeKind::WorktreeStructure) => {
-                self.status_dirty = true;
-                // Force-reopen repo handles to bypass libgit2 refdb cache
-                let _ = repo_tab.repo.reopen();
-                for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
-                    let _ = wt_repo.reopen();
+                Some(FsChangeKind::WorktreeStructure) => {
+                    if tab_idx == self.active_tab {
+                        self.status_dirty = true;
+                    } else {
+                        self.refresh_status_for_tab(tab_idx);
+                    }
+                    {
+                        let (repo_tab, view_state) = &mut self.tabs[tab_idx];
+                        // Force-reopen repo handles to bypass libgit2 refdb cache
+                        let _ = repo_tab.repo.reopen();
+                        for wt_repo in view_state.worktree_state.repo_cache.values_mut() {
+                            let _ = wt_repo.reopen();
+                        }
+                    }
+                    self.trigger_repo_state_refresh_for_tab(tab_idx);
+                    // Note: watcher path updates will happen when poll_repo_state applies results
                 }
-                self.trigger_repo_state_refresh();
-                // Note: watcher path updates will happen when poll_repo_state applies results
+                None => {}
             }
-            None => {}
         }
     }
 
     fn poll_diff_stats(&mut self) {
-        let rx = match self.diff_stats_receiver {
-            Some(ref rx) => rx,
-            None => return,
-        };
-        match rx.try_recv() {
-            Ok(stats) => {
-                self.diff_stats_receiver = None;
-                if let Some((repo_tab, _view_state)) = self.tabs.get_mut(self.active_tab) {
+        for tab_idx in 0..self.tabs.len() {
+            let poll = {
+                let (_, view_state) = &mut self.tabs[tab_idx];
+                poll_slot(&mut view_state.diff_stats_receiver)
+            };
+            match poll {
+                ReceiverPoll::Ready(stats) => {
+                    let (repo_tab, _) = &mut self.tabs[tab_idx];
                     for (oid, ins, del) in stats {
                         if let Some(commit) = repo_tab.commits.iter_mut().find(|c| c.id == oid) {
                             commit.insertions = ins;
@@ -1802,189 +1854,203 @@ impl App {
                         }
                     }
                 }
+                ReceiverPoll::Disconnected | ReceiverPoll::Pending => {}
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.diff_stats_receiver = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
     fn poll_remote_ops(&mut self) {
+        for tab_idx in 0..self.tabs.len() {
+            self.poll_remote_ops_for_tab(tab_idx);
+        }
+    }
+
+    fn poll_remote_ops_for_tab(&mut self, tab_idx: usize) {
         use std::sync::mpsc::TryRecvError;
 
         let ci_config = self.config.clone();
         let proxy = self.proxy.clone();
-        let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) else {
-            return;
-        };
         let now = Instant::now();
         const TIMEOUT_SECS: u64 = 60;
 
         let mut needs_repo_refresh = false;
+        {
+            let Some((repo_tab, view_state)) = self.tabs.get_mut(tab_idx) else {
+                return;
+            };
 
-        // Helper: handle the result of polling a fetch/pull/push op.
-        // On success, shows a toast and sets needs_repo_refresh flag.
-        macro_rules! handle_poll {
-            ($op_name:expr, $past_tense:expr, $receiver:expr, $header_flag:expr, $timeout_idx:expr) => {
-                match poll_remote_op(
-                    $receiver,
-                    $header_flag,
-                    &mut view_state.showed_timeout_toast[$timeout_idx],
-                    $op_name,
-                    now,
-                    TIMEOUT_SECS,
-                ) {
-                    AsyncOpPoll::Success(remote) => {
-                        self.toast_manager.push(
-                            format!("{} {}", $past_tense, remote),
-                            ToastSeverity::Success,
-                        );
-                        needs_repo_refresh = true;
-                        // Refresh CI status after remote ops
-                        trigger_ci_fetch(&ci_config, repo_tab, view_state, &proxy);
+            // Helper: handle the result of polling a fetch/pull/push op.
+            // On success, shows a toast and sets needs_repo_refresh flag.
+            macro_rules! handle_poll {
+                ($op_name:expr, $past_tense:expr, $receiver:expr, $header_flag:expr, $timeout_idx:expr) => {
+                    match poll_remote_op(
+                        $receiver,
+                        $header_flag,
+                        &mut view_state.showed_timeout_toast[$timeout_idx],
+                        $op_name,
+                        now,
+                        TIMEOUT_SECS,
+                    ) {
+                        AsyncOpPoll::Success(remote) => {
+                            self.toast_manager.push(
+                                format!("{} {}", $past_tense, remote),
+                                ToastSeverity::Success,
+                            );
+                            needs_repo_refresh = true;
+                            // Refresh CI status after remote ops
+                            trigger_ci_fetch(&ci_config, repo_tab, view_state, &proxy);
+                        }
+                        AsyncOpPoll::Failed(summary, raw_stderr) => {
+                            self.error_dialog.show(
+                                &format!("{} Failed", $op_name),
+                                &summary,
+                                &raw_stderr,
+                            );
+                            self.interrupted_modal = self.active_modal.take();
+                            self.active_modal = Some(ActiveModal::Error);
+                            // Refresh even on failure: a failed pull still fetches refs,
+                            // a failed merge may leave the repo in a new state, etc.
+                            needs_repo_refresh = true;
+                        }
+                        AsyncOpPoll::Disconnected => {
+                            self.error_dialog.show(
+                                &format!("{} Failed", $op_name),
+                                &format!(
+                                    "{} failed: the background thread terminated unexpectedly.",
+                                    $op_name
+                                ),
+                                "",
+                            );
+                            self.interrupted_modal = self.active_modal.take();
+                            self.active_modal = Some(ActiveModal::Error);
+                        }
+                        AsyncOpPoll::Timeout => {
+                            self.toast_manager.push(
+                                format!("{} still running...", $op_name),
+                                ToastSeverity::Info,
+                            );
+                        }
+                        AsyncOpPoll::Pending => {}
                     }
-                    AsyncOpPoll::Failed(summary, raw_stderr) => {
-                        self.error_dialog.show(
-                            &format!("{} Failed", $op_name),
-                            &summary,
-                            &raw_stderr,
-                        );
-                        self.interrupted_modal = self.active_modal.take();
-                        self.active_modal = Some(ActiveModal::Error);
-                        // Refresh even on failure: a failed pull still fetches refs,
-                        // a failed merge may leave the repo in a new state, etc.
-                        needs_repo_refresh = true;
+                };
+            }
+
+            handle_poll!(
+                "Fetch",
+                "Fetched from",
+                &mut view_state.fetch_receiver,
+                &mut view_state.header_bar.fetching,
+                0
+            );
+            handle_poll!(
+                "Pull",
+                "Pulled from",
+                &mut view_state.pull_receiver,
+                &mut view_state.header_bar.pulling,
+                1
+            );
+            let was_pushing = view_state.header_bar.pushing;
+            handle_poll!(
+                "Push",
+                "Pushed to",
+                &mut view_state.push_receiver,
+                &mut view_state.header_bar.pushing,
+                2
+            );
+            if was_pushing && !view_state.header_bar.pushing {
+                view_state.last_push_time = Some(Instant::now());
+            }
+
+            // Poll CI status receivers (one per provider)
+            view_state.ci_receivers.retain(|rx| {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        // Replace any existing result for the same provider
+                        view_state
+                            .ci_results
+                            .retain(|r| r.provider != result.provider);
+                        view_state.ci_results.push(result);
+                        view_state.ci_results.sort_by_key(|r| r.provider.sort_key());
+                        false // remove completed receiver
                     }
-                    AsyncOpPoll::Disconnected => {
+                    _ => true, // keep pending receivers
+                }
+            });
+            // Update per-commit states from merged provider results
+            if !view_state.ci_results.is_empty() {
+                let fetch = ci::CiFetchResult {
+                    providers: view_state.ci_results.clone(),
+                };
+                view_state.commit_graph_view.ci_commit_rollups =
+                    fetch.per_commit_provider_rollups();
+            }
+
+            // Poll generic async ops (submodule/worktree operations)
+            // This has unique post-success behavior (squash merge toast, worktree/stash refresh)
+            // so it's handled separately rather than through the common helper.
+            if let Some((ref rx, ref label, started)) = view_state.generic_op_receiver {
+                let label = label.clone();
+                match rx.try_recv() {
+                    Ok(result) => {
+                        view_state.generic_op_receiver = None;
+                        view_state.showed_timeout_toast[3] = false;
+                        if result.success {
+                            self.toast_manager
+                                .push(format!("{} complete", label), ToastSeverity::Success);
+                            // Squash merge doesn't auto-commit: show info toast
+                            if label.starts_with("Squash merge") {
+                                self.toast_manager.push(
+                                    "Squash merge staged. Review and commit when ready."
+                                        .to_string(),
+                                    ToastSeverity::Info,
+                                );
+                            }
+                            needs_repo_refresh = true;
+                        } else {
+                            let (msg, _) = git::classify_git_error(&label, &result.error);
+                            self.error_dialog.show(
+                                &format!("{} Failed", label),
+                                &msg,
+                                &result.error,
+                            );
+                            self.interrupted_modal = self.active_modal.take();
+                            self.active_modal = Some(ActiveModal::Error);
+                        }
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        view_state.generic_op_receiver = None;
+                        view_state.showed_timeout_toast[3] = false;
                         self.error_dialog.show(
-                            &format!("{} Failed", $op_name),
+                            &format!("{} Failed", label),
                             &format!(
                                 "{} failed: the background thread terminated unexpectedly.",
-                                $op_name
+                                label
                             ),
                             "",
                         );
                         self.interrupted_modal = self.active_modal.take();
                         self.active_modal = Some(ActiveModal::Error);
                     }
-                    AsyncOpPoll::Timeout => {
-                        self.toast_manager.push(
-                            format!("{} still running...", $op_name),
-                            ToastSeverity::Info,
-                        );
-                    }
-                    AsyncOpPoll::Pending => {}
-                }
-            };
-        }
-
-        handle_poll!(
-            "Fetch",
-            "Fetched from",
-            &mut view_state.fetch_receiver,
-            &mut view_state.header_bar.fetching,
-            0
-        );
-        handle_poll!(
-            "Pull",
-            "Pulled from",
-            &mut view_state.pull_receiver,
-            &mut view_state.header_bar.pulling,
-            1
-        );
-        let was_pushing = view_state.header_bar.pushing;
-        handle_poll!(
-            "Push",
-            "Pushed to",
-            &mut view_state.push_receiver,
-            &mut view_state.header_bar.pushing,
-            2
-        );
-        if was_pushing && !view_state.header_bar.pushing {
-            view_state.last_push_time = Some(Instant::now());
-        }
-
-        // Poll CI status receivers (one per provider)
-        view_state.ci_receivers.retain(|rx| {
-            match rx.try_recv() {
-                Ok(result) => {
-                    // Replace any existing result for the same provider
-                    view_state
-                        .ci_results
-                        .retain(|r| r.provider != result.provider);
-                    view_state.ci_results.push(result);
-                    view_state.ci_results.sort_by_key(|r| r.provider.sort_key());
-                    false // remove completed receiver
-                }
-                _ => true, // keep pending receivers
-            }
-        });
-        // Update per-commit states from merged provider results
-        if !view_state.ci_results.is_empty() {
-            let fetch = ci::CiFetchResult {
-                providers: view_state.ci_results.clone(),
-            };
-            view_state.commit_graph_view.ci_commit_rollups = fetch.per_commit_provider_rollups();
-        }
-
-        // Poll generic async ops (submodule/worktree operations)
-        // This has unique post-success behavior (squash merge toast, worktree/stash refresh)
-        // so it's handled separately rather than through the common helper.
-        if let Some((ref rx, ref label, started)) = view_state.generic_op_receiver {
-            let label = label.clone();
-            match rx.try_recv() {
-                Ok(result) => {
-                    view_state.generic_op_receiver = None;
-                    view_state.showed_timeout_toast[3] = false;
-                    if result.success {
-                        self.toast_manager
-                            .push(format!("{} complete", label), ToastSeverity::Success);
-                        // Squash merge doesn't auto-commit: show info toast
-                        if label.starts_with("Squash merge") {
-                            self.toast_manager.push(
-                                "Squash merge staged. Review and commit when ready.".to_string(),
-                                ToastSeverity::Info,
-                            );
+                    Err(TryRecvError::Empty) => {
+                        if now.duration_since(started).as_secs() >= TIMEOUT_SECS
+                            && !view_state.showed_timeout_toast[3]
+                        {
+                            view_state.showed_timeout_toast[3] = true;
+                            self.toast_manager
+                                .push(format!("{} still running...", label), ToastSeverity::Info);
                         }
-                        needs_repo_refresh = true;
-                    } else {
-                        let (msg, _) = git::classify_git_error(&label, &result.error);
-                        self.error_dialog
-                            .show(&format!("{} Failed", label), &msg, &result.error);
-                        self.interrupted_modal = self.active_modal.take();
-                        self.active_modal = Some(ActiveModal::Error);
-                    }
-                }
-                Err(TryRecvError::Disconnected) => {
-                    view_state.generic_op_receiver = None;
-                    view_state.showed_timeout_toast[3] = false;
-                    self.error_dialog.show(
-                        &format!("{} Failed", label),
-                        &format!(
-                            "{} failed: the background thread terminated unexpectedly.",
-                            label
-                        ),
-                        "",
-                    );
-                    self.interrupted_modal = self.active_modal.take();
-                    self.active_modal = Some(ActiveModal::Error);
-                }
-                Err(TryRecvError::Empty) => {
-                    if now.duration_since(started).as_secs() >= TIMEOUT_SECS
-                        && !view_state.showed_timeout_toast[3]
-                    {
-                        view_state.showed_timeout_toast[3] = true;
-                        self.toast_manager
-                            .push(format!("{} still running...", label), ToastSeverity::Info);
                     }
                 }
             }
         }
 
         if needs_repo_refresh {
-            self.trigger_repo_state_refresh();
-            self.status_dirty = true;
+            self.trigger_repo_state_refresh_for_tab(tab_idx);
+            if tab_idx == self.active_tab {
+                self.status_dirty = true;
+            } else {
+                self.refresh_status_for_tab(tab_idx);
+            }
         }
     }
 
@@ -2136,7 +2202,7 @@ impl App {
                 self.settings_dialog.time_spacing_strength;
             view_state.commit_graph_view.fast_scroll = self.config.fast_scroll;
             view_state.commit_graph_view.ratchet_scroll = self.config.ratchet_scroll;
-            self.repo_state_receiver = Some(init_tab_view(
+            view_state.repo_state_receiver = Some(init_tab_view(
                 &mut repo_tab,
                 &mut view_state,
                 &render_state.text_renderer,
@@ -2192,7 +2258,9 @@ impl App {
             self.toast_manager.push(e, ToastSeverity::Error);
         }
         if orphans_changed {
-            self.trigger_repo_state_refresh();
+            for tab_idx in 0..self.tabs.len() {
+                self.trigger_repo_state_refresh_for_tab(tab_idx);
+            }
         }
     }
 
@@ -3284,29 +3352,31 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Periodic CI status polling
-                if let Some((repo_tab, view_state)) = self.tabs.get_mut(self.active_tab) {
-                    let now = Instant::now();
+                // Periodic CI status polling (all tabs)
+                let ci_config = self.config.clone();
+                let ci_proxy = self.proxy.clone();
+                let now = Instant::now();
+                for (repo_tab, view_state) in &mut self.tabs {
                     // Skip if a fetch is already in flight
-                    if view_state.ci_receivers.is_empty() {
-                        // Determine poll interval:
-                        // - 15s if CI is pending or within 5 min of a push
-                        // - 5 min otherwise
-                        let any_pending = view_state
-                            .ci_results
-                            .iter()
-                            .any(|r| r.status.state == ci::CiState::Pending);
-                        let fast_poll = any_pending
-                            || view_state
-                                .last_push_time
-                                .is_some_and(|t| now.duration_since(t).as_secs() < 300);
-                        let interval = if fast_poll { 15 } else { 300 };
-                        let elapsed_since_fetch =
-                            now.duration_since(view_state.last_ci_fetch).as_secs();
-
-                        if elapsed_since_fetch >= interval {
-                            trigger_ci_fetch(&self.config, repo_tab, view_state, &self.proxy);
-                        }
+                    if !view_state.ci_receivers.is_empty() {
+                        continue;
+                    }
+                    // Determine poll interval:
+                    // - 15s if CI is pending or within 5 min of a push
+                    // - 5 min otherwise
+                    let any_pending = view_state
+                        .ci_results
+                        .iter()
+                        .any(|r| r.status.state == ci::CiState::Pending);
+                    let fast_poll = any_pending
+                        || view_state
+                            .last_push_time
+                            .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+                    let interval = if fast_poll { 15 } else { 300 };
+                    let elapsed_since_fetch =
+                        now.duration_since(view_state.last_ci_fetch).as_secs();
+                    if elapsed_since_fetch >= interval {
+                        trigger_ci_fetch(&ci_config, repo_tab, view_state, &ci_proxy);
                     }
                 }
 
@@ -3538,12 +3608,12 @@ impl ApplicationHandler for App {
             merge(last_resize + Duration::from_millis(100));
         }
 
-        // 7. CI status polling timer
+        // 7. CI status polling timer (all tabs)
         // Continue polling if we already have CI results (tokens may be in keychain, not config)
-        if let Some((_, vs)) = self.tabs.get(self.active_tab)
-            && vs.ci_receivers.is_empty()
-            && !vs.ci_results.is_empty()
-        {
+        for (_, vs) in &self.tabs {
+            if !vs.ci_receivers.is_empty() || vs.ci_results.is_empty() {
+                continue;
+            }
             let any_pending = vs
                 .ci_results
                 .iter()
