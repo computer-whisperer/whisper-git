@@ -157,34 +157,51 @@ impl GitHubClient {
     }
 
     fn map_ureq_error(err: ureq::Error) -> anyhow::Error {
-        match err {
-            ureq::Error::Status(status, resp) => {
-                let body = resp.into_string().unwrap_or_default();
-                anyhow::anyhow!(Self::classify_http_error(status, &body))
-            }
-            ureq::Error::Transport(e) => anyhow::anyhow!("GitHub API transport error: {e}"),
-        }
+        anyhow::anyhow!("GitHub API transport error: {err}")
     }
 
-    fn get(&self, path: &str) -> Result<ureq::Response> {
-        ureq::get(&format!("{API_BASE}{path}"))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "whisper-git")
-            .set("X-GitHub-Api-Version", "2022-11-28")
+    fn ensure_success(resp: &mut ureq::http::Response<ureq::Body>) -> Result<()> {
+        let status = resp.status().as_u16();
+        if (200..300).contains(&status) {
+            return Ok(());
+        }
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        anyhow::bail!(Self::classify_http_error(status, &body));
+    }
+
+    fn get(&self, path: &str) -> Result<ureq::http::Response<ureq::Body>> {
+        let mut resp = ureq::get(&format!("{API_BASE}{path}"))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "whisper-git")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .config()
+            .http_status_as_error(false)
+            .build()
             .call()
-            .map_err(Self::map_ureq_error)
+            .map_err(Self::map_ureq_error)?;
+        Self::ensure_success(&mut resp)?;
+        Ok(resp)
     }
 
     #[allow(dead_code)]
-    fn post(&self, path: &str, body: &serde_json::Value) -> Result<ureq::Response> {
-        ureq::post(&format!("{API_BASE}{path}"))
-            .set("Authorization", &format!("Bearer {}", self.token))
-            .set("Accept", "application/vnd.github+json")
-            .set("User-Agent", "whisper-git")
-            .set("X-GitHub-Api-Version", "2022-11-28")
-            .send_json(body.clone())
-            .map_err(Self::map_ureq_error)
+    fn post(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
+        let mut resp = ureq::post(&format!("{API_BASE}{path}"))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "whisper-git")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .send_json(body)
+            .map_err(Self::map_ureq_error)?;
+        Self::ensure_success(&mut resp)?;
+        Ok(resp)
     }
 
     /// Fetch the most recent workflow runs for a repo, optionally filtered by branch.
@@ -199,10 +216,13 @@ impl GitHubClient {
         if let Some(branch) = branch {
             path.push_str(&format!("&branch={branch}"));
         }
-        let resp = self
+        let mut resp = self
             .get(&path)
             .with_context(|| format!("Failed to fetch workflow runs for {owner}/{repo}"))?;
-        let body: WorkflowRunsResponse = resp.into_json().context("Failed to parse runs")?;
+        let body: WorkflowRunsResponse = resp
+            .body_mut()
+            .read_json()
+            .context("Failed to parse runs")?;
         Ok(body.workflow_runs)
     }
 
@@ -213,8 +233,11 @@ impl GitHubClient {
             "name": name,
             "private": private,
         });
-        let resp = self.post("/user/repos", &body)?;
-        let repo: CreatedRepo = resp.into_json().context("Failed to parse created repo")?;
+        let mut resp = self.post("/user/repos", &body)?;
+        let repo: CreatedRepo = resp
+            .body_mut()
+            .read_json()
+            .context("Failed to parse created repo")?;
         Ok(repo)
     }
 }
@@ -241,8 +264,11 @@ impl GitHubClient {
         let mut all = Vec::new();
         for page in 1..=max_pages {
             let path = format!("/user/repos?sort=pushed&direction=desc&per_page=100&page={page}");
-            let resp = self.get(&path)?;
-            let repos: Vec<RepoInfo> = resp.into_json().context("Failed to parse repo list")?;
+            let mut resp = self.get(&path)?;
+            let repos: Vec<RepoInfo> = resp
+                .body_mut()
+                .read_json()
+                .context("Failed to parse repo list")?;
             let done = repos.len() < 100;
             all.extend(repos);
             if done {

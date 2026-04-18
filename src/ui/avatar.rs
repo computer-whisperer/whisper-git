@@ -156,14 +156,18 @@ fn download_avatar(email: &str) -> Option<(Vec<u8>, u32)> {
 
     // Download from Gravatar
     let url = format!("https://www.gravatar.com/avatar/{hash}?s={AVATAR_SIZE}&d=404");
-    let response = ureq::get(&url).call().ok()?;
+    let mut response = ureq::get(&url).call().ok()?;
 
-    if response.status() != 200 {
+    if response.status().as_u16() != 200 {
         return None;
     }
 
     let mut bytes = Vec::new();
-    response.into_reader().read_to_end(&mut bytes).ok()?;
+    response
+        .body_mut()
+        .as_reader()
+        .read_to_end(&mut bytes)
+        .ok()?;
 
     // Decode image
     let img = image::load_from_memory(&bytes).ok()?;

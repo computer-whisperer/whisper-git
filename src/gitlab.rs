@@ -88,12 +88,26 @@ impl GitLabClient {
         Self { token, api_base }
     }
 
-    fn get(&self, path: &str) -> Result<ureq::Response> {
-        ureq::get(&format!("{}{path}", self.api_base))
-            .set("PRIVATE-TOKEN", &self.token)
-            .set("User-Agent", "whisper-git")
+    fn get(&self, path: &str) -> Result<ureq::http::Response<ureq::Body>> {
+        let mut resp = ureq::get(&format!("{}{path}", self.api_base))
+            .header("PRIVATE-TOKEN", &self.token)
+            .header("User-Agent", "whisper-git")
+            .config()
+            .http_status_as_error(false)
+            .build()
             .call()
-            .context("GitLab API request failed")
+            .context("GitLab API request failed")?;
+        let status = resp.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = resp.body_mut().read_to_string().unwrap_or_default();
+            let message = if body.trim().is_empty() {
+                format!("GitLab API request failed (HTTP {status})")
+            } else {
+                format!("GitLab API request failed (HTTP {status}): {}", body.trim())
+            };
+            return Err(anyhow::anyhow!(message));
+        }
+        Ok(resp)
     }
 
     /// Fetch recent pipelines for a project, optionally filtered by ref (branch).
@@ -110,8 +124,11 @@ impl GitLabClient {
         if let Some(r) = ref_name {
             path.push_str(&format!("&ref={r}"));
         }
-        let resp = self.get(&path)?;
-        let pipelines: Vec<Pipeline> = resp.into_json().context("Failed to parse pipelines")?;
+        let mut resp = self.get(&path)?;
+        let pipelines: Vec<Pipeline> = resp
+            .body_mut()
+            .read_json()
+            .context("Failed to parse pipelines")?;
         Ok(pipelines)
     }
 }
