@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Whisper Git
+GenericName=Git Client
+Comment=GPU-accelerated Git client
+Exec=whisper-git %F
+Icon=applications-development
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;version control;vcs;
+StartupNotify=true

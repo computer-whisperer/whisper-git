@@ -1,7 +1,14 @@
 [package]
 name = "whisper-git"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "GPU-accelerated Git client built in Rust with Vulkan"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/computer-whisperer/whisper-git"
+homepage = "https://github.com/computer-whisperer/whisper-git"
+readme = "README.md"
+keywords = ["git", "vulkan", "gui", "graphics"]
+categories = ["development-tools", "gui"]
 
 [dependencies]
 # Graphics

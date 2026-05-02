@@ -1,0 +1,73 @@
+# Maintainer: Christian Balcom <robot.inventor@gmail.com>
+#
+# whisper-git: GPU-accelerated Git client (Vulkan + winit, retained-mode UI).
+#
+# Bumping this for a new release:
+#   1. Tag the upstream release: `git tag v0.x.y && git push --tags`
+#   2. Update pkgver below; reset pkgrel to 1.
+#   3. updpkgsums   (refreshes the source tarball checksum)
+#   4. makepkg --syncdeps --clean   (verify it builds)
+#   5. makepkg --printsrcinfo > .SRCINFO
+#   6. Push to AUR (separate `aur:whisper-git` git remote).
+
+pkgname=whisper-git
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="GPU-accelerated Git client built in Rust with Vulkan"
+arch=('x86_64' 'aarch64')
+url="https://github.com/computer-whisperer/whisper-git"
+license=('MIT' 'Apache')
+# Runtime: Vulkan loader (driver ICD comes from mesa/NVIDIA/etc., not us),
+# wayland + libxkbcommon for winit, dbus for the secret-service keyring
+# backend and for arboard's wayland-data-control clipboard path.
+depends=('vulkan-icd-loader' 'wayland' 'libxkbcommon' 'dbus' 'gcc-libs' 'glibc')
+makedepends=('rust' 'cargo' 'vulkan-headers' 'glslang')
+optdepends=('gnome-keyring: libsecret backend for credential storage'
+            'kwallet: KDE backend for credential storage'
+            'xorg-server-xwayland: run on X11 / XWayland')
+source=(
+    "${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz"
+    'whisper-git.desktop'
+)
+# Refresh the first checksum with `updpkgsums` whenever pkgver bumps.
+# The .desktop is local, versioned in upstream — SKIP is fine.
+sha256sums=(
+    'SKIP'
+    'SKIP'
+)
+
+prepare() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo build --release --frozen
+}
+
+check() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --release --frozen
+}
+
+package() {
+    cd "${srcdir}/${pkgname}-${pkgver}"
+
+    install -Dm755 "${srcdir}/target/release/${pkgname}" \
+        "${pkgdir}/usr/bin/${pkgname}"
+
+    install -Dm644 "${srcdir}/whisper-git.desktop" \
+        "${pkgdir}/usr/share/applications/whisper-git.desktop"
+
+    install -Dm644 LICENSE-MIT \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
+    install -Dm644 LICENSE-APACHE \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-APACHE"
+    install -Dm644 README.md \
+        "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}
