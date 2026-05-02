@@ -25,7 +25,7 @@ use crate::ui::widgets::{
     ToastManager, ToastSeverity, TokenDialog, Tooltip,
 };
 use crate::ui::{
-    AvatarCache, AvatarRenderer, IconRenderer, Rect, ScreenLayout, TextRenderer, Widget,
+    AvatarCache, AvatarRenderer, IconRenderer, LayoutCtx, Rect, ScreenLayout, TextRenderer, Widget,
     WidgetOutput,
 };
 
@@ -1007,6 +1007,19 @@ pub(crate) fn build_ui_output(
 ) -> (WidgetOutput, WidgetOutput, WidgetOutput, WidgetOutput) {
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
+
+    // Cross-cutting rendering plumbing. Constructed here, threaded through to
+    // every widget's `layout` in subsequent waves of the LayoutCtx refactor.
+    let ctx = LayoutCtx {
+        text: text_renderer,
+        bold: bold_text_renderer,
+        icons: Some(icon_renderer),
+        avatars: Some(avatar_renderer),
+        scale,
+        elapsed,
+        screen: screen_bounds,
+    };
+    let _ = &ctx;
 
     // Tab bar takes space at top when multiple tabs
     let tab_bar_height = if tabs.len() > 1 {

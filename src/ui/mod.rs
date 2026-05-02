@@ -12,4 +12,4 @@ pub use icon::IconRenderer;
 pub use layout::{Color, Rect, ScreenLayout};
 pub use spline::{Spline, SplinePoint, SplineRenderer, SplineVertex};
 pub use text::{TextRenderer, TextVertex};
-pub use widget::{Widget, WidgetOutput};
+pub use widget::{LayoutCtx, Widget, WidgetOutput};

@@ -4,7 +4,37 @@
 //! but regenerate vertices each frame (immediate-mode rendering).
 
 use crate::input::{EventResponse, InputEvent};
-use crate::ui::{Rect, SplineVertex, TextRenderer, TextVertex};
+use crate::ui::{AvatarRenderer, IconRenderer, Rect, SplineVertex, TextRenderer, TextVertex};
+
+/// Cross-cutting rendering plumbing passed to every widget's `layout`.
+///
+/// Holds resources every widget might need (text renderers, icon/avatar atlases),
+/// the display HiDPI scale, and animation time. Widget-specific data
+/// (commit lists, branch names, etc.) is *not* threaded through here — those
+/// stay as method-specific arguments on the few views that need them.
+///
+/// `scale` is the display HiDPI factor (1.0, 1.5, 2.0). It is **not** a
+/// "size up because bounds got bigger" factor — widgets that scale their
+/// internals relative to bounds (e.g. header_bar's `bounds.height / 32.0`)
+/// continue to derive that locally.
+#[allow(dead_code)] // Fields are wired up in subsequent waves of the LayoutCtx refactor
+pub struct LayoutCtx<'a> {
+    pub text: &'a TextRenderer,
+    pub bold: &'a TextRenderer,
+    pub icons: Option<&'a IconRenderer>,
+    pub avatars: Option<&'a AvatarRenderer>,
+    pub scale: f32,
+    pub elapsed: f32,
+    pub screen: Rect,
+}
+
+impl LayoutCtx<'_> {
+    /// Scale a logical pixel value by the current display scale.
+    #[allow(dead_code)] // Used in subsequent waves of the LayoutCtx refactor
+    pub fn px(&self, n: f32) -> f32 {
+        n * self.scale
+    }
+}
 
 /// Common widget state
 #[derive(Clone, Debug, Default)]
