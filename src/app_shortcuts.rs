@@ -24,7 +24,7 @@ impl App {
         }
         // Ctrl+W: close tab
         if *key == Key::W && modifiers.only_ctrl() {
-            if self.tabs.len() > 1 {
+            if !self.tabs.is_empty() {
                 let idx = self.active_tab;
                 self.close_tab(idx);
             }
@@ -32,18 +32,22 @@ impl App {
         }
         // Ctrl+Tab: next tab
         if *key == Key::Tab && modifiers.only_ctrl() {
-            let next = (self.active_tab + 1) % self.tabs.len();
-            self.switch_tab(next);
+            if !self.tabs.is_empty() {
+                let next = (self.active_tab + 1) % self.tabs.len();
+                self.switch_tab(next);
+            }
             return true;
         }
         // Ctrl+Shift+Tab: previous tab
         if *key == Key::Tab && modifiers.ctrl_shift() {
-            let prev = if self.active_tab == 0 {
-                self.tabs.len() - 1
-            } else {
-                self.active_tab - 1
-            };
-            self.switch_tab(prev);
+            if !self.tabs.is_empty() {
+                let prev = if self.active_tab == 0 {
+                    self.tabs.len() - 1
+                } else {
+                    self.active_tab - 1
+                };
+                self.switch_tab(prev);
+            }
             return true;
         }
         // Ctrl+S: stash push (only when staging text inputs are not focused)

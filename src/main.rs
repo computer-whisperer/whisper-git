@@ -828,6 +828,7 @@ impl ApplicationHandler for App {
                 self.handle_scale_factor_changed(scale_factor);
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop),
+            WindowEvent::DroppedFile(ref path) => self.handle_dropped_file(path.clone()),
             ref win_event => self.handle_input_window_event(event_loop, win_event),
         }
     }

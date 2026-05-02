@@ -7,9 +7,17 @@ impl App {
         let mut tab_bar = TabBar::new();
         let mut next_tab_id = 1_u64;
 
-        // Determine repo paths to open
+        // Determine repo paths to open. With no CLI args, try the cwd — but
+        // only if it's actually a git repo. Launches from a .desktop file have
+        // cwd = $HOME (or /), neither of which is a repo; in that case we
+        // leave tabs empty and the welcome view takes over the main area.
         let repo_paths: Vec<PathBuf> = if cli_args.repos.is_empty() {
-            vec![PathBuf::from(".")]
+            let cwd = PathBuf::from(".");
+            if git2::Repository::discover(&cwd).is_ok() {
+                vec![cwd]
+            } else {
+                Vec::new()
+            }
         } else {
             cli_args.repos.clone()
         };
@@ -36,10 +44,8 @@ impl App {
                 }
             }
         }
-        // Ensure at least one tab exists (even if all repos failed to open)
-        if tabs.is_empty() {
-            anyhow::bail!("No repositories could be opened");
-        }
+        // Zero tabs is a valid state — the welcome view takes over until the
+        // user opens a repo via dialog, drag-drop, or CLI.
 
         let mut settings_dialog = SettingsDialog::new();
         settings_dialog.show_avatars = config.avatars_enabled;

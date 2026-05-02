@@ -242,6 +242,34 @@ impl App {
         }
     }
 
+    pub(crate) fn handle_dropped_file(&mut self, path: PathBuf) {
+        crash_log::breadcrumb(format!("dropped file: {}", path.display()));
+        // Drops can land on a repo workdir or a file inside it; discover walks
+        // up to find the .git so both cases work. Multi-file drops fire this
+        // handler once per path, opening one tab per dropped repo.
+        let repo_path = match git2::Repository::discover(&path) {
+            Ok(repo) => repo
+                .workdir()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| path.clone()),
+            Err(_) => {
+                self.toast_manager.push(
+                    format!("Not a git repository: {}", path.display()),
+                    ToastSeverity::Error,
+                );
+                return;
+            }
+        };
+        let path_str = repo_path.to_string_lossy().to_string();
+        if let Err(e) = self.config.add_recent_repo(&path_str) {
+            self.toast_manager.push(e, ToastSeverity::Error);
+        }
+        self.open_repo_tab(repo_path);
+        if let Some(state) = &self.state {
+            state.window.request_redraw();
+        }
+    }
+
     pub(crate) fn handle_input_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
