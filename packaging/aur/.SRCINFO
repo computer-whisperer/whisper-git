@@ -17,6 +17,7 @@ pkgbase = whisper-git
 	depends = dbus
 	depends = gcc-libs
 	depends = glibc
+	options = !lto
 	optdepends = gnome-keyring: libsecret backend for credential storage
 	optdepends = kwallet: KDE backend for credential storage
 	optdepends = xorg-server-xwayland: run on X11 / XWayland

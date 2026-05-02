@@ -21,6 +21,11 @@ license=('MIT' 'Apache')
 # wayland + libxkbcommon for winit, dbus for the secret-service keyring
 # backend and for arboard's wayland-data-control clipboard path.
 depends=('vulkan-icd-loader' 'wayland' 'libxkbcommon' 'dbus' 'gcc-libs' 'glibc')
+# Arch's default makepkg.conf enables LTO. The `ring` crate's static
+# C/asm objects don't survive rustc's LTO link step (lld drops the
+# static lib referenced via cargo:rustc-link-lib=static), producing
+# undefined ring_core_* symbol errors. Opt out here.
+options=('!lto')
 makedepends=('rust' 'cargo' 'vulkan-headers' 'glslang')
 optdepends=('gnome-keyring: libsecret backend for credential storage'
             'kwallet: KDE backend for credential storage'
