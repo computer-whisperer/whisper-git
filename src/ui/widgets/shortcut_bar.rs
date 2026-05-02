@@ -14,10 +14,13 @@ pub enum ShortcutContext {
     Sidebar,
 }
 
-/// A single shortcut hint: key label + action description
+/// A single shortcut hint: key label + action description.
+/// `group_break` introduces a divider before this hint to visually separate
+/// context-specific shortcuts from global git operations.
 struct ShortcutHint {
     key: &'static str,
     action: &'static str,
+    group_break: bool,
 }
 
 /// Thin bar rendered below the header showing keyboard shortcuts
@@ -75,6 +78,19 @@ impl ShortcutBar {
             // Gap between hints
             if i > 0 {
                 x += char_w * 2.0;
+            }
+
+            // Group divider — thin vertical line separating shortcut groups
+            if hint.group_break {
+                let div_x = x;
+                let div_pad = 6.0;
+                let div_h = scaled_lh + pill_pad_v * 2.0;
+                let div_y = text_y - pill_pad_v;
+                output.spline_vertices.extend(create_rect_vertices(
+                    &Rect::new(div_x, div_y + 2.0, 1.0, div_h - 4.0),
+                    theme::BORDER.to_array(),
+                ));
+                x += 1.0 + div_pad * 2.0;
             }
 
             // Key pill: rounded rect background behind key text
@@ -181,73 +197,90 @@ impl ShortcutBar {
                 ShortcutHint {
                     key: "j/k",
                     action: "Navigate",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Enter",
                     action: "Select",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Ctrl+F",
                     action: "Search",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "/",
                     action: "Filter",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Tab",
                     action: "Next Panel",
+                    group_break: false,
                 },
             ],
             ShortcutContext::Staging => vec![
                 ShortcutHint {
                     key: "Tab",
                     action: "Cycle Fields",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Ctrl+Enter",
                     action: "Commit",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Tab",
                     action: "Next Panel",
+                    group_break: false,
                 },
             ],
             ShortcutContext::Sidebar => vec![
                 ShortcutHint {
                     key: "j/k",
                     action: "Navigate",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Enter",
                     action: "Checkout",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "d",
                     action: "Delete",
+                    group_break: false,
                 },
                 ShortcutHint {
                     key: "Tab",
                     action: "Next Panel",
+                    group_break: false,
                 },
             ],
         };
-        // Global git operation shortcuts shown in all contexts
+        // Global git operation shortcuts shown in all contexts.
+        // First entry gets a group divider to visually separate from context shortcuts.
         hints.push(ShortcutHint {
-            key: "C-S-F",
+            key: "Ctrl+Shift+F",
             action: "Fetch",
+            group_break: true,
         });
         hints.push(ShortcutHint {
-            key: "C-S-L",
+            key: "Ctrl+Shift+L",
             action: "Pull",
+            group_break: false,
         });
         hints.push(ShortcutHint {
-            key: "C-S-P",
+            key: "Ctrl+Shift+P",
             action: "Push",
+            group_break: false,
         });
         hints.push(ShortcutHint {
             key: "`",
             action: "Terminal",
+            group_break: false,
         });
         hints
     }
