@@ -270,12 +270,14 @@ impl WelcomeView {
         let inner_x = left.x + pad;
         let inner_w = left.width - pad * 2.0;
         let title_y = left.y + pad + 8.0;
-        let buttons_y = title_y + 64.0;
+        // Title at TITLE_SCALE plus a subtitle plus a comfortable gap before
+        // the action stack. Bumped from the body-scale version.
+        let buttons_y = title_y + 88.0;
         let open = Rect::new(inner_x, buttons_y, inner_w, btn_h);
         let clone = Rect::new(inner_x, open.bottom() + gap, inner_w, btn_h);
         let init = Rect::new(inner_x, clone.bottom() + gap, inner_w, btn_h);
-        let path_label_y = init.bottom() + 36.0;
-        let path_input_y = path_label_y + 24.0;
+        let path_label_y = init.bottom() + 32.0;
+        let path_input_y = path_label_y + 22.0;
         // Path input + Open stacked vertically — a side-by-side layout doesn't
         // leave enough room in the narrow action column for the placeholder.
         let path_input = Rect::new(inner_x, path_input_y, inner_w, 34.0);
@@ -299,8 +301,8 @@ impl WelcomeView {
     /// Bounds of recent-list items.
     fn recent_item_bounds(right: Rect) -> Vec<Rect> {
         let pad_x = 28.0;
-        let pad_top = 64.0;
-        let item_h = 60.0;
+        let pad_top = 76.0;
+        let item_h = 68.0;
         let gap = 8.0;
         let inner_x = right.x + pad_x;
         let inner_w = right.width - pad_x * 2.0;
@@ -320,6 +322,14 @@ impl WelcomeView {
             .collect()
     }
 }
+
+// Type scale constants — multipliers applied via layout_text_scaled. Keep
+// tile name + body buttons at 1.0x so their existing measure/truncate paths
+// remain valid; everything else uses these.
+const TITLE_SCALE: f32 = 1.7;
+const SUBTITLE_SCALE: f32 = 0.9;
+const SECTION_HEADER_SCALE: f32 = 1.3;
+const SECONDARY_SCALE: f32 = 0.85;
 
 struct ActionLayout {
     title_y: f32,
@@ -462,18 +472,24 @@ impl WelcomeView {
         ));
 
         // ── Left: title and actions ────────────────────────────────────────
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
-            "Whisper Git",
-            actions.open.x,
-            actions.title_y,
-            theme::TEXT_BRIGHT.to_array(),
-        ));
-        output.text_vertices.extend(text_renderer.layout_text(
-            "GPU-accelerated Git client",
-            actions.open.x,
-            actions.title_y + line_height + 2.0,
-            theme::TEXT_MUTED.to_array(),
-        ));
+        output
+            .bold_text_vertices
+            .extend(bold_renderer.layout_text_scaled(
+                "Whisper Git",
+                actions.open.x,
+                actions.title_y,
+                theme::TEXT_BRIGHT.to_array(),
+                TITLE_SCALE,
+            ));
+        output
+            .text_vertices
+            .extend(text_renderer.layout_text_scaled(
+                "GPU-accelerated Git client",
+                actions.open.x,
+                actions.title_y + line_height * TITLE_SCALE + 6.0,
+                theme::TEXT_MUTED.to_array(),
+                SUBTITLE_SCALE,
+            ));
 
         output.extend(self.open_button.layout_with_bold(
             text_renderer,
@@ -492,12 +508,15 @@ impl WelcomeView {
         ));
 
         // Path input section
-        output.text_vertices.extend(text_renderer.layout_text(
-            "Open by path",
-            actions.open.x,
-            actions.path_label_y,
-            theme::TEXT_MUTED.to_array(),
-        ));
+        output
+            .text_vertices
+            .extend(text_renderer.layout_text_scaled(
+                "Open by path",
+                actions.open.x,
+                actions.path_label_y,
+                theme::TEXT_MUTED.to_array(),
+                SECONDARY_SCALE,
+            ));
         output.extend(self.path_input.layout(text_renderer, actions.path_input));
         output.extend(self.open_path_button.layout_with_bold(
             text_renderer,
@@ -506,29 +525,35 @@ impl WelcomeView {
         ));
 
         // Hint at bottom of the left column
-        let hint_y = left.bottom() - 28.0;
-        output.text_vertices.extend(text_renderer.layout_text(
-            "Drop a folder anywhere to open",
-            actions.open.x,
-            hint_y,
-            theme::TEXT_MUTED.with_alpha(0.7).to_array(),
-        ));
+        let hint_y = left.bottom() - 26.0;
+        output
+            .text_vertices
+            .extend(text_renderer.layout_text_scaled(
+                "Drop a folder anywhere to open",
+                actions.open.x,
+                hint_y,
+                theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                SECONDARY_SCALE,
+            ));
 
         // ── Right: recent ──────────────────────────────────────────────────
-        let recent_pad_x = 24.0;
+        let recent_pad_x = 28.0;
         let recent_x = right.x + recent_pad_x;
         let header_y = right.y + 28.0;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
-            "Recent",
-            recent_x,
-            header_y,
-            theme::TEXT.to_array(),
-        ));
+        output
+            .bold_text_vertices
+            .extend(bold_renderer.layout_text_scaled(
+                "Recent",
+                recent_x,
+                header_y,
+                theme::TEXT.to_array(),
+                SECTION_HEADER_SCALE,
+            ));
         // Subtle underline under the header
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(
                 recent_x,
-                header_y + line_height + 6.0,
+                header_y + line_height * SECTION_HEADER_SCALE + 8.0,
                 right.width - recent_pad_x * 2.0,
                 1.0,
             ),
@@ -568,8 +593,9 @@ impl WelcomeView {
                     .extend(create_rounded_rect_vertices(r, bg.to_array(), 6.0));
 
                 // Right-aligned status block on the name line: branch name
-                // (muted) and a dirty dot if the workdir has changes. Computed
-                // first so the bold name can be truncated against what's left.
+                // (small muted) and a dirty dot if the workdir has changes.
+                // Computed first so the bold name can be truncated against
+                // what's left.
                 let right_pad = 14.0;
                 let dot_size = 8.0;
                 let dot_gap = 8.0;
@@ -588,20 +614,25 @@ impl WelcomeView {
                 let branch_w = if branch_text.is_empty() {
                     0.0
                 } else {
-                    text_renderer.measure_text(branch_text)
+                    text_renderer.measure_text_scaled(branch_text, SECONDARY_SCALE)
                 };
                 if branch_w > 0.0 {
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        branch_text,
-                        right_cursor - branch_w,
-                        r.y + 10.0,
-                        theme::TEXT_MUTED.to_array(),
-                    ));
+                    // Vertically nudge so the smaller branch text aligns with
+                    // the bold name's optical baseline.
+                    let branch_y = r.y + 10.0 + (line_height - line_height * SECONDARY_SCALE) * 0.5;
+                    output
+                        .text_vertices
+                        .extend(text_renderer.layout_text_scaled(
+                            branch_text,
+                            right_cursor - branch_w,
+                            branch_y,
+                            theme::TEXT_MUTED.to_array(),
+                            SECONDARY_SCALE,
+                        ));
                     right_cursor -= branch_w + dot_gap;
                 }
 
-                // Name (bold) + parent (muted), each truncated to fit the
-                // remaining width on its line.
+                // Name (bold, body size) + parent (small muted).
                 let name_color = if hovered {
                     theme::TEXT_BRIGHT
                 } else {
@@ -616,14 +647,25 @@ impl WelcomeView {
                     name_color.to_array(),
                 ));
                 let parent_max_w = r.width - 28.0;
-                let parent_display =
-                    truncate_to_width(&abbreviate_home(&entry.parent), text_renderer, parent_max_w);
-                output.text_vertices.extend(text_renderer.layout_text(
-                    &parent_display,
-                    r.x + 14.0,
-                    r.y + 10.0 + line_height + 6.0,
-                    theme::TEXT_MUTED.to_array(),
-                ));
+                // truncate_to_width measures at 1.0x; divide the budget by
+                // SECONDARY_SCALE so the rendered (smaller) text actually fits.
+                let parent_display = truncate_to_width(
+                    &abbreviate_home(&entry.parent),
+                    text_renderer,
+                    parent_max_w / SECONDARY_SCALE,
+                );
+                // line_height from fontdue already includes leading, so use
+                // it directly as the inter-line offset.
+                let parent_y = r.y + 10.0 + line_height;
+                output
+                    .text_vertices
+                    .extend(text_renderer.layout_text_scaled(
+                        &parent_display,
+                        r.x + 14.0,
+                        parent_y,
+                        theme::TEXT_MUTED.to_array(),
+                        SECONDARY_SCALE,
+                    ));
             }
         }
 
