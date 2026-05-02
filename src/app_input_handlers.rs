@@ -471,6 +471,13 @@ impl App {
             return;
         }
 
+        // Welcome view owns the main area when no tabs are open. Skip per-tab
+        // routing entirely — it has nothing to route to.
+        if self.tabs.is_empty() {
+            self.welcome_view.handle_event(input_event, main_bounds);
+            return;
+        }
+
         // Route to tab bar (if visible)
         if self.tabs.len() > 1
             && self

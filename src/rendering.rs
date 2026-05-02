@@ -32,6 +32,7 @@ use crate::ui::{
 use crate::submodule_nav::open_terminal_at;
 
 use super::{ActiveModal, App, FocusedPanel, RenderState, RepoTab, TabViewState};
+use crate::views::WelcomeView;
 
 /// Render the preview/diff panel header bar (SURFACE_RAISED background + bold title).
 /// Returns the body rect below the header.
@@ -979,6 +980,7 @@ pub(crate) fn build_ui_output(
     active_modal: Option<ActiveModal>,
     repo_dialog: &RepoDialog,
     clone_dialog: &CloneDialog,
+    welcome_view: &WelcomeView,
     settings_dialog: &SettingsDialog,
     token_dialog: &TokenDialog,
     confirm_dialog: &ConfirmDialog,
@@ -1027,6 +1029,81 @@ pub(crate) fn build_ui_output(
     let mut chrome_output = WidgetOutput::new();
     let mut overlay_output = WidgetOutput::new();
     let mut popover_output = WidgetOutput::new();
+
+    // No tabs → welcome view owns the main area. Skip per-tab chrome/content
+    // entirely; modals (clone dialog, etc.) still draw on top via the overlay
+    // layer below.
+    if tabs.is_empty() {
+        graph_output.extend(welcome_view.layout_with_bold(
+            text_renderer,
+            bold_text_renderer,
+            main_bounds,
+        ));
+
+        // Toast notifications still useful (init success, dropped-file errors)
+        overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds, scale));
+
+        // Allow modal dialogs to render on top — Ctrl+O still works from welcome.
+        if clone_dialog.is_visible() {
+            overlay_output.extend(clone_dialog.layout_with_bold(
+                text_renderer,
+                bold_text_renderer,
+                screen_bounds,
+            ));
+        }
+        if repo_dialog.is_visible() {
+            overlay_output.extend(repo_dialog.layout_with_bold(
+                text_renderer,
+                bold_text_renderer,
+                screen_bounds,
+            ));
+        }
+        if settings_dialog.is_visible() {
+            overlay_output.extend(settings_dialog.layout_with_bold(
+                text_renderer,
+                bold_text_renderer,
+                screen_bounds,
+            ));
+        }
+        if confirm_dialog.is_visible() {
+            overlay_output.extend(confirm_dialog.layout_with_bold(
+                text_renderer,
+                bold_text_renderer,
+                screen_bounds,
+            ));
+        }
+        if error_dialog.is_visible() {
+            overlay_output.extend(error_dialog.layout_with_bold(
+                text_renderer,
+                bold_text_renderer,
+                screen_bounds,
+            ));
+        }
+
+        // Suppress everything else — there's no active tab to drive it.
+        let _ = (
+            active_modal,
+            token_dialog,
+            branch_name_dialog,
+            remote_dialog,
+            merge_dialog,
+            rebase_dialog,
+            pull_dialog,
+            push_dialog,
+            tab_bar_bounds,
+            tab_bar,
+            tooltip,
+            avatar_cache,
+            avatar_renderer,
+            icon_renderer,
+            staging_preview_ratio,
+            mouse_pos,
+            elapsed,
+            active_tab,
+            &layout,
+        );
+        return (graph_output, chrome_output, overlay_output, popover_output);
+    }
 
     // Panel backgrounds and borders go in graph layer (base - renders first, behind everything)
     let focused = tabs
@@ -1662,6 +1739,7 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
         app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
+        &app.welcome_view,
         &app.settings_dialog,
         &app.token_dialog,
         &app.confirm_dialog,
@@ -1885,6 +1963,7 @@ pub(crate) fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
         app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
+        &app.welcome_view,
         &app.settings_dialog,
         &app.token_dialog,
         &app.confirm_dialog,
@@ -2044,6 +2123,7 @@ pub(crate) fn capture_screenshot_offscreen(
         app.active_modal,
         &app.repo_dialog,
         &app.clone_dialog,
+        &app.welcome_view,
         &app.settings_dialog,
         &app.token_dialog,
         &app.confirm_dialog,

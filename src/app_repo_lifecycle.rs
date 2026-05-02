@@ -130,6 +130,66 @@ impl App {
         }
     }
 
+    /// Drain WelcomeView pickers and pending actions. Called every frame
+    /// while the welcome view is the active surface.
+    pub(crate) fn poll_welcome_view(&mut self) {
+        self.welcome_view.poll_pickers();
+
+        let Some(action) = self.welcome_view.take_action() else {
+            return;
+        };
+        match action {
+            WelcomeAction::Open(path) => {
+                let path_str = path.to_string_lossy().to_string();
+                if let Err(e) = self.config.add_recent_repo(&path_str) {
+                    self.toast_manager.push(e, ToastSeverity::Error);
+                }
+                self.welcome_view.set_recent(&self.config.recent_repos);
+                self.open_repo_tab(path);
+            }
+            WelcomeAction::Clone => {
+                let gh_token =
+                    token_store::get_github_token().or_else(|| self.config.github_token.clone());
+                self.clone_dialog.show(gh_token.as_deref());
+                self.active_modal = Some(ActiveModal::CloneDialog);
+            }
+            WelcomeAction::InitAt(path) => {
+                self.init_repo_at(path);
+            }
+        }
+    }
+
+    /// Initialize a repo at `path` (if not already one) and open it as a tab.
+    /// Idempotent: picking an existing repo just opens it without re-init.
+    pub(crate) fn init_repo_at(&mut self, path: PathBuf) {
+        if git2::Repository::discover(&path).is_ok() {
+            self.toast_manager.push(
+                format!("Already a git repository: {}", path.display()),
+                ToastSeverity::Info,
+            );
+        } else {
+            match git2::Repository::init(&path) {
+                Ok(_) => {
+                    self.toast_manager.push(
+                        format!("Initialized {}", path.display()),
+                        ToastSeverity::Success,
+                    );
+                }
+                Err(e) => {
+                    self.toast_manager
+                        .push(format!("Init failed: {e}"), ToastSeverity::Error);
+                    return;
+                }
+            }
+        }
+        let path_str = path.to_string_lossy().to_string();
+        if let Err(e) = self.config.add_recent_repo(&path_str) {
+            self.toast_manager.push(e, ToastSeverity::Error);
+        }
+        self.welcome_view.set_recent(&self.config.recent_repos);
+        self.open_repo_tab(path);
+    }
+
     pub(crate) fn poll_clone_dialog(&mut self) {
         self.clone_dialog.poll();
 

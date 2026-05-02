@@ -81,6 +81,9 @@ impl App {
             }
         }
 
+        let mut welcome_view = WelcomeView::new();
+        welcome_view.set_recent(&config.recent_repos);
+
         let (dirty_check_tx, dirty_check_rx) = std::sync::mpsc::channel();
         Ok(Self {
             cli_args,
@@ -91,6 +94,7 @@ impl App {
             tab_bar,
             repo_dialog: RepoDialog::new(),
             clone_dialog: CloneDialog::new(),
+            welcome_view,
             settings_dialog,
             token_dialog,
             confirm_dialog: ConfirmDialog::new(),
@@ -317,6 +321,7 @@ impl App {
         // Set event loop proxy for file picker wake-up
         self.repo_dialog.set_proxy(self.proxy.clone());
         self.clone_dialog.set_proxy(self.proxy.clone());
+        self.welcome_view.set_proxy(self.proxy.clone());
 
         // Initial status refresh for active tab
         self.refresh_status();

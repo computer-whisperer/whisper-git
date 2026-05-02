@@ -158,6 +158,7 @@ impl App {
         self.poll_clone_dialog();
         self.poll_clone_receiver();
         self.poll_open_receiver(frame_diag);
+        self.poll_welcome_view();
 
         // Debounce swapchain recreation during rapid resizes (e.g. KDE
         // animated window geometry changes).  Render at the old swapchain

@@ -84,7 +84,7 @@ use crate::ui::{
 };
 use crate::views::{
     BranchSidebar, CommitDetailAction, CommitDetailView, CommitGraphView, DiffAction, DiffView,
-    GraphAction, SidebarAction, StagingAction, StagingWell,
+    GraphAction, SidebarAction, StagingAction, StagingWell, WelcomeAction, WelcomeView,
 };
 use crate::watcher::{FsChangeKind, RepoWatcher};
 
@@ -644,6 +644,8 @@ pub(crate) struct App {
     pub(crate) tab_bar: TabBar,
     pub(crate) repo_dialog: RepoDialog,
     pub(crate) clone_dialog: CloneDialog,
+    /// Shown when no tabs are open. Owns its own pickers + recent list.
+    pub(crate) welcome_view: WelcomeView,
     pub(crate) settings_dialog: SettingsDialog,
     pub(crate) token_dialog: TokenDialog,
     pub(crate) confirm_dialog: ConfirmDialog,

@@ -10,7 +10,12 @@ impl App {
         self.active_tab = self.tab_bar.remove_tab(index);
         self.toast_manager
             .push(format!("Closed {}", name), ToastSeverity::Info);
-        if !self.tabs.is_empty() {
+        if self.tabs.is_empty() {
+            // Falling back to the welcome surface — make sure it shows the
+            // freshest MRU order (the just-closed tab may have been opened
+            // since welcome was last populated).
+            self.welcome_view.set_recent(&self.config.recent_repos);
+        } else {
             self.refresh_status();
         }
     }
