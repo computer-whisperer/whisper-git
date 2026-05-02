@@ -28,6 +28,11 @@ struct RecentEntry {
     path: PathBuf,
     name: String,
     parent: String,
+    /// Async-populated: HEAD branch shorthand, None until the background
+    /// info load completes (or if the repo can't be opened).
+    branch: Option<String>,
+    /// Async-populated: true if working tree is dirty.
+    is_dirty: Option<bool>,
 }
 
 impl RecentEntry {
@@ -41,8 +46,45 @@ impl RecentEntry {
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        Self { path, name, parent }
+        Self {
+            path,
+            name,
+            parent,
+            branch: None,
+            is_dirty: None,
+        }
     }
+}
+
+/// Result of a single repo info probe.
+struct RecentInfo {
+    branch: Option<String>,
+    is_dirty: Option<bool>,
+}
+
+/// Open the repo at `path` and gather a cheap summary (HEAD branch + dirty
+/// flag). Submodules are excluded from the status walk because that's where
+/// the cost spikes on large monorepos. Returns Nones if the repo can't be
+/// opened — the welcome tile still renders, just without indicators.
+fn fetch_recent_info(path: &std::path::Path) -> RecentInfo {
+    let mut info = RecentInfo {
+        branch: None,
+        is_dirty: None,
+    };
+    let Ok(repo) = git2::Repository::open(path) else {
+        return info;
+    };
+    info.branch = repo
+        .head()
+        .ok()
+        .and_then(|h| h.shorthand().map(String::from));
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(false)
+        .include_ignored(false)
+        .exclude_submodules(true);
+    info.is_dirty = repo.statuses(Some(&mut opts)).ok().map(|s| !s.is_empty());
+    info
 }
 
 pub struct WelcomeView {
@@ -56,6 +98,9 @@ pub struct WelcomeView {
     hovered_recent: i32,
     open_picker_rx: Option<mpsc::Receiver<String>>,
     init_picker_rx: Option<mpsc::Receiver<String>>,
+    /// Streaming receiver of per-repo info probes spawned by set_recent.
+    /// Each child thread sends one message, then drops its tx clone.
+    info_rx: Option<mpsc::Receiver<(PathBuf, RecentInfo)>>,
     pending_action: Option<WelcomeAction>,
     proxy: Option<EventLoopProxy<()>>,
 }
@@ -78,6 +123,7 @@ impl WelcomeView {
             hovered_recent: -1,
             open_picker_rx: None,
             init_picker_rx: None,
+            info_rx: None,
             pending_action: None,
             proxy: None,
         }
@@ -88,19 +134,47 @@ impl WelcomeView {
     }
 
     /// Refresh the recent list from config. Called on show and after each open
-    /// so MRU ordering stays current.
+    /// so MRU ordering stays current. Also kicks off a parallel info probe so
+    /// each tile picks up its branch + dirty state asynchronously.
     pub fn set_recent(&mut self, recent_repos: &[String]) {
         self.recent = recent_repos
             .iter()
             .map(|s| RecentEntry::from_path_str(s))
             .collect();
+        self.spawn_info_load();
+    }
+
+    /// Spawn a worker thread per recent entry to probe HEAD branch + dirty
+    /// state. Each worker sends its result to a shared channel; the receiver
+    /// is drained by `poll_pickers`. Wall time ≈ slowest single repo since
+    /// they run in parallel, with bounded count (MAX_RECENT_REPOS).
+    fn spawn_info_load(&mut self) {
+        if self.recent.is_empty() {
+            self.info_rx = None;
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        for entry in &self.recent {
+            let path = entry.path.clone();
+            let tx = tx.clone();
+            let proxy = self.proxy.clone();
+            std::thread::spawn(move || {
+                let info = fetch_recent_info(&path);
+                let _ = tx.send((path, info));
+                if let Some(p) = proxy {
+                    let _ = p.send_event(());
+                }
+            });
+        }
+        self.info_rx = Some(rx);
     }
 
     pub fn take_action(&mut self) -> Option<WelcomeAction> {
         self.pending_action.take()
     }
 
-    /// Drain any picker results queued from the file-dialog threads.
+    /// Drain any picker results queued from the file-dialog threads, plus
+    /// any per-repo info probes from the background load workers.
     pub fn poll_pickers(&mut self) {
         if let Some(ref rx) = self.open_picker_rx {
             match rx.try_recv() {
@@ -120,6 +194,16 @@ impl WelcomeView {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.init_picker_rx = None,
                 Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // Drain all available info results in one shot so a frame catches
+        // every probe that has finished since last poll.
+        if let Some(ref rx) = self.info_rx {
+            while let Ok((path, info)) = rx.try_recv() {
+                if let Some(entry) = self.recent.iter_mut().find(|e| e.path == path) {
+                    entry.branch = info.branch;
+                    entry.is_dirty = info.is_dirty;
+                }
             }
         }
     }
@@ -483,22 +567,57 @@ impl WelcomeView {
                     .spline_vertices
                     .extend(create_rounded_rect_vertices(r, bg.to_array(), 6.0));
 
-                // Name (bold) + parent (muted), each truncated to fit the tile.
+                // Right-aligned status block on the name line: branch name
+                // (muted) and a dirty dot if the workdir has changes. Computed
+                // first so the bold name can be truncated against what's left.
+                let right_pad = 14.0;
+                let dot_size = 8.0;
+                let dot_gap = 8.0;
+                let mut right_cursor = r.right() - right_pad;
+                if entry.is_dirty == Some(true) {
+                    let dot_x = right_cursor - dot_size;
+                    let dot_y = r.y + 10.0 + (line_height - dot_size) / 2.0 + 2.0;
+                    output.spline_vertices.extend(create_rounded_rect_vertices(
+                        &Rect::new(dot_x, dot_y, dot_size, dot_size),
+                        theme::ACTION.to_array(),
+                        dot_size / 2.0,
+                    ));
+                    right_cursor = dot_x - dot_gap;
+                }
+                let branch_text = entry.branch.as_deref().unwrap_or("");
+                let branch_w = if branch_text.is_empty() {
+                    0.0
+                } else {
+                    text_renderer.measure_text(branch_text)
+                };
+                if branch_w > 0.0 {
+                    output.text_vertices.extend(text_renderer.layout_text(
+                        branch_text,
+                        right_cursor - branch_w,
+                        r.y + 10.0,
+                        theme::TEXT_MUTED.to_array(),
+                    ));
+                    right_cursor -= branch_w + dot_gap;
+                }
+
+                // Name (bold) + parent (muted), each truncated to fit the
+                // remaining width on its line.
                 let name_color = if hovered {
                     theme::TEXT_BRIGHT
                 } else {
                     theme::TEXT
                 };
-                let text_max_w = r.width - 28.0;
-                let name_display = truncate_to_width(&entry.name, bold_renderer, text_max_w);
+                let name_max_w = (right_cursor - (r.x + 14.0)).max(0.0);
+                let name_display = truncate_to_width(&entry.name, bold_renderer, name_max_w);
                 output.bold_text_vertices.extend(bold_renderer.layout_text(
                     &name_display,
                     r.x + 14.0,
                     r.y + 10.0,
                     name_color.to_array(),
                 ));
+                let parent_max_w = r.width - 28.0;
                 let parent_display =
-                    truncate_to_width(&abbreviate_home(&entry.parent), text_renderer, text_max_w);
+                    truncate_to_width(&abbreviate_home(&entry.parent), text_renderer, parent_max_w);
                 output.text_vertices.extend(text_renderer.layout_text(
                     &parent_display,
                     r.x + 14.0,
