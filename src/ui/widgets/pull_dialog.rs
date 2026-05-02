@@ -1,12 +1,12 @@
 //! Pull dialog - modal overlay for pulling any branch from any remote with optional rebase
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, Dropdown, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the pull dialog
 #[derive(Clone, Debug)]
@@ -256,18 +256,7 @@ impl Widget for PullDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl PullDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -285,7 +274,7 @@ impl PullDialog {
 
         // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             "Pull Branch",
             dialog.x + padding,
             title_y,
@@ -301,7 +290,7 @@ impl PullDialog {
 
         // Remote label + input
         let remote_label_y = dialog.y + 44.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Remote:",
             dialog.x + padding,
             remote_label_y,
@@ -312,12 +301,12 @@ impl PullDialog {
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
         output.extend(
             self.remote_dropdown
-                .layout(text_renderer, remote_input_bounds),
+                .layout(ctx, remote_input_bounds),
         );
 
         // Remote branch label + input
         let branch_label_y = remote_input_y + line_h + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Remote branch:",
             dialog.x + padding,
             branch_label_y,
@@ -325,7 +314,7 @@ impl PullDialog {
         ));
         let branch_input_y = branch_label_y + label_h;
         let branch_input_bounds = Rect::new(dialog.x + padding, branch_input_y, input_w, line_h);
-        output.extend(self.branch_input.layout(text_renderer, branch_input_bounds));
+        output.extend(self.branch_input.layout(ctx, branch_input_bounds));
 
         // Checkbox + label
         let checkbox_y = branch_input_y + line_h + 8.0 * scale;
@@ -367,7 +356,7 @@ impl PullDialog {
 
         // Checkbox label
         let checkbox_label_x = checkbox_x + checkbox_size + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Rebase instead of merge",
             checkbox_label_x,
             checkbox_y,
@@ -396,12 +385,14 @@ impl PullDialog {
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.pull_button.layout(text_renderer, confirm_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.pull_button.layout(ctx, confirm_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }
+}
 
+impl PullDialog {
     /// Compute the bounds of the remote dropdown (for popup rendering).
     fn remote_dropdown_bounds(&self, bounds: Rect) -> Rect {
         let scale = (bounds.height / 720.0).max(1.0);
@@ -416,12 +407,11 @@ impl PullDialog {
     }
 
     /// Render the dropdown popup in a separate layer so it draws on top of all dialog text.
-    pub fn layout_popup(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_popup(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         if !self.visible {
             return WidgetOutput::new();
         }
         let dropdown_bounds = self.remote_dropdown_bounds(bounds);
-        self.remote_dropdown
-            .layout_popup(text_renderer, dropdown_bounds)
+        self.remote_dropdown.layout_popup(ctx, dropdown_bounds)
     }
 }

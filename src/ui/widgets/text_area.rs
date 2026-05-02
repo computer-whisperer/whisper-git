@@ -2,9 +2,10 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, WidgetState, create_rect_outline_vertices,
+    create_rect_vertices, theme,
 };
-use crate::ui::{Rect, TextRenderer};
+use crate::ui::Rect;
 use std::cell::RefCell;
 
 /// Find the byte offset of the previous word boundary from cursor position within a line.
@@ -701,10 +702,9 @@ impl Widget for TextArea {
         EventResponse::Ignored
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
-        // Background
         let bg_color = if self.state.focused {
             theme::SURFACE.lighten(0.02)
         } else {
@@ -714,7 +714,6 @@ impl Widget for TextArea {
             .spline_vertices
             .extend(create_rect_vertices(&bounds, bg_color.to_array()));
 
-        // Border
         let border_color = if self.state.focused {
             theme::STATUS_AHEAD
         } else {
@@ -726,7 +725,7 @@ impl Widget for TextArea {
             1.0,
         ));
 
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
         let text_x = bounds.x + 8.0;
         let text_y_start = bounds.y + 4.0;
         let visible_lines = ((bounds.height - 8.0) / line_height).max(1.0) as usize;
@@ -743,14 +742,13 @@ impl Widget for TextArea {
                 let mut byte_end = 0usize;
                 for c in line.chars() {
                     byte_end += c.len_utf8();
-                    let x_off = text_renderer.measure_text(&line[..byte_end]);
+                    let x_off = ctx.text.measure_text(&line[..byte_end]);
                     line_boundaries.push((byte_end, x_off));
                 }
                 all_boundaries.push(line_boundaries);
             }
         }
 
-        // Draw visible lines
         for (i, line_idx) in (self.scroll_offset..self.lines.len())
             .take(visible_lines)
             .enumerate()
@@ -759,7 +757,7 @@ impl Widget for TextArea {
             let line = &self.lines[line_idx];
 
             if !line.is_empty() {
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     line,
                     text_x,
                     y,
@@ -767,10 +765,9 @@ impl Widget for TextArea {
                 ));
             }
 
-            // Draw cursor on this line (blinks when focused)
             if self.state.focused && self.cursor_visible && line_idx == self.cursor_line {
                 let col = clamp_to_boundary(line, self.cursor_col.min(line.len()));
-                let cursor_x = text_x + text_renderer.measure_text(&line[..col]);
+                let cursor_x = text_x + ctx.text.measure_text(&line[..col]);
                 let cursor_rect = Rect::new(cursor_x, y, 2.0, line_height);
                 output
                     .spline_vertices

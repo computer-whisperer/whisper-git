@@ -1,12 +1,12 @@
 //! Rebase dialog - modal overlay for choosing rebase options (--autostash, --rebase-merges)
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
-use crate::ui::{Rect, TextRenderer};
 
 /// Options for the rebase operation
 #[derive(Clone, Copy, Debug)]
@@ -268,18 +268,7 @@ impl Widget for RebaseDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl RebaseDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -298,7 +287,7 @@ impl RebaseDialog {
         // Title (bold)
         let title = format!("Rebase onto '{}'", self.target_branch);
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             &title,
             dialog.x + padding,
             title_y,
@@ -315,7 +304,7 @@ impl RebaseDialog {
         // Subtitle (muted)
         let subtitle = format!("Rebasing: {}", self.current_branch);
         let subtitle_y = dialog.y + 44.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             &subtitle,
             dialog.x + padding,
             subtitle_y,
@@ -374,7 +363,7 @@ impl RebaseDialog {
             } else {
                 theme::TEXT
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 label,
                 text_x,
                 item_y + 4.0 * scale,
@@ -388,7 +377,7 @@ impl RebaseDialog {
         {
             let warning_y = dialog.bottom() - padding - line_h - 22.0 * scale;
             let amber = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 warning,
                 dialog.x + padding,
                 warning_y,
@@ -418,8 +407,8 @@ impl RebaseDialog {
         let rebase_bounds = Rect::new(rebase_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.rebase_button.layout(text_renderer, rebase_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.rebase_button.layout(ctx, rebase_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }

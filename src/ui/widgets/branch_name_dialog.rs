@@ -3,12 +3,12 @@
 use git2::Oid;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the branch name dialog
 #[derive(Clone, Debug)]
@@ -328,18 +328,7 @@ impl Widget for BranchNameDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl BranchNameDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -351,26 +340,22 @@ impl BranchNameDialog {
         let padding = 16.0 * scale;
         let line_h = 32.0 * scale;
 
-        // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
-        // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             &self.title,
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
         ));
 
-        // Title separator
         let sep_y = dialog.y + 36.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
-        // Input field
         let input_y = dialog.y + 44.0 * scale;
         let input_bounds = Rect::new(
             dialog.x + padding,
@@ -378,14 +363,13 @@ impl BranchNameDialog {
             dialog.width - padding * 2.0,
             line_h,
         );
-        output.extend(self.name_input.layout(text_renderer, input_bounds));
+        output.extend(self.name_input.layout(ctx, input_bounds));
 
-        // Worktree option checkboxes
         let mut next_cb_y = input_y + line_h + 6.0 * scale;
         if self.show_submodule_checkbox() {
             render_checkbox(
                 &mut output,
-                text_renderer,
+                ctx,
                 "Initialize submodules",
                 self.init_submodules,
                 dialog.x + padding,
@@ -397,7 +381,7 @@ impl BranchNameDialog {
         if self.show_lfs_checkbox() {
             render_checkbox(
                 &mut output,
-                text_renderer,
+                ctx,
                 "Checkout LFS files",
                 self.checkout_lfs,
                 dialog.x + padding,
@@ -406,14 +390,12 @@ impl BranchNameDialog {
             );
         }
 
-        // Buttons at bottom
         let button_y = dialog.bottom() - padding - line_h;
         let button_w = 80.0 * scale;
         let button_gap = 8.0 * scale;
         let cancel_x = dialog.right() - padding - button_w;
         let create_x = cancel_x - button_w - button_gap;
 
-        // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(
@@ -428,8 +410,8 @@ impl BranchNameDialog {
         let create_bounds = Rect::new(create_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.create_button.layout(text_renderer, create_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.create_button.layout(ctx, create_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }
@@ -438,7 +420,7 @@ impl BranchNameDialog {
 /// Render a checkbox with label at the given position.
 fn render_checkbox(
     output: &mut WidgetOutput,
-    text_renderer: &TextRenderer,
+    ctx: &LayoutCtx,
     label: &str,
     checked: bool,
     x: f32,
@@ -482,5 +464,5 @@ fn render_checkbox(
     };
     output
         .text_vertices
-        .extend(text_renderer.layout_text(label, text_x, y, text_color.to_array()));
+        .extend(ctx.text.layout_text(label, text_x, y, text_color.to_array()));
 }

@@ -5,12 +5,12 @@ use std::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the repo dialog
 #[derive(Clone, Debug)]
@@ -345,18 +345,7 @@ impl Widget for RepoDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl RepoDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -367,14 +356,14 @@ impl RepoDialog {
         let dialog = self.dialog_bounds(bounds, scale);
         let padding = 16.0 * scale;
         let line_h = 32.0 * scale;
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
 
         // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
         // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             "Open Repository",
             dialog.x + padding,
             title_y,
@@ -398,16 +387,16 @@ impl RepoDialog {
             dialog.width - padding * 2.0 - browse_w - browse_gap,
             line_h,
         );
-        output.extend(self.path_input.layout(text_renderer, input_bounds));
+        output.extend(self.path_input.layout(ctx, input_bounds));
 
         // Browse button
         let browse_bounds = Rect::new(input_bounds.right() + browse_gap, input_y, browse_w, line_h);
-        output.extend(self.browse_button.layout(text_renderer, browse_bounds));
+        output.extend(self.browse_button.layout(ctx, browse_bounds));
 
         // Error message (below input)
         if let Some(ref err) = self.error_message {
             let err_y = input_y + line_h + 4.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 err,
                 dialog.x + padding,
                 err_y,
@@ -418,7 +407,7 @@ impl RepoDialog {
         // Waiting indicator for native picker
         if self.picker_rx.is_some() {
             let wait_y = input_y + line_h + 4.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "Waiting for folder selection...",
                 dialog.x + padding,
                 wait_y,
@@ -429,7 +418,7 @@ impl RepoDialog {
         // Recent repos section
         if !self.recent_repos.is_empty() {
             let recent_label_y = input_y + line_h + 8.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "Recent",
                 dialog.x + padding,
                 recent_label_y,
@@ -471,7 +460,7 @@ impl RepoDialog {
                 } else {
                     theme::TEXT
                 };
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     &display_path,
                     dialog.x + padding + 4.0 * scale,
                     text_y,
@@ -502,12 +491,12 @@ impl RepoDialog {
         let open_bounds = Rect::new(open_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.open_button.layout(text_renderer, open_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.open_button.layout(ctx, open_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         // Hint text
         let hint_y = button_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Enter to open  |  Ctrl+O Browse",
             dialog.x + padding,
             hint_y,

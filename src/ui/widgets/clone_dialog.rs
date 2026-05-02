@@ -6,13 +6,13 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::github::RepoInfo;
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the clone dialog
 #[derive(Clone, Debug)]
@@ -511,18 +511,7 @@ impl Widget for CloneDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl CloneDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         if !self.visible {
             return output;
@@ -532,14 +521,14 @@ impl CloneDialog {
         let dialog = self.dialog_bounds(bounds, scale);
         let padding = 16.0 * scale;
         let line_h = 32.0 * scale;
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
 
         // Backdrop + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
         // Title
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             "Clone Repository",
             dialog.x + padding,
             title_y,
@@ -561,7 +550,7 @@ impl CloneDialog {
             dialog.width - padding * 2.0,
             line_h,
         );
-        output.extend(self.url_input.layout(text_renderer, url_bounds));
+        output.extend(self.url_input.layout(ctx, url_bounds));
 
         // Destination input + browse
         let dest_y = url_y + line_h + 8.0 * scale;
@@ -574,13 +563,13 @@ impl CloneDialog {
             line_h,
         );
         let browse_bounds = Rect::new(dest_bounds.right() + browse_gap, dest_y, browse_w, line_h);
-        output.extend(self.dest_input.layout(text_renderer, dest_bounds));
-        output.extend(self.browse_button.layout(text_renderer, browse_bounds));
+        output.extend(self.dest_input.layout(ctx, dest_bounds));
+        output.extend(self.browse_button.layout(ctx, browse_bounds));
 
         // Error message
         if let Some(ref err) = self.error_message {
             let err_y = dest_y + line_h + 4.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 err,
                 dialog.x + padding,
                 err_y,
@@ -622,7 +611,7 @@ impl CloneDialog {
             ));
         }
         let checkbox_label_x = checkbox_x + checkbox_size + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Clone as bare repository (--bare)",
             checkbox_label_x,
             checkbox_y,
@@ -634,7 +623,7 @@ impl CloneDialog {
         if list_area.height > 0.0 {
             if self.fetching_repos {
                 let fetch_y = list_area.y + 4.0 * scale;
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     "Loading repositories...",
                     list_area.x,
                     fetch_y,
@@ -649,7 +638,7 @@ impl CloneDialog {
                 } else {
                     format!("Matching repositories ({count})")
                 };
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     &label,
                     list_area.x,
                     label_y,
@@ -704,8 +693,8 @@ impl CloneDialog {
                     let name_y = item_y + 4.0 * scale;
                     let max_name_w = list_area.width - 8.0 * scale;
                     let name_display =
-                        truncate_to_width(&repo.full_name, bold_renderer, max_name_w);
-                    output.bold_text_vertices.extend(bold_renderer.layout_text(
+                        truncate_to_width(&repo.full_name, ctx.bold, max_name_w);
+                    output.bold_text_vertices.extend(ctx.bold.layout_text(
                         &name_display,
                         list_area.x + 4.0 * scale,
                         name_y,
@@ -716,8 +705,8 @@ impl CloneDialog {
                     if let Some(ref desc) = repo.description {
                         let desc_y = name_y + line_height + 1.0 * scale;
                         if desc_y + line_height <= item_y + item_h {
-                            let desc_display = truncate_to_width(desc, text_renderer, max_name_w);
-                            output.text_vertices.extend(text_renderer.layout_text(
+                            let desc_display = truncate_to_width(desc, ctx.text, max_name_w);
+                            output.text_vertices.extend(ctx.text.layout_text(
                                 &desc_display,
                                 list_area.x + 4.0 * scale,
                                 desc_y,
@@ -730,9 +719,9 @@ impl CloneDialog {
                     let mut badge_x = list_area.right() - 8.0 * scale;
                     if repo.private {
                         let badge = "private";
-                        let badge_w = text_renderer.measure_text(badge);
+                        let badge_w = ctx.text.measure_text(badge);
                         badge_x -= badge_w;
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        output.text_vertices.extend(ctx.text.layout_text(
                             badge,
                             badge_x,
                             name_y,
@@ -742,9 +731,9 @@ impl CloneDialog {
                     }
                     if repo.fork {
                         let badge = "fork";
-                        let badge_w = text_renderer.measure_text(badge);
+                        let badge_w = ctx.text.measure_text(badge);
                         badge_x -= badge_w;
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        output.text_vertices.extend(ctx.text.layout_text(
                             badge,
                             badge_x,
                             name_y,
@@ -792,12 +781,12 @@ impl CloneDialog {
         let clone_bounds = Rect::new(clone_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.clone_button.layout(text_renderer, clone_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.clone_button.layout(ctx, clone_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         // Hint
         let hint_y = button_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Enter to clone",
             dialog.x + padding,
             hint_y,

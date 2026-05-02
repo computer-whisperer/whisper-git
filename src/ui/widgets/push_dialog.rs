@@ -1,12 +1,12 @@
 //! Push dialog - modal overlay for pushing any branch to any remote with optional branch name
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, Dropdown, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the push dialog
 #[derive(Clone, Debug)]
@@ -283,18 +283,7 @@ impl Widget for PushDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl PushDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -312,7 +301,7 @@ impl PushDialog {
 
         // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             "Push Branch",
             dialog.x + padding,
             title_y,
@@ -328,7 +317,7 @@ impl PushDialog {
 
         // Local branch label + input
         let local_label_y = dialog.y + 44.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Local branch:",
             dialog.x + padding,
             local_label_y,
@@ -339,12 +328,12 @@ impl PushDialog {
         let local_input_bounds = Rect::new(dialog.x + padding, local_input_y, input_w, line_h);
         output.extend(
             self.local_branch_input
-                .layout(text_renderer, local_input_bounds),
+                .layout(ctx, local_input_bounds),
         );
 
         // Remote label + input
         let remote_label_y = local_input_y + line_h + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Remote:",
             dialog.x + padding,
             remote_label_y,
@@ -354,12 +343,12 @@ impl PushDialog {
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
         output.extend(
             self.remote_dropdown
-                .layout(text_renderer, remote_input_bounds),
+                .layout(ctx, remote_input_bounds),
         );
 
         // Remote branch label + input
         let remote_branch_label_y = remote_input_y + line_h + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Remote branch:",
             dialog.x + padding,
             remote_branch_label_y,
@@ -370,7 +359,7 @@ impl PushDialog {
             Rect::new(dialog.x + padding, remote_branch_input_y, input_w, line_h);
         output.extend(
             self.remote_branch_input
-                .layout(text_renderer, remote_branch_input_bounds),
+                .layout(ctx, remote_branch_input_bounds),
         );
 
         // Checkbox + label
@@ -413,7 +402,7 @@ impl PushDialog {
 
         // Checkbox label
         let checkbox_label_x = checkbox_x + checkbox_size + 8.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Force push (--force-with-lease)",
             checkbox_label_x,
             checkbox_y,
@@ -423,7 +412,7 @@ impl PushDialog {
         // Warning text if force push is enabled
         if self.force_push {
             let warning_y = checkbox_y + checkbox_size + 4.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "⚠ Force push will overwrite remote history. Use with caution.",
                 dialog.x + padding,
                 warning_y,
@@ -453,12 +442,14 @@ impl PushDialog {
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.push_button.layout(text_renderer, confirm_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.push_button.layout(ctx, confirm_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }
+}
 
+impl PushDialog {
     /// Compute the bounds of the remote dropdown (for popup rendering).
     fn remote_dropdown_bounds(&self, bounds: Rect) -> Rect {
         let scale = (bounds.height / 720.0).max(1.0);
@@ -475,12 +466,11 @@ impl PushDialog {
     }
 
     /// Render the dropdown popup in a separate layer so it draws on top of all dialog text.
-    pub fn layout_popup(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout_popup(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         if !self.visible {
             return WidgetOutput::new();
         }
         let dropdown_bounds = self.remote_dropdown_bounds(bounds);
-        self.remote_dropdown
-            .layout_popup(text_renderer, dropdown_bounds)
+        self.remote_dropdown.layout_popup(ctx, dropdown_bounds)
     }
 }

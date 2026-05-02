@@ -7,7 +7,7 @@ use crate::git::{SubmoduleInfo, WorkingDirStatus, WorktreeInfo};
 use crate::input::{EventResponse, InputEvent, Key};
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
-    WidgetOutput, create_rect_outline_vertices, create_rect_vertices,
+    LayoutCtx, WidgetOutput, create_rect_outline_vertices, create_rect_vertices,
     create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::context_menu::MenuItem;
@@ -1585,7 +1585,7 @@ impl StagingWell {
     }
 
     /// Layout the staging well
-    pub fn layout(&mut self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    pub fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let s = self.scale;
 
@@ -1637,7 +1637,7 @@ impl StagingWell {
             };
 
             let amber_color = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &banner_text,
                 bounds.x + 8.0 * s,
                 bounds.y + 6.0 * s,
@@ -1647,7 +1647,7 @@ impl StagingWell {
             // Show conflicted file count
             if has_conflicts {
                 let conflict_label = format!("Conflicted Files ({})", conflict_count);
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     &conflict_label,
                     bounds.x + 8.0 * s,
                     bounds.y + 24.0 * s,
@@ -1662,7 +1662,7 @@ impl StagingWell {
                     bounds.width,
                     conflict_banner_h - (list_y - bounds.y),
                 );
-                output.extend(self.conflicted_list.layout(text_renderer, conflict_bounds));
+                output.extend(self.conflicted_list.layout(ctx, conflict_bounds));
             }
         }
 
@@ -1681,7 +1681,7 @@ impl StagingWell {
 
         // Section title
         let unstaged_title = format!("Unstaged Changes ({})", unstaged_count);
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             &unstaged_title,
             regions.unstaged_header.x + 4.0 * s,
             regions.unstaged_header.y + 5.0 * s,
@@ -1694,9 +1694,9 @@ impl StagingWell {
 
         if unstaged_empty {
             // Compact inline hint after header title
-            let title_w = text_renderer.measure_text(&unstaged_title);
+            let title_w = ctx.text.measure_text(&unstaged_title);
             let hint = "  \u{2014} Working tree clean";
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 hint,
                 regions.unstaged_header.x + 4.0 * s + title_w,
                 regions.unstaged_header.y + 5.0 * s,
@@ -1706,7 +1706,7 @@ impl StagingWell {
             // Stage All button in header (only when there are files)
             output.extend(
                 self.stage_all_btn
-                    .layout(text_renderer, regions.stage_all_btn),
+                    .layout(ctx, regions.stage_all_btn),
             );
 
             // Subtle background tint for unstaged area (orange tint)
@@ -1716,7 +1716,7 @@ impl StagingWell {
             ));
 
             // Unstaged files list
-            output.extend(self.unstaged_list.layout(text_renderer, regions.unstaged));
+            output.extend(self.unstaged_list.layout(ctx, regions.unstaged));
         }
 
         // --- Divider between unstaged and untracked/staged ---
@@ -1740,7 +1740,7 @@ impl StagingWell {
 
             // Section title
             let untracked_title = format!("Untracked Files ({})", untracked_count);
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &untracked_title,
                 regions.untracked_header.x + 4.0 * s,
                 regions.untracked_header.y + 5.0 * s,
@@ -1750,7 +1750,7 @@ impl StagingWell {
             // Track All button in header
             output.extend(
                 self.track_all_btn
-                    .layout(text_renderer, regions.track_all_btn),
+                    .layout(ctx, regions.track_all_btn),
             );
 
             // Subtle background tint for untracked area (blue tint)
@@ -1760,7 +1760,7 @@ impl StagingWell {
             ));
 
             // Untracked files list
-            output.extend(self.untracked_list.layout(text_renderer, regions.untracked));
+            output.extend(self.untracked_list.layout(ctx, regions.untracked));
 
             // Divider after untracked section
             let div_ut_y = regions.untracked.bottom() + 2.0 * s;
@@ -1785,7 +1785,7 @@ impl StagingWell {
 
         // Section title
         let staged_title = format!("Staged Changes ({})", staged_count);
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             &staged_title,
             regions.staged_header.x + 4.0 * s,
             regions.staged_header.y + 5.0 * s,
@@ -1798,9 +1798,9 @@ impl StagingWell {
 
         if staged_empty {
             // Compact inline hint after header title
-            let title_w = text_renderer.measure_text(&staged_title);
+            let title_w = ctx.text.measure_text(&staged_title);
             let hint = "  \u{2014} Stage files to commit them";
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 hint,
                 regions.staged_header.x + 4.0 * s + title_w,
                 regions.staged_header.y + 5.0 * s,
@@ -1810,7 +1810,7 @@ impl StagingWell {
             // Unstage All button in header (only when there are files)
             output.extend(
                 self.unstage_all_btn
-                    .layout(text_renderer, regions.unstage_all_btn),
+                    .layout(ctx, regions.unstage_all_btn),
             );
 
             // Subtle background tint for staged area (green tint)
@@ -1820,7 +1820,7 @@ impl StagingWell {
             ));
 
             // Staged files list
-            output.extend(self.staged_list.layout(text_renderer, regions.staged));
+            output.extend(self.staged_list.layout(ctx, regions.staged));
         }
 
         // --- Divider between staged and commit area ---
@@ -1858,7 +1858,7 @@ impl StagingWell {
         } else {
             theme::TEXT_BRIGHT
         };
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             title_text,
             regions.commit_area.x + 4.0 * s,
             title_y,
@@ -1875,15 +1875,15 @@ impl StagingWell {
         } else {
             theme::TEXT_MUTED
         };
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             &char_count,
-            regions.commit_area.right() - text_renderer.measure_text(&char_count) - 4.0 * s,
+            regions.commit_area.right() - ctx.text.measure_text(&char_count) - 4.0 * s,
             title_y,
             count_color.to_array(),
         ));
 
         // Subject input
-        output.extend(self.subject_input.layout(text_renderer, regions.subject));
+        output.extend(self.subject_input.layout(ctx, regions.subject));
 
         // Character limit progress bar below subject input
         if subject_len > 0 {
@@ -1913,7 +1913,7 @@ impl StagingWell {
         }
 
         // Body area
-        output.extend(self.body_area.layout(text_renderer, regions.body));
+        output.extend(self.body_area.layout(ctx, regions.body));
 
         // --- Divider between commit area and buttons ---
         let btn_divider_y = regions.buttons.y - 2.0 * s;
@@ -1932,13 +1932,13 @@ impl StagingWell {
         // =============================================================
 
         // AI generate button
-        output.extend(self.ai_generate_btn.layout(text_renderer, regions.ai_btn));
+        output.extend(self.ai_generate_btn.layout(ctx, regions.ai_btn));
 
         // Amend toggle button
-        output.extend(self.amend_btn.layout(text_renderer, regions.amend_btn));
+        output.extend(self.amend_btn.layout(ctx, regions.amend_btn));
 
         // Commit button
-        output.extend(self.commit_btn.layout(text_renderer, regions.commit_btn));
+        output.extend(self.commit_btn.layout(ctx, regions.commit_btn));
 
         // =============================================================
         // 5. SUBMODULES SECTION (between staged and commit, only if any exist)
@@ -1958,7 +1958,7 @@ impl StagingWell {
             // Section header
             let header_y = sm_rect.y + 4.0 * s;
             let sm_title = format!("Submodules ({})", self.submodules.len());
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &sm_title,
                 sm_left + 4.0 * s,
                 header_y + 2.0 * s,
@@ -1992,13 +1992,13 @@ impl StagingWell {
                     // Status dot
                     let dot = "\u{25CF}"; // ●
                     let dot_x = sm_left + 4.0 * s;
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    output.text_vertices.extend(ctx.text.layout_text(
                         dot,
                         dot_x,
                         row_y + 2.0,
                         dot_color.to_array(),
                     ));
-                    let dot_w = text_renderer.measure_text(dot) + 4.0;
+                    let dot_w = ctx.text.measure_text(dot) + 4.0;
 
                     // Revision summary shown on the right:
                     // pin=<HEAD tree> idx=<index gitlink> wd=<checked out gitlink>.
@@ -2037,10 +2037,10 @@ impl StagingWell {
                     } else {
                         format!("{} ({})", sm.name, sm.branch)
                     };
-                    let name_display = truncate_to_width(&name_text, text_renderer, name_w);
+                    let name_display = truncate_to_width(&name_text, ctx.text, name_w);
 
                     // Name + branch on left
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    output.text_vertices.extend(ctx.text.layout_text(
                         &name_display,
                         name_x,
                         row_y + 2.0,
@@ -2049,9 +2049,9 @@ impl StagingWell {
 
                     // Revision state summary on right
                     if !rev_text.is_empty() {
-                        let rev_display = truncate_to_width(&rev_text, text_renderer, rev_col_w);
-                        let rev_w = text_renderer.measure_text(&rev_display);
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        let rev_display = truncate_to_width(&rev_text, ctx.text, rev_col_w);
+                        let rev_w = ctx.text.measure_text(&rev_display);
+                        output.text_vertices.extend(ctx.text.layout_text(
                             &rev_display,
                             sm_left + sm_width - rev_w - 4.0 * s,
                             row_y + 2.0,

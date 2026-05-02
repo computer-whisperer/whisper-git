@@ -6,8 +6,8 @@ use std::time::Instant;
 use crate::git::{FileStatus, FileStatusKind};
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices,
-    create_rounded_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, WidgetState, create_rect_outline_vertices,
+    create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::scrollbar::{ScrollAction, Scrollbar};
 use crate::ui::{Color, Rect, TextRenderer};
@@ -507,7 +507,7 @@ impl Widget for FileList {
         EventResponse::Ignored
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         // Background
@@ -528,7 +528,7 @@ impl Widget for FileList {
             border_thickness,
         ));
 
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
         let header_height = self.header_height();
         let title_row_h = self.title_row_height();
 
@@ -555,7 +555,7 @@ impl Widget for FileList {
                 "\u{25BC}"
             }; // ▲ Staged / ▼ Unstaged
             let title_text = format!("{} {}", arrow, self.title);
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &title_text,
                 bounds.x + 10.0,
                 bounds.y + 6.0,
@@ -564,8 +564,8 @@ impl Widget for FileList {
 
             // File count pill badge (right of title)
             let count_text = format!("{}", self.files.len());
-            let title_width = text_renderer.measure_text(&title_text);
-            let count_width = text_renderer.measure_text(&count_text);
+            let title_width = ctx.text.measure_text(&title_text);
+            let count_width = ctx.text.measure_text(&count_text);
             let pill_pad_h = 6.0;
             let pill_pad_v = 2.0;
             let pill_x = bounds.x + 10.0 + title_width + 8.0;
@@ -587,7 +587,7 @@ impl Widget for FileList {
             } else {
                 theme::STATUS_BEHIND
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &count_text,
                 pill_x + pill_pad_h,
                 bounds.y + 6.0,
@@ -610,8 +610,8 @@ impl Widget for FileList {
             let (total_add, total_del) = self.totals();
             if total_add > 0 || total_del > 0 {
                 let stats_text = format!("+{} -{}", total_add, total_del);
-                let stats_x = bounds.right() - text_renderer.measure_text(&stats_text) - 10.0;
-                output.text_vertices.extend(text_renderer.layout_text(
+                let stats_x = bounds.right() - ctx.text.measure_text(&stats_text) - 10.0;
+                output.text_vertices.extend(ctx.text.layout_text(
                     &stats_text,
                     stats_x,
                     bounds.y + 6.0,
@@ -652,41 +652,41 @@ impl Widget for FileList {
                     // Render count in color
                     output
                         .text_vertices
-                        .extend(text_renderer.layout_text_scaled(
+                        .extend(ctx.text.layout_text_scaled(
                             &count_str,
                             sx,
                             summary_y,
                             color.to_array(),
                             small_scale,
                         ));
-                    sx += text_renderer.measure_text_scaled(&count_str, small_scale);
+                    sx += ctx.text.measure_text_scaled(&count_str, small_scale);
 
                     // Render label in muted text
                     let label_str = format!(" {}", label);
                     output
                         .text_vertices
-                        .extend(text_renderer.layout_text_scaled(
+                        .extend(ctx.text.layout_text_scaled(
                             &label_str,
                             sx,
                             summary_y,
                             theme::TEXT_MUTED.with_alpha(0.7).to_array(),
                             small_scale,
                         ));
-                    sx += text_renderer.measure_text_scaled(&label_str, small_scale);
+                    sx += ctx.text.measure_text_scaled(&label_str, small_scale);
 
                     // Comma separator
                     if i + 1 < parts.len() {
                         let sep = ", ";
                         output
                             .text_vertices
-                            .extend(text_renderer.layout_text_scaled(
+                            .extend(ctx.text.layout_text_scaled(
                                 sep,
                                 sx,
                                 summary_y,
                                 theme::TEXT_MUTED.with_alpha(0.5).to_array(),
                                 small_scale,
                             ));
-                        sx += text_renderer.measure_text_scaled(sep, small_scale);
+                        sx += ctx.text.measure_text_scaled(sep, small_scale);
                     }
                 }
             }
@@ -742,7 +742,7 @@ impl Widget for FileList {
                 FileStatusKind::Conflicted => (STATUS_CONFLICTED, "C"),
             };
 
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 status_letter,
                 bounds.x + 10.0 * self.scale,
                 y + 2.0 * self.scale,
@@ -752,7 +752,7 @@ impl Widget for FileList {
             // File path - split into directory (dim) and filename (bright)
             let path_x_offset = 30.0 * self.scale; // After status letter
             let max_path_width = bounds.width - path_x_offset - 30.0 * self.scale;
-            let path = truncate_path_to_width(&file.path, text_renderer, max_path_width);
+            let path = truncate_path_to_width(&file.path, ctx.text, max_path_width);
 
             let (dir_part, file_part) = match path.rfind('/') {
                 Some(pos) => (&path[..=pos], &path[pos + 1..]),
@@ -768,13 +768,13 @@ impl Widget for FileList {
                 } else {
                     theme::TEXT_MUTED
                 };
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     dir_part,
                     text_x,
                     y + 2.0 * self.scale,
                     dir_color.to_array(),
                 ));
-                text_x += text_renderer.measure_text(dir_part);
+                text_x += ctx.text.measure_text(dir_part);
             }
 
             // Filename portion in bright color
@@ -783,7 +783,7 @@ impl Widget for FileList {
             } else {
                 theme::TEXT
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 file_part,
                 text_x,
                 y + 2.0 * self.scale,
@@ -794,8 +794,8 @@ impl Widget for FileList {
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
                 let stats_x =
-                    bounds.right() - text_renderer.measure_text(&stats) - 10.0 * self.scale;
-                output.text_vertices.extend(text_renderer.layout_text(
+                    bounds.right() - ctx.text.measure_text(&stats) - 10.0 * self.scale;
+                output.text_vertices.extend(ctx.text.layout_text(
                     &stats,
                     stats_x,
                     y + 2.0 * self.scale,
@@ -822,7 +822,7 @@ impl Widget for FileList {
             };
 
             let full_text = format!("{} {}", check_icon, empty_text);
-            let text_width = text_renderer.measure_text(&full_text);
+            let text_width = ctx.text.measure_text(&full_text);
             let center_x = bounds.x + (bounds.width - text_width) / 2.0;
             // Offset slightly upward to make room for hint below
             let center_y =
@@ -834,14 +834,14 @@ impl Widget for FileList {
             } else {
                 theme::STATUS_CLEAN.with_alpha(0.6)
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 check_icon,
                 center_x,
                 center_y,
                 check_color.to_array(),
             ));
-            let icon_w = text_renderer.measure_text(check_icon) + 4.0;
-            output.text_vertices.extend(text_renderer.layout_text(
+            let icon_w = ctx.text.measure_text(check_icon) + 4.0;
+            output.text_vertices.extend(ctx.text.layout_text(
                 empty_text,
                 center_x + icon_w,
                 center_y,
@@ -849,10 +849,10 @@ impl Widget for FileList {
             ));
 
             // Hint text below (smaller, more muted)
-            let hint_width = text_renderer.measure_text_scaled(hint_text, 0.85);
+            let hint_width = ctx.text.measure_text_scaled(hint_text, 0.85);
             let hint_x = bounds.x + (bounds.width - hint_width) / 2.0;
             let hint_y = center_y + line_height * 1.4;
-            output.text_vertices.extend(text_renderer.layout_text_small(
+            output.text_vertices.extend(ctx.text.layout_text_small(
                 hint_text,
                 hint_x,
                 hint_y,

@@ -4,36 +4,19 @@
 //! but regenerate vertices each frame (immediate-mode rendering).
 
 use crate::input::{EventResponse, InputEvent};
-use crate::ui::{AvatarRenderer, IconRenderer, Rect, SplineVertex, TextRenderer, TextVertex};
+use crate::ui::{IconRenderer, Rect, SplineVertex, TextRenderer, TextVertex};
 
 /// Cross-cutting rendering plumbing passed to every widget's `layout`.
 ///
-/// Holds resources every widget might need (text renderers, icon/avatar atlases),
-/// the display HiDPI scale, and animation time. Widget-specific data
-/// (commit lists, branch names, etc.) is *not* threaded through here — those
-/// stay as method-specific arguments on the few views that need them.
-///
-/// `scale` is the display HiDPI factor (1.0, 1.5, 2.0). It is **not** a
-/// "size up because bounds got bigger" factor — widgets that scale their
-/// internals relative to bounds (e.g. header_bar's `bounds.height / 32.0`)
-/// continue to derive that locally.
-#[allow(dead_code)] // Fields are wired up in subsequent waves of the LayoutCtx refactor
+/// Holds resources every widget might need (text renderers, icon atlas) and
+/// animation time. Widget-specific data (commit lists, branch names, etc.) is
+/// *not* threaded through here — those stay as method-specific arguments on
+/// the few views that need them.
 pub struct LayoutCtx<'a> {
     pub text: &'a TextRenderer,
     pub bold: &'a TextRenderer,
     pub icons: Option<&'a IconRenderer>,
-    pub avatars: Option<&'a AvatarRenderer>,
-    pub scale: f32,
     pub elapsed: f32,
-    pub screen: Rect,
-}
-
-impl LayoutCtx<'_> {
-    /// Scale a logical pixel value by the current display scale.
-    #[allow(dead_code)] // Used in subsequent waves of the LayoutCtx refactor
-    pub fn px(&self, n: f32) -> f32 {
-        n * self.scale
-    }
 }
 
 /// Common widget state
@@ -100,7 +83,12 @@ impl Default for WidgetOutput {
     }
 }
 
-/// The core widget trait
+/// The core widget trait.
+///
+/// `layout` takes `&mut self` because several composite widgets (context menu,
+/// staging well, branch sidebar, commit detail, diff view, tooltip) cache
+/// hit-test bounds during the layout pass. Simple widgets that don't mutate
+/// during layout just don't read `self` mutably — the cost is zero.
 pub trait Widget {
     /// Handle an input event, returning whether it was consumed
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
@@ -114,7 +102,7 @@ pub trait Widget {
     }
 
     /// Layout the widget and produce rendering output
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput;
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput;
 
     /// Set focus state
     fn set_focused(&mut self, focused: bool) {

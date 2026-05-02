@@ -2,7 +2,9 @@
 
 use crate::ci::CiState;
 use crate::input::{EventResponse, InputEvent, MouseButton};
-use crate::ui::widget::{Widget, WidgetOutput, create_arc_vertices, create_rect_vertices, theme};
+use crate::ui::widget::{
+    LayoutCtx, Widget, WidgetOutput, create_arc_vertices, create_rect_vertices, theme,
+};
 use crate::ui::{Rect, TextRenderer};
 
 /// Actions emitted by the tab bar
@@ -266,7 +268,7 @@ impl Widget for TabBar {
         }
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if self.tabs.is_empty() {
@@ -278,8 +280,8 @@ impl Widget for TabBar {
             .spline_vertices
             .extend(create_rect_vertices(&bounds, theme::SURFACE.to_array()));
 
-        let cached = self.compute_bounds(bounds, text_renderer);
-        let line_height = text_renderer.line_height();
+        let cached = self.compute_bounds(bounds, ctx.text);
+        let line_height = ctx.text.line_height();
 
         for (i, (tab_rect, close_rect)) in cached
             .tab_rects
@@ -347,7 +349,7 @@ impl Widget for TabBar {
                 ));
                 text_x += ci_dot_size + ci_dot_gap;
             }
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &self.tabs[i].name,
                 text_x,
                 text_y,
@@ -361,9 +363,9 @@ impl Widget for TabBar {
                 } else {
                     theme::TEXT_MUTED
                 };
-                let cx = close_rect.x + (close_rect.width - text_renderer.measure_text("x")) / 2.0;
+                let cx = close_rect.x + (close_rect.width - ctx.text.measure_text("x")) / 2.0;
                 let cy = close_rect.y + (close_rect.height - line_height) / 2.0;
-                output.text_vertices.extend(text_renderer.layout_text(
+                output.text_vertices.extend(ctx.text.layout_text(
                     "x",
                     cx,
                     cy,
@@ -394,9 +396,9 @@ impl Widget for TabBar {
             theme::TEXT_MUTED
         };
         let plus_x =
-            cached.new_rect.x + (cached.new_rect.width - text_renderer.measure_text("+")) / 2.0;
+            cached.new_rect.x + (cached.new_rect.width - ctx.text.measure_text("+")) / 2.0;
         let plus_y = cached.new_rect.y + (cached.new_rect.height - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "+",
             plus_x,
             plus_y,

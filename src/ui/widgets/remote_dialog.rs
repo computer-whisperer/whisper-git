@@ -1,11 +1,11 @@
 //! Remote dialog - modal overlay for adding/editing git remotes
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// The mode the remote dialog was opened in
 #[derive(Clone, Debug)]
@@ -306,18 +306,7 @@ impl Widget for RemoteDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl RemoteDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -330,33 +319,29 @@ impl RemoteDialog {
         let line_h = 32.0 * scale;
         let label_h = 18.0 * scale;
 
-        // Backdrop + shadow + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
 
-        // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             &self.title,
             dialog.x + padding,
             title_y,
             theme::TEXT_BRIGHT.to_array(),
         ));
 
-        // Title separator
         let sep_y = dialog.y + 36.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
-        // First label + input
         let first_label_y = dialog.y + 44.0 * scale;
         let first_label = match &self.mode {
             RemoteDialogMode::Add => "Name",
             RemoteDialogMode::EditUrl(_) => "URL",
             RemoteDialogMode::Rename(_) => "New Name",
         };
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             first_label,
             dialog.x + padding,
             first_label_y,
@@ -366,12 +351,11 @@ impl RemoteDialog {
         let first_input_y = first_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
         let first_input_bounds = Rect::new(dialog.x + padding, first_input_y, input_w, line_h);
-        output.extend(self.first_input.layout(text_renderer, first_input_bounds));
+        output.extend(self.first_input.layout(ctx, first_input_bounds));
 
-        // Second label + input (Add mode only)
         if self.is_two_field() {
             let second_label_y = first_input_y + line_h + 8.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "URL",
                 dialog.x + padding,
                 second_label_y,
@@ -381,17 +365,15 @@ impl RemoteDialog {
             let second_input_y = second_label_y + label_h;
             let second_input_bounds =
                 Rect::new(dialog.x + padding, second_input_y, input_w, line_h);
-            output.extend(self.second_input.layout(text_renderer, second_input_bounds));
+            output.extend(self.second_input.layout(ctx, second_input_bounds));
         }
 
-        // Buttons at bottom
         let button_y = dialog.bottom() - padding - line_h;
         let button_w = 80.0 * scale;
         let button_gap = 8.0 * scale;
         let cancel_x = dialog.right() - padding - button_w;
         let confirm_x = cancel_x - button_w - button_gap;
 
-        // Button separator
         let btn_sep_y = button_y - 8.0 * scale;
         output.spline_vertices.extend(create_rect_vertices(
             &Rect::new(
@@ -406,8 +388,8 @@ impl RemoteDialog {
         let confirm_bounds = Rect::new(confirm_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.confirm_button.layout(text_renderer, confirm_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.confirm_button.layout(ctx, confirm_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }

@@ -1,12 +1,12 @@
 //! Token management dialog - secure entry/removal of GitHub and GitLab API tokens
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_outline_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_outline_vertices,
     create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions emitted by the token dialog
 #[derive(Clone, Debug)]
@@ -588,20 +588,20 @@ impl Widget for TokenDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         if !self.visible {
             return output;
         }
 
         let dl = self.compute_layout(bounds);
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
 
         // Backdrop + dialog background
         create_dialog_backdrop(&mut output, &bounds, &dl.dialog, dl.scale);
 
         // Title
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Manage Tokens",
             dl.dialog.x + dl.padding,
             dl.dialog.y + dl.padding,
@@ -622,7 +622,7 @@ impl Widget for TokenDialog {
 
         // === GitHub section ===
         let label_y = dl.github_row_y + (dl.line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "GitHub",
             dl.dialog.x + dl.padding,
             label_y,
@@ -641,8 +641,8 @@ impl Widget for TokenDialog {
             theme::TEXT_MUTED.to_array()
         };
         let status_x =
-            dl.dialog.x + dl.padding + text_renderer.measure_text("GitHub") + 12.0 * dl.scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+            dl.dialog.x + dl.padding + ctx.text.measure_text("GitHub") + 12.0 * dl.scale;
+        output.text_vertices.extend(ctx.text.layout_text(
             status_text,
             status_x,
             label_y,
@@ -656,7 +656,7 @@ impl Widget for TokenDialog {
             dl.btn_w,
             dl.line_h,
         );
-        output.extend(self.github_set_button.layout(text_renderer, set_bounds));
+        output.extend(self.github_set_button.layout(ctx, set_bounds));
         if self.github_has_token {
             let clear_bounds = Rect::new(
                 dl.right_edge - dl.btn_w,
@@ -664,7 +664,7 @@ impl Widget for TokenDialog {
                 dl.btn_w,
                 dl.line_h,
             );
-            output.extend(self.github_clear_button.layout(text_renderer, clear_bounds));
+            output.extend(self.github_clear_button.layout(ctx, clear_bounds));
         }
 
         // GitHub separator
@@ -687,7 +687,7 @@ impl Widget for TokenDialog {
             dl.add_button_y - dl.line_h - 4.0 * dl.scale
         };
         let gl_label_y = gitlab_header_y + (dl.line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "GitLab",
             dl.dialog.x + dl.padding,
             gl_label_y,
@@ -700,7 +700,7 @@ impl Widget for TokenDialog {
             let row_label_y = row_y + (dl.line_h - line_height) / 2.0;
 
             // Host name
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 host,
                 dl.dialog.x + dl.padding + 12.0 * dl.scale,
                 row_label_y,
@@ -721,9 +721,9 @@ impl Widget for TokenDialog {
             let gl_status_x = dl.dialog.x
                 + dl.padding
                 + 12.0 * dl.scale
-                + text_renderer.measure_text(host)
+                + ctx.text.measure_text(host)
                 + 12.0 * dl.scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 gl_status,
                 gl_status_x,
                 row_label_y,
@@ -737,13 +737,13 @@ impl Widget for TokenDialog {
                 dl.btn_w,
                 dl.line_h,
             );
-            if let Some(btn) = self.gitlab_set_buttons.get(i) {
-                output.extend(btn.layout(text_renderer, set_bounds));
+            if let Some(btn) = self.gitlab_set_buttons.get_mut(i) {
+                output.extend(btn.layout(ctx, set_bounds));
             }
             if *has_token {
                 let clear_bounds = Rect::new(dl.right_edge - dl.btn_w, row_y, dl.btn_w, dl.line_h);
-                if let Some(btn) = self.gitlab_clear_buttons.get(i) {
-                    output.extend(btn.layout(text_renderer, clear_bounds));
+                if let Some(btn) = self.gitlab_clear_buttons.get_mut(i) {
+                    output.extend(btn.layout(ctx, clear_bounds));
                 }
             }
 
@@ -763,7 +763,7 @@ impl Widget for TokenDialog {
         // Add GitLab host button
         let add_w = 180.0 * dl.scale;
         let add_bounds = Rect::new(dl.dialog.x + dl.padding, dl.add_button_y, add_w, dl.line_h);
-        output.extend(self.gitlab_add_button.layout(text_renderer, add_bounds));
+        output.extend(self.gitlab_add_button.layout(ctx, add_bounds));
 
         // === Inline edit area ===
         if let Some((edit_y, two_line)) = dl.edit_area {
@@ -794,11 +794,11 @@ impl Widget for TokenDialog {
             ));
 
             if two_line {
-                output.extend(self.host_input.layout(text_renderer, host_bounds));
+                output.extend(self.host_input.layout(ctx, host_bounds));
             }
-            output.extend(self.edit_input.layout(text_renderer, token_bounds));
-            output.extend(self.edit_save_button.layout(text_renderer, save_bounds));
-            output.extend(self.edit_cancel_button.layout(text_renderer, cancel_bounds));
+            output.extend(self.edit_input.layout(ctx, token_bounds));
+            output.extend(self.edit_save_button.layout(ctx, save_bounds));
+            output.extend(self.edit_cancel_button.layout(ctx, cancel_bounds));
         }
 
         // === Close button ===
@@ -817,7 +817,7 @@ impl Widget for TokenDialog {
             theme::BORDER.with_alpha(0.4).to_array(),
         ));
 
-        output.extend(self.close_button.layout(text_renderer, close_bounds));
+        output.extend(self.close_button.layout(ctx, close_bounds));
 
         // Keychain status note at bottom-left
         let note_y = dl.close_y + (dl.line_h - line_height) / 2.0;
@@ -826,7 +826,7 @@ impl Widget for TokenDialog {
         } else {
             "Keychain unavailable \u{2014} stored in config"
         };
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             note,
             dl.dialog.x + dl.padding,
             note_y,

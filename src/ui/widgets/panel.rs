@@ -1,7 +1,9 @@
 //! Panel widget - a container with optional background and border
 
-use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetOutput, create_rect_vertices, create_rect_outline_vertices, theme};
+use crate::ui::widget::{
+    LayoutCtx, Widget, WidgetOutput, create_rect_outline_vertices, create_rect_vertices, theme,
+};
+use crate::ui::{Color, Rect};
 
 /// A panel container with background color and optional border
 pub struct Panel {
@@ -68,15 +70,15 @@ impl Default for Panel {
 }
 
 impl Widget for Panel {
-    fn layout(&self, _text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, _ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
-        // Draw background
         if let Some(bg) = self.background {
-            output.spline_vertices.extend(create_rect_vertices(&bounds, bg.to_array()));
+            output
+                .spline_vertices
+                .extend(create_rect_vertices(&bounds, bg.to_array()));
         }
 
-        // Draw border
         if let Some(border) = self.border {
             output.spline_vertices.extend(create_rect_outline_vertices(
                 &bounds,

@@ -2,10 +2,10 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Color, Rect, TextRenderer};
+use crate::ui::{Color, Rect};
 
 /// The merge strategy to use
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,18 +331,7 @@ impl Widget for MergeDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl MergeDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -361,7 +350,7 @@ impl MergeDialog {
         // Title (bold)
         let title = format!("Merge '{}' into {}", self.branch_name, self.current_branch);
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             &title,
             dialog.x + padding,
             title_y,
@@ -377,7 +366,7 @@ impl MergeDialog {
 
         // Strategy label
         let strategy_label_y = dialog.y + 44.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Strategy:",
             dialog.x + padding,
             strategy_label_y,
@@ -469,7 +458,7 @@ impl MergeDialog {
             } else {
                 theme::TEXT
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 label,
                 text_x,
                 item_y + 3.0 * scale,
@@ -481,7 +470,7 @@ impl MergeDialog {
         if self.show_message_input() {
             let radio_end_y = radio_start_y + items.len() as f32 * radio_line_h;
             let label_y = radio_end_y + 2.0 * scale;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "Commit message:",
                 dialog.x + padding,
                 label_y,
@@ -492,14 +481,14 @@ impl MergeDialog {
             let input_y = radio_end_y + label_h + 4.0 * scale;
             let input_w = dialog.width - padding * 2.0;
             let input_bounds = Rect::new(dialog.x + padding, input_y, input_w, line_h);
-            output.extend(self.message_input.layout(text_renderer, input_bounds));
+            output.extend(self.message_input.layout(ctx, input_bounds));
         }
 
         // Warning text (amber)
         if let Some(ref warning) = self.warning {
             let warning_y = dialog.bottom() - padding - line_h - 20.0 * scale;
             let amber = [1.0, 0.718, 0.302, 1.0]; // #FFB74D
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 warning,
                 dialog.x + padding,
                 warning_y,
@@ -529,8 +518,8 @@ impl MergeDialog {
         let merge_bounds = Rect::new(merge_x, button_y, button_w, line_h);
         let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
 
-        output.extend(self.merge_button.layout(text_renderer, merge_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
+        output.extend(self.merge_button.layout(ctx, merge_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
 
         output
     }

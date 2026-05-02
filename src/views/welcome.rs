@@ -12,10 +12,10 @@ use winit::event_loop::EventLoopProxy;
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::{Rect, TextRenderer};
+use crate::ui::Rect;
 
 #[derive(Clone, Debug)]
 pub enum WelcomeAction {
@@ -443,22 +443,11 @@ impl Widget for WelcomeView {
         EventResponse::Ignored
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl WelcomeView {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let (left, right) = Self::split_columns(bounds);
         let actions = Self::action_layout(left);
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
 
         // Surface fills (subtle) — slightly raised left column to suggest sidebar
         output.spline_vertices.extend(create_rect_vertices(
@@ -474,7 +463,7 @@ impl WelcomeView {
         // ── Left: title and actions ────────────────────────────────────────
         output
             .bold_text_vertices
-            .extend(bold_renderer.layout_text_scaled(
+            .extend(ctx.bold.layout_text_scaled(
                 "Whisper Git",
                 actions.open.x,
                 actions.title_y,
@@ -483,7 +472,7 @@ impl WelcomeView {
             ));
         output
             .text_vertices
-            .extend(text_renderer.layout_text_scaled(
+            .extend(ctx.text.layout_text_scaled(
                 "GPU-accelerated Git client",
                 actions.open.x,
                 actions.title_y + line_height * TITLE_SCALE + 6.0,
@@ -491,44 +480,28 @@ impl WelcomeView {
                 SUBTITLE_SCALE,
             ));
 
-        output.extend(self.open_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            actions.open,
-        ));
-        output.extend(self.clone_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            actions.clone,
-        ));
-        output.extend(self.init_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            actions.init,
-        ));
+        output.extend(self.open_button.layout(ctx, actions.open));
+        output.extend(self.clone_button.layout(ctx, actions.clone));
+        output.extend(self.init_button.layout(ctx, actions.init));
 
         // Path input section
         output
             .text_vertices
-            .extend(text_renderer.layout_text_scaled(
+            .extend(ctx.text.layout_text_scaled(
                 "Open by path",
                 actions.open.x,
                 actions.path_label_y,
                 theme::TEXT_MUTED.to_array(),
                 SECONDARY_SCALE,
             ));
-        output.extend(self.path_input.layout(text_renderer, actions.path_input));
-        output.extend(self.open_path_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            actions.path_open_btn,
-        ));
+        output.extend(self.path_input.layout(ctx, actions.path_input));
+        output.extend(self.open_path_button.layout(ctx, actions.path_open_btn));
 
         // Hint at bottom of the left column
         let hint_y = left.bottom() - 26.0;
         output
             .text_vertices
-            .extend(text_renderer.layout_text_scaled(
+            .extend(ctx.text.layout_text_scaled(
                 "Drop a folder anywhere to open",
                 actions.open.x,
                 hint_y,
@@ -542,7 +515,7 @@ impl WelcomeView {
         let header_y = right.y + 28.0;
         output
             .bold_text_vertices
-            .extend(bold_renderer.layout_text_scaled(
+            .extend(ctx.bold.layout_text_scaled(
                 "Recent",
                 recent_x,
                 header_y,
@@ -562,13 +535,13 @@ impl WelcomeView {
 
         let item_rects = Self::recent_item_bounds(right);
         if self.recent.is_empty() {
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "No recent repositories.",
                 recent_x,
                 header_y + line_height * 3.0,
                 theme::TEXT_MUTED.to_array(),
             ));
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 "Use Open Local, Clone Remote, Init New, or drop a folder here.",
                 recent_x,
                 header_y + line_height * 4.5,
@@ -614,7 +587,7 @@ impl WelcomeView {
                 let branch_w = if branch_text.is_empty() {
                     0.0
                 } else {
-                    text_renderer.measure_text_scaled(branch_text, SECONDARY_SCALE)
+                    ctx.text.measure_text_scaled(branch_text, SECONDARY_SCALE)
                 };
                 if branch_w > 0.0 {
                     // Vertically nudge so the smaller branch text aligns with
@@ -622,7 +595,7 @@ impl WelcomeView {
                     let branch_y = r.y + 10.0 + (line_height - line_height * SECONDARY_SCALE) * 0.5;
                     output
                         .text_vertices
-                        .extend(text_renderer.layout_text_scaled(
+                        .extend(ctx.text.layout_text_scaled(
                             branch_text,
                             right_cursor - branch_w,
                             branch_y,
@@ -639,8 +612,8 @@ impl WelcomeView {
                     theme::TEXT
                 };
                 let name_max_w = (right_cursor - (r.x + 14.0)).max(0.0);
-                let name_display = truncate_to_width(&entry.name, bold_renderer, name_max_w);
-                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                let name_display = truncate_to_width(&entry.name, ctx.bold, name_max_w);
+                output.bold_text_vertices.extend(ctx.bold.layout_text(
                     &name_display,
                     r.x + 14.0,
                     r.y + 10.0,
@@ -651,7 +624,7 @@ impl WelcomeView {
                 // SECONDARY_SCALE so the rendered (smaller) text actually fits.
                 let parent_display = truncate_to_width(
                     &abbreviate_home(&entry.parent),
-                    text_renderer,
+                    ctx.text,
                     parent_max_w / SECONDARY_SCALE,
                 );
                 // line_height from fontdue already includes leading, so use
@@ -659,7 +632,7 @@ impl WelcomeView {
                 let parent_y = r.y + 10.0 + line_height;
                 output
                     .text_vertices
-                    .extend(text_renderer.layout_text_scaled(
+                    .extend(ctx.text.layout_text_scaled(
                         &parent_display,
                         r.x + 14.0,
                         parent_y,

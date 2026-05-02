@@ -1,11 +1,11 @@
 //! Confirmation dialog - modal overlay for confirming destructive actions
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the confirm dialog
 #[derive(Clone, Debug)]
@@ -53,79 +53,6 @@ impl ConfirmDialog {
 
     pub fn take_action(&mut self) -> Option<ConfirmDialogAction> {
         self.pending_action.take()
-    }
-
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
-        let mut output = WidgetOutput::new();
-
-        if !self.visible {
-            return output;
-        }
-
-        let scale = (bounds.height / 720.0).max(1.0);
-        let dialog = self.dialog_bounds(bounds, scale);
-        let padding = 16.0 * scale;
-        let line_h = 32.0 * scale;
-
-        // Backdrop + shadow + dialog background
-        create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
-
-        // Title (bold)
-        let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
-            &self.title,
-            dialog.x + padding,
-            title_y,
-            theme::TEXT_BRIGHT.to_array(),
-        ));
-
-        // Title separator
-        let sep_y = dialog.y + 36.0 * scale;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
-            theme::BORDER.with_alpha(0.4).to_array(),
-        ));
-
-        // Message
-        let message_y = dialog.y + 44.0 * scale;
-        output.text_vertices.extend(text_renderer.layout_text(
-            &self.message,
-            dialog.x + padding,
-            message_y,
-            theme::TEXT.to_array(),
-        ));
-
-        // Buttons at bottom
-        let button_y = dialog.bottom() - padding - line_h;
-        let button_w = 80.0 * scale;
-        let button_gap = 8.0 * scale;
-        let cancel_x = dialog.right() - padding - button_w;
-        let ok_x = cancel_x - button_w - button_gap;
-
-        // Button separator
-        let btn_sep_y = button_y - 8.0 * scale;
-        output.spline_vertices.extend(create_rect_vertices(
-            &Rect::new(
-                dialog.x + padding,
-                btn_sep_y,
-                dialog.width - padding * 2.0,
-                1.0,
-            ),
-            theme::BORDER.with_alpha(0.4).to_array(),
-        ));
-
-        let ok_bounds = Rect::new(ok_x, button_y, button_w, line_h);
-        let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
-
-        output.extend(self.ok_button.layout(text_renderer, ok_bounds));
-        output.extend(self.cancel_button.layout(text_renderer, cancel_bounds));
-
-        output
     }
 
     /// Compute dialog bounds centered in screen
@@ -214,8 +141,65 @@ impl Widget for ConfirmDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        // Fallback: use regular renderer for bold (title won't be bold)
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
+        let mut output = WidgetOutput::new();
+
+        if !self.visible {
+            return output;
+        }
+
+        let scale = (bounds.height / 720.0).max(1.0);
+        let dialog = self.dialog_bounds(bounds, scale);
+        let padding = 16.0 * scale;
+        let line_h = 32.0 * scale;
+
+        create_dialog_backdrop(&mut output, &bounds, &dialog, scale);
+
+        let title_y = dialog.y + padding;
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
+            &self.title,
+            dialog.x + padding,
+            title_y,
+            theme::TEXT_BRIGHT.to_array(),
+        ));
+
+        let sep_y = dialog.y + 36.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(dialog.x + padding, sep_y, dialog.width - padding * 2.0, 1.0),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
+        let message_y = dialog.y + 44.0 * scale;
+        output.text_vertices.extend(ctx.text.layout_text(
+            &self.message,
+            dialog.x + padding,
+            message_y,
+            theme::TEXT.to_array(),
+        ));
+
+        let button_y = dialog.bottom() - padding - line_h;
+        let button_w = 80.0 * scale;
+        let button_gap = 8.0 * scale;
+        let cancel_x = dialog.right() - padding - button_w;
+        let ok_x = cancel_x - button_w - button_gap;
+
+        let btn_sep_y = button_y - 8.0 * scale;
+        output.spline_vertices.extend(create_rect_vertices(
+            &Rect::new(
+                dialog.x + padding,
+                btn_sep_y,
+                dialog.width - padding * 2.0,
+                1.0,
+            ),
+            theme::BORDER.with_alpha(0.4).to_array(),
+        ));
+
+        let ok_bounds = Rect::new(ok_x, button_y, button_w, line_h);
+        let cancel_bounds = Rect::new(cancel_x, button_y, button_w, line_h);
+
+        output.extend(self.ok_button.layout(ctx, ok_bounds));
+        output.extend(self.cancel_button.layout(ctx, cancel_bounds));
+
+        output
     }
 }

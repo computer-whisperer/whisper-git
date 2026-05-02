@@ -2,11 +2,10 @@
 
 use crate::ci::{CiCounts, CiState, ProviderCiResult};
 use crate::input::{EventResponse, InputEvent};
-use crate::ui::icon::IconRenderer;
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_arc_vertices, create_rect_vertices, create_rounded_rect_vertices,
-    theme,
+    LayoutCtx, Widget, WidgetOutput, create_arc_vertices, create_rect_vertices,
+    create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
 use crate::ui::widgets::Tooltip;
@@ -371,7 +370,7 @@ impl HeaderBar {
         let scale = (bounds.height / 32.0).max(1.0);
         let line_height = text_renderer.line_height();
 
-        // Replicate the after_path_x computation from layout_with_bold
+        // Replicate the after_path_x computation from layout
         let after_path_x = if self.breadcrumb_segments.is_empty() {
             let path_w = text_renderer.measure_text(&self.repo_path);
             bounds.x + 16.0 + path_w
@@ -477,16 +476,12 @@ impl Default for HeaderBar {
 }
 
 impl HeaderBar {
-    /// Layout with bold text support. Renders repo path and button labels in bold.
-    /// `elapsed` is seconds since app start, used for spinning arc and pulsing animations.
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-        elapsed: f32,
-        icon_renderer: Option<&IconRenderer>,
-    ) -> WidgetOutput {
+    /// Render the header bar with breadcrumbs, op indicators, CI status, and action buttons.
+    /// Reads `ctx.elapsed` for spinning arcs and pulsing animations, and `ctx.icons` for
+    /// CI provider icons.
+    fn layout_inner(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
+        let elapsed = ctx.elapsed;
+        let icon_renderer = ctx.icons;
         let mut output = WidgetOutput::new();
         let scale = (bounds.height / 32.0).max(1.0);
 
@@ -496,25 +491,25 @@ impl HeaderBar {
             theme::SURFACE_RAISED.to_array(),
         ));
 
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
 
         // Track where the next element starts after the path/breadcrumb area
         let after_path_x = if self.breadcrumb_segments.is_empty() {
             // Normal mode: repo path in regular text
             let path_x = bounds.x + 16.0;
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &self.repo_path,
                 path_x,
                 text_y,
                 theme::TEXT.to_array(),
             ));
-            path_x + text_renderer.measure_text(&self.repo_path)
+            path_x + ctx.text.measure_text(&self.repo_path)
         } else {
             // Breadcrumb mode: segment > segment > ... + close button
             let mut x = bounds.x + 16.0;
             let separator = " > ";
-            let sep_w = text_renderer.measure_text(separator);
+            let sep_w = ctx.text.measure_text(separator);
 
             let last_idx = self.breadcrumb_segments.len() - 1;
 
@@ -534,25 +529,25 @@ impl HeaderBar {
                 if is_last {
                     output
                         .bold_text_vertices
-                        .extend(bold_renderer.layout_text(segment, x, text_y, color));
+                        .extend(ctx.bold.layout_text(segment, x, text_y, color));
                 } else {
                     output
                         .text_vertices
-                        .extend(text_renderer.layout_text(segment, x, text_y, color));
+                        .extend(ctx.text.layout_text(segment, x, text_y, color));
                 }
 
                 if !is_last && is_hovered {
-                    let seg_w = text_renderer.measure_text(segment);
+                    let seg_w = ctx.text.measure_text(segment);
                     output.spline_vertices.extend(create_rect_vertices(
                         &Rect::new(x, text_y + line_height - 1.0, seg_w, 1.0),
                         theme::TEXT_MUTED.to_array(),
                     ));
                 }
 
-                x += text_renderer.measure_text(segment);
+                x += ctx.text.measure_text(segment);
 
                 if !is_last {
-                    output.text_vertices.extend(text_renderer.layout_text(
+                    output.text_vertices.extend(ctx.text.layout_text(
                         separator,
                         x,
                         text_y,
@@ -564,7 +559,7 @@ impl HeaderBar {
 
             // Close button [✕]
             let close_bounds = self.close_button_bounds(bounds, scale);
-            output.extend(self.close_button.layout(text_renderer, close_bounds));
+            output.extend(self.close_button.layout(ctx, close_bounds));
 
             close_bounds.right() + 8.0
         };
@@ -573,7 +568,7 @@ impl HeaderBar {
         if let Some(label) = self.operation_state_label {
             let label_x = after_path_x + 12.0;
             let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
-            output.bold_text_vertices.extend(bold_renderer.layout_text(
+            output.bold_text_vertices.extend(ctx.bold.layout_text(
                 label,
                 label_x,
                 text_y,
@@ -581,11 +576,7 @@ impl HeaderBar {
             ));
 
             if let Some(abort_bounds) = self.abort_button_bounds {
-                output.extend(self.abort_button.layout_with_bold(
-                    text_renderer,
-                    bold_renderer,
-                    abort_bounds,
-                ));
+                output.extend(self.abort_button.layout(ctx, abort_bounds));
             }
         }
 
@@ -617,7 +608,7 @@ impl HeaderBar {
 
             // Label text after spinner
             let label_x = indicator_x + spinner_radius * 2.0 + 6.0 * scale;
-            output.bold_text_vertices.extend(bold_renderer.layout_text(
+            output.bold_text_vertices.extend(ctx.bold.layout_text(
                 op_label,
                 label_x,
                 text_y,
@@ -674,23 +665,23 @@ impl HeaderBar {
                         for (idx, (count, state)) in tokens.iter().enumerate() {
                             if idx > 0 {
                                 x += Self::ci_token_separator_pad(scale);
-                                output.text_vertices.extend(text_renderer.layout_text(
+                                output.text_vertices.extend(ctx.text.layout_text(
                                     "|",
                                     x,
                                     text_y,
                                     theme::TEXT_MUTED.with_alpha(0.8).to_array(),
                                 ));
-                                x += text_renderer.measure_text("|");
+                                x += ctx.text.measure_text("|");
                                 x += Self::ci_token_separator_pad(scale);
                             }
                             let count_text = count.to_string();
-                            output.text_vertices.extend(text_renderer.layout_text(
+                            output.text_vertices.extend(ctx.text.layout_text(
                                 &count_text,
                                 x,
                                 text_y,
                                 theme::TEXT_MUTED.to_array(),
                             ));
-                            x += text_renderer.measure_text(&count_text);
+                            x += ctx.text.measure_text(&count_text);
                             x += Self::ci_count_dot_gap(scale);
                             let dot_cx = x + dot_radius;
                             output.spline_vertices.extend(create_arc_vertices(
@@ -706,13 +697,13 @@ impl HeaderBar {
                         }
                     } else {
                         x += Self::ci_icon_gap(scale);
-                        output.text_vertices.extend(text_renderer.layout_text(
+                        output.text_vertices.extend(ctx.text.layout_text(
                             &ci_result.status.summary,
                             x,
                             text_y,
                             theme::TEXT_MUTED.to_array(),
                         ));
-                        x += text_renderer.measure_text(&ci_result.status.summary);
+                        x += ctx.text.measure_text(&ci_result.status.summary);
                     }
                 }
             }
@@ -723,21 +714,15 @@ impl HeaderBar {
             self.button_bounds(bounds);
 
         // Reload button (ghost style)
-        output.extend(self.reload_button.layout_with_bold(
-            text_renderer,
-            bold_renderer,
-            reload_bounds,
-        ));
+        output.extend(self.reload_button.layout(ctx, reload_bounds));
 
         // Async operation button rendering with pulsing background and spinning arc
-        let async_buttons: [(&Button, Rect, bool); 3] = [
-            (&self.fetch_button, fetch_bounds, self.fetching),
-            (&self.pull_button, pull_bounds, self.pulling),
-            (&self.push_button, push_bounds, self.pushing),
-        ];
-
-        for (button, btn_bounds, is_active) in &async_buttons {
-            if *is_active {
+        for (button, btn_bounds, is_active) in [
+            (&mut self.fetch_button, fetch_bounds, self.fetching),
+            (&mut self.pull_button, pull_bounds, self.pulling),
+            (&mut self.push_button, push_bounds, self.pushing),
+        ] {
+            if is_active {
                 // Pulsing background: subtle glow effect
                 let pulse = (elapsed * 3.0).sin() * 0.5 + 0.5; // 0..1 at ~0.5Hz
                 let pulse_color = [
@@ -751,7 +736,7 @@ impl HeaderBar {
                 ];
                 let corner_radius = (btn_bounds.height * 0.20).min(8.0);
                 output.spline_vertices.extend(create_rounded_rect_vertices(
-                    btn_bounds,
+                    &btn_bounds,
                     pulse_color,
                     corner_radius,
                 ));
@@ -779,25 +764,25 @@ impl HeaderBar {
                 // Render button text (shifted right to make room for spinner)
                 let text_area_x = spinner_cx + spinner_radius + 4.0 * scale;
                 let text_area_w = btn_bounds.right() - text_area_x - 4.0 * scale;
-                let display_text = truncate_to_width(&button.label, bold_renderer, text_area_w);
-                let text_width = bold_renderer.measure_text(&display_text);
+                let display_text = truncate_to_width(&button.label, ctx.bold, text_area_w);
+                let text_width = ctx.bold.measure_text(&display_text);
                 let text_x = text_area_x + (text_area_w - text_width) / 2.0;
                 let btn_text_y = btn_bounds.y + (btn_bounds.height - line_height) / 2.0;
 
-                output.bold_text_vertices.extend(bold_renderer.layout_text(
+                output.bold_text_vertices.extend(ctx.bold.layout_text(
                     &display_text,
                     text_x,
                     btn_text_y,
                     theme::TEXT_BRIGHT.to_array(),
                 ));
             } else {
-                output.extend(button.layout_with_bold(text_renderer, bold_renderer, *btn_bounds));
+                output.extend(button.layout(ctx, btn_bounds));
             }
         }
 
         // Help and Settings buttons (ghost style - keep regular weight)
-        output.extend(self.help_button.layout(text_renderer, help_bounds));
-        output.extend(self.settings_button.layout(text_renderer, settings_bounds));
+        output.extend(self.help_button.layout(ctx, help_bounds));
+        output.extend(self.settings_button.layout(ctx, settings_bounds));
 
         // Drop shadow below header
         let shadow_strip_height = 2.0;
@@ -1002,125 +987,7 @@ impl Widget for HeaderBar {
         }
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        let mut output = WidgetOutput::new();
-
-        // Background - elevated surface for header prominence
-        output.spline_vertices.extend(create_rect_vertices(
-            &bounds,
-            theme::SURFACE_RAISED.to_array(),
-        ));
-
-        let line_height = text_renderer.line_height();
-        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
-
-        // Track where the next element starts after the path/breadcrumb area
-        let after_path_x = if self.breadcrumb_segments.is_empty() {
-            // Normal mode: repo path in regular text
-            let path_x = bounds.x + 16.0;
-            output.text_vertices.extend(text_renderer.layout_text(
-                &self.repo_path,
-                path_x,
-                text_y,
-                theme::TEXT.to_array(),
-            ));
-            path_x + text_renderer.measure_text(&self.repo_path)
-        } else {
-            // Breadcrumb mode: segment > segment > ... + close button
-            let scale = (bounds.height / 32.0).max(1.0);
-            let mut x = bounds.x + 16.0;
-            let separator = " > ";
-            let sep_w = text_renderer.measure_text(separator);
-
-            let last_idx = self.breadcrumb_segments.len() - 1;
-
-            for (i, segment) in self.breadcrumb_segments.iter().enumerate() {
-                let is_last = i == last_idx;
-                let is_hovered = self.breadcrumb_hovered == Some(i);
-
-                let color = if is_last {
-                    theme::TEXT_BRIGHT.to_array()
-                } else if is_hovered {
-                    theme::TEXT.to_array()
-                } else {
-                    theme::TEXT_MUTED.to_array()
-                };
-
-                output
-                    .text_vertices
-                    .extend(text_renderer.layout_text(segment, x, text_y, color));
-
-                // Underline hovered non-last segments for clickability affordance
-                if !is_last && is_hovered {
-                    let seg_w = text_renderer.measure_text(segment);
-                    output.spline_vertices.extend(create_rect_vertices(
-                        &Rect::new(x, text_y + line_height - 1.0, seg_w, 1.0),
-                        theme::TEXT_MUTED.to_array(),
-                    ));
-                }
-
-                x += text_renderer.measure_text(segment);
-
-                if !is_last {
-                    output.text_vertices.extend(text_renderer.layout_text(
-                        separator,
-                        x,
-                        text_y,
-                        theme::TEXT_MUTED.to_array(),
-                    ));
-                    x += sep_w;
-                }
-            }
-
-            // Close button [✕]
-            let close_bounds = self.close_button_bounds(bounds, scale);
-            output.extend(self.close_button.layout(text_renderer, close_bounds));
-
-            close_bounds.right() + 8.0
-        };
-
-        // Operation state banner (e.g. "MERGE IN PROGRESS" + Abort button)
-        if let Some(label) = self.operation_state_label {
-            let label_x = after_path_x + 12.0;
-            let label_color = [1.0, 0.718, 0.302, 1.0]; // amber #FFB74D
-            output.text_vertices.extend(text_renderer.layout_text(
-                label,
-                label_x,
-                text_y,
-                label_color,
-            ));
-
-            // Abort button (pre-computed bounds)
-            if let Some(abort_bounds) = self.abort_button_bounds {
-                output.extend(self.abort_button.layout(text_renderer, abort_bounds));
-            }
-        }
-
-        // Button bounds
-        let (reload_bounds, fetch_bounds, pull_bounds, push_bounds, help_bounds, settings_bounds) =
-            self.button_bounds(bounds);
-
-        // Render stored buttons (preserves hover/press state from handle_event)
-        output.extend(self.reload_button.layout(text_renderer, reload_bounds));
-        output.extend(self.fetch_button.layout(text_renderer, fetch_bounds));
-        output.extend(self.pull_button.layout(text_renderer, pull_bounds));
-        output.extend(self.push_button.layout(text_renderer, push_bounds));
-
-        // Help and Settings buttons (ghost style - rendered via Button widget)
-        output.extend(self.help_button.layout(text_renderer, help_bounds));
-        output.extend(self.settings_button.layout(text_renderer, settings_bounds));
-
-        // Drop shadow below header: 4 strips fading from rgba(0,0,0,0.15) to transparent
-        let shadow_strip_height = 2.0;
-        for i in 0..4u32 {
-            let alpha = 0.15 * (1.0 - i as f32 / 4.0);
-            let strip_y = bounds.bottom() + i as f32 * shadow_strip_height;
-            let strip = Rect::new(bounds.x, strip_y, bounds.width, shadow_strip_height);
-            output
-                .spline_vertices
-                .extend(create_rect_vertices(&strip, [0.0, 0.0, 0.0, alpha]));
-        }
-
-        output
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
+        self.layout_inner(ctx, bounds)
     }
 }

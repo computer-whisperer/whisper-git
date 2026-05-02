@@ -2,10 +2,10 @@
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
 use crate::ui::widget::{
-    Widget, WidgetOutput, WidgetState, create_rect_outline_vertices, create_rect_vertices,
-    create_rounded_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, WidgetState, create_rect_outline_vertices,
+    create_rect_vertices, create_rounded_rect_vertices, theme,
 };
-use crate::ui::{Rect, TextRenderer};
+use crate::ui::Rect;
 use std::cell::RefCell;
 
 /// Find the byte offset of the previous word boundary from cursor position.
@@ -510,7 +510,7 @@ impl Widget for TextInput {
         EventResponse::Ignored
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let padding = 12.0;
         let corner_radius = (bounds.height * 0.15).min(5.0);
@@ -519,11 +519,11 @@ impl Widget for TextInput {
         {
             let mut boundaries = self.char_boundaries.borrow_mut();
             boundaries.clear();
-            boundaries.push((0, 0.0)); // Start position
+            boundaries.push((0, 0.0));
             let mut byte_end = 0usize;
             for c in self.text.chars() {
                 byte_end += c.len_utf8();
-                let x_offset = text_renderer.measure_text(&self.text[..byte_end]);
+                let x_offset = ctx.text.measure_text(&self.text[..byte_end]);
                 boundaries.push((byte_end, x_offset));
             }
         }
@@ -553,26 +553,24 @@ impl Widget for TextInput {
             border_thickness,
         ));
 
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
         let text_y = bounds.y + (bounds.height - line_height) / 2.0;
         let text_x = bounds.x + padding;
 
-        // Text content or placeholder
         if self.text.is_empty() {
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &self.placeholder,
                 text_x,
                 text_y,
                 theme::TEXT_MUTED.to_array(),
             ));
         } else {
-            // Use bright text when focused
             let text_color = if self.state.focused {
                 theme::TEXT_BRIGHT
             } else {
                 theme::TEXT
             };
-            output.text_vertices.extend(text_renderer.layout_text(
+            output.text_vertices.extend(ctx.text.layout_text(
                 &self.text,
                 text_x,
                 text_y,
@@ -580,20 +578,18 @@ impl Widget for TextInput {
             ));
         }
 
-        // Cursor (when focused and visible per blink cycle)
         if self.state.focused && self.cursor_visible {
-            let cursor_x = text_x + text_renderer.measure_text(&self.text[..self.cursor]);
+            let cursor_x = text_x + ctx.text.measure_text(&self.text[..self.cursor]);
             let cursor_rect = Rect::new(cursor_x, bounds.y + 6.0, 2.0, bounds.height - 12.0);
             output
                 .spline_vertices
                 .extend(create_rect_vertices(&cursor_rect, theme::ACCENT.to_array()));
         }
 
-        // Character count (for max_length) - show in corner
         if self.max_length > 0 {
             let count_text = format!("{}", self.text.chars().count());
-            let count_x = bounds.right() - text_renderer.measure_text(&count_text) - padding;
-            output.text_vertices.extend(text_renderer.layout_text(
+            let count_x = bounds.right() - ctx.text.measure_text(&count_text) - padding;
+            output.text_vertices.extend(ctx.text.layout_text(
                 &count_text,
                 count_x,
                 text_y,

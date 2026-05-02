@@ -3,10 +3,10 @@
 use crate::input::{EventResponse, InputEvent, MouseButton};
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
-    Widget, WidgetOutput, WidgetState, create_rect_vertices, create_rounded_rect_outline_vertices,
-    create_rounded_rect_vertices, theme,
+    LayoutCtx, Widget, WidgetOutput, WidgetState, create_rect_vertices,
+    create_rounded_rect_outline_vertices, create_rounded_rect_vertices, theme,
 };
-use crate::ui::{Color, Rect, TextRenderer};
+use crate::ui::{Color, Rect};
 
 /// A clickable button with text
 pub struct Button {
@@ -84,86 +84,6 @@ impl Button {
     }
 }
 
-impl Button {
-    /// Layout with bold text for the label.
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
-        let mut output = WidgetOutput::new();
-        let corner_radius = (bounds.height * 0.20).min(8.0);
-
-        // Draw background with rounded corners
-        let bg_color = self.current_background();
-        output.spline_vertices.extend(create_rounded_rect_vertices(
-            &bounds,
-            bg_color.to_array(),
-            corner_radius,
-        ));
-
-        // Draw border
-        if let Some(border) = self.border_color {
-            let border_color = if self.state.hovered {
-                theme::BORDER_LIGHT
-            } else {
-                border
-            };
-            output
-                .spline_vertices
-                .extend(create_rounded_rect_outline_vertices(
-                    &bounds,
-                    border_color.to_array(),
-                    corner_radius,
-                    1.0,
-                ));
-        }
-
-        // Top highlight line when hovered
-        if self.state.hovered && self.border_color.is_some() {
-            let highlight_rect = Rect::new(bounds.x + 1.0, bounds.y + 1.0, bounds.width - 2.0, 1.0);
-            output.spline_vertices.extend(create_rect_vertices(
-                &highlight_rect,
-                theme::BORDER_LIGHT.with_alpha(0.7).to_array(),
-            ));
-        }
-
-        // Draw label text in bold, truncating with "..." if needed
-        let line_height = text_renderer.line_height();
-        let h_padding = 12.0;
-        let max_text_width = bounds.width - h_padding * 2.0;
-
-        let text_width = bold_renderer.measure_text(&self.label);
-        let (display_label, display_width) = if text_width > max_text_width && max_text_width > 0.0
-        {
-            let truncated = truncate_to_width(&self.label, bold_renderer, max_text_width);
-            let w = bold_renderer.measure_text(&truncated);
-            (truncated, w)
-        } else {
-            (self.label.clone(), text_width)
-        };
-
-        let text_x = bounds.x + (bounds.width - display_width) / 2.0;
-        let text_y = bounds.y + (bounds.height - line_height) / 2.0;
-
-        let text_color = if self.state.hovered || self.state.pressed {
-            theme::TEXT_BRIGHT
-        } else {
-            self.text_color
-        };
-
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
-            &display_label,
-            text_x,
-            text_y,
-            text_color.to_array(),
-        ));
-
-        output
-    }
-}
-
 impl Widget for Button {
     fn handle_event(&mut self, event: &InputEvent, bounds: Rect) -> EventResponse {
         if !self.state.enabled {
@@ -193,11 +113,7 @@ impl Widget for Button {
                 }
             }
             InputEvent::MouseMove { x, y, .. } => {
-                let was_hovered = self.state.hovered;
                 self.state.hovered = bounds.contains(*x, *y);
-                if was_hovered != self.state.hovered {
-                    // State changed, but don't consume the event
-                }
             }
             _ => {}
         }
@@ -209,7 +125,7 @@ impl Widget for Button {
         self.state.hovered = bounds.contains(x, y);
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
         let corner_radius = (bounds.height * 0.20).min(8.0);
 
@@ -223,17 +139,16 @@ impl Widget for Button {
         );
 
         // Draw background with rounded corners
-        let bg_color = self.current_background();
         output.spline_vertices.extend(create_rounded_rect_vertices(
             &draw_bounds,
-            bg_color.to_array(),
+            self.current_background().to_array(),
             corner_radius,
         ));
 
-        // Draw border - brighter on hover (using overlaid rounded rect for outline effect)
+        // Draw border — brighter on hover, normal when pressed (inset look)
         if let Some(border) = self.border_color {
             let border_color = if self.state.pressed {
-                border // Normal border when pressed (inset look)
+                border
             } else if self.state.hovered {
                 theme::BORDER_LIGHT
             } else {
@@ -263,21 +178,28 @@ impl Widget for Button {
             ));
         }
 
-        // Draw label text - brighter on hover/press
-        let line_height = text_renderer.line_height();
+        // Bold label, truncated to the available width.
+        let h_padding = 12.0;
+        let max_text_width = bounds.width - h_padding * 2.0;
+        let raw_w = ctx.bold.measure_text(&self.label);
+        let (label, label_w) = if raw_w > max_text_width && max_text_width > 0.0 {
+            let t = truncate_to_width(&self.label, ctx.bold, max_text_width);
+            let w = ctx.bold.measure_text(&t);
+            (t, w)
+        } else {
+            (self.label.clone(), raw_w)
+        };
 
-        let text_width = text_renderer.measure_text(&self.label);
-        let text_x = draw_bounds.x + (draw_bounds.width - text_width) / 2.0;
-        let text_y = draw_bounds.y + (draw_bounds.height - line_height) / 2.0;
-
+        let text_x = draw_bounds.x + (draw_bounds.width - label_w) / 2.0;
+        let text_y = draw_bounds.y + (draw_bounds.height - ctx.bold.line_height()) / 2.0;
         let text_color = if self.state.hovered || self.state.pressed {
             theme::TEXT_BRIGHT
         } else {
             self.text_color
         };
 
-        output.text_vertices.extend(text_renderer.layout_text(
-            &self.label,
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
+            &label,
             text_x,
             text_y,
             text_color.to_array(),

@@ -974,23 +974,23 @@ fn add_panel_chrome(
 pub(crate) fn build_ui_output(
     tabs: &mut [(RepoTab, TabViewState)],
     active_tab: usize,
-    tab_bar: &TabBar,
+    tab_bar: &mut TabBar,
     toast_manager: &mut ToastManager,
     tooltip: &mut Tooltip,
     active_modal: Option<ActiveModal>,
-    repo_dialog: &RepoDialog,
-    clone_dialog: &CloneDialog,
-    welcome_view: &WelcomeView,
-    settings_dialog: &SettingsDialog,
-    token_dialog: &TokenDialog,
-    confirm_dialog: &ConfirmDialog,
-    error_dialog: &ErrorDialog,
-    branch_name_dialog: &BranchNameDialog,
-    remote_dialog: &RemoteDialog,
-    merge_dialog: &MergeDialog,
-    rebase_dialog: &RebaseDialog,
-    pull_dialog: &PullDialog,
-    push_dialog: &PushDialog,
+    repo_dialog: &mut RepoDialog,
+    clone_dialog: &mut CloneDialog,
+    welcome_view: &mut WelcomeView,
+    settings_dialog: &mut SettingsDialog,
+    token_dialog: &mut TokenDialog,
+    confirm_dialog: &mut ConfirmDialog,
+    error_dialog: &mut ErrorDialog,
+    branch_name_dialog: &mut BranchNameDialog,
+    remote_dialog: &mut RemoteDialog,
+    merge_dialog: &mut MergeDialog,
+    rebase_dialog: &mut RebaseDialog,
+    pull_dialog: &mut PullDialog,
+    push_dialog: &mut PushDialog,
     text_renderer: &TextRenderer,
     bold_text_renderer: &TextRenderer,
     scale_factor: f64,
@@ -1008,18 +1008,13 @@ pub(crate) fn build_ui_output(
     let screen_bounds = Rect::from_size(extent[0] as f32, extent[1] as f32);
     let scale = scale_factor as f32;
 
-    // Cross-cutting rendering plumbing. Constructed here, threaded through to
-    // every widget's `layout` in subsequent waves of the LayoutCtx refactor.
+    // Cross-cutting rendering plumbing threaded through every widget's `layout`.
     let ctx = LayoutCtx {
         text: text_renderer,
         bold: bold_text_renderer,
         icons: Some(icon_renderer),
-        avatars: Some(avatar_renderer),
-        scale,
         elapsed,
-        screen: screen_bounds,
     };
-    let _ = &ctx;
 
     // Tab bar takes space at top when multiple tabs
     let tab_bar_height = if tabs.len() > 1 {
@@ -1047,9 +1042,8 @@ pub(crate) fn build_ui_output(
     // entirely; modals (clone dialog, etc.) still draw on top via the overlay
     // layer below.
     if tabs.is_empty() {
-        graph_output.extend(welcome_view.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        graph_output.extend(welcome_view.layout(
+            &ctx,
             main_bounds,
         ));
 
@@ -1058,37 +1052,32 @@ pub(crate) fn build_ui_output(
 
         // Allow modal dialogs to render on top — Ctrl+O still works from welcome.
         if clone_dialog.is_visible() {
-            overlay_output.extend(clone_dialog.layout_with_bold(
-                text_renderer,
-                bold_text_renderer,
+            overlay_output.extend(clone_dialog.layout(
+            &ctx,
                 screen_bounds,
             ));
         }
         if repo_dialog.is_visible() {
-            overlay_output.extend(repo_dialog.layout_with_bold(
-                text_renderer,
-                bold_text_renderer,
+            overlay_output.extend(repo_dialog.layout(
+            &ctx,
                 screen_bounds,
             ));
         }
         if settings_dialog.is_visible() {
-            overlay_output.extend(settings_dialog.layout_with_bold(
-                text_renderer,
-                bold_text_renderer,
+            overlay_output.extend(settings_dialog.layout(
+            &ctx,
                 screen_bounds,
             ));
         }
         if confirm_dialog.is_visible() {
-            overlay_output.extend(confirm_dialog.layout_with_bold(
-                text_renderer,
-                bold_text_renderer,
+            overlay_output.extend(confirm_dialog.layout(
+            &ctx,
                 screen_bounds,
             ));
         }
         if error_dialog.is_visible() {
-            overlay_output.extend(error_dialog.layout_with_bold(
-                text_renderer,
-                bold_text_renderer,
+            overlay_output.extend(error_dialog.layout(
+            &ctx,
                 screen_bounds,
             ));
         }
@@ -1223,13 +1212,7 @@ pub(crate) fn build_ui_output(
             ));
 
         // Header bar (chrome layer - on top of graph)
-        chrome_output.extend(view_state.header_bar.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
-            layout.header,
-            elapsed,
-            Some(icon_renderer),
-        ));
+        chrome_output.extend(view_state.header_bar.layout(&ctx, layout.header));
 
         // Shortcut bar (chrome layer - on top of graph) - only when visible
         if shortcut_bar_visible {
@@ -1272,7 +1255,7 @@ pub(crate) fn build_ui_output(
                     let (staging_rect, diff_rect) =
                         content_rect.split_vertical(staging_preview_ratio);
                     chrome_output
-                        .extend(view_state.staging_well.layout(text_renderer, staging_rect));
+                        .extend(view_state.staging_well.layout(&ctx, staging_rect));
 
                     let has_diff = view_state.diff_view.has_content();
                     let title = if has_diff {
@@ -1379,7 +1362,7 @@ pub(crate) fn build_ui_output(
 
     // Tab bar (chrome layer - rendered after graph so it draws on top)
     if tabs.len() > 1 {
-        chrome_output.extend(tab_bar.layout(text_renderer, tab_bar_bounds));
+        chrome_output.extend(tab_bar.layout(&ctx, tab_bar_bounds));
     }
 
     // Context menu overlay (overlay layer - on top of all panels)
@@ -1397,105 +1380,94 @@ pub(crate) fn build_ui_output(
 
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        overlay_output.extend(repo_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(repo_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Clone dialog (overlay layer)
     if clone_dialog.is_visible() {
-        overlay_output.extend(clone_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(clone_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Settings dialog (overlay layer - on top of everything)
     if settings_dialog.is_visible() {
-        overlay_output.extend(settings_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(settings_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Token dialog (overlay layer - on top of settings)
     if token_dialog.is_visible() {
-        overlay_output.extend(token_dialog.layout(text_renderer, screen_bounds));
+        overlay_output.extend(token_dialog.layout(&ctx, screen_bounds));
     }
 
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
-        overlay_output.extend(confirm_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(confirm_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Error dialog (overlay layer - on top of confirm dialog)
     if error_dialog.is_visible() {
-        overlay_output.extend(error_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(error_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Branch name dialog (overlay layer - on top of everything)
     if branch_name_dialog.is_visible() {
-        overlay_output.extend(branch_name_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(branch_name_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Remote dialog (overlay layer - on top of everything)
     if remote_dialog.is_visible() {
-        overlay_output.extend(remote_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(remote_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Pull dialog (overlay layer - on top of everything)
     if pull_dialog.is_visible() {
-        overlay_output.extend(pull_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(pull_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
-        popover_output.extend(pull_dialog.layout_popup(text_renderer, screen_bounds));
+        popover_output.extend(pull_dialog.layout_popup(&ctx, screen_bounds));
     }
 
     if push_dialog.is_visible() {
-        overlay_output.extend(push_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(push_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
-        popover_output.extend(push_dialog.layout_popup(text_renderer, screen_bounds));
+        popover_output.extend(push_dialog.layout_popup(&ctx, screen_bounds));
     }
 
     // Merge dialog (overlay layer - on top of everything)
     if merge_dialog.is_visible() {
-        overlay_output.extend(merge_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(merge_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
 
     // Rebase dialog (overlay layer - on top of everything)
     if rebase_dialog.is_visible() {
-        overlay_output.extend(rebase_dialog.layout_with_bold(
-            text_renderer,
-            bold_text_renderer,
+        overlay_output.extend(rebase_dialog.layout(
+            &ctx,
             screen_bounds,
         ));
     }
@@ -1746,23 +1718,23 @@ pub(crate) fn draw_frame(app: &mut App) -> Result<()> {
     let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
-        &app.tab_bar,
+        &mut app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
         app.active_modal,
-        &app.repo_dialog,
-        &app.clone_dialog,
-        &app.welcome_view,
-        &app.settings_dialog,
-        &app.token_dialog,
-        &app.confirm_dialog,
-        &app.error_dialog,
-        &app.branch_name_dialog,
-        &app.remote_dialog,
-        &app.merge_dialog,
-        &app.rebase_dialog,
-        &app.pull_dialog,
-        &app.push_dialog,
+        &mut app.repo_dialog,
+        &mut app.clone_dialog,
+        &mut app.welcome_view,
+        &mut app.settings_dialog,
+        &mut app.token_dialog,
+        &mut app.confirm_dialog,
+        &mut app.error_dialog,
+        &mut app.branch_name_dialog,
+        &mut app.remote_dialog,
+        &mut app.merge_dialog,
+        &mut app.rebase_dialog,
+        &mut app.pull_dialog,
+        &mut app.push_dialog,
         &state.text_renderer,
         &state.bold_text_renderer,
         scale_factor,
@@ -1970,23 +1942,23 @@ pub(crate) fn capture_screenshot(app: &mut App) -> Result<image::RgbaImage> {
     let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
-        &app.tab_bar,
+        &mut app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
         app.active_modal,
-        &app.repo_dialog,
-        &app.clone_dialog,
-        &app.welcome_view,
-        &app.settings_dialog,
-        &app.token_dialog,
-        &app.confirm_dialog,
-        &app.error_dialog,
-        &app.branch_name_dialog,
-        &app.remote_dialog,
-        &app.merge_dialog,
-        &app.rebase_dialog,
-        &app.pull_dialog,
-        &app.push_dialog,
+        &mut app.repo_dialog,
+        &mut app.clone_dialog,
+        &mut app.welcome_view,
+        &mut app.settings_dialog,
+        &mut app.token_dialog,
+        &mut app.confirm_dialog,
+        &mut app.error_dialog,
+        &mut app.branch_name_dialog,
+        &mut app.remote_dialog,
+        &mut app.merge_dialog,
+        &mut app.rebase_dialog,
+        &mut app.pull_dialog,
+        &mut app.push_dialog,
         &state.text_renderer,
         &state.bold_text_renderer,
         scale_factor,
@@ -2130,23 +2102,23 @@ pub(crate) fn capture_screenshot_offscreen(
     let (graph_output, chrome_output, overlay_output, popover_output) = build_ui_output(
         &mut app.tabs,
         app.active_tab,
-        &app.tab_bar,
+        &mut app.tab_bar,
         &mut app.toast_manager,
         &mut app.tooltip,
         app.active_modal,
-        &app.repo_dialog,
-        &app.clone_dialog,
-        &app.welcome_view,
-        &app.settings_dialog,
-        &app.token_dialog,
-        &app.confirm_dialog,
-        &app.error_dialog,
-        &app.branch_name_dialog,
-        &app.remote_dialog,
-        &app.merge_dialog,
-        &app.rebase_dialog,
-        &app.pull_dialog,
-        &app.push_dialog,
+        &mut app.repo_dialog,
+        &mut app.clone_dialog,
+        &mut app.welcome_view,
+        &mut app.settings_dialog,
+        &mut app.token_dialog,
+        &mut app.confirm_dialog,
+        &mut app.error_dialog,
+        &mut app.branch_name_dialog,
+        &mut app.remote_dialog,
+        &mut app.merge_dialog,
+        &mut app.rebase_dialog,
+        &mut app.pull_dialog,
+        &mut app.push_dialog,
         &state.text_renderer,
         &state.bold_text_renderer,
         scale_factor,

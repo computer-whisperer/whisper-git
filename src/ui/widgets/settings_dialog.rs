@@ -1,12 +1,12 @@
 //! Settings dialog - modal overlay for configuring application preferences
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
-    Widget, WidgetOutput, create_dialog_backdrop, create_rect_outline_vertices,
+    LayoutCtx, Widget, WidgetOutput, create_dialog_backdrop, create_rect_outline_vertices,
     create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::Button;
-use crate::ui::{Rect, TextRenderer};
 
 /// Actions from the settings dialog
 #[derive(Clone, Debug)]
@@ -280,18 +280,7 @@ impl Widget for SettingsDialog {
         EventResponse::Consumed
     }
 
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
-        self.layout_with_bold(text_renderer, text_renderer, bounds)
-    }
-}
-
-impl SettingsDialog {
-    pub fn layout_with_bold(
-        &self,
-        text_renderer: &TextRenderer,
-        bold_renderer: &TextRenderer,
-        bounds: Rect,
-    ) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if !self.visible {
@@ -303,7 +292,7 @@ impl SettingsDialog {
         let padding = 16.0 * scale;
         let line_h = 32.0 * scale;
         let title_h = 40.0 * scale;
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
         let row_gap = 12.0 * scale;
 
         // Backdrop + shadow + dialog background
@@ -311,7 +300,7 @@ impl SettingsDialog {
 
         // Title (bold)
         let title_y = dialog.y + padding;
-        output.bold_text_vertices.extend(bold_renderer.layout_text(
+        output.bold_text_vertices.extend(ctx.bold.layout_text(
             "Settings",
             dialog.x + padding,
             title_y,
@@ -336,7 +325,7 @@ impl SettingsDialog {
 
         // Row 1: Show Avatars
         let label_y = row1_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Show Avatars",
             dialog.x + padding,
             label_y,
@@ -344,10 +333,10 @@ impl SettingsDialog {
         ));
 
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
-        self.render_toggle_option(&mut output, text_renderer, &av_on, "ON", self.show_avatars);
+        self.render_toggle_option(&mut output, ctx, &av_on, "ON", self.show_avatars);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &av_off,
             "OFF",
             !self.show_avatars,
@@ -367,7 +356,7 @@ impl SettingsDialog {
 
         // Row 2: Scroll Speed
         let label_y2 = row2_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Scroll Speed",
             dialog.x + padding,
             label_y2,
@@ -377,14 +366,14 @@ impl SettingsDialog {
         let (sp_normal, sp_fast) = self.toggle_bounds(&dialog, row2_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &sp_normal,
             "Normal",
             self.scroll_speed < 1.5,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &sp_fast,
             "Fast",
             self.scroll_speed >= 1.5,
@@ -404,7 +393,7 @@ impl SettingsDialog {
 
         // Row 3: Row Size
         let label_y3 = row3_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Row Size",
             dialog.x + padding,
             label_y3,
@@ -414,14 +403,14 @@ impl SettingsDialog {
         let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &rs_normal,
             "Normal",
             self.row_scale < 1.5,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &rs_large,
             "Large",
             self.row_scale >= 1.5,
@@ -441,7 +430,7 @@ impl SettingsDialog {
 
         // Row 4: Worktree Names
         let label_y4 = row4_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Worktree Names",
             dialog.x + padding,
             label_y4,
@@ -451,14 +440,14 @@ impl SettingsDialog {
         let (wt_short, wt_full) = self.toggle_bounds(&dialog, row4_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &wt_short,
             "Short",
             self.abbreviate_worktree_names,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &wt_full,
             "Full",
             !self.abbreviate_worktree_names,
@@ -478,7 +467,7 @@ impl SettingsDialog {
 
         // Row 5: Time Spacing
         let label_y5 = row5_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Time Spacing",
             dialog.x + padding,
             label_y5,
@@ -489,21 +478,21 @@ impl SettingsDialog {
             self.triple_toggle_bounds(&dialog, row5_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &ts_low,
             "Low",
             self.time_spacing_strength < 0.5,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &ts_normal,
             "Normal",
             self.time_spacing_strength >= 0.5 && self.time_spacing_strength < 1.5,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &ts_high,
             "High",
             self.time_spacing_strength >= 1.5,
@@ -523,7 +512,7 @@ impl SettingsDialog {
 
         // Row 6: Show Orphans
         let label_y6 = row6_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Show Orphans",
             dialog.x + padding,
             label_y6,
@@ -533,14 +522,14 @@ impl SettingsDialog {
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &oc_on,
             "ON",
             self.show_orphaned_commits,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &oc_off,
             "OFF",
             !self.show_orphaned_commits,
@@ -560,7 +549,7 @@ impl SettingsDialog {
 
         // Row 7: Graph Scroll
         let label_y7 = row7_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "Graph Scroll",
             dialog.x + padding,
             label_y7,
@@ -570,14 +559,14 @@ impl SettingsDialog {
         let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &gs_snap,
             "Snap",
             self.ratchet_scroll,
         );
         self.render_toggle_option(
             &mut output,
-            text_renderer,
+            ctx,
             &gs_smooth,
             "Smooth",
             !self.ratchet_scroll,
@@ -589,7 +578,7 @@ impl SettingsDialog {
         let tokens_bounds = Rect::new(dialog.x + padding, tokens_y, tokens_w, line_h);
         output.extend(
             self.manage_tokens_button
-                .layout(text_renderer, tokens_bounds),
+                .layout(ctx, tokens_bounds),
         );
 
         // Close button at bottom
@@ -610,11 +599,11 @@ impl SettingsDialog {
         ));
 
         let close_bounds = Rect::new(close_x, button_y, button_w, line_h);
-        output.extend(self.close_button.layout(text_renderer, close_bounds));
+        output.extend(self.close_button.layout(ctx, close_bounds));
 
         // Version text at bottom-left
         let version_y = button_y + (line_h - line_height) / 2.0;
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             "whisper-git v0.1.0",
             dialog.x + padding,
             version_y,
@@ -630,12 +619,12 @@ impl SettingsDialog {
     fn render_toggle_option(
         &self,
         output: &mut WidgetOutput,
-        text_renderer: &TextRenderer,
+        ctx: &LayoutCtx,
         rect: &Rect,
         label: &str,
         is_active: bool,
     ) {
-        let line_height = text_renderer.line_height();
+        let line_height = ctx.text.line_height();
 
         // Background
         let bg_color = if is_active {
@@ -659,7 +648,7 @@ impl SettingsDialog {
             .extend(create_rect_outline_vertices(rect, border_color, 1.0));
 
         // Label text (centered)
-        let text_width = text_renderer.measure_text(label);
+        let text_width = ctx.text.measure_text(label);
         let text_x = rect.x + (rect.width - text_width) / 2.0;
         let text_y = rect.y + (rect.height - line_height) / 2.0;
         let text_color = if is_active {
@@ -669,6 +658,6 @@ impl SettingsDialog {
         };
         output
             .text_vertices
-            .extend(text_renderer.layout_text(label, text_x, text_y, text_color));
+            .extend(ctx.text.layout_text(label, text_x, text_y, text_color));
     }
 }

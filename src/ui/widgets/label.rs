@@ -1,7 +1,7 @@
 //! Label widget - static text display
 
-use crate::ui::{Color, Rect, TextRenderer};
-use crate::ui::widget::{Widget, WidgetOutput, theme};
+use crate::ui::widget::{LayoutCtx, Widget, WidgetOutput, theme};
+use crate::ui::{Color, Rect};
 
 /// Text alignment options
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,17 +65,15 @@ impl Label {
 }
 
 impl Widget for Label {
-    fn layout(&self, text_renderer: &TextRenderer, bounds: Rect) -> WidgetOutput {
+    fn layout(&mut self, ctx: &LayoutCtx, bounds: Rect) -> WidgetOutput {
         let mut output = WidgetOutput::new();
 
         if self.text.is_empty() {
             return output;
         }
 
-        let line_height = text_renderer.line_height();
-
-        // Calculate text width for alignment
-        let text_width = text_renderer.measure_text(&self.text);
+        let line_height = ctx.text.line_height();
+        let text_width = ctx.text.measure_text(&self.text);
 
         let x = match self.align {
             TextAlign::Left => bounds.x,
@@ -89,7 +87,7 @@ impl Widget for Label {
             bounds.y
         };
 
-        output.text_vertices.extend(text_renderer.layout_text(
+        output.text_vertices.extend(ctx.text.layout_text(
             &self.text,
             x,
             y,
@@ -98,5 +96,4 @@ impl Widget for Label {
 
         output
     }
-
 }
