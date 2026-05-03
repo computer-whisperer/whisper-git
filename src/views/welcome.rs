@@ -10,12 +10,12 @@ use std::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::text_util::truncate_to_width;
 use crate::ui::widget::{
     LayoutCtx, Widget, WidgetOutput, create_rect_vertices, create_rounded_rect_vertices, theme,
 };
 use crate::ui::widgets::{Button, TextInput};
-use crate::ui::Rect;
 
 #[derive(Clone, Debug)]
 pub enum WelcomeAction {
@@ -470,44 +470,38 @@ impl Widget for WelcomeView {
                 theme::TEXT_BRIGHT.to_array(),
                 TITLE_SCALE,
             ));
-        output
-            .text_vertices
-            .extend(ctx.text.layout_text_scaled(
-                "GPU-accelerated Git client",
-                actions.open.x,
-                actions.title_y + line_height * TITLE_SCALE + 6.0,
-                theme::TEXT_MUTED.to_array(),
-                SUBTITLE_SCALE,
-            ));
+        output.text_vertices.extend(ctx.text.layout_text_scaled(
+            "GPU-accelerated Git client",
+            actions.open.x,
+            actions.title_y + line_height * TITLE_SCALE + 6.0,
+            theme::TEXT_MUTED.to_array(),
+            SUBTITLE_SCALE,
+        ));
 
         output.extend(self.open_button.layout(ctx, actions.open));
         output.extend(self.clone_button.layout(ctx, actions.clone));
         output.extend(self.init_button.layout(ctx, actions.init));
 
         // Path input section
-        output
-            .text_vertices
-            .extend(ctx.text.layout_text_scaled(
-                "Open by path",
-                actions.open.x,
-                actions.path_label_y,
-                theme::TEXT_MUTED.to_array(),
-                SECONDARY_SCALE,
-            ));
+        output.text_vertices.extend(ctx.text.layout_text_scaled(
+            "Open by path",
+            actions.open.x,
+            actions.path_label_y,
+            theme::TEXT_MUTED.to_array(),
+            SECONDARY_SCALE,
+        ));
         output.extend(self.path_input.layout(ctx, actions.path_input));
         output.extend(self.open_path_button.layout(ctx, actions.path_open_btn));
 
         // Hint at bottom of the left column
         let hint_y = left.bottom() - 26.0;
-        output
-            .text_vertices
-            .extend(ctx.text.layout_text_scaled(
-                "Drop a folder anywhere to open",
-                actions.open.x,
-                hint_y,
-                theme::TEXT_MUTED.with_alpha(0.7).to_array(),
-                SECONDARY_SCALE,
-            ));
+        output.text_vertices.extend(ctx.text.layout_text_scaled(
+            "Drop a folder anywhere to open",
+            actions.open.x,
+            hint_y,
+            theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+            SECONDARY_SCALE,
+        ));
 
         // ── Right: recent ──────────────────────────────────────────────────
         let recent_pad_x = 28.0;
@@ -593,15 +587,13 @@ impl Widget for WelcomeView {
                     // Vertically nudge so the smaller branch text aligns with
                     // the bold name's optical baseline.
                     let branch_y = r.y + 10.0 + (line_height - line_height * SECONDARY_SCALE) * 0.5;
-                    output
-                        .text_vertices
-                        .extend(ctx.text.layout_text_scaled(
-                            branch_text,
-                            right_cursor - branch_w,
-                            branch_y,
-                            theme::TEXT_MUTED.to_array(),
-                            SECONDARY_SCALE,
-                        ));
+                    output.text_vertices.extend(ctx.text.layout_text_scaled(
+                        branch_text,
+                        right_cursor - branch_w,
+                        branch_y,
+                        theme::TEXT_MUTED.to_array(),
+                        SECONDARY_SCALE,
+                    ));
                     right_cursor -= branch_w + dot_gap;
                 }
 
@@ -630,15 +622,13 @@ impl Widget for WelcomeView {
                 // line_height from fontdue already includes leading, so use
                 // it directly as the inter-line offset.
                 let parent_y = r.y + 10.0 + line_height;
-                output
-                    .text_vertices
-                    .extend(ctx.text.layout_text_scaled(
-                        &parent_display,
-                        r.x + 14.0,
-                        parent_y,
-                        theme::TEXT_MUTED.to_array(),
-                        SECONDARY_SCALE,
-                    ));
+                output.text_vertices.extend(ctx.text.layout_text_scaled(
+                    &parent_display,
+                    r.x + 14.0,
+                    parent_y,
+                    theme::TEXT_MUTED.to_array(),
+                    SECONDARY_SCALE,
+                ));
             }
         }
 

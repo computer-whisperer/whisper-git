@@ -640,8 +640,7 @@ impl Widget for TokenDialog {
         } else {
             theme::TEXT_MUTED.to_array()
         };
-        let status_x =
-            dl.dialog.x + dl.padding + ctx.text.measure_text("GitHub") + 12.0 * dl.scale;
+        let status_x = dl.dialog.x + dl.padding + ctx.text.measure_text("GitHub") + 12.0 * dl.scale;
         output.text_vertices.extend(ctx.text.layout_text(
             status_text,
             status_x,

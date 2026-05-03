@@ -326,10 +326,7 @@ impl Widget for PushDialog {
         let local_input_y = local_label_y + label_h;
         let input_w = dialog.width - padding * 2.0;
         let local_input_bounds = Rect::new(dialog.x + padding, local_input_y, input_w, line_h);
-        output.extend(
-            self.local_branch_input
-                .layout(ctx, local_input_bounds),
-        );
+        output.extend(self.local_branch_input.layout(ctx, local_input_bounds));
 
         // Remote label + input
         let remote_label_y = local_input_y + line_h + 8.0 * scale;
@@ -341,10 +338,7 @@ impl Widget for PushDialog {
         ));
         let remote_input_y = remote_label_y + label_h;
         let remote_input_bounds = Rect::new(dialog.x + padding, remote_input_y, input_w, line_h);
-        output.extend(
-            self.remote_dropdown
-                .layout(ctx, remote_input_bounds),
-        );
+        output.extend(self.remote_dropdown.layout(ctx, remote_input_bounds));
 
         // Remote branch label + input
         let remote_branch_label_y = remote_input_y + line_h + 8.0 * scale;

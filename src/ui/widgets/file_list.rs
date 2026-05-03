@@ -650,42 +650,36 @@ impl Widget for FileList {
                 for (i, (label, count, color)) in parts.iter().enumerate() {
                     let count_str = format!("{}", count);
                     // Render count in color
-                    output
-                        .text_vertices
-                        .extend(ctx.text.layout_text_scaled(
-                            &count_str,
-                            sx,
-                            summary_y,
-                            color.to_array(),
-                            small_scale,
-                        ));
+                    output.text_vertices.extend(ctx.text.layout_text_scaled(
+                        &count_str,
+                        sx,
+                        summary_y,
+                        color.to_array(),
+                        small_scale,
+                    ));
                     sx += ctx.text.measure_text_scaled(&count_str, small_scale);
 
                     // Render label in muted text
                     let label_str = format!(" {}", label);
-                    output
-                        .text_vertices
-                        .extend(ctx.text.layout_text_scaled(
-                            &label_str,
-                            sx,
-                            summary_y,
-                            theme::TEXT_MUTED.with_alpha(0.7).to_array(),
-                            small_scale,
-                        ));
+                    output.text_vertices.extend(ctx.text.layout_text_scaled(
+                        &label_str,
+                        sx,
+                        summary_y,
+                        theme::TEXT_MUTED.with_alpha(0.7).to_array(),
+                        small_scale,
+                    ));
                     sx += ctx.text.measure_text_scaled(&label_str, small_scale);
 
                     // Comma separator
                     if i + 1 < parts.len() {
                         let sep = ", ";
-                        output
-                            .text_vertices
-                            .extend(ctx.text.layout_text_scaled(
-                                sep,
-                                sx,
-                                summary_y,
-                                theme::TEXT_MUTED.with_alpha(0.5).to_array(),
-                                small_scale,
-                            ));
+                        output.text_vertices.extend(ctx.text.layout_text_scaled(
+                            sep,
+                            sx,
+                            summary_y,
+                            theme::TEXT_MUTED.with_alpha(0.5).to_array(),
+                            small_scale,
+                        ));
                         sx += ctx.text.measure_text_scaled(sep, small_scale);
                     }
                 }
@@ -793,8 +787,7 @@ impl Widget for FileList {
             // +/- counts on the right
             if file.additions > 0 || file.deletions > 0 {
                 let stats = format!("+{} -{}", file.additions, file.deletions);
-                let stats_x =
-                    bounds.right() - ctx.text.measure_text(&stats) - 10.0 * self.scale;
+                let stats_x = bounds.right() - ctx.text.measure_text(&stats) - 10.0 * self.scale;
                 output.text_vertices.extend(ctx.text.layout_text(
                     &stats,
                     stats_x,

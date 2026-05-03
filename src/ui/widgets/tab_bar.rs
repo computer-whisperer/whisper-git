@@ -395,8 +395,7 @@ impl Widget for TabBar {
         } else {
             theme::TEXT_MUTED
         };
-        let plus_x =
-            cached.new_rect.x + (cached.new_rect.width - ctx.text.measure_text("+")) / 2.0;
+        let plus_x = cached.new_rect.x + (cached.new_rect.width - ctx.text.measure_text("+")) / 2.0;
         let plus_y = cached.new_rect.y + (cached.new_rect.height - line_height) / 2.0;
         output.text_vertices.extend(ctx.text.layout_text(
             "+",

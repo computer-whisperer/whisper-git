@@ -1042,44 +1042,26 @@ pub(crate) fn build_ui_output(
     // entirely; modals (clone dialog, etc.) still draw on top via the overlay
     // layer below.
     if tabs.is_empty() {
-        graph_output.extend(welcome_view.layout(
-            &ctx,
-            main_bounds,
-        ));
+        graph_output.extend(welcome_view.layout(&ctx, main_bounds));
 
         // Toast notifications still useful (init success, dropped-file errors)
         overlay_output.extend(toast_manager.layout(text_renderer, screen_bounds, scale));
 
         // Allow modal dialogs to render on top — Ctrl+O still works from welcome.
         if clone_dialog.is_visible() {
-            overlay_output.extend(clone_dialog.layout(
-            &ctx,
-                screen_bounds,
-            ));
+            overlay_output.extend(clone_dialog.layout(&ctx, screen_bounds));
         }
         if repo_dialog.is_visible() {
-            overlay_output.extend(repo_dialog.layout(
-            &ctx,
-                screen_bounds,
-            ));
+            overlay_output.extend(repo_dialog.layout(&ctx, screen_bounds));
         }
         if settings_dialog.is_visible() {
-            overlay_output.extend(settings_dialog.layout(
-            &ctx,
-                screen_bounds,
-            ));
+            overlay_output.extend(settings_dialog.layout(&ctx, screen_bounds));
         }
         if confirm_dialog.is_visible() {
-            overlay_output.extend(confirm_dialog.layout(
-            &ctx,
-                screen_bounds,
-            ));
+            overlay_output.extend(confirm_dialog.layout(&ctx, screen_bounds));
         }
         if error_dialog.is_visible() {
-            overlay_output.extend(error_dialog.layout(
-            &ctx,
-                screen_bounds,
-            ));
+            overlay_output.extend(error_dialog.layout(&ctx, screen_bounds));
         }
 
         // Suppress everything else — there's no active tab to drive it.
@@ -1254,8 +1236,7 @@ pub(crate) fn build_ui_output(
                     // Upper: staging well, Lower: diff view with header
                     let (staging_rect, diff_rect) =
                         content_rect.split_vertical(staging_preview_ratio);
-                    chrome_output
-                        .extend(view_state.staging_well.layout(&ctx, staging_rect));
+                    chrome_output.extend(view_state.staging_well.layout(&ctx, staging_rect));
 
                     let has_diff = view_state.diff_view.has_content();
                     let title = if has_diff {
@@ -1380,26 +1361,17 @@ pub(crate) fn build_ui_output(
 
     // Repo dialog (overlay layer - on top of everything including toasts)
     if repo_dialog.is_visible() {
-        overlay_output.extend(repo_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(repo_dialog.layout(&ctx, screen_bounds));
     }
 
     // Clone dialog (overlay layer)
     if clone_dialog.is_visible() {
-        overlay_output.extend(clone_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(clone_dialog.layout(&ctx, screen_bounds));
     }
 
     // Settings dialog (overlay layer - on top of everything)
     if settings_dialog.is_visible() {
-        overlay_output.extend(settings_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(settings_dialog.layout(&ctx, screen_bounds));
     }
 
     // Token dialog (overlay layer - on top of settings)
@@ -1409,67 +1381,43 @@ pub(crate) fn build_ui_output(
 
     // Confirm dialog (overlay layer - on top of everything including settings)
     if confirm_dialog.is_visible() {
-        overlay_output.extend(confirm_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(confirm_dialog.layout(&ctx, screen_bounds));
     }
 
     // Error dialog (overlay layer - on top of confirm dialog)
     if error_dialog.is_visible() {
-        overlay_output.extend(error_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(error_dialog.layout(&ctx, screen_bounds));
     }
 
     // Branch name dialog (overlay layer - on top of everything)
     if branch_name_dialog.is_visible() {
-        overlay_output.extend(branch_name_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(branch_name_dialog.layout(&ctx, screen_bounds));
     }
 
     // Remote dialog (overlay layer - on top of everything)
     if remote_dialog.is_visible() {
-        overlay_output.extend(remote_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(remote_dialog.layout(&ctx, screen_bounds));
     }
 
     // Pull dialog (overlay layer - on top of everything)
     if pull_dialog.is_visible() {
-        overlay_output.extend(pull_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(pull_dialog.layout(&ctx, screen_bounds));
         popover_output.extend(pull_dialog.layout_popup(&ctx, screen_bounds));
     }
 
     if push_dialog.is_visible() {
-        overlay_output.extend(push_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(push_dialog.layout(&ctx, screen_bounds));
         popover_output.extend(push_dialog.layout_popup(&ctx, screen_bounds));
     }
 
     // Merge dialog (overlay layer - on top of everything)
     if merge_dialog.is_visible() {
-        overlay_output.extend(merge_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(merge_dialog.layout(&ctx, screen_bounds));
     }
 
     // Rebase dialog (overlay layer - on top of everything)
     if rebase_dialog.is_visible() {
-        overlay_output.extend(rebase_dialog.layout(
-            &ctx,
-            screen_bounds,
-        ));
+        overlay_output.extend(rebase_dialog.layout(&ctx, screen_bounds));
     }
 
     (graph_output, chrome_output, overlay_output, popover_output)

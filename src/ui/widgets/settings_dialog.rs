@@ -334,13 +334,7 @@ impl Widget for SettingsDialog {
 
         let (av_on, av_off) = self.toggle_bounds(&dialog, row1_y, line_h, scale);
         self.render_toggle_option(&mut output, ctx, &av_on, "ON", self.show_avatars);
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &av_off,
-            "OFF",
-            !self.show_avatars,
-        );
+        self.render_toggle_option(&mut output, ctx, &av_off, "OFF", !self.show_avatars);
 
         // Separator
         let sep1_y = row1_y + line_h + 5.0 * scale;
@@ -371,13 +365,7 @@ impl Widget for SettingsDialog {
             "Normal",
             self.scroll_speed < 1.5,
         );
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &sp_fast,
-            "Fast",
-            self.scroll_speed >= 1.5,
-        );
+        self.render_toggle_option(&mut output, ctx, &sp_fast, "Fast", self.scroll_speed >= 1.5);
 
         // Separator
         let sep2_y = row2_y + line_h + 5.0 * scale;
@@ -401,20 +389,8 @@ impl Widget for SettingsDialog {
         ));
 
         let (rs_normal, rs_large) = self.toggle_bounds(&dialog, row3_y, line_h, scale);
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &rs_normal,
-            "Normal",
-            self.row_scale < 1.5,
-        );
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &rs_large,
-            "Large",
-            self.row_scale >= 1.5,
-        );
+        self.render_toggle_option(&mut output, ctx, &rs_normal, "Normal", self.row_scale < 1.5);
+        self.render_toggle_option(&mut output, ctx, &rs_large, "Large", self.row_scale >= 1.5);
 
         // Separator
         let sep3_y = row3_y + line_h + 5.0 * scale;
@@ -520,13 +496,7 @@ impl Widget for SettingsDialog {
         ));
 
         let (oc_on, oc_off) = self.toggle_bounds(&dialog, row6_y, line_h, scale);
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &oc_on,
-            "ON",
-            self.show_orphaned_commits,
-        );
+        self.render_toggle_option(&mut output, ctx, &oc_on, "ON", self.show_orphaned_commits);
         self.render_toggle_option(
             &mut output,
             ctx,
@@ -557,29 +527,14 @@ impl Widget for SettingsDialog {
         ));
 
         let (gs_snap, gs_smooth) = self.toggle_bounds(&dialog, row7_y, line_h, scale);
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &gs_snap,
-            "Snap",
-            self.ratchet_scroll,
-        );
-        self.render_toggle_option(
-            &mut output,
-            ctx,
-            &gs_smooth,
-            "Smooth",
-            !self.ratchet_scroll,
-        );
+        self.render_toggle_option(&mut output, ctx, &gs_snap, "Snap", self.ratchet_scroll);
+        self.render_toggle_option(&mut output, ctx, &gs_smooth, "Smooth", !self.ratchet_scroll);
 
         // Manage Tokens button
         let tokens_y = row7_y + line_h + row_gap + 4.0 * scale;
         let tokens_w = 160.0 * scale;
         let tokens_bounds = Rect::new(dialog.x + padding, tokens_y, tokens_w, line_h);
-        output.extend(
-            self.manage_tokens_button
-                .layout(ctx, tokens_bounds),
-        );
+        output.extend(self.manage_tokens_button.layout(ctx, tokens_bounds));
 
         // Close button at bottom
         let button_y = dialog.bottom() - padding - line_h;

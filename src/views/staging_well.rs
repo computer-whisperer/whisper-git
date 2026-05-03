@@ -1704,10 +1704,7 @@ impl StagingWell {
             ));
         } else {
             // Stage All button in header (only when there are files)
-            output.extend(
-                self.stage_all_btn
-                    .layout(ctx, regions.stage_all_btn),
-            );
+            output.extend(self.stage_all_btn.layout(ctx, regions.stage_all_btn));
 
             // Subtle background tint for unstaged area (orange tint)
             output.spline_vertices.extend(create_rect_vertices(
@@ -1748,10 +1745,7 @@ impl StagingWell {
             ));
 
             // Track All button in header
-            output.extend(
-                self.track_all_btn
-                    .layout(ctx, regions.track_all_btn),
-            );
+            output.extend(self.track_all_btn.layout(ctx, regions.track_all_btn));
 
             // Subtle background tint for untracked area (blue tint)
             output.spline_vertices.extend(create_rect_vertices(
@@ -1808,10 +1802,7 @@ impl StagingWell {
             ));
         } else {
             // Unstage All button in header (only when there are files)
-            output.extend(
-                self.unstage_all_btn
-                    .layout(ctx, regions.unstage_all_btn),
-            );
+            output.extend(self.unstage_all_btn.layout(ctx, regions.unstage_all_btn));
 
             // Subtle background tint for staged area (green tint)
             output.spline_vertices.extend(create_rect_vertices(

@@ -462,7 +462,8 @@ fn render_checkbox(
     } else {
         theme::TEXT
     };
-    output
-        .text_vertices
-        .extend(ctx.text.layout_text(label, text_x, y, text_color.to_array()));
+    output.text_vertices.extend(
+        ctx.text
+            .layout_text(label, text_x, y, text_color.to_array()),
+    );
 }

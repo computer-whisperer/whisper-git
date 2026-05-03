@@ -692,8 +692,7 @@ impl Widget for CloneDialog {
                     // Repo name (bold)
                     let name_y = item_y + 4.0 * scale;
                     let max_name_w = list_area.width - 8.0 * scale;
-                    let name_display =
-                        truncate_to_width(&repo.full_name, ctx.bold, max_name_w);
+                    let name_display = truncate_to_width(&repo.full_name, ctx.bold, max_name_w);
                     output.bold_text_vertices.extend(ctx.bold.layout_text(
                         &name_display,
                         list_area.x + 4.0 * scale,

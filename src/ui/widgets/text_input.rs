@@ -1,11 +1,11 @@
 //! Single-line text input widget
 
 use crate::input::{EventResponse, InputEvent, Key, MouseButton};
+use crate::ui::Rect;
 use crate::ui::widget::{
     LayoutCtx, Widget, WidgetOutput, WidgetState, create_rect_outline_vertices,
     create_rect_vertices, create_rounded_rect_vertices, theme,
 };
-use crate::ui::Rect;
 use std::cell::RefCell;
 
 /// Find the byte offset of the previous word boundary from cursor position.
