@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::git::{
-    BranchTip, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorktreeInfo,
+    BranchTip, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -94,6 +94,15 @@ pub struct RepoTab {
     pub submodules: Vec<SubmoduleInfo>,
     pub stashes: Vec<StashEntry>,
     pub sidebar: SidebarState,
+    /// Working directory status (staged / unstaged / untracked / conflicted).
+    pub status: WorkingDirStatus,
+    /// Controlled commit-message subject. App owns the value; aetna's
+    /// `text_input::apply_event` mutates this through `on_event`.
+    pub commit_subject: String,
+    /// Controlled commit-message body.
+    pub commit_body: String,
+    /// Currently previewed file (None = no diff selected).
+    pub selected_diff_file: Option<String>,
 }
 
 impl RepoTab {
@@ -109,6 +118,10 @@ impl RepoTab {
             submodules: Vec::new(),
             stashes: Vec::new(),
             sidebar: SidebarState::default(),
+            status: WorkingDirStatus::default(),
+            commit_subject: String::new(),
+            commit_body: String::new(),
+            selected_diff_file: None,
             repo,
         };
         tab.refresh();
@@ -116,7 +129,7 @@ impl RepoTab {
     }
 
     /// Re-query everything from the underlying repo. Synchronous; the
-    /// async equivalent goes back online in Phase 4.
+    /// async equivalent comes back when async polling is re-enabled.
     pub fn refresh(&mut self) {
         self.current_branch = self.repo.current_branch().unwrap_or_default();
         self.branch_tips = self.repo.branch_tips().unwrap_or_default();
@@ -125,6 +138,7 @@ impl RepoTab {
         self.worktrees = self.repo.worktrees().unwrap_or_default();
         self.submodules = self.repo.submodules().unwrap_or_default();
         self.stashes = self.repo.stash_list();
+        self.status = self.repo.status().unwrap_or_default();
     }
 
     /// Local branches sorted alphabetically.

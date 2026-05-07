@@ -7,13 +7,15 @@
 use std::path::Path;
 
 use aetna_core::{
-    App, AppShader, BuildCx, El, IconName, KeyChord, UiEvent, UiEventKind,
+    App, AppShader, BuildCx, El, IconName, KeyChord, Selection, UiEvent, UiEventKind,
     prelude::*,
     toast::ToastSpec,
+    widgets::{text_area, text_input},
 };
 
 use crate::repo_tab::{RepoTab, SidebarSection};
 use crate::sidebar;
+use crate::staging;
 
 /// commit_node.wgsl — copied verbatim from the aetna `custom_paint`
 /// example. Per-row commit-graph cell: vertical lane line + circle
@@ -95,6 +97,10 @@ pub struct WhisperApp {
     pub active_tab: usize,
     pub shortcut_bar_visible: bool,
     pub toasts: Vec<ToastSpec>,
+    /// Global text selection. Aetna's `text_input` / `text_area`
+    /// `apply_event` helpers fold per-input selection state through
+    /// this single value (see `aetna_core::Selection::within`).
+    pub selection: Selection,
 }
 
 impl WhisperApp {
@@ -121,6 +127,7 @@ impl WhisperApp {
             active_tab: 0,
             shortcut_bar_visible: true,
             toasts: Vec::new(),
+            selection: Selection::default(),
         }
     }
 
@@ -132,6 +139,7 @@ impl WhisperApp {
             active_tab: 0,
             shortcut_bar_visible: true,
             toasts: Vec::new(),
+            selection: Selection::default(),
         }
     }
 
@@ -157,9 +165,13 @@ impl App for WhisperApp {
         let chrome_el = column(chrome).gap(0.0);
 
         let body = match self.active() {
-            Some(tab) => row([sidebar::sidebar(tab), main_placeholder(Some(tab))])
-                .gap(0.0)
-                .height(Size::Fill(1.0)),
+            Some(tab) => row([
+                sidebar::sidebar(tab),
+                main_placeholder(Some(tab)),
+                staging::staging_well(tab, &self.selection),
+            ])
+            .gap(0.0)
+            .height(Size::Fill(1.0)),
             None => main_placeholder(None),
         };
 
@@ -168,6 +180,22 @@ impl App for WhisperApp {
     }
 
     fn on_event(&mut self, event: UiEvent) {
+        // Text-editing routes consume the event for the active tab's
+        // commit-message fields. Clipboard ops (Ctrl+C/X/V) are deferred
+        // along with the commit op in Phase 4c.
+        // Index-based borrow so we can hand `self.selection` to the
+        // apply_event helpers without conflicting with `&mut tab`.
+        let active_idx = self.active_tab;
+        if let Some(tab) = self.tabs.get_mut(active_idx) {
+            text_input::apply_event(
+                &mut tab.commit_subject,
+                &mut self.selection,
+                "subject",
+                &event,
+            );
+            text_area::apply_event(&mut tab.commit_body, &mut self.selection, "body", &event);
+        }
+
         let route = event.route().map(str::to_string);
         match event.kind {
             UiEventKind::Click | UiEventKind::Activate | UiEventKind::Hotkey => {
@@ -177,6 +205,10 @@ impl App for WhisperApp {
             }
             _ => {}
         }
+    }
+
+    fn selection(&self) -> Selection {
+        self.selection.clone()
     }
 
     fn hotkeys(&self) -> Vec<(KeyChord, String)> {
@@ -228,13 +260,30 @@ impl WhisperApp {
             return;
         }
 
+        // Stage / unstage / diff-preview routes — Phase 4c wires to git.
+        if let Some(path) = key.strip_prefix("stage_file:") {
+            self.toasts
+                .push(ToastSpec::info(format!("Stage {path} (Phase 4c)")));
+            return;
+        }
+        if let Some(path) = key.strip_prefix("unstage_file:") {
+            self.toasts
+                .push(ToastSpec::info(format!("Unstage {path} (Phase 4c)")));
+            return;
+        }
+        if let Some(path) = key.strip_prefix("diff:") {
+            if let Some(tab) = self.active_mut() {
+                tab.selected_diff_file = Some(path.to_string());
+            }
+            return;
+        }
+
         // Sidebar item clicks — Phase 3 just announces them.
         for prefix in ["branch:", "remote:", "tag:", "submodule:", "worktree:", "stash:"] {
             if let Some(name) = key.strip_prefix(prefix) {
                 let label = prefix.trim_end_matches(':');
-                self.toasts.push(ToastSpec::info(format!(
-                    "{label}: {name} (Phase 4 wiring)"
-                )));
+                self.toasts
+                    .push(ToastSpec::info(format!("{label}: {name} (Phase 4c wiring)")));
                 return;
             }
         }
@@ -242,10 +291,12 @@ impl WhisperApp {
         match key {
             "open_repo" => self.toasts.push(ToastSpec::info("Open repo (Phase 5)")),
             "close_tab" => self.close_tab(self.active_tab),
-            "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4)")),
-            "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4)")),
-            "push" => self.toasts.push(ToastSpec::info("Push (Phase 4)")),
-            "commit" => self.toasts.push(ToastSpec::info("Commit (Phase 4)")),
+            "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4c)")),
+            "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4c)")),
+            "push" => self.toasts.push(ToastSpec::info("Push (Phase 4c)")),
+            "commit" => self.toasts.push(ToastSpec::info("Commit (Phase 4c)")),
+            "stage_all" => self.toasts.push(ToastSpec::info("Stage all (Phase 4c)")),
+            "unstage_all" => self.toasts.push(ToastSpec::info("Unstage all (Phase 4c)")),
             "settings" => self.toasts.push(ToastSpec::info("Settings (Phase 5)")),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
