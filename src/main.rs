@@ -100,6 +100,19 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 tab.selected_commit = tab.commits.first().map(|c| c.id);
             }
         }
+        "commit-menu" => {
+            use whisper_git::ui_app::{ContextMenuState, ContextTarget};
+            if let Some(tab) = app.tabs.first_mut() {
+                tab.view_mode = RepoView::History;
+                if let Some(oid) = tab.commits.first().map(|c| c.id) {
+                    tab.selected_commit = Some(oid);
+                    app.context_menu = Some(ContextMenuState {
+                        pos: (480.0, 200.0),
+                        target: ContextTarget::Commit(oid),
+                    });
+                }
+            }
+        }
         "diff" => {
             // Pick the first changed file so the diff viewer has content
             // to render. Fall through silently when no repos are open.

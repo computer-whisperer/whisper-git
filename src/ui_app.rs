@@ -37,6 +37,8 @@ pub enum ConfirmAction {
     DeleteBranch(String),
     DeleteTag(String),
     DropStash(usize),
+    /// `git reset --hard <oid>` from a commit-row context menu.
+    ResetHard(git2::Oid),
 }
 
 /// Per-section right-click target. Carries the exact identity needed to
@@ -44,10 +46,15 @@ pub enum ConfirmAction {
 #[derive(Clone, Debug)]
 pub enum ContextTarget {
     LocalBranch(String),
-    RemoteBranch { remote: String, branch: String },
+    RemoteBranch {
+        remote: String,
+        branch: String,
+    },
     Tag(String),
     Worktree(String),
     Stash(usize),
+    /// A row in the commit history view.
+    Commit(git2::Oid),
 }
 
 #[derive(Clone, Debug)]
@@ -509,8 +516,19 @@ impl WhisperApp {
         let Some(route) = event.route() else {
             return false;
         };
-        let Some(target) = parse_sidebar_target(route) else {
-            return false;
+        let target = if let Some(idx_str) = route.strip_prefix("commit:") {
+            let Ok(idx) = idx_str.parse::<usize>() else {
+                return false;
+            };
+            let Some(oid) = self.active().and_then(|t| t.commits.get(idx).map(|c| c.id)) else {
+                return false;
+            };
+            ContextTarget::Commit(oid)
+        } else {
+            let Some(t) = parse_sidebar_target(route) else {
+                return false;
+            };
+            t
         };
         let Some(pos) = event.pointer_pos() else {
             return false;
@@ -610,6 +628,42 @@ impl WhisperApp {
                     "Switch to worktree '{name}' (Phase 5c)"
                 )));
             }
+            ("copy_sha", ContextTarget::Commit(oid)) => {
+                let sha = oid.to_string();
+                match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(sha.clone())) {
+                    Ok(()) => self
+                        .toasts
+                        .push(ToastSpec::success(format!("Copied {}", &sha[..7]))),
+                    Err(e) => self
+                        .toasts
+                        .push(ToastSpec::error(format!("Clipboard: {e}"))),
+                }
+            }
+            ("checkout", ContextTarget::Commit(oid)) => {
+                self.run_op("Checkout", move |t| t.repo.checkout_commit_detached(oid));
+            }
+            ("reset_hard", ContextTarget::Commit(oid)) => {
+                let short = oid.to_string()[..7].to_string();
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Reset hard".to_string(),
+                    body: format!("Move HEAD to {short} and discard all changes in tracked files?"),
+                    ok_label: "Reset".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::ResetHard(oid),
+                });
+            }
+            ("cherry_pick", ContextTarget::Commit(oid)) => {
+                self.toasts.push(ToastSpec::info(format!(
+                    "Cherry-pick {} (async phase)",
+                    &oid.to_string()[..7]
+                )));
+            }
+            ("revert", ContextTarget::Commit(oid)) => {
+                self.toasts.push(ToastSpec::info(format!(
+                    "Revert {} (async phase)",
+                    &oid.to_string()[..7]
+                )));
+            }
             _ => {}
         }
     }
@@ -658,6 +712,11 @@ impl WhisperApp {
                 // placeholder until Phase 4d brings the rest of the
                 // stash op surface online.
                 self.toasts.push(ToastSpec::info("Drop stash (Phase 4d)"));
+            }
+            ConfirmAction::ResetHard(oid) => {
+                self.run_op("Reset hard", move |t| {
+                    t.repo.reset_to_commit(oid, git2::ResetType::Hard)
+                });
             }
         }
     }
@@ -799,6 +858,13 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
         ContextTarget::Worktree(_) => vec![menu_item("Switch to worktree").key("ctx:switch")],
         ContextTarget::Stash(_) => vec![menu_item("Drop").key("ctx:drop")],
+        ContextTarget::Commit(_) => vec![
+            menu_item("Copy SHA").key("ctx:copy_sha"),
+            menu_item("Checkout (detached)").key("ctx:checkout"),
+            menu_item("Reset hard to here").key("ctx:reset_hard"),
+            menu_item("Cherry-pick").key("ctx:cherry_pick"),
+            menu_item("Revert").key("ctx:revert"),
+        ],
     };
 
     context_menu(SIDEBAR_CTX_KEY, state.pos, items)

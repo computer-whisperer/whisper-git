@@ -126,6 +126,19 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             t.selected_commit = t.commits.first().map(|c| c.id);
             WhisperApp::with_tabs(vec![t])
         }));
+        if let Some(commit_oid) = first.commits.first().map(|c| c.id) {
+            scenes.push(("history_context_menu".to_string(), {
+                let mut t = reopen(first);
+                t.view_mode = RepoView::History;
+                t.selected_commit = Some(commit_oid);
+                let mut app = WhisperApp::with_tabs(vec![t]);
+                app.context_menu = Some(ContextMenuState {
+                    pos: (480.0, 200.0),
+                    target: ContextTarget::Commit(commit_oid),
+                });
+                app
+            }));
+        }
         scenes.push(("modal_settings".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.active_modal = Some(ActiveModal::Settings);
