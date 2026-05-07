@@ -2,9 +2,8 @@
 //! shader_manifest) for whisper-git's scenes. CPU-only: no GPU, no
 //! window. Faster than `--screenshot` and catches layout regressions.
 //!
-//! Phase 0: one scene (the placeholder). New scenes get added as views
-//! land in later phases. The vulkano `--screenshot` path remains the
-//! authority for shader output; this path is the layout net.
+//! New scenes get added as views land. The vulkano `--screenshot` path
+//! remains the authority for shader output; this path is the layout net.
 
 use std::path::PathBuf;
 
@@ -17,10 +16,25 @@ fn main() -> Result<()> {
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
     let viewport = Rect::new(0.0, 0.0, 1600.0, 900.0);
 
-    let scenes: &[(&str, fn() -> WhisperApp)] = &[
-        ("placeholder", || WhisperApp::new(Vec::new())),
-        ("placeholder_with_repo", || {
-            WhisperApp::new(vec![PathBuf::from("/example/repo")])
+    type SceneFn = fn() -> WhisperApp;
+    let scenes: &[(&str, SceneFn)] = &[
+        ("chrome_no_repo", || WhisperApp::new(Vec::new())),
+        ("chrome_one_repo", || {
+            WhisperApp::new(vec![PathBuf::from("/home/dev/projects/whisper-git")])
+        }),
+        ("chrome_three_tabs", || {
+            WhisperApp::new(vec![
+                PathBuf::from("/home/dev/projects/whisper-git"),
+                PathBuf::from("/home/dev/projects/aetna"),
+                PathBuf::from("/home/dev/projects/scratch"),
+            ])
+        }),
+        ("chrome_shortcuts_collapsed", || {
+            let mut app = WhisperApp::new(vec![PathBuf::from(
+                "/home/dev/projects/whisper-git",
+            )]);
+            app.shortcut_bar_visible = false;
+            app
         }),
     ];
 
