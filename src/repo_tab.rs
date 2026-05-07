@@ -9,9 +9,17 @@ use anyhow::{Context, Result};
 
 use crate::commit_graph::GraphLayout;
 use crate::git::{
-    BranchTip, CommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus,
-    WorktreeInfo,
+    BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo,
+    WorkingDirStatus, WorktreeInfo,
 };
+
+/// Cached detail for the currently selected commit. Loaded once per
+/// selection change so the History details pane doesn't hit libgit2 on
+/// every frame.
+pub struct CommitDetail {
+    pub info: FullCommitInfo,
+    pub files: Vec<DiffFile>,
+}
 
 /// Which center-pane view the tab is currently showing.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
@@ -127,6 +135,10 @@ pub struct RepoTab {
     /// Currently selected commit (drives the right-pane preview when
     /// the History view is active).
     pub selected_commit: Option<git2::Oid>,
+    /// Cached detail for `selected_commit`, refreshed via
+    /// [`Self::select_commit`] when the selection changes or
+    /// invalidated alongside `refresh()` when the commit disappears.
+    pub commit_detail: Option<CommitDetail>,
 }
 
 impl RepoTab {
@@ -150,6 +162,7 @@ impl RepoTab {
             commits: Vec::new(),
             graph_layout: GraphLayout::new(),
             selected_commit: None,
+            commit_detail: None,
             repo,
         };
         tab.refresh();
@@ -173,7 +186,35 @@ impl RepoTab {
             && !self.commits.iter().any(|c| c.id == oid)
         {
             self.selected_commit = None;
+            self.commit_detail = None;
+        } else if let Some(oid) = self.selected_commit {
+            self.load_commit_detail(oid);
         }
+    }
+
+    /// Switch the History view's selected commit. Clears the cached
+    /// detail when `oid` is `None`; otherwise loads metadata + diff.
+    pub fn select_commit(&mut self, oid: Option<git2::Oid>) {
+        if self.selected_commit == oid && self.commit_detail.is_some() {
+            return;
+        }
+        self.selected_commit = oid;
+        match oid {
+            Some(o) => self.load_commit_detail(o),
+            None => self.commit_detail = None,
+        }
+    }
+
+    fn load_commit_detail(&mut self, oid: git2::Oid) {
+        let info = match self.repo.full_commit_info(oid) {
+            Ok(i) => i,
+            Err(_) => {
+                self.commit_detail = None;
+                return;
+            }
+        };
+        let files = self.repo.diff_for_commit(oid).unwrap_or_default();
+        self.commit_detail = Some(CommitDetail { info, files });
     }
 
     /// Local branches sorted alphabetically.

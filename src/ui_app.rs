@@ -21,6 +21,7 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
     logo: false,
 };
 
+use crate::commit_details;
 use crate::commit_graph;
 use crate::config::Config;
 use crate::dialogs;
@@ -246,17 +247,19 @@ impl App for WhisperApp {
 
         let body = match self.active() {
             Some(tab) => {
-                let center = match tab.view_mode {
-                    RepoView::Working => diff_view::diff_view(tab),
-                    RepoView::History => commit_graph::history_view(tab),
+                let (center, right) = match tab.view_mode {
+                    RepoView::Working => (
+                        diff_view::diff_view(tab),
+                        staging::staging_well(tab, &self.selection),
+                    ),
+                    RepoView::History => (
+                        commit_graph::history_view(tab),
+                        commit_details::commit_details_pane(tab),
+                    ),
                 };
-                row([
-                    sidebar::sidebar(tab),
-                    center,
-                    staging::staging_well(tab, &self.selection),
-                ])
-                .gap(0.0)
-                .height(Size::Fill(1.0))
+                row([sidebar::sidebar(tab), center, right])
+                    .gap(0.0)
+                    .height(Size::Fill(1.0))
             }
             None => main_placeholder(None),
         };
@@ -404,9 +407,9 @@ impl WhisperApp {
         if let Some(idx_str) = key.strip_prefix("commit:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && let Some(tab) = self.active_mut()
-                && let Some(c) = tab.commits.get(idx)
             {
-                tab.selected_commit = Some(c.id);
+                let oid = tab.commits.get(idx).map(|c| c.id);
+                tab.select_commit(oid);
             }
             return;
         }
@@ -468,6 +471,19 @@ impl WhisperApp {
             "view:history" => {
                 if let Some(tab) = self.active_mut() {
                     tab.view_mode = RepoView::History;
+                }
+            }
+            "details:copy_sha" => {
+                if let Some(oid) = self.active().and_then(|t| t.selected_commit) {
+                    let sha = oid.to_string();
+                    match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(sha.clone())) {
+                        Ok(()) => self
+                            .toasts
+                            .push(ToastSpec::success(format!("Copied {}", &sha[..7]))),
+                        Err(e) => self
+                            .toasts
+                            .push(ToastSpec::error(format!("Clipboard: {e}"))),
+                    }
                 }
             }
             _ => {}

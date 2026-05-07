@@ -97,7 +97,8 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "history" => {
             if let Some(tab) = app.tabs.first_mut() {
                 tab.view_mode = RepoView::History;
-                tab.selected_commit = tab.commits.first().map(|c| c.id);
+                let pick = tab.commits.first().map(|c| c.id);
+                tab.select_commit(pick);
             }
         }
         "commit-menu" => {
@@ -105,7 +106,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
             if let Some(tab) = app.tabs.first_mut() {
                 tab.view_mode = RepoView::History;
                 if let Some(oid) = tab.commits.first().map(|c| c.id) {
-                    tab.selected_commit = Some(oid);
+                    tab.select_commit(Some(oid));
                     app.context_menu = Some(ContextMenuState {
                         pos: (480.0, 200.0),
                         target: ContextTarget::Commit(oid),
