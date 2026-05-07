@@ -1,6 +1,9 @@
 /target
 /.codex
 
+# aetna bundle dump artifacts (regenerate via `cargo run --bin dump_bundles`)
+/out/
+
 # AUR build artifacts (makepkg in packaging/aur/)
 /packaging/aur/src/
 /packaging/aur/pkg/

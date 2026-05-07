@@ -11,16 +11,16 @@ keywords = ["git", "vulkan", "gui", "graphics"]
 categories = ["development-tools", "gui"]
 
 [dependencies]
+# UI toolkit (path dep until aetna 0.3.0 ships on crates.io)
+aetna-core = { path = "../../aetna/aetna.main/crates/aetna-core" }
+aetna-vulkano = { path = "../../aetna/aetna.main/crates/aetna-vulkano" }
+
 # Graphics
 vulkano = "0.35"
-vulkano-shaders = "0.35"
 winit = "0.30"
 
 # Git
 git2 = "0.20"
-
-# Text rendering (SDF via EDT from fontdue coverage)
-fontdue = "0.9"
 
 # Screenshot/image output
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

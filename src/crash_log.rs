@@ -3,6 +3,11 @@
 //! Provides a breadcrumb ring buffer, system info capture, panic hook with crash report
 //! persistence, and startup crash detection. Uses only std — no external dependencies.
 
+// Phase 0: a few helpers (breadcrumb, set_vulkan_device, prune_crash_logs,
+// has_crash_since_last_exit) are unused while the legacy app_bootstrap path
+// is offline. They get re-wired during the aetna port.
+#![allow(dead_code)]
+
 use std::backtrace::Backtrace;
 use std::collections::VecDeque;
 use std::fs;
