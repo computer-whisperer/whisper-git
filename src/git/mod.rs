@@ -10,7 +10,7 @@ mod refs;
 mod status;
 
 pub use async_ops::*;
-pub use diff::DiffFile;
+pub use diff::{DiffFile, DiffHunk, DiffLine};
 pub use status::{FileStatus, FileStatusKind, WorkingDirStatus, working_dir_status_from_statuses};
 
 use anyhow::{Context, Result};

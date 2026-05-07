@@ -16,10 +16,11 @@ struct CliArgs {
     screenshot: Option<PathBuf>,
     screenshot_size: Option<(u32, u32)>,
     screenshot_scale: Option<f64>,
-    /// Recognized but ignored in Phase 0 (no states wired yet).
-    #[allow(dead_code)]
+    /// Optional state injection for screenshots. Recognized values:
+    /// `diff` — auto-select the first changed file so the diff view
+    /// renders content. Other states are added as they become useful.
     screenshot_state: Option<String>,
-    /// Recognized but ignored in Phase 0.
+    /// Recognized but unused. Reserved for view selection in later phases.
     #[allow(dead_code)]
     view: Option<String>,
     repos: Vec<PathBuf>,
@@ -68,9 +69,10 @@ fn main() -> Result<()> {
     crash_log::install_panic_hook();
 
     let args = parse_args();
-    let app = WhisperApp::from_paths(args.repos.iter());
+    let mut app = WhisperApp::from_paths(args.repos.iter());
 
     if let Some(out_path) = args.screenshot.as_ref() {
+        apply_screenshot_state(&mut app, args.screenshot_state.as_deref());
         let (w, h) = args.screenshot_size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
         let scale = args.screenshot_scale.unwrap_or(1.0) as f32;
         screenshot_mode::run(out_path, w, h, scale, app).context("screenshot mode")?;
@@ -82,4 +84,27 @@ fn main() -> Result<()> {
     host::run("Whisper Git", viewport, app)?;
     crash_log::mark_clean_exit();
     Ok(())
+}
+
+fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
+    let Some(state) = state else { return };
+    match state {
+        "diff" => {
+            // Pick the first changed file so the diff viewer has content
+            // to render. Fall through silently when no repos are open.
+            if let Some(tab) = app.tabs.first_mut() {
+                let pick = tab
+                    .status
+                    .unstaged
+                    .first()
+                    .or_else(|| tab.status.untracked.first())
+                    .or_else(|| tab.status.staged.first())
+                    .map(|f| f.path.clone());
+                if let Some(p) = pick {
+                    tab.selected_diff_file = Some(p);
+                }
+            }
+        }
+        other => eprintln!("warning: unknown --screenshot-state '{other}'"),
+    }
 }

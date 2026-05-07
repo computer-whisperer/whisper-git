@@ -92,6 +92,25 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 app
             },
         ));
+        // Pre-select the first changed file so the diff view actually
+        // renders content rather than the placeholder.
+        if let Some(diff_target) = first
+            .status
+            .unstaged
+            .first()
+            .or_else(|| first.status.untracked.first())
+            .or_else(|| first.status.staged.first())
+            .map(|f| f.path.clone())
+        {
+            scenes.push((
+                "diff_view".to_string(),
+                WhisperApp::with_tabs(vec![{
+                    let mut t = reopen(first);
+                    t.selected_diff_file = Some(diff_target);
+                    t
+                }]),
+            ));
+        }
     }
 
     if opened.len() >= 2 {

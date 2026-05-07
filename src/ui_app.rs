@@ -13,6 +13,7 @@ use aetna_core::{
     widgets::{text_area, text_input},
 };
 
+use crate::diff_view;
 use crate::repo_tab::{RepoTab, SidebarSection};
 use crate::sidebar;
 use crate::staging;
@@ -167,7 +168,7 @@ impl App for WhisperApp {
         let body = match self.active() {
             Some(tab) => row([
                 sidebar::sidebar(tab),
-                main_placeholder(Some(tab)),
+                diff_view::diff_view(tab),
                 staging::staging_well(tab, &self.selection),
             ])
             .gap(0.0)
@@ -275,6 +276,16 @@ impl WhisperApp {
             if let Some(tab) = self.active_mut() {
                 tab.selected_diff_file = Some(path.to_string());
             }
+            return;
+        }
+        if let Some(rest) = key.strip_prefix("stage_hunk:") {
+            self.toasts
+                .push(ToastSpec::info(format!("Stage hunk {rest} (Phase 4c)")));
+            return;
+        }
+        if let Some(rest) = key.strip_prefix("unstage_hunk:") {
+            self.toasts
+                .push(ToastSpec::info(format!("Unstage hunk {rest} (Phase 4c)")));
             return;
         }
 

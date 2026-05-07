@@ -6,6 +6,7 @@
 //! the port is in flight.
 
 pub mod crash_log;
+pub mod diff_view;
 pub mod git;
 pub mod host;
 pub mod repo_tab;
