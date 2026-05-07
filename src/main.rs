@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     crash_log::install_panic_hook();
 
     let args = parse_args();
-    let app = WhisperApp::new(args.repos.clone());
+    let app = WhisperApp::from_paths(args.repos.iter());
 
     if let Some(out_path) = args.screenshot.as_ref() {
         let (w, h) = args.screenshot_size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));

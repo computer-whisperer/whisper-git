@@ -1,11 +1,10 @@
-//! Phase 2 placeholder App impl: tab bar + header + shortcut bar +
-//! placeholder main area, wired into stock aetna widgets.
+//! Phase 3 App impl: chrome + branch sidebar wired to a real GitRepo.
 //!
-//! Real per-repo state (commits, branches, staging, diff) lands in
-//! later phases; here we just exercise event routing and the chrome
-//! visual story.
+//! Per-tab data lives in `RepoTab` (see `repo_tab.rs`); the sidebar
+//! composer lives in `sidebar.rs`. Staging / diff / graph still
+//! placeholders in the main area.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use aetna_core::{
     App, AppShader, BuildCx, El, IconName, KeyChord, UiEvent, UiEventKind,
@@ -13,10 +12,13 @@ use aetna_core::{
     toast::ToastSpec,
 };
 
+use crate::repo_tab::{RepoTab, SidebarSection};
+use crate::sidebar;
+
 /// commit_node.wgsl — copied verbatim from the aetna `custom_paint`
-/// example. Per-row commit-graph cell: vertical lane line + circle node.
-/// Registered up front so Phase 6 doesn't need to retrofit shader
-/// wiring into the host.
+/// example. Per-row commit-graph cell: vertical lane line + circle
+/// node. Registered up front so Phase 6 doesn't need to retrofit
+/// shader wiring into the host.
 pub const COMMIT_NODE_WGSL: &str = r#"
 struct FrameUniforms { viewport: vec2<f32>, _pad: vec2<f32>, };
 @group(0) @binding(0) var<uniform> frame: FrameUniforms;
@@ -89,48 +91,79 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 "#;
 
 pub struct WhisperApp {
-    pub repos: Vec<PathBuf>,
+    pub tabs: Vec<RepoTab>,
     pub active_tab: usize,
     pub shortcut_bar_visible: bool,
     pub toasts: Vec<ToastSpec>,
 }
 
 impl WhisperApp {
-    pub fn new(repos: Vec<PathBuf>) -> Self {
+    /// Construct from CLI repo paths. Failed opens log to stderr and
+    /// produce no tab.
+    pub fn from_paths<I, P>(paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut tabs = Vec::new();
+        for p in paths {
+            let path = p.as_ref();
+            match RepoTab::open(path) {
+                Ok(tab) => tabs.push(tab),
+                Err(e) => eprintln!(
+                    "Warning: could not open repository at {}: {e}",
+                    path.display()
+                ),
+            }
+        }
         Self {
-            repos,
+            tabs,
             active_tab: 0,
             shortcut_bar_visible: true,
             toasts: Vec::new(),
         }
     }
 
-    fn active_repo(&self) -> Option<&PathBuf> {
-        self.repos.get(self.active_tab)
+    /// Construct with already-built tabs. Used by `dump_bundles` which
+    /// fabricates synthetic repos.
+    pub fn with_tabs(tabs: Vec<RepoTab>) -> Self {
+        Self {
+            tabs,
+            active_tab: 0,
+            shortcut_bar_visible: true,
+            toasts: Vec::new(),
+        }
     }
 
-    fn repo_label(path: &PathBuf) -> String {
-        path.file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string())
+    fn active(&self) -> Option<&RepoTab> {
+        self.tabs.get(self.active_tab)
+    }
+
+    fn active_mut(&mut self) -> Option<&mut RepoTab> {
+        self.tabs.get_mut(self.active_tab)
     }
 }
 
 impl App for WhisperApp {
     fn build(&self, _cx: &BuildCx) -> El {
-        let mut chrome: Vec<El> = Vec::with_capacity(4);
-        if self.repos.len() >= 1 {
-            chrome.push(tab_bar(&self.repos, self.active_tab));
+        let mut chrome: Vec<El> = Vec::with_capacity(3);
+        if !self.tabs.is_empty() {
+            chrome.push(tab_bar(self));
         }
-        chrome.push(header_bar(self.active_repo()));
+        chrome.push(header_bar(self.active()));
         if self.shortcut_bar_visible {
             chrome.push(shortcut_bar());
         }
-        chrome.push(main_placeholder(self.active_repo()));
+        let chrome_el = column(chrome).gap(0.0);
 
-        let main = column(chrome).gap(0.0);
-        // overlays(...) wrapper required so the runtime has somewhere
-        // to append toast / tooltip layers.
+        let body = match self.active() {
+            Some(tab) => row([sidebar::sidebar(tab), main_placeholder(Some(tab))])
+                .gap(0.0)
+                .height(Size::Fill(1.0)),
+            None => main_placeholder(None),
+        };
+
+        let main = column([chrome_el, body]).gap(0.0);
         overlays(main, [])
     }
 
@@ -150,9 +183,6 @@ impl App for WhisperApp {
         vec![
             (KeyChord::ctrl('o'), "open_repo".to_string()),
             (KeyChord::ctrl('w'), "close_tab".to_string()),
-            // F1 / question-mark would be conventional, but Ctrl+/
-            // composes from one keychord (no Shift coupling) and
-            // doesn't collide with text-input focus.
             (KeyChord::ctrl('/'), "toggle_shortcut_bar".to_string()),
         ]
     }
@@ -172,7 +202,7 @@ impl App for WhisperApp {
 
 impl WhisperApp {
     fn handle_action(&mut self, key: &str) {
-        // Tab switching: keys are formatted "tab:{idx}" / "tab_close:{idx}".
+        // tab:{idx}, tab_close:{idx}
         if let Some(idx_str) = key.strip_prefix("tab_close:") {
             if let Ok(idx) = idx_str.parse::<usize>() {
                 self.close_tab(idx);
@@ -181,27 +211,42 @@ impl WhisperApp {
         }
         if let Some(idx_str) = key.strip_prefix("tab:") {
             if let Ok(idx) = idx_str.parse::<usize>()
-                && idx < self.repos.len()
+                && idx < self.tabs.len()
             {
                 self.active_tab = idx;
             }
             return;
         }
 
+        // section:LOCAL etc.
+        if let Some(section_key) = key.strip_prefix("section:") {
+            if let Some(section) = parse_section(section_key)
+                && let Some(tab) = self.active_mut()
+            {
+                tab.sidebar.toggle(section);
+            }
+            return;
+        }
+
+        // Sidebar item clicks — Phase 3 just announces them.
+        for prefix in ["branch:", "remote:", "tag:", "submodule:", "worktree:", "stash:"] {
+            if let Some(name) = key.strip_prefix(prefix) {
+                let label = prefix.trim_end_matches(':');
+                self.toasts.push(ToastSpec::info(format!(
+                    "{label}: {name} (Phase 4 wiring)"
+                )));
+                return;
+            }
+        }
+
         match key {
-            "open_repo" => self
-                .toasts
-                .push(ToastSpec::info("Open repo (Phase 5)")),
+            "open_repo" => self.toasts.push(ToastSpec::info("Open repo (Phase 5)")),
             "close_tab" => self.close_tab(self.active_tab),
             "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4)")),
             "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4)")),
             "push" => self.toasts.push(ToastSpec::info("Push (Phase 4)")),
-            "commit" => self
-                .toasts
-                .push(ToastSpec::info("Commit (Phase 4)")),
-            "settings" => self
-                .toasts
-                .push(ToastSpec::info("Settings (Phase 5)")),
+            "commit" => self.toasts.push(ToastSpec::info("Commit (Phase 4)")),
+            "settings" => self.toasts.push(ToastSpec::info("Settings (Phase 5)")),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
             }
@@ -210,25 +255,33 @@ impl WhisperApp {
     }
 
     fn close_tab(&mut self, idx: usize) {
-        if idx >= self.repos.len() {
+        if idx >= self.tabs.len() {
             return;
         }
-        self.repos.remove(idx);
-        if self.active_tab >= self.repos.len() && !self.repos.is_empty() {
-            self.active_tab = self.repos.len() - 1;
+        self.tabs.remove(idx);
+        if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
+            self.active_tab = self.tabs.len() - 1;
         }
     }
+}
+
+fn parse_section(key: &str) -> Option<SidebarSection> {
+    SidebarSection::ALL
+        .iter()
+        .copied()
+        .find(|s| s.key() == key)
 }
 
 // ---------------------------------------------------------------------------
 // Chrome composition
 // ---------------------------------------------------------------------------
 
-fn tab_bar(repos: &[PathBuf], active: usize) -> El {
-    let mut tabs: Vec<El> = repos
+fn tab_bar(app: &WhisperApp) -> El {
+    let mut tabs: Vec<El> = app
+        .tabs
         .iter()
         .enumerate()
-        .map(|(i, p)| tab_chip(WhisperApp::repo_label(p), i, i == active))
+        .map(|(i, t)| tab_chip(t.repo_name.clone(), i, i == app.active_tab))
         .collect();
     tabs.push(
         icon_button(IconName::Plus)
@@ -261,20 +314,24 @@ fn tab_chip(label: String, idx: usize, active: bool) -> El {
     chip
 }
 
-fn header_bar(active_repo: Option<&PathBuf>) -> El {
-    let branch = match active_repo {
-        Some(p) => row([
-            icon(IconName::GitBranch),
-            text(WhisperApp::repo_label(p)).label(),
-        ])
-        .gap(tokens::SPACE_XS)
-        .align(Align::Center),
+fn header_bar(active: Option<&RepoTab>) -> El {
+    let branch = match active {
+        Some(t) => {
+            let label = if t.current_branch.is_empty() {
+                "(detached)".to_string()
+            } else {
+                t.current_branch.clone()
+            };
+            row([icon(IconName::GitBranch), text(label).label()])
+                .gap(tokens::SPACE_XS)
+                .align(Align::Center)
+        }
         None => row([icon(IconName::GitBranch), text("(no repo)").muted()])
             .gap(tokens::SPACE_XS)
             .align(Align::Center),
     };
 
-    let actions_enabled = active_repo.is_some();
+    let actions_enabled = active.is_some();
 
     row([
         branch,
@@ -320,15 +377,28 @@ fn kbd(chord: &str, label: &str) -> El {
         .align(Align::Center)
 }
 
-fn main_placeholder(active_repo: Option<&PathBuf>) -> El {
-    let body = match active_repo {
-        Some(p) => column([
-            h2(format!("Active repo: {}", WhisperApp::repo_label(p))),
-            text(p.display().to_string()).mono().muted(),
+fn main_placeholder(active: Option<&RepoTab>) -> El {
+    let body = match active {
+        Some(t) => column([
+            h2(format!("{}", t.repo_name)),
+            text(format!(
+                "Branch: {} · {} local · {} remote · {} tags · {} stashes · {} worktrees · {} submodules",
+                if t.current_branch.is_empty() {
+                    "(detached)"
+                } else {
+                    &t.current_branch
+                },
+                t.local_branches().len(),
+                t.remote_branches().iter().map(|(_, b)| b.len()).sum::<usize>(),
+                t.tags.len(),
+                t.stashes.len(),
+                t.worktrees.len(),
+                t.submodules.len(),
+            ))
+            .muted(),
             paragraph(
-                "Phase 2 only renders chrome. Branch sidebar (Phase 3), staging \
-                 well + diff (Phase 4), commit graph (Phase 6), and dialogs \
-                 (Phase 5) are still placeholders.",
+                "Phase 3 wires the branch sidebar from real git data. \
+                 Staging / diff / graph still placeholders.",
             ),
         ]),
         None => column([
@@ -339,4 +409,5 @@ fn main_placeholder(active_repo: Option<&PathBuf>) -> El {
     body.padding(tokens::SPACE_LG)
         .gap(tokens::SPACE_MD)
         .height(Size::Fill(1.0))
+        .width(Size::Fill(1.0))
 }

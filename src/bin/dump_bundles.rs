@@ -1,51 +1,52 @@
 //! Dump aetna bundle artifacts (svg + tree + draw_ops + lint +
 //! shader_manifest) for whisper-git's scenes. CPU-only: no GPU, no
-//! window. Faster than `--screenshot` and catches layout regressions.
+//! window.
 //!
-//! New scenes get added as views land. The vulkano `--screenshot` path
-//! remains the authority for shader output; this path is the layout net.
+//! Repo paths come from positional CLI args (or default to the current
+//! working directory). Missing repos are tolerated quietly so the
+//! same invocation works in any environment.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use aetna_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 use anyhow::{Context, Result};
 
-use whisper_git::WhisperApp;
+use whisper_git::{WhisperApp, repo_tab::RepoTab};
 
 fn main() -> Result<()> {
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
     let viewport = Rect::new(0.0, 0.0, 1600.0, 900.0);
 
-    type SceneFn = fn() -> WhisperApp;
-    let scenes: &[(&str, SceneFn)] = &[
-        ("chrome_no_repo", || WhisperApp::new(Vec::new())),
-        ("chrome_one_repo", || {
-            WhisperApp::new(vec![PathBuf::from("/home/dev/projects/whisper-git")])
-        }),
-        ("chrome_three_tabs", || {
-            WhisperApp::new(vec![
-                PathBuf::from("/home/dev/projects/whisper-git"),
-                PathBuf::from("/home/dev/projects/aetna"),
-                PathBuf::from("/home/dev/projects/scratch"),
-            ])
-        }),
-        ("chrome_shortcuts_collapsed", || {
-            let mut app = WhisperApp::new(vec![PathBuf::from(
-                "/home/dev/projects/whisper-git",
-            )]);
-            app.shortcut_bar_visible = false;
-            app
-        }),
-    ];
+    let cli_paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
+    let paths: Vec<PathBuf> = if cli_paths.is_empty() {
+        vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
+    } else {
+        cli_paths
+    };
+
+    let opened: Vec<RepoTab> = paths
+        .iter()
+        .filter_map(|p| match RepoTab::open(p) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!(
+                    "skipping {} (not a git repo or open failed: {e})",
+                    p.display()
+                );
+                None
+            }
+        })
+        .collect();
+
+    let scenes = build_scenes(&opened);
 
     let mut total_findings = 0;
-    for (name, build) in scenes {
-        let app = build();
+    for (name, app) in scenes {
         let theme = app.theme();
         let cx = BuildCx::new(&theme);
         let mut tree = app.build(&cx);
         let bundle = render_bundle(&mut tree, viewport, Some(env!("CARGO_PKG_NAME")));
-        let written = write_bundle(&bundle, &out_dir, name).context("write_bundle")?;
+        let written = write_bundle(&bundle, &out_dir, &name).context("write_bundle")?;
         for p in &written {
             println!("wrote {}", p.display());
         }
@@ -60,4 +61,56 @@ fn main() -> Result<()> {
         eprintln!("\n{total_findings} total lint findings");
     }
     Ok(())
+}
+
+fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
+    let mut scenes: Vec<(String, WhisperApp)> = Vec::new();
+
+    // Always render the empty state.
+    scenes.push(("chrome_no_repo".to_string(), WhisperApp::with_tabs(Vec::new())));
+
+    if let Some(first) = opened.first() {
+        scenes.push((
+            "sidebar_default".to_string(),
+            WhisperApp::with_tabs(vec![reopen(first)]),
+        ));
+        scenes.push((
+            "sidebar_local_collapsed".to_string(),
+            WhisperApp::with_tabs(vec![{
+                let mut t = reopen(first);
+                t.sidebar
+                    .collapsed
+                    .insert(whisper_git::repo_tab::SidebarSection::Local);
+                t
+            }]),
+        ));
+        scenes.push((
+            "sidebar_shortcuts_collapsed".to_string(),
+            {
+                let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+                app.shortcut_bar_visible = false;
+                app
+            },
+        ));
+    }
+
+    if opened.len() >= 2 {
+        scenes.push((
+            "sidebar_multi_tab".to_string(),
+            WhisperApp::with_tabs(opened.iter().map(reopen).collect()),
+        ));
+    }
+
+    scenes
+}
+
+/// `RepoTab` doesn't impl Clone (GitRepo wraps libgit2 handles), so we
+/// re-open per scene from the underlying path.
+fn reopen(t: &RepoTab) -> RepoTab {
+    let path = t
+        .repo
+        .workdir()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+    RepoTab::open(path).expect("reopen succeeded once already")
 }
