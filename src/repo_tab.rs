@@ -7,9 +7,23 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use crate::commit_graph::GraphLayout;
 use crate::git::{
-    BranchTip, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
+    BranchTip, CommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus,
+    WorktreeInfo,
 };
+
+/// Which center-pane view the tab is currently showing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum RepoView {
+    #[default]
+    Working,
+    History,
+}
+
+/// Cap for `commit_graph()` — first cut, no infinite-scroll. Plenty for
+/// the visible viewport even on big repos. Lifted later if needed.
+const COMMIT_LIMIT: usize = 1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum SidebarSection {
@@ -103,6 +117,16 @@ pub struct RepoTab {
     pub commit_body: String,
     /// Currently previewed file (None = no diff selected).
     pub selected_diff_file: Option<String>,
+    /// Center-pane view mode (Working diff vs History graph).
+    pub view_mode: RepoView,
+    /// Reachable commit history, refreshed alongside status. Capped at
+    /// `COMMIT_LIMIT` until infinite-scroll comes back.
+    pub commits: Vec<CommitInfo>,
+    /// Lane / color assignment for `commits`. Rebuilt each refresh.
+    pub graph_layout: GraphLayout,
+    /// Currently selected commit (drives the right-pane preview when
+    /// the History view is active).
+    pub selected_commit: Option<git2::Oid>,
 }
 
 impl RepoTab {
@@ -122,6 +146,10 @@ impl RepoTab {
             commit_subject: String::new(),
             commit_body: String::new(),
             selected_diff_file: None,
+            view_mode: RepoView::default(),
+            commits: Vec::new(),
+            graph_layout: GraphLayout::new(),
+            selected_commit: None,
             repo,
         };
         tab.refresh();
@@ -139,6 +167,13 @@ impl RepoTab {
         self.submodules = self.repo.submodules().unwrap_or_default();
         self.stashes = self.repo.stash_list();
         self.status = self.repo.status().unwrap_or_default();
+        self.commits = self.repo.commit_graph(COMMIT_LIMIT).unwrap_or_default();
+        self.graph_layout.build(&self.commits);
+        if let Some(oid) = self.selected_commit
+            && !self.commits.iter().any(|c| c.id == oid)
+        {
+            self.selected_commit = None;
+        }
     }
 
     /// Local branches sorted alphabetically.
@@ -158,8 +193,7 @@ impl RepoTab {
     /// symref aliases are filtered out — git2 surfaces them as branches
     /// but they're not meaningful entries in a sidebar.
     pub fn remote_branches(&self) -> Vec<(String, Vec<String>)> {
-        let mut by_remote: std::collections::BTreeMap<String, Vec<String>> =
-            Default::default();
+        let mut by_remote: std::collections::BTreeMap<String, Vec<String>> = Default::default();
         for tip in &self.branch_tips {
             if !tip.is_remote {
                 continue;

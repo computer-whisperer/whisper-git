@@ -26,9 +26,7 @@ use vulkano::{
     format::Format,
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{
-        AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator,
-    },
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     render_pass::{Framebuffer, FramebufferCreateInfo},
     sync::{self, GpuFuture},
 };
@@ -218,8 +216,7 @@ impl Capture {
                 .collect(),
             other => anyhow::bail!("unsupported capture format: {other:?}"),
         };
-        image::RgbaImage::from_raw(self.width, self.height, rgba)
-            .context("RgbaImage::from_raw")
+        image::RgbaImage::from_raw(self.width, self.height, rgba).context("RgbaImage::from_raw")
     }
 }
 
@@ -249,7 +246,10 @@ fn capture_to_buffer(
     .context("capture buffer")?;
 
     builder
-        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(image.clone(), buffer.clone()))
+        .copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(
+            image.clone(),
+            buffer.clone(),
+        ))
         .context("copy image to buffer")?;
 
     Ok(Capture {

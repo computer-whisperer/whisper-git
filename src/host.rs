@@ -463,7 +463,10 @@ fn create_swapchain(
     (swapchain, images, image_format)
 }
 
-fn build_framebuffers(images: &[Arc<Image>], render_pass: &Arc<RenderPass>) -> Vec<Arc<Framebuffer>> {
+fn build_framebuffers(
+    images: &[Arc<Image>],
+    render_pass: &Arc<RenderPass>,
+) -> Vec<Arc<Framebuffer>> {
     images
         .iter()
         .map(|image| {

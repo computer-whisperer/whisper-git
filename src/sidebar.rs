@@ -136,19 +136,14 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
         );
         for branch in branches {
             let key = format!("remote:{}/{}", remote, branch);
-            rows.push(item_row(
-                IconName::GitBranch,
-                &branch,
-                None,
-                false,
-                false,
-                key,
-            ).padding(Sides {
-                left: tokens::SPACE_LG,
-                right: tokens::SPACE_SM,
-                top: tokens::SPACE_XS,
-                bottom: tokens::SPACE_XS,
-            }));
+            rows.push(
+                item_row(IconName::GitBranch, &branch, None, false, false, key).padding(Sides {
+                    left: tokens::SPACE_LG,
+                    right: tokens::SPACE_SM,
+                    top: tokens::SPACE_XS,
+                    bottom: tokens::SPACE_XS,
+                }),
+            );
         }
     }
     Some(column(rows).gap(0.0))

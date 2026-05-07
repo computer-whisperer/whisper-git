@@ -73,7 +73,9 @@ fn main() -> Result<()> {
 
     if let Some(out_path) = args.screenshot.as_ref() {
         apply_screenshot_state(&mut app, args.screenshot_state.as_deref());
-        let (w, h) = args.screenshot_size.unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
+        let (w, h) = args
+            .screenshot_size
+            .unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
         let scale = args.screenshot_scale.unwrap_or(1.0) as f32;
         screenshot_mode::run(out_path, w, h, scale, app).context("screenshot mode")?;
         crash_log::mark_clean_exit();
@@ -87,10 +89,17 @@ fn main() -> Result<()> {
 }
 
 fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
+    use whisper_git::repo_tab::RepoView;
     use whisper_git::ui_app::{ActiveModal, ConfirmAction};
 
     let Some(state) = state else { return };
     match state {
+        "history" => {
+            if let Some(tab) = app.tabs.first_mut() {
+                tab.view_mode = RepoView::History;
+                tab.selected_commit = tab.commits.first().map(|c| c.id);
+            }
+        }
         "diff" => {
             // Pick the first changed file so the diff viewer has content
             // to render. Fall through silently when no repos are open.

@@ -20,8 +20,12 @@ pub const STAGING_WIDTH: f32 = 420.0;
 
 pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
     let staged = &tab.status.staged;
-    let unstaged_all: Vec<&FileStatus> =
-        tab.status.unstaged.iter().chain(tab.status.untracked.iter()).collect();
+    let unstaged_all: Vec<&FileStatus> = tab
+        .status
+        .unstaged
+        .iter()
+        .chain(tab.status.untracked.iter())
+        .collect();
     let conflicted = &tab.status.conflicted;
 
     let mut sections: Vec<El> = Vec::new();
@@ -56,7 +60,9 @@ fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
         row([
             text("Commit").label(),
             spacer(),
-            text(format!("{} staged", tab.status.staged.len())).caption().muted(),
+            text(format!("{} staged", tab.status.staged.len()))
+                .caption()
+                .muted(),
         ])
         .align(Align::Center)
         .gap(tokens::SPACE_SM),
@@ -81,11 +87,7 @@ fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
     .surface_role(SurfaceRole::Panel)
 }
 
-fn file_section(
-    title: &str,
-    files: &[&FileStatus],
-    bulk_action: Option<(&str, &str, bool)>,
-) -> El {
+fn file_section(title: &str, files: &[&FileStatus], bulk_action: Option<(&str, &str, bool)>) -> El {
     let mut header_children: Vec<El> = vec![
         text(title.to_string()).label(),
         badge(files.len().to_string()).muted(),
@@ -102,10 +104,12 @@ fn file_section(
         .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS));
 
     let body: Vec<El> = if files.is_empty() {
-        vec![text("(none)").caption().muted().padding(Sides::xy(
-            tokens::SPACE_LG,
-            tokens::SPACE_XS,
-        ))]
+        vec![
+            text("(none)")
+                .caption()
+                .muted()
+                .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_XS)),
+        ]
     } else {
         files
             .iter()

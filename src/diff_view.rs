@@ -19,10 +19,7 @@ pub fn diff_view(tab: &RepoTab) -> El {
     // show the unstaged side of the diff. (A file can be in both — the
     // user toggles via the diff hunk Stage/Unstage buttons.)
     let staged = file_is_staged(tab, path);
-    let hunks = tab
-        .repo
-        .diff_working_file(path, staged)
-        .unwrap_or_default();
+    let hunks = tab.repo.diff_working_file(path, staged).unwrap_or_default();
 
     let mut header_children: Vec<El> = vec![
         text(path.to_string()).label(),
@@ -36,8 +33,7 @@ pub fn diff_view(tab: &RepoTab) -> El {
         .align(Align::Center);
 
     let body: El = if hunks.is_empty() {
-        column([text("(no changes)").caption().muted()])
-            .padding(tokens::SPACE_LG)
+        column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_LG)
     } else {
         let rows: Vec<El> = hunks
             .iter()
@@ -47,10 +43,13 @@ pub fn diff_view(tab: &RepoTab) -> El {
         column(rows).gap(tokens::SPACE_MD).padding(tokens::SPACE_MD)
     };
 
-    column([header, scroll([body]).key("diff:scroll").height(Size::Fill(1.0))])
-        .gap(0.0)
-        .height(Size::Fill(1.0))
-        .width(Size::Fill(1.0))
+    column([
+        header,
+        scroll([body]).key("diff:scroll").height(Size::Fill(1.0)),
+    ])
+    .gap(0.0)
+    .height(Size::Fill(1.0))
+    .width(Size::Fill(1.0))
 }
 
 fn placeholder() -> El {
@@ -68,7 +67,12 @@ fn placeholder() -> El {
 }
 
 fn file_is_staged(tab: &RepoTab, path: &str) -> bool {
-    if tab.status.staged.iter().any(|f: &FileStatus| f.path == path) {
+    if tab
+        .status
+        .staged
+        .iter()
+        .any(|f: &FileStatus| f.path == path)
+    {
         // If it's *also* in unstaged, prefer unstaged (where the user is
         // actively editing). Otherwise show the staged side.
         !tab.status.unstaged.iter().any(|f| f.path == path)
@@ -87,7 +91,9 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
     };
 
     let header = row([
-        text(hunk.header.trim().to_string()).code().text_color(tokens::INFO),
+        text(hunk.header.trim().to_string())
+            .code()
+            .text_color(tokens::INFO),
         spacer(),
         button(action_label.to_string())
             .key(action_key)
@@ -116,14 +122,8 @@ fn line_row(line: &DiffLine) -> El {
         '+' | '-' | ' ' => line.origin,
         _ => ' ',
     };
-    let new_no = line
-        .new_lineno
-        .map(|n| n.to_string())
-        .unwrap_or_default();
-    let old_no = line
-        .old_lineno
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let new_no = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
+    let old_no = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
 
     row([
         text(format!("{old_no:>4}"))

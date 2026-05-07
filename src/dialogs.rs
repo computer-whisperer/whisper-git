@@ -28,11 +28,7 @@ pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
             switch(shortcut_bar_visible).key("settings:shortcut_bar"),
         ),
         field_row("Row size", row_size_selector(config.row_scale)),
-        row([
-            spacer(),
-            button("Done").key("settings:close").primary(),
-        ])
-        .align(Align::Center),
+        row([spacer(), button("Done").key("settings:close").primary()]).align(Align::Center),
     ])
     .gap(tokens::SPACE_MD);
 
@@ -42,9 +38,17 @@ pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
 fn row_size_selector(current: f32) -> El {
     let normal_active = current < 1.25;
     let normal = button("Normal").key("settings:row_size:1.0");
-    let normal = if normal_active { normal.primary() } else { normal.ghost() };
+    let normal = if normal_active {
+        normal.primary()
+    } else {
+        normal.ghost()
+    };
     let large = button("Large").key("settings:row_size:1.5");
-    let large = if normal_active { large.ghost() } else { large.primary() };
+    let large = if normal_active {
+        large.ghost()
+    } else {
+        large.primary()
+    };
     row([normal, large]).gap(tokens::SPACE_XS)
 }
 

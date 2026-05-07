@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use whisper_git::{
     WhisperApp,
-    repo_tab::RepoTab,
+    repo_tab::{RepoTab, RepoView},
     ui_app::{ActiveModal, ContextMenuState, ContextTarget},
 };
 
@@ -55,7 +55,10 @@ fn main() -> Result<()> {
             println!("wrote {}", p.display());
         }
         if !bundle.lint.findings.is_empty() {
-            eprintln!("\nlint findings ({} in {name}):", bundle.lint.findings.len());
+            eprintln!(
+                "\nlint findings ({} in {name}):",
+                bundle.lint.findings.len()
+            );
             eprint!("{}", bundle.lint.text());
             total_findings += bundle.lint.findings.len();
         }
@@ -71,7 +74,10 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
     let mut scenes: Vec<(String, WhisperApp)> = Vec::new();
 
     // Always render the empty state.
-    scenes.push(("chrome_no_repo".to_string(), WhisperApp::with_tabs(Vec::new())));
+    scenes.push((
+        "chrome_no_repo".to_string(),
+        WhisperApp::with_tabs(Vec::new()),
+    ));
 
     if let Some(first) = opened.first() {
         scenes.push((
@@ -88,14 +94,11 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 t
             }]),
         ));
-        scenes.push((
-            "sidebar_shortcuts_collapsed".to_string(),
-            {
-                let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
-                app.shortcut_bar_visible = false;
-                app
-            },
-        ));
+        scenes.push(("sidebar_shortcuts_collapsed".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.shortcut_bar_visible = false;
+            app
+        }));
         // Pre-select the first changed file so the diff view actually
         // renders content rather than the placeholder.
         if let Some(diff_target) = first
@@ -115,6 +118,14 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 }]),
             ));
         }
+        scenes.push(("history_view".to_string(), {
+            let mut t = reopen(first);
+            t.view_mode = RepoView::History;
+            // Pre-select the most recent commit so the bundle shows the
+            // selected-row treatment (raised bg + bright ring).
+            t.selected_commit = t.commits.first().map(|c| c.id);
+            WhisperApp::with_tabs(vec![t])
+        }));
         scenes.push(("modal_settings".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.active_modal = Some(ActiveModal::Settings);
@@ -135,9 +146,8 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.active_modal = Some(ActiveModal::Error {
                 title: "Push failed".to_string(),
-                body:
-                    "remote rejected the push: non-fast-forward updates were rejected"
-                        .to_string(),
+                body: "remote rejected the push: non-fast-forward updates were rejected"
+                    .to_string(),
             });
             app
         }));

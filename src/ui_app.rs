@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use aetna_core::{
-    App, AppShader, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, UiEvent,
-    UiEventKind, UiKey,
+    App, AppShader, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, UiEvent, UiEventKind,
+    UiKey,
     prelude::*,
     toast::ToastSpec,
     widgets::{text_area, text_input},
@@ -21,10 +21,11 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
     logo: false,
 };
 
+use crate::commit_graph;
 use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
-use crate::repo_tab::{RepoTab, SidebarSection};
+use crate::repo_tab::{RepoTab, RepoView, SidebarSection};
 use crate::sidebar;
 use crate::staging;
 
@@ -237,13 +238,19 @@ impl App for WhisperApp {
         let chrome_el = column(chrome).gap(0.0);
 
         let body = match self.active() {
-            Some(tab) => row([
-                sidebar::sidebar(tab),
-                diff_view::diff_view(tab),
-                staging::staging_well(tab, &self.selection),
-            ])
-            .gap(0.0)
-            .height(Size::Fill(1.0)),
+            Some(tab) => {
+                let center = match tab.view_mode {
+                    RepoView::Working => diff_view::diff_view(tab),
+                    RepoView::History => commit_graph::history_view(tab),
+                };
+                row([
+                    sidebar::sidebar(tab),
+                    center,
+                    staging::staging_well(tab, &self.selection),
+                ])
+                .gap(0.0)
+                .height(Size::Fill(1.0))
+            }
             None => main_placeholder(None),
         };
 
@@ -291,8 +298,7 @@ impl App for WhisperApp {
             text_area::apply_event(&mut tab.commit_body, &mut self.selection, "body", &event);
         }
 
-        if matches!(event.kind, UiEventKind::SecondaryClick)
-            && self.handle_secondary_click(&event)
+        if matches!(event.kind, UiEventKind::SecondaryClick) && self.handle_secondary_click(&event)
         {
             return;
         }
@@ -387,6 +393,16 @@ impl WhisperApp {
             }
             return;
         }
+        // commit:{idx} — selects a commit in the History view.
+        if let Some(idx_str) = key.strip_prefix("commit:") {
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && let Some(tab) = self.active_mut()
+                && let Some(c) = tab.commits.get(idx)
+            {
+                tab.selected_commit = Some(c.id);
+            }
+            return;
+        }
         if let Some(rest) = key.strip_prefix("stage_hunk:") {
             if let Some((idx_str, path)) = rest.split_once(':')
                 && let Ok(idx) = idx_str.parse::<usize>()
@@ -407,11 +423,19 @@ impl WhisperApp {
         }
 
         // Sidebar item clicks — Phase 3 just announces them.
-        for prefix in ["branch:", "remote:", "tag:", "submodule:", "worktree:", "stash:"] {
+        for prefix in [
+            "branch:",
+            "remote:",
+            "tag:",
+            "submodule:",
+            "worktree:",
+            "stash:",
+        ] {
             if let Some(name) = key.strip_prefix(prefix) {
                 let label = prefix.trim_end_matches(':');
-                self.toasts
-                    .push(ToastSpec::info(format!("{label}: {name} (Phase 4c wiring)")));
+                self.toasts.push(ToastSpec::info(format!(
+                    "{label}: {name} (Phase 4c wiring)"
+                )));
                 return;
             }
         }
@@ -428,6 +452,16 @@ impl WhisperApp {
             "settings" => self.active_modal = Some(ActiveModal::Settings),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
+            }
+            "view:working" => {
+                if let Some(tab) = self.active_mut() {
+                    tab.view_mode = RepoView::Working;
+                }
+            }
+            "view:history" => {
+                if let Some(tab) = self.active_mut() {
+                    tab.view_mode = RepoView::History;
+                }
             }
             _ => {}
         }
@@ -540,7 +574,9 @@ impl WhisperApp {
                 self.run_op("Checkout", |t| t.repo.checkout_branch(&name));
             }
             ("checkout", ContextTarget::RemoteBranch { remote, branch }) => {
-                self.run_op("Checkout", |t| t.repo.checkout_remote_branch(&remote, &branch));
+                self.run_op("Checkout", |t| {
+                    t.repo.checkout_remote_branch(&remote, &branch)
+                });
             }
             ("delete", ContextTarget::LocalBranch(name)) => {
                 self.active_modal = Some(ActiveModal::Confirm {
@@ -570,8 +606,9 @@ impl WhisperApp {
                 });
             }
             ("switch", ContextTarget::Worktree(name)) => {
-                self.toasts
-                    .push(ToastSpec::info(format!("Switch to worktree '{name}' (Phase 5c)")));
+                self.toasts.push(ToastSpec::info(format!(
+                    "Switch to worktree '{name}' (Phase 5c)"
+                )));
             }
             _ => {}
         }
@@ -620,8 +657,7 @@ impl WhisperApp {
                 // GitRepo doesn't expose stash_drop sync today; emit a
                 // placeholder until Phase 4d brings the rest of the
                 // stash op surface online.
-                self.toasts
-                    .push(ToastSpec::info("Drop stash (Phase 4d)"));
+                self.toasts.push(ToastSpec::info("Drop stash (Phase 4d)"));
             }
         }
     }
@@ -698,7 +734,11 @@ impl WhisperApp {
         let message = if tab.commit_body.trim().is_empty() {
             tab.commit_subject.clone()
         } else {
-            format!("{}\n\n{}", tab.commit_subject.trim(), tab.commit_body.trim())
+            format!(
+                "{}\n\n{}",
+                tab.commit_subject.trim(),
+                tab.commit_body.trim()
+            )
         };
         match tab.repo.commit(&message) {
             Ok(oid) => {
@@ -718,10 +758,7 @@ impl WhisperApp {
 }
 
 fn parse_section(key: &str) -> Option<SidebarSection> {
-    SidebarSection::ALL
-        .iter()
-        .copied()
-        .find(|s| s.key() == key)
+    SidebarSection::ALL.iter().copied().find(|s| s.key() == key)
 }
 
 fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
@@ -827,9 +864,11 @@ fn header_bar(active: Option<&RepoTab>) -> El {
     };
 
     let actions_enabled = active.is_some();
+    let view_mode = active.map(|t| t.view_mode).unwrap_or(RepoView::Working);
 
     row([
         branch,
+        view_mode_segment(view_mode),
         spacer(),
         button_with_icon(IconName::Download, "Fetch")
             .key("fetch")
@@ -853,6 +892,26 @@ fn header_bar(active: Option<&RepoTab>) -> El {
     .gap(tokens::SPACE_SM)
     .align(Align::Center)
     .opacity(if actions_enabled { 1.0 } else { 0.85 })
+}
+
+/// Two-button segmented control in the header that toggles the
+/// center pane between the working diff and the commit history.
+fn view_mode_segment(current: RepoView) -> El {
+    let working = button("Working").key("view:working");
+    let working = if current == RepoView::Working {
+        working.primary()
+    } else {
+        working.ghost()
+    };
+    let history = button("History").key("view:history");
+    let history = if current == RepoView::History {
+        history.primary()
+    } else {
+        history.ghost()
+    };
+    row([working, history])
+        .gap(tokens::SPACE_XS)
+        .align(Align::Center)
 }
 
 fn shortcut_bar() -> El {
