@@ -126,6 +126,21 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                     .to_string(),
             });
         }
+        "context-menu" => {
+            use whisper_git::ui_app::{ContextMenuState, ContextTarget};
+            if let Some(tab) = app.tabs.first() {
+                let target = tab
+                    .local_branches()
+                    .first()
+                    .map(|b| ContextTarget::LocalBranch((*b).to_string()));
+                if let Some(target) = target {
+                    app.context_menu = Some(ContextMenuState {
+                        pos: (90.0, 200.0),
+                        target,
+                    });
+                }
+            }
+        }
         other => eprintln!("warning: unknown --screenshot-state '{other}'"),
     }
 }

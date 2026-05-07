@@ -11,7 +11,11 @@ use std::path::{Path, PathBuf};
 use aetna_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 use anyhow::{Context, Result};
 
-use whisper_git::{WhisperApp, repo_tab::RepoTab, ui_app::ActiveModal};
+use whisper_git::{
+    WhisperApp,
+    repo_tab::RepoTab,
+    ui_app::{ActiveModal, ContextMenuState, ContextTarget},
+};
 
 fn main() -> Result<()> {
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -134,6 +138,14 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 body:
                     "remote rejected the push: non-fast-forward updates were rejected"
                         .to_string(),
+            });
+            app
+        }));
+        scenes.push(("sidebar_context_menu".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.context_menu = Some(ContextMenuState {
+                pos: (90.0, 200.0),
+                target: ContextTarget::LocalBranch("main".to_string()),
             });
             app
         }));

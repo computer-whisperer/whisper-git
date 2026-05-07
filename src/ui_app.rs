@@ -29,12 +29,33 @@ use crate::sidebar;
 use crate::staging;
 
 /// Pending action that gates a Confirm modal. Carried through `on_event`
-/// from the originating action to the OK button. Phase 5b adds branch /
-/// stash deletion variants.
+/// from the originating action to the OK button.
 #[derive(Clone, Debug)]
 pub enum ConfirmAction {
     CloseTab(usize),
+    DeleteBranch(String),
+    DeleteTag(String),
+    DropStash(usize),
 }
+
+/// Per-section right-click target. Carries the exact identity needed to
+/// dispatch any of that section's menu actions.
+#[derive(Clone, Debug)]
+pub enum ContextTarget {
+    LocalBranch(String),
+    RemoteBranch { remote: String, branch: String },
+    Tag(String),
+    Worktree(String),
+    Stash(usize),
+}
+
+#[derive(Clone, Debug)]
+pub struct ContextMenuState {
+    pub pos: (f32, f32),
+    pub target: ContextTarget,
+}
+
+const SIDEBAR_CTX_KEY: &str = "sidebar_ctx";
 
 #[derive(Clone, Debug)]
 pub enum ActiveModal {
@@ -142,6 +163,8 @@ pub struct WhisperApp {
     /// Currently-open modal, if any. Esc / scrim click / OK / Cancel
     /// all clear this back to None.
     pub active_modal: Option<ActiveModal>,
+    /// Open context menu (one at a time). Outside-click dismisses.
+    pub context_menu: Option<ContextMenuState>,
 }
 
 impl WhisperApp {
@@ -172,6 +195,7 @@ impl WhisperApp {
             selection: Selection::default(),
             config,
             active_modal: None,
+            context_menu: None,
         }
     }
 
@@ -187,6 +211,7 @@ impl WhisperApp {
             selection: Selection::default(),
             config: Config::default(),
             active_modal: None,
+            context_menu: None,
         }
     }
 
@@ -236,7 +261,11 @@ impl App for WhisperApp {
             } => dialogs::confirm_modal(title, body, ok_label, *destructive),
             ActiveModal::Error { title, body } => dialogs::error_modal(title, body),
         });
-        overlays(main, [modal_layer])
+        let menu_layer = self
+            .context_menu
+            .as_ref()
+            .map(|cm| sidebar_context_menu(cm));
+        overlays(main, [menu_layer, modal_layer])
     }
 
     fn on_event(&mut self, event: UiEvent) {
@@ -260,6 +289,12 @@ impl App for WhisperApp {
                 &event,
             );
             text_area::apply_event(&mut tab.commit_body, &mut self.selection, "body", &event);
+        }
+
+        if matches!(event.kind, UiEventKind::SecondaryClick)
+            && self.handle_secondary_click(&event)
+        {
+            return;
         }
 
         let route = event.route().map(str::to_string);
@@ -408,13 +443,41 @@ impl WhisperApp {
         }
     }
 
+    /// Open the sidebar context menu when the user right-clicks on an
+    /// item. Returns true if the event was handled.
+    fn handle_secondary_click(&mut self, event: &UiEvent) -> bool {
+        let Some(route) = event.route() else {
+            return false;
+        };
+        let Some(target) = parse_sidebar_target(route) else {
+            return false;
+        };
+        let Some(pos) = event.pointer_pos() else {
+            return false;
+        };
+        self.context_menu = Some(ContextMenuState { pos, target });
+        true
+    }
+
     /// Handle modal-only routes. Returns true if the key was a modal
-    /// route (settings:* / modal:* / scrim dismiss) so the caller can
-    /// short-circuit.
+    /// route (settings:* / modal:* / scrim dismiss / context-menu :ctx)
+    /// so the caller can short-circuit.
     fn handle_modal_route(&mut self, key: &str) -> bool {
-        // Scrim outside-click dismiss for any modal.
-        if key.ends_with(":dismiss") {
-            self.active_modal = None;
+        // Scrim dismiss — match the specific overlay so we don't close
+        // a modal when the user clicked outside the context menu (or
+        // vice versa).
+        if let Some(scope) = key.strip_suffix(":dismiss") {
+            if scope == SIDEBAR_CTX_KEY {
+                self.context_menu = None;
+            } else if scope.starts_with("modal:") {
+                self.active_modal = None;
+            }
+            return true;
+        }
+
+        // Context-menu actions (`ctx:action`).
+        if let Some(action) = key.strip_prefix("ctx:") {
+            self.handle_context_action(action);
             return true;
         }
 
@@ -439,6 +502,52 @@ impl WhisperApp {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_context_action(&mut self, action: &str) {
+        let Some(state) = self.context_menu.take() else {
+            return;
+        };
+        match (action, state.target) {
+            ("checkout", ContextTarget::LocalBranch(name)) => {
+                self.run_op("Checkout", |t| t.repo.checkout_branch(&name));
+            }
+            ("checkout", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.run_op("Checkout", |t| t.repo.checkout_remote_branch(&remote, &branch));
+            }
+            ("delete", ContextTarget::LocalBranch(name)) => {
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Delete branch".to_string(),
+                    body: format!("Delete local branch '{name}' permanently?"),
+                    ok_label: "Delete".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteBranch(name),
+                });
+            }
+            ("delete", ContextTarget::Tag(name)) => {
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Delete tag".to_string(),
+                    body: format!("Delete tag '{name}' permanently?"),
+                    ok_label: "Delete".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteTag(name),
+                });
+            }
+            ("drop", ContextTarget::Stash(idx)) => {
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Drop stash".to_string(),
+                    body: format!("Drop stash @{{{idx}}} permanently?"),
+                    ok_label: "Drop".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DropStash(idx),
+                });
+            }
+            ("switch", ContextTarget::Worktree(name)) => {
+                self.toasts
+                    .push(ToastSpec::info(format!("Switch to worktree '{name}' (Phase 5c)")));
+            }
+            _ => {}
         }
     }
 
@@ -475,6 +584,19 @@ impl WhisperApp {
     fn run_confirm_action(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::CloseTab(idx) => self.close_tab(idx),
+            ConfirmAction::DeleteBranch(name) => {
+                self.run_op("Delete branch", |t| t.repo.delete_branch(&name));
+            }
+            ConfirmAction::DeleteTag(name) => {
+                self.run_op("Delete tag", |t| t.repo.delete_tag(&name));
+            }
+            ConfirmAction::DropStash(_idx) => {
+                // GitRepo doesn't expose stash_drop sync today; emit a
+                // placeholder until Phase 4d brings the rest of the
+                // stash op surface online.
+                self.toasts
+                    .push(ToastSpec::info("Drop stash (Phase 4d)"));
+            }
         }
     }
 
@@ -574,6 +696,49 @@ fn parse_section(key: &str) -> Option<SidebarSection> {
         .iter()
         .copied()
         .find(|s| s.key() == key)
+}
+
+fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
+    if let Some(name) = route.strip_prefix("branch:") {
+        return Some(ContextTarget::LocalBranch(name.to_string()));
+    }
+    if let Some(rest) = route.strip_prefix("remote:") {
+        if let Some((remote, branch)) = rest.split_once('/') {
+            return Some(ContextTarget::RemoteBranch {
+                remote: remote.to_string(),
+                branch: branch.to_string(),
+            });
+        }
+    }
+    if let Some(name) = route.strip_prefix("tag:") {
+        return Some(ContextTarget::Tag(name.to_string()));
+    }
+    if let Some(name) = route.strip_prefix("worktree:") {
+        return Some(ContextTarget::Worktree(name.to_string()));
+    }
+    if let Some(idx_str) = route.strip_prefix("stash:") {
+        if let Ok(idx) = idx_str.parse::<usize>() {
+            return Some(ContextTarget::Stash(idx));
+        }
+    }
+    None
+}
+
+fn sidebar_context_menu(state: &ContextMenuState) -> El {
+    use aetna_core::widgets::popover::{context_menu, menu_item};
+
+    let items: Vec<El> = match &state.target {
+        ContextTarget::LocalBranch(_) => vec![
+            menu_item("Checkout").key("ctx:checkout"),
+            menu_item("Delete").key("ctx:delete"),
+        ],
+        ContextTarget::RemoteBranch { .. } => vec![menu_item("Checkout").key("ctx:checkout")],
+        ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
+        ContextTarget::Worktree(_) => vec![menu_item("Switch to worktree").key("ctx:switch")],
+        ContextTarget::Stash(_) => vec![menu_item("Drop").key("ctx:drop")],
+    };
+
+    context_menu(SIDEBAR_CTX_KEY, state.pos, items)
 }
 
 // ---------------------------------------------------------------------------
