@@ -87,6 +87,8 @@ fn main() -> Result<()> {
 }
 
 fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
+    use whisper_git::ui_app::{ActiveModal, ConfirmAction};
+
     let Some(state) = state else { return };
     match state {
         "diff" => {
@@ -104,6 +106,25 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                     tab.selected_diff_file = Some(p);
                 }
             }
+        }
+        "settings" => {
+            app.active_modal = Some(ActiveModal::Settings);
+        }
+        "confirm" => {
+            app.active_modal = Some(ActiveModal::Confirm {
+                title: "Delete branch".to_string(),
+                body: "Delete local branch 'feature/old' permanently?".to_string(),
+                ok_label: "Delete".to_string(),
+                destructive: true,
+                action: ConfirmAction::CloseTab(0),
+            });
+        }
+        "error" => {
+            app.active_modal = Some(ActiveModal::Error {
+                title: "Push failed".to_string(),
+                body: "remote rejected the push: non-fast-forward updates were rejected"
+                    .to_string(),
+            });
         }
         other => eprintln!("warning: unknown --screenshot-state '{other}'"),
     }

@@ -5,7 +5,9 @@
 //! on disk under `src/` but are intentionally not declared here while
 //! the port is in flight.
 
+pub mod config;
 pub mod crash_log;
+pub mod dialogs;
 pub mod diff_view;
 pub mod git;
 pub mod host;

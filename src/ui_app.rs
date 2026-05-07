@@ -21,10 +21,36 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
     logo: false,
 };
 
+use crate::config::Config;
+use crate::dialogs;
 use crate::diff_view;
 use crate::repo_tab::{RepoTab, SidebarSection};
 use crate::sidebar;
 use crate::staging;
+
+/// Pending action that gates a Confirm modal. Carried through `on_event`
+/// from the originating action to the OK button. Phase 5b adds branch /
+/// stash deletion variants.
+#[derive(Clone, Debug)]
+pub enum ConfirmAction {
+    CloseTab(usize),
+}
+
+#[derive(Clone, Debug)]
+pub enum ActiveModal {
+    Settings,
+    Confirm {
+        title: String,
+        body: String,
+        ok_label: String,
+        destructive: bool,
+        action: ConfirmAction,
+    },
+    Error {
+        title: String,
+        body: String,
+    },
+}
 
 /// commit_node.wgsl — copied verbatim from the aetna `custom_paint`
 /// example. Per-row commit-graph cell: vertical lane line + circle
@@ -110,6 +136,12 @@ pub struct WhisperApp {
     /// `apply_event` helpers fold per-input selection state through
     /// this single value (see `aetna_core::Selection::within`).
     pub selection: Selection,
+    /// Persistent user settings. Loaded at startup, saved on each
+    /// successful settings change. `Default` for fixture / dump scenes.
+    pub config: Config,
+    /// Currently-open modal, if any. Esc / scrim click / OK / Cancel
+    /// all clear this back to None.
+    pub active_modal: Option<ActiveModal>,
 }
 
 impl WhisperApp {
@@ -131,17 +163,21 @@ impl WhisperApp {
                 ),
             }
         }
+        let config = Config::load();
         Self {
             tabs,
             active_tab: 0,
-            shortcut_bar_visible: true,
+            shortcut_bar_visible: config.shortcut_bar_visible,
             toasts: Vec::new(),
             selection: Selection::default(),
+            config,
+            active_modal: None,
         }
     }
 
     /// Construct with already-built tabs. Used by `dump_bundles` which
-    /// fabricates synthetic repos.
+    /// fabricates synthetic repos. Config is `Default::default()` so
+    /// dumped scenes are hermetic across developer machines.
     pub fn with_tabs(tabs: Vec<RepoTab>) -> Self {
         Self {
             tabs,
@@ -149,6 +185,8 @@ impl WhisperApp {
             shortcut_bar_visible: true,
             toasts: Vec::new(),
             selection: Selection::default(),
+            config: Config::default(),
+            active_modal: None,
         }
     }
 
@@ -185,15 +223,34 @@ impl App for WhisperApp {
         };
 
         let main = column([chrome_el, body]).gap(0.0);
-        overlays(main, [])
+        let modal_layer = self.active_modal.as_ref().map(|m| match m {
+            ActiveModal::Settings => {
+                dialogs::settings_modal(&self.config, self.shortcut_bar_visible)
+            }
+            ActiveModal::Confirm {
+                title,
+                body,
+                ok_label,
+                destructive,
+                ..
+            } => dialogs::confirm_modal(title, body, ok_label, *destructive),
+            ActiveModal::Error { title, body } => dialogs::error_modal(title, body),
+        });
+        overlays(main, [modal_layer])
     }
 
     fn on_event(&mut self, event: UiEvent) {
+        // Escape closes whichever modal is open. Aetna emits an Escape
+        // event when the key is pressed and no widget consumes it; our
+        // text inputs don't consume Escape, so it always reaches us.
+        if matches!(event.kind, UiEventKind::Escape) && self.active_modal.is_some() {
+            self.active_modal = None;
+            return;
+        }
+
         // Text-editing routes consume the event for the active tab's
-        // commit-message fields. Clipboard ops (Ctrl+C/X/V) are deferred
-        // along with the commit op in Phase 4c.
-        // Index-based borrow so we can hand `self.selection` to the
-        // apply_event helpers without conflicting with `&mut tab`.
+        // commit-message fields. Index-based borrow so we can hand
+        // `self.selection` to the apply_event helpers without conflict.
         let active_idx = self.active_tab;
         if let Some(tab) = self.tabs.get_mut(active_idx) {
             text_input::apply_event(
@@ -247,6 +304,13 @@ impl App for WhisperApp {
 
 impl WhisperApp {
     fn handle_action(&mut self, key: &str) {
+        // Modal lifecycle keys come first — a few share prefixes with
+        // app actions (e.g. "settings:" vs "settings"), and the modal
+        // routes should always take precedence when one is open.
+        if self.handle_modal_route(key) {
+            return;
+        }
+
         // tab:{idx}, tab_close:{idx}
         if let Some(idx_str) = key.strip_prefix("tab_close:") {
             if let Ok(idx) = idx_str.parse::<usize>() {
@@ -326,7 +390,7 @@ impl WhisperApp {
             "commit" => self.commit(),
             "stage_all" => self.stage_all(),
             "unstage_all" => self.unstage_all(),
-            "settings" => self.toasts.push(ToastSpec::info("Settings (Phase 5)")),
+            "settings" => self.active_modal = Some(ActiveModal::Settings),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
             }
@@ -341,6 +405,76 @@ impl WhisperApp {
         self.tabs.remove(idx);
         if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
             self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    /// Handle modal-only routes. Returns true if the key was a modal
+    /// route (settings:* / modal:* / scrim dismiss) so the caller can
+    /// short-circuit.
+    fn handle_modal_route(&mut self, key: &str) -> bool {
+        // Scrim outside-click dismiss for any modal.
+        if key.ends_with(":dismiss") {
+            self.active_modal = None;
+            return true;
+        }
+
+        if let Some(rest) = key.strip_prefix("settings:") {
+            self.handle_settings_route(rest);
+            return true;
+        }
+
+        match key {
+            "modal:confirm:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:confirm:ok" => {
+                if let Some(ActiveModal::Confirm { action, .. }) = self.active_modal.take() {
+                    self.run_confirm_action(action);
+                }
+                true
+            }
+            "modal:error:close" => {
+                self.active_modal = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_settings_route(&mut self, sub: &str) {
+        match sub {
+            "close" => self.active_modal = None,
+            "avatars" => {
+                self.config.avatars_enabled = !self.config.avatars_enabled;
+                self.persist_config();
+            }
+            "shortcut_bar" => {
+                self.shortcut_bar_visible = !self.shortcut_bar_visible;
+                self.config.shortcut_bar_visible = self.shortcut_bar_visible;
+                self.persist_config();
+            }
+            other => {
+                if let Some(scale_str) = other.strip_prefix("row_size:")
+                    && let Ok(scale) = scale_str.parse::<f32>()
+                {
+                    self.config.row_scale = scale;
+                    self.persist_config();
+                }
+            }
+        }
+    }
+
+    fn persist_config(&mut self) {
+        if let Err(e) = self.config.save() {
+            self.toasts
+                .push(ToastSpec::error(format!("Save settings failed: {e}")));
+        }
+    }
+
+    fn run_confirm_action(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::CloseTab(idx) => self.close_tab(idx),
         }
     }
 

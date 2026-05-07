@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use aetna_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 use anyhow::{Context, Result};
 
-use whisper_git::{WhisperApp, repo_tab::RepoTab};
+use whisper_git::{WhisperApp, repo_tab::RepoTab, ui_app::ActiveModal};
 
 fn main() -> Result<()> {
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
@@ -111,6 +111,32 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 }]),
             ));
         }
+        scenes.push(("modal_settings".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(ActiveModal::Settings);
+            app
+        }));
+        scenes.push(("modal_confirm_destructive".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(ActiveModal::Confirm {
+                title: "Delete branch".to_string(),
+                body: "Delete local branch 'feature/old' permanently?".to_string(),
+                ok_label: "Delete".to_string(),
+                destructive: true,
+                action: whisper_git::ui_app::ConfirmAction::CloseTab(0),
+            });
+            app
+        }));
+        scenes.push(("modal_error".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(ActiveModal::Error {
+                title: "Push failed".to_string(),
+                body:
+                    "remote rejected the push: non-fast-forward updates were rejected"
+                        .to_string(),
+            });
+            app
+        }));
     }
 
     if opened.len() >= 2 {
