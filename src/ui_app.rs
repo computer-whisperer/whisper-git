@@ -7,10 +7,18 @@
 use std::path::Path;
 
 use aetna_core::{
-    App, AppShader, BuildCx, El, IconName, KeyChord, Selection, UiEvent, UiEventKind,
+    App, AppShader, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, UiEvent,
+    UiEventKind, UiKey,
     prelude::*,
     toast::ToastSpec,
     widgets::{text_area, text_input},
+};
+
+const KM_CTRL: KeyModifiers = KeyModifiers {
+    shift: false,
+    ctrl: true,
+    alt: false,
+    logo: false,
 };
 
 use crate::diff_view;
@@ -217,6 +225,10 @@ impl App for WhisperApp {
             (KeyChord::ctrl('o'), "open_repo".to_string()),
             (KeyChord::ctrl('w'), "close_tab".to_string()),
             (KeyChord::ctrl('/'), "toggle_shortcut_bar".to_string()),
+            (
+                KeyChord::named(UiKey::Enter).with_modifiers(KM_CTRL),
+                "commit".to_string(),
+            ),
         ]
     }
 
@@ -261,15 +273,13 @@ impl WhisperApp {
             return;
         }
 
-        // Stage / unstage / diff-preview routes — Phase 4c wires to git.
+        // Stage / unstage / diff-preview routes.
         if let Some(path) = key.strip_prefix("stage_file:") {
-            self.toasts
-                .push(ToastSpec::info(format!("Stage {path} (Phase 4c)")));
+            self.run_op("Stage", |t| t.repo.stage_file(path));
             return;
         }
         if let Some(path) = key.strip_prefix("unstage_file:") {
-            self.toasts
-                .push(ToastSpec::info(format!("Unstage {path} (Phase 4c)")));
+            self.run_op("Unstage", |t| t.repo.unstage_file(path));
             return;
         }
         if let Some(path) = key.strip_prefix("diff:") {
@@ -279,13 +289,21 @@ impl WhisperApp {
             return;
         }
         if let Some(rest) = key.strip_prefix("stage_hunk:") {
-            self.toasts
-                .push(ToastSpec::info(format!("Stage hunk {rest} (Phase 4c)")));
+            if let Some((idx_str, path)) = rest.split_once(':')
+                && let Ok(idx) = idx_str.parse::<usize>()
+            {
+                let path = path.to_string();
+                self.run_op("Stage hunk", move |t| t.repo.stage_hunk(&path, idx));
+            }
             return;
         }
         if let Some(rest) = key.strip_prefix("unstage_hunk:") {
-            self.toasts
-                .push(ToastSpec::info(format!("Unstage hunk {rest} (Phase 4c)")));
+            if let Some((idx_str, path)) = rest.split_once(':')
+                && let Ok(idx) = idx_str.parse::<usize>()
+            {
+                let path = path.to_string();
+                self.run_op("Unstage hunk", move |t| t.repo.unstage_hunk(&path, idx));
+            }
             return;
         }
 
@@ -305,9 +323,9 @@ impl WhisperApp {
             "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4c)")),
             "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4c)")),
             "push" => self.toasts.push(ToastSpec::info("Push (Phase 4c)")),
-            "commit" => self.toasts.push(ToastSpec::info("Commit (Phase 4c)")),
-            "stage_all" => self.toasts.push(ToastSpec::info("Stage all (Phase 4c)")),
-            "unstage_all" => self.toasts.push(ToastSpec::info("Unstage all (Phase 4c)")),
+            "commit" => self.commit(),
+            "stage_all" => self.stage_all(),
+            "unstage_all" => self.unstage_all(),
             "settings" => self.toasts.push(ToastSpec::info("Settings (Phase 5)")),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
@@ -323,6 +341,96 @@ impl WhisperApp {
         self.tabs.remove(idx);
         if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
             self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    /// Run a sync git op on the active tab. On success, refresh status
+    /// + emit a success toast tagged with `label`. On failure, emit an
+    /// error toast carrying the underlying message.
+    fn run_op<F>(&mut self, label: &str, op: F)
+    where
+        F: FnOnce(&mut RepoTab) -> anyhow::Result<()>,
+    {
+        let active_idx = self.active_tab;
+        let Some(tab) = self.tabs.get_mut(active_idx) else {
+            return;
+        };
+        match op(tab) {
+            Ok(()) => {
+                tab.refresh();
+                self.toasts.push(ToastSpec::success(format!("{label} ✓")));
+            }
+            Err(e) => {
+                self.toasts
+                    .push(ToastSpec::error(format!("{label} failed: {e}")));
+            }
+        }
+    }
+
+    fn stage_all(&mut self) {
+        self.run_op("Stage all", |t| {
+            // Stage each unstaged + untracked file. We could use
+            // `git add -A` via CLI for a single batch, but stage_file
+            // already handles per-path errors gracefully and keeps us
+            // out of process-spawn territory. Collect paths first so
+            // we don't hold an immutable borrow across the mutating
+            // calls.
+            let paths: Vec<String> = t
+                .status
+                .unstaged
+                .iter()
+                .chain(t.status.untracked.iter())
+                .map(|f| f.path.clone())
+                .collect();
+            for p in paths {
+                t.repo.stage_file(&p)?;
+            }
+            Ok(())
+        });
+    }
+
+    fn unstage_all(&mut self) {
+        self.run_op("Unstage all", |t| {
+            let paths: Vec<String> = t.status.staged.iter().map(|f| f.path.clone()).collect();
+            for p in paths {
+                t.repo.unstage_file(&p)?;
+            }
+            Ok(())
+        });
+    }
+
+    fn commit(&mut self) {
+        let active_idx = self.active_tab;
+        let Some(tab) = self.tabs.get_mut(active_idx) else {
+            return;
+        };
+        if tab.commit_subject.trim().is_empty() {
+            self.toasts
+                .push(ToastSpec::warning("Commit subject is empty"));
+            return;
+        }
+        if tab.status.staged.is_empty() {
+            self.toasts.push(ToastSpec::warning("No staged changes"));
+            return;
+        }
+        let message = if tab.commit_body.trim().is_empty() {
+            tab.commit_subject.clone()
+        } else {
+            format!("{}\n\n{}", tab.commit_subject.trim(), tab.commit_body.trim())
+        };
+        match tab.repo.commit(&message) {
+            Ok(oid) => {
+                tab.commit_subject.clear();
+                tab.commit_body.clear();
+                tab.refresh();
+                let short = oid.to_string()[..7].to_string();
+                self.toasts
+                    .push(ToastSpec::success(format!("Committed {short}")));
+            }
+            Err(e) => {
+                self.toasts
+                    .push(ToastSpec::error(format!("Commit failed: {e}")));
+            }
         }
     }
 }
