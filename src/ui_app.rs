@@ -417,7 +417,7 @@ impl WhisperApp {
         }
 
         match key {
-            "open_repo" => self.toasts.push(ToastSpec::info("Open repo (Phase 5)")),
+            "open_repo" => self.open_repo_dialog(),
             "close_tab" => self.close_tab(self.active_tab),
             "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4c)")),
             "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4c)")),
@@ -440,6 +440,32 @@ impl WhisperApp {
         self.tabs.remove(idx);
         if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
             self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    /// Open a native file picker (via `rfd`) and add the chosen
+    /// directory as a new repo tab. Async polling for picker results
+    /// can come later; today we block on the picker call (the picker
+    /// runs in its own OS process / window so the user is interacting
+    /// with that, not the frozen UI).
+    fn open_repo_dialog(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Open repository")
+            .pick_folder();
+        let Some(path) = picked else { return };
+        match RepoTab::open(&path) {
+            Ok(tab) => {
+                self.tabs.push(tab);
+                self.active_tab = self.tabs.len() - 1;
+                self.toasts
+                    .push(ToastSpec::success(format!("Opened {}", path.display())));
+            }
+            Err(e) => {
+                self.active_modal = Some(ActiveModal::Error {
+                    title: "Open failed".to_string(),
+                    body: format!("Could not open {}: {e}", path.display()),
+                });
+            }
         }
     }
 
