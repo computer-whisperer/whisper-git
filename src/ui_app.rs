@@ -11,7 +11,10 @@ use aetna_core::{
     UiEventKind, UiKey,
     prelude::*,
     toast::ToastSpec,
-    widgets::{text_area, text_input},
+    widgets::{
+        resize_handle::{self, ResizeDrag, resize_handle},
+        text_area, text_input,
+    },
 };
 
 const KM_CTRL: KeyModifiers = KeyModifiers {
@@ -20,6 +23,13 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
     alt: false,
     logo: false,
 };
+
+/// Resize-handle clamp range for the right pane. Loose enough that the
+/// commit-details / staging well can shrink to a usable narrow column
+/// or expand into a roomy editor — tighter than the sidebar (which has
+/// less content variance) but wider than the input minimums imply.
+const RIGHT_PANE_MIN: f32 = 280.0;
+const RIGHT_PANE_MAX: f32 = 720.0;
 
 use crate::commit_details;
 use crate::commit_graph;
@@ -221,6 +231,18 @@ pub struct WhisperApp {
     /// In-flight `git clone`. App-scoped (not per-tab) since the new
     /// repo doesn't have a tab yet — on success we open it as one.
     pub clone_op: Option<CloneOp>,
+    /// Left-sidebar pixel width. Initialised from `Config::sidebar_w`,
+    /// re-saved when the user releases a drag of the left handle.
+    pub sidebar_w: f32,
+    /// Right-pane pixel width. Drives both the staging well (Working
+    /// view) and the commit details pane (History view) so the user's
+    /// choice carries between view modes.
+    pub right_pane_w: f32,
+    /// Drag-anchor state for the left and right resize handles.
+    /// Ephemeral — not persisted, just rebuilt across PointerDown /
+    /// Drag / PointerUp.
+    pub sidebar_drag: ResizeDrag,
+    pub right_drag: ResizeDrag,
 }
 
 /// In-flight clone tracker. Carries the receiver, the started time
@@ -252,6 +274,8 @@ impl WhisperApp {
             }
         }
         let config = Config::load();
+        let sidebar_w = config.sidebar_w;
+        let right_pane_w = config.right_pane_w;
         Self {
             tabs,
             active_tab: 0,
@@ -263,6 +287,10 @@ impl WhisperApp {
             context_menu: None,
             proxy: None,
             clone_op: None,
+            sidebar_w,
+            right_pane_w,
+            sidebar_drag: ResizeDrag::default(),
+            right_drag: ResizeDrag::default(),
         }
     }
 
@@ -270,17 +298,24 @@ impl WhisperApp {
     /// fabricates synthetic repos. Config is `Default::default()` so
     /// dumped scenes are hermetic across developer machines.
     pub fn with_tabs(tabs: Vec<RepoTab>) -> Self {
+        let config = Config::default();
+        let sidebar_w = config.sidebar_w;
+        let right_pane_w = config.right_pane_w;
         Self {
             tabs,
             active_tab: 0,
             shortcut_bar_visible: true,
             toasts: Vec::new(),
             selection: Selection::default(),
-            config: Config::default(),
+            config,
             active_modal: None,
             context_menu: None,
             proxy: None,
             clone_op: None,
+            sidebar_w,
+            right_pane_w,
+            sidebar_drag: ResizeDrag::default(),
+            right_drag: ResizeDrag::default(),
         }
     }
 
@@ -311,16 +346,23 @@ impl App for WhisperApp {
 
         let body = match self.active() {
             Some(tab) => {
+                let has_right_pane = !matches!(
+                    (tab.view_mode, tab.active_view()),
+                    (RepoView::Working, None)
+                );
                 let (center, right) = match tab.view_mode {
                     RepoView::Working => match tab.active_view() {
                         Some(view) => {
+                            // The selector + staging-well pair share the
+                            // user-resized right-pane width; override the
+                            // default `STAGING_WIDTH` Fixed at the outer
+                            // wrapper so both stay aligned.
                             let staging_pane = match staging::worktree_selector(tab) {
                                 Some(sel) => column([
                                     sel,
                                     staging::staging_well(view, &self.selection),
                                 ])
                                 .gap(0.0)
-                                .width(Size::Fixed(staging::STAGING_WIDTH))
                                 .height(Size::Fill(1.0)),
                                 None => staging::staging_well(view, &self.selection),
                             };
@@ -333,9 +375,22 @@ impl App for WhisperApp {
                         commit_details::commit_details_pane(tab),
                     ),
                 };
-                row([sidebar::sidebar(tab), center, right])
-                    .gap(0.0)
-                    .height(Size::Fill(1.0))
+
+                // Resizable layout: sidebar | resize_handle | center
+                // (| resize_handle | right). The handle widgets live as
+                // siblings inside the row and route drag events to the
+                // app via their keys; aetna's `apply_event_fixed` folds
+                // the drag delta back into the size value.
+                let mut children: Vec<El> = vec![
+                    sidebar::sidebar(tab).width(Size::Fixed(self.sidebar_w)),
+                    resize_handle(Axis::Row).key("sidebar:resize"),
+                    center,
+                ];
+                if has_right_pane {
+                    children.push(resize_handle(Axis::Row).key("right:resize"));
+                    children.push(right.width(Size::Fixed(self.right_pane_w)));
+                }
+                row(children).gap(0.0).height(Size::Fill(1.0))
             }
             None => main_placeholder(None),
         };
@@ -375,6 +430,42 @@ impl App for WhisperApp {
         if matches!(event.kind, UiEventKind::Escape) && self.active_modal.is_some() {
             self.active_modal = None;
             return;
+        }
+
+        // Resize-handle drags. Each handle owns its anchor state on
+        // `WhisperApp`; the helper folds PointerDown/Drag/PointerUp +
+        // arrow keys into the size value. PointerUp persists the new
+        // width to disk so the layout survives a relaunch.
+        if resize_handle::apply_event_fixed(
+            &mut self.sidebar_w,
+            &mut self.sidebar_drag,
+            &event,
+            "sidebar:resize",
+            Axis::Row,
+            tokens::SIDEBAR_WIDTH_MIN,
+            tokens::SIDEBAR_WIDTH_MAX,
+        ) {
+            self.config.sidebar_w = self.sidebar_w;
+        }
+        if resize_handle::apply_event_fixed(
+            &mut self.right_pane_w,
+            &mut self.right_drag,
+            &event,
+            "right:resize",
+            Axis::Row,
+            RIGHT_PANE_MIN,
+            RIGHT_PANE_MAX,
+        ) {
+            self.config.right_pane_w = self.right_pane_w;
+        }
+        if matches!(event.kind, UiEventKind::PointerUp)
+            && (event.route() == Some("sidebar:resize")
+                || event.route() == Some("right:resize"))
+        {
+            // Save once on release rather than on every Drag tick — both
+            // to avoid spamming the disk and so a settings.json read
+            // partway through a drag sees a coherent value.
+            let _ = self.config.save();
         }
 
         // Text-editing routes consume the event for the active worktree's

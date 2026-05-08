@@ -30,6 +30,22 @@ pub struct Config {
     /// GitLab tokens keyed by hostname (e.g. "gitlab.com", "gitlab.company.com")
     #[serde(default)]
     pub gitlab_tokens: HashMap<String, String>,
+    /// User-resized left sidebar width (logical px). Persisted across
+    /// restarts via this config so the layout the user worked into
+    /// survives a relaunch.
+    #[serde(default = "default_sidebar_w")]
+    pub sidebar_w: f32,
+    /// User-resized right pane width — staging well in Working view,
+    /// commit details pane in History view.
+    #[serde(default = "default_right_w")]
+    pub right_pane_w: f32,
+}
+
+fn default_sidebar_w() -> f32 {
+    aetna_core::tokens::SIDEBAR_WIDTH
+}
+fn default_right_w() -> f32 {
+    420.0
 }
 
 fn default_true() -> bool {
@@ -60,6 +76,8 @@ impl Default for Config {
             ai_provider: default_ai_provider(),
             github_token: None,
             gitlab_tokens: HashMap::new(),
+            sidebar_w: default_sidebar_w(),
+            right_pane_w: default_right_w(),
         }
     }
 }
