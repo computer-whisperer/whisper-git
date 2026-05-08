@@ -162,17 +162,16 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
         SurfaceRole::Sunken,
     ));
 
-    card([card_content(sections)
-        .gap(0.0)
-        .padding(0.0)
-        .height(Size::Fill(1.0))])
-    .width(Size::Fixed(STAGING_WIDTH))
-    .height(Size::Fill(1.0))
+    column(sections)
+        .width(Size::Fixed(STAGING_WIDTH))
+        .height(Size::Fill(1.0))
+        .padding(tokens::SPACE_3)
+        .gap(tokens::SPACE_3)
 }
 
 fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
-    column([
-        row([
+    card([
+        card_header([row([
             text("Commit").label(),
             spacer(),
             text(format!("{} staged", view.status.staged.len()))
@@ -180,27 +179,34 @@ fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
                 .muted(),
         ])
         .align(Align::Center)
+        .gap(tokens::SPACE_2)])
+        .padding(Sides {
+            left: tokens::SPACE_3,
+            right: tokens::SPACE_3,
+            top: tokens::SPACE_3,
+            bottom: tokens::SPACE_2,
+        }),
+        card_content([
+            text_input(&view.commit_subject, selection, "subject")
+                .key("subject")
+                .width(Size::Fill(1.0)),
+            text_area(&view.commit_body, selection, "body")
+                .key("body")
+                .width(Size::Fill(1.0))
+                .height(Size::Fixed(120.0)),
+        ])
+        .padding(Sides::xy(tokens::SPACE_3, 0.0))
         .gap(tokens::SPACE_2),
-        text_input(&view.commit_subject, selection, "subject")
-            .key("subject")
-            .width(Size::Fill(1.0)),
-        text_area(&view.commit_body, selection, "body")
-            .key("body")
-            .width(Size::Fill(1.0))
-            .height(Size::Fixed(120.0)),
-        row([
+        card_footer([
             spacer(),
             button_with_icon(IconName::GitCommit, "Commit")
                 .key("commit")
                 .primary()
                 .tooltip("Stage and commit (Ctrl+Enter)"),
         ])
-        .align(Align::Center),
+        .padding(tokens::SPACE_3),
     ])
-    .padding(tokens::SPACE_3)
-    .gap(tokens::SPACE_2)
     .fill(tokens::ACCENT)
-    .stroke(tokens::BORDER)
 }
 
 fn file_section(
@@ -224,16 +230,9 @@ fn file_section(
     {
         header_children.push(button(label.to_string()).key(key.to_string()).ghost());
     }
-    let header = row(header_children)
+    let header_row = row(header_children)
         .align(Align::Center)
-        .gap(tokens::SPACE_2)
-        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
-        .fill(if is_danger {
-            tokens::DESTRUCTIVE.with_alpha(40)
-        } else {
-            tokens::MUTED
-        })
-        .stroke(tokens::BORDER);
+        .gap(tokens::SPACE_2);
 
     let body: Vec<El> = if files.is_empty() {
         vec![
@@ -249,7 +248,22 @@ fn file_section(
             .collect()
     };
 
-    column([header, column(body).gap(0.0)]).gap(0.0)
+    let header_fill = if is_danger {
+        tokens::DESTRUCTIVE.with_alpha(40)
+    } else {
+        tokens::MUTED
+    };
+
+    let mut card_el = card([
+        card_header([header_row])
+            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
+            .fill(header_fill),
+        card_content(body).padding(0.0).gap(0.0),
+    ]);
+    if is_danger {
+        card_el = card_el.surface_role(SurfaceRole::Danger);
+    }
+    card_el
 }
 
 fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {

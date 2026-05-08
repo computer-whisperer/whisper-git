@@ -21,17 +21,13 @@ pub fn diff_view(view: &WorktreeView) -> El {
     let staged = file_is_staged(view, path);
     let hunks = view.repo.diff_working_file(path, staged).unwrap_or_default();
 
-    let mut header_children: Vec<El> = vec![
+    let header_row = row([
         text(path.to_string()).label(),
         spacer(),
         badge(if staged { "staged" } else { "unstaged" }).muted(),
-    ];
-    let header = row(header_children.drain(..))
-        .fill(tokens::MUTED)
-        .stroke(tokens::BORDER)
-        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
-        .gap(tokens::SPACE_2)
-        .align(Align::Center);
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
 
     let body: El = if hunks.is_empty() {
         column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_4)
@@ -44,13 +40,16 @@ pub fn diff_view(view: &WorktreeView) -> El {
         column(rows).gap(tokens::SPACE_3).padding(tokens::SPACE_3)
     };
 
-    card([card_content([
-        header,
-        scroll([body]).key("diff:scroll").height(Size::Fill(1.0)),
+    card([
+        card_header([header_row])
+            .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
+            .fill(tokens::MUTED),
+        card_content([scroll([body])
+            .key("diff:scroll")
+            .height(Size::Fill(1.0))])
+        .padding(0.0)
+        .height(Size::Fill(1.0)),
     ])
-    .gap(0.0)
-    .padding(0.0)
-    .height(Size::Fill(1.0))])
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }
@@ -93,7 +92,7 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
         format!("stage_hunk:{idx}:{path}")
     };
 
-    let header = row([
+    let header_row = row([
         text(hunk.header.trim().to_string())
             .code()
             .text_color(tokens::INFO),
@@ -103,18 +102,17 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
             .ghost()
             .tooltip(format!("{action_label} this hunk")),
     ])
-    .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
     .gap(tokens::SPACE_2)
-    .align(Align::Center)
-    .fill(tokens::ACCENT)
-    .stroke(tokens::BORDER);
+    .align(Align::Center);
 
     let lines: Vec<El> = hunk.lines.iter().map(line_row).collect();
 
-    column([header, column(lines).gap(0.0)])
-        .gap(0.0)
-        .fill(tokens::CARD)
-        .stroke(tokens::BORDER)
+    card([
+        card_header([header_row])
+            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+            .fill(tokens::ACCENT),
+        card_content(lines).padding(0.0).gap(0.0),
+    ])
 }
 
 fn line_row(line: &DiffLine) -> El {

@@ -12,45 +12,38 @@ use crate::repo_tab::RepoTab;
 const PANE_WIDTH: f32 = 420.0;
 
 pub fn commit_details_pane(tab: &RepoTab) -> El {
-    let body = match (tab.selected_commit, &tab.commit_detail) {
-        (Some(_), Some(detail)) => details_body(detail),
-        (Some(_), None) => placeholder("Loading…"),
-        (None, _) => placeholder("Select a commit to inspect."),
+    let pane = match (tab.selected_commit, &tab.commit_detail) {
+        (Some(_), Some(detail)) => details_pane(detail),
+        (Some(_), None) => placeholder_pane("Loading…"),
+        (None, _) => placeholder_pane("Select a commit to inspect."),
     };
-
-    card([card_content([body])
-        .gap(0.0)
-        .padding(0.0)
-        .height(Size::Fill(1.0))])
-    .width(Size::Fixed(PANE_WIDTH))
-    .height(Size::Fill(1.0))
+    pane.width(Size::Fixed(PANE_WIDTH)).height(Size::Fill(1.0))
 }
 
-fn placeholder(msg: &str) -> El {
-    column([text(msg.to_string()).muted()])
-        .padding(tokens::SPACE_4)
-        .gap(tokens::SPACE_2)
-        .width(Size::Fill(1.0))
-        .height(Size::Fill(1.0))
-        .align(Align::Center)
+fn placeholder_pane(msg: &str) -> El {
+    card([
+        card_content([text(msg.to_string()).muted()])
+            .padding(tokens::SPACE_4)
+            .height(Size::Fill(1.0))
+            .align(Align::Center),
+    ])
 }
 
-fn details_body(detail: &crate::repo_tab::CommitDetail) -> El {
+fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
     let info = &detail.info;
     let parents_label = if info.parent_short_ids.is_empty() {
         "(root commit)".to_string()
     } else {
         format!("Parents: {}", info.parent_short_ids.join(", "))
     };
-
     let (subject, body) = split_message(&info.full_message);
-    let body_el: Option<El> = if body.trim().is_empty() {
-        None
+    let body_children: Vec<El> = if body.trim().is_empty() {
+        Vec::new()
     } else {
-        Some(paragraph(body).label())
+        vec![paragraph(body).label()]
     };
 
-    let header = column([
+    let identity = card_header([
         row([
             icon(IconName::GitCommit),
             text(info.short_id.clone()).mono().label(),
@@ -71,48 +64,63 @@ fn details_body(detail: &crate::repo_tab::CommitDetail) -> El {
         ))
         .muted(),
     ])
+    .padding(tokens::SPACE_4)
     .gap(tokens::SPACE_1);
 
-    let mut message_children: Vec<El> = vec![h3(subject)];
-    if let Some(b) = body_el {
-        message_children.push(b);
-    }
-    let message_card = card([column(message_children).gap(tokens::SPACE_2)]);
+    let scroll_body = scroll([column([
+        titled_card(subject, body_children),
+        files_card(detail),
+    ])
+    .gap(tokens::SPACE_3)
+    .padding(Sides {
+        left: tokens::SPACE_4,
+        right: tokens::SPACE_4,
+        top: 0.0,
+        bottom: tokens::SPACE_4,
+    })])
+    .key("commit_details:scroll")
+    .height(Size::Fill(1.0));
 
-    let files_card = card([column(files_section(detail)).gap(tokens::SPACE_1)]);
-
-    scroll([column([header, message_card, files_card])
-        .gap(tokens::SPACE_3)
-        .padding(tokens::SPACE_4)])
-    .width(Size::Fill(1.0))
-    .height(Size::Fill(1.0))
+    card([
+        identity,
+        card_content([scroll_body])
+            .padding(0.0)
+            .height(Size::Fill(1.0)),
+    ])
 }
 
-fn files_section(detail: &crate::repo_tab::CommitDetail) -> Vec<El> {
-    let mut out: Vec<El> = Vec::with_capacity(detail.files.len() + 1);
-    out.push(
-        row([
-            text(format!("{} files", detail.files.len())).label(),
-            spacer(),
-            text(format!(
-                "+{}  -{}",
-                detail.files.iter().map(|f| f.additions).sum::<usize>(),
-                detail.files.iter().map(|f| f.deletions).sum::<usize>(),
-            ))
-            .mono()
-            .muted(),
-        ])
-        .gap(tokens::SPACE_2)
-        .align(Align::Center),
-    );
-    if detail.files.is_empty() {
-        out.push(text("No file changes.").muted());
+fn files_card(detail: &crate::repo_tab::CommitDetail) -> El {
+    let summary = row([
+        text(format!("{} files", detail.files.len())).label(),
+        spacer(),
+        text(format!(
+            "+{}  -{}",
+            detail.files.iter().map(|f| f.additions).sum::<usize>(),
+            detail.files.iter().map(|f| f.deletions).sum::<usize>(),
+        ))
+        .mono()
+        .muted(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body: Vec<El> = if detail.files.is_empty() {
+        vec![text("No file changes.").muted()]
     } else {
-        for f in &detail.files {
-            out.push(file_row(f));
-        }
-    }
-    out
+        detail.files.iter().map(file_row).collect()
+    };
+
+    card([
+        card_header([summary]).padding(tokens::SPACE_3),
+        card_content(body)
+            .padding(Sides {
+                left: tokens::SPACE_3,
+                right: tokens::SPACE_3,
+                top: 0.0,
+                bottom: tokens::SPACE_3,
+            })
+            .gap(tokens::SPACE_1),
+    ])
 }
 
 fn file_row(f: &crate::git::DiffFile) -> El {

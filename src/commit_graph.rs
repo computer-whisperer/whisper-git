@@ -459,14 +459,11 @@ pub fn history_view(tab: &RepoTab) -> El {
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
-    let header = row([text(header_text).caption().muted()])
-        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
-        .fill(tokens::MUTED)
-        .stroke(tokens::BORDER);
-
-    card([card_content([
-        header,
-        virtual_list(commits.len(), ROW_HEIGHT, move |i| {
+    card([
+        card_header([row([text(header_text).caption().muted()])])
+            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
+            .fill(tokens::MUTED),
+        card_content([virtual_list(commits.len(), ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
             build_row(
@@ -479,11 +476,10 @@ pub fn history_view(tab: &RepoTab) -> El {
             )
         })
         .key("commits")
+        .height(Size::Fill(1.0))])
+        .padding(0.0)
         .height(Size::Fill(1.0)),
     ])
-    .gap(0.0)
-    .padding(0.0)
-    .height(Size::Fill(1.0))])
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }
