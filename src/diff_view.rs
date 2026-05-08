@@ -50,6 +50,7 @@ pub fn diff_view(tab: &RepoTab) -> El {
     .gap(0.0)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
+    .surface_role(SurfaceRole::Panel)
 }
 
 fn placeholder() -> El {

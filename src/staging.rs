@@ -35,17 +35,20 @@ pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
             "Conflicted",
             conflicted.iter().collect::<Vec<_>>().as_slice(),
             None,
+            SurfaceRole::Danger,
         ));
     }
     sections.push(file_section(
         "Staged",
         staged.iter().collect::<Vec<_>>().as_slice(),
         Some(("Unstage all", "unstage_all", false)),
+        SurfaceRole::Sunken,
     ));
     sections.push(file_section(
         "Unstaged",
         unstaged_all.as_slice(),
         Some(("Stage all", "stage_all", true)),
+        SurfaceRole::Sunken,
     ));
 
     column(sections)
@@ -87,12 +90,21 @@ fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
     .surface_role(SurfaceRole::Raised)
 }
 
-fn file_section(title: &str, files: &[&FileStatus], bulk_action: Option<(&str, &str, bool)>) -> El {
-    let mut header_children: Vec<El> = vec![
-        text(title.to_string()).caption().muted(),
-        badge(files.len().to_string()).muted(),
-        spacer(),
-    ];
+fn file_section(
+    title: &str,
+    files: &[&FileStatus],
+    bulk_action: Option<(&str, &str, bool)>,
+    role: SurfaceRole,
+) -> El {
+    let title_el = if role == SurfaceRole::Danger {
+        text(title.to_string())
+            .caption()
+            .text_color(tokens::DESTRUCTIVE)
+    } else {
+        text(title.to_string()).caption().muted()
+    };
+    let mut header_children: Vec<El> =
+        vec![title_el, badge(files.len().to_string()).muted(), spacer()];
     if let Some((label, key, _is_stage)) = bulk_action
         && !files.is_empty()
     {
@@ -102,7 +114,7 @@ fn file_section(title: &str, files: &[&FileStatus], bulk_action: Option<(&str, &
         .align(Align::Center)
         .gap(tokens::SPACE_SM)
         .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS))
-        .surface_role(SurfaceRole::Sunken);
+        .surface_role(role);
 
     let body: Vec<El> = if files.is_empty() {
         vec![

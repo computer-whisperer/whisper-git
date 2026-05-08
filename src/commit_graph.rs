@@ -273,10 +273,12 @@ pub fn history_view(tab: &RepoTab) -> El {
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
+    let header = row([text(header_text).caption().muted()])
+        .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_SM))
+        .surface_role(SurfaceRole::Sunken);
+
     column([
-        text(header_text)
-            .muted()
-            .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_SM)),
+        header,
         virtual_list(commits.len(), ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
@@ -286,6 +288,7 @@ pub fn history_view(tab: &RepoTab) -> El {
         .height(Size::Fill(1.0)),
     ])
     .gap(0.0)
+    .surface_role(SurfaceRole::Panel)
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }
