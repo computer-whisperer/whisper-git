@@ -103,7 +103,7 @@ pub fn run<A: App + 'static>(
     let theme = app.theme();
     let cx = BuildCx::new(&theme);
     let mut tree = app.build(&cx);
-    runner.set_theme(theme);
+    runner.set_theme(theme.clone());
     let viewport = Rect::new(
         0.0,
         0.0,
@@ -123,7 +123,7 @@ pub fn run<A: App + 'static>(
         &mut builder,
         framebuffer,
         target_image.clone(),
-        clear_color(),
+        clear_color(&theme),
     );
     let capture = capture_to_buffer(&mut builder, mem_alloc, target_image)?;
     let cb = builder.build().context("build cmd")?;
@@ -260,8 +260,8 @@ fn capture_to_buffer(
     })
 }
 
-fn clear_color() -> [f32; 4] {
-    let c = aetna_core::tokens::BACKGROUND;
+fn clear_color(theme: &aetna_core::Theme) -> [f32; 4] {
+    let c = theme.resolve(aetna_core::tokens::BACKGROUND);
     [
         srgb_to_linear(c.r as f32 / 255.0),
         srgb_to_linear(c.g as f32 / 255.0),

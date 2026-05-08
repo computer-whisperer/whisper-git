@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use aetna_core::{
-    App, AppShader, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, UiEvent, UiEventKind,
-    UiKey,
+    App, AppShader, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
+    UiEventKind, UiKey,
     prelude::*,
     toast::ToastSpec,
     widgets::{text_area, text_input},
@@ -350,6 +350,10 @@ impl App for WhisperApp {
             wgsl: COMMIT_NODE_WGSL,
             samples_backdrop: false,
         }]
+    }
+
+    fn theme(&self) -> Theme {
+        Theme::radix_slate_blue_dark()
     }
 }
 
