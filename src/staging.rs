@@ -84,12 +84,12 @@ fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
     ])
     .padding(tokens::SPACE_MD)
     .gap(tokens::SPACE_SM)
-    .surface_role(SurfaceRole::Panel)
+    .surface_role(SurfaceRole::Raised)
 }
 
 fn file_section(title: &str, files: &[&FileStatus], bulk_action: Option<(&str, &str, bool)>) -> El {
     let mut header_children: Vec<El> = vec![
-        text(title.to_string()).label(),
+        text(title.to_string()).caption().muted(),
         badge(files.len().to_string()).muted(),
         spacer(),
     ];
@@ -101,7 +101,8 @@ fn file_section(title: &str, files: &[&FileStatus], bulk_action: Option<(&str, &
     let header = row(header_children)
         .align(Align::Center)
         .gap(tokens::SPACE_SM)
-        .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS));
+        .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS))
+        .surface_role(SurfaceRole::Sunken);
 
     let body: Vec<El> = if files.is_empty() {
         vec![

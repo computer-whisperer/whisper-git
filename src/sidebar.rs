@@ -49,8 +49,8 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
     let count = section_count(tab, section);
 
     row([
-        icon(caret),
-        text(section.label()).label(),
+        icon(caret).muted(),
+        text(section.label()).caption().muted(),
         spacer(),
         badge(count.to_string()).muted(),
     ])
@@ -270,8 +270,8 @@ fn item_row(
         .align(Align::Center);
 
     match (is_head, is_selected) {
-        (true, _) => row_el.surface_role(SurfaceRole::Raised),
-        (_, true) => row_el.surface_role(SurfaceRole::Panel),
+        (true, _) => row_el.surface_role(SurfaceRole::Current),
+        (_, true) => row_el.surface_role(SurfaceRole::Selected),
         _ => row_el,
     }
 }

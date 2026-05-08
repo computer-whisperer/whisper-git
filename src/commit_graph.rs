@@ -201,11 +201,6 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
         Some(l) => (l.lane, l.color),
         None => (0, ORPHAN_COLOR),
     };
-    let row_bg = if selected {
-        tokens::MUTED
-    } else {
-        Color::rgba(0, 0, 0, 0)
-    };
     let when = commit.relative_time();
     let summary = if commit.summary.is_empty() {
         "(no summary)".to_string()
@@ -213,7 +208,7 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
         commit.summary.clone()
     };
 
-    row([
+    let row_el = row([
         graph_cell(lane, color, selected),
         text(commit.short_id.clone()).mono().muted(),
         text(summary),
@@ -225,8 +220,13 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
     .gap(tokens::SPACE_MD)
     .padding(Sides::xy(tokens::SPACE_SM, 0.0))
     .height(Size::Fixed(ROW_HEIGHT))
-    .align(Align::Center)
-    .fill(row_bg)
+    .align(Align::Center);
+
+    if selected {
+        row_el.surface_role(SurfaceRole::Selected)
+    } else {
+        row_el
+    }
 }
 
 /// History pane composer. Returns the center-pane `El` for the
