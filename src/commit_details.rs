@@ -28,8 +28,8 @@ pub fn commit_details_pane(tab: &RepoTab) -> El {
 
 fn placeholder(msg: &str) -> El {
     column([text(msg.to_string()).muted()])
-        .padding(tokens::SPACE_LG)
-        .gap(tokens::SPACE_SM)
+        .padding(tokens::SPACE_4)
+        .gap(tokens::SPACE_2)
         .width(Size::Fill(1.0))
         .height(Size::Fill(1.0))
         .align(Align::Center)
@@ -60,7 +60,7 @@ fn details_body(detail: &crate::repo_tab::CommitDetail) -> El {
                 .ghost()
                 .tooltip("Copy full commit SHA"),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center),
         text(parents_label).muted().caption(),
         text(format!(
@@ -71,19 +71,19 @@ fn details_body(detail: &crate::repo_tab::CommitDetail) -> El {
         ))
         .muted(),
     ])
-    .gap(tokens::SPACE_XS);
+    .gap(tokens::SPACE_1);
 
     let mut message_children: Vec<El> = vec![h3(subject)];
     if let Some(b) = body_el {
         message_children.push(b);
     }
-    let message_card = card([column(message_children).gap(tokens::SPACE_SM)]);
+    let message_card = card([column(message_children).gap(tokens::SPACE_2)]);
 
-    let files_card = card([column(files_section(detail)).gap(tokens::SPACE_XS)]);
+    let files_card = card([column(files_section(detail)).gap(tokens::SPACE_1)]);
 
     scroll([column([header, message_card, files_card])
-        .gap(tokens::SPACE_MD)
-        .padding(tokens::SPACE_LG)])
+        .gap(tokens::SPACE_3)
+        .padding(tokens::SPACE_4)])
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }
@@ -102,7 +102,7 @@ fn files_section(detail: &crate::repo_tab::CommitDetail) -> Vec<El> {
             .mono()
             .muted(),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center),
     );
     if detail.files.is_empty() {
@@ -127,10 +127,10 @@ fn file_row(f: &crate::git::DiffFile) -> El {
                 .mono()
                 .text_color(tokens::DESTRUCTIVE),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
     };
     row([text(f.path.clone()).mono().nowrap_text(), spacer(), stats])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center)
         .key(format!("commit_file:{}", f.path))
         .focusable()

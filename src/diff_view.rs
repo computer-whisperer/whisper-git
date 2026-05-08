@@ -29,19 +29,19 @@ pub fn diff_view(view: &WorktreeView) -> El {
     let header = row(header_children.drain(..))
         .fill(tokens::MUTED)
         .stroke(tokens::BORDER)
-        .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_SM))
-        .gap(tokens::SPACE_SM)
+        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
+        .gap(tokens::SPACE_2)
         .align(Align::Center);
 
     let body: El = if hunks.is_empty() {
-        column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_LG)
+        column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_4)
     } else {
         let rows: Vec<El> = hunks
             .iter()
             .enumerate()
             .map(|(idx, h)| hunk_block(h, idx, path, staged))
             .collect();
-        column(rows).gap(tokens::SPACE_MD).padding(tokens::SPACE_MD)
+        column(rows).gap(tokens::SPACE_3).padding(tokens::SPACE_3)
     };
 
     card([card_content([
@@ -63,8 +63,8 @@ fn placeholder() -> El {
              Phase 4c will wire Stage / Unstage hunks.",
         ),
     ])
-    .padding(tokens::SPACE_LG)
-    .gap(tokens::SPACE_MD)
+    .padding(tokens::SPACE_4)
+    .gap(tokens::SPACE_3)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }
@@ -103,8 +103,8 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
             .ghost()
             .tooltip(format!("{action_label} this hunk")),
     ])
-    .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-    .gap(tokens::SPACE_SM)
+    .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+    .gap(tokens::SPACE_2)
     .align(Align::Center)
     .fill(tokens::ACCENT)
     .stroke(tokens::BORDER);
@@ -148,6 +148,6 @@ fn line_row(line: &DiffLine) -> El {
             .nowrap_text()
             .text_color(color),
     ])
-    .gap(tokens::SPACE_XS)
-    .padding(Sides::xy(tokens::SPACE_SM, 0.0))
+    .gap(tokens::SPACE_1)
+    .padding(Sides::xy(tokens::SPACE_2, 0.0))
 }

@@ -212,8 +212,8 @@ fn pill(
     tooltip: Option<String>,
 ) -> El {
     let mut row_el = row([text(label.into()).caption().text_color(fg)])
-        .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-        .gap(tokens::SPACE_XS)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .gap(tokens::SPACE_1)
         .align(Align::Center)
         .fill(fg.with_alpha(bg_alpha))
         .stroke(fg.with_alpha(120));
@@ -347,8 +347,8 @@ fn build_row(
     let row_el = row(children)
         .key(format!("commit:{idx}"))
         .focusable()
-        .gap(tokens::SPACE_MD)
-        .padding(Sides::xy(tokens::SPACE_SM, 0.0))
+        .gap(tokens::SPACE_3)
+        .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(ROW_HEIGHT))
         .align(Align::Center);
 
@@ -396,8 +396,8 @@ fn synthetic_row(
     row(children)
         .key(format!("commit:{idx}"))
         .focusable()
-        .gap(tokens::SPACE_MD)
-        .padding(Sides::xy(tokens::SPACE_SM, 0.0))
+        .gap(tokens::SPACE_3)
+        .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(ROW_HEIGHT))
         .align(Align::Center)
 }
@@ -411,8 +411,8 @@ pub fn history_view(tab: &RepoTab) -> El {
             text("No commits").muted(),
             text("This repo has no reachable commits — make one and refresh.").muted(),
         ])
-        .gap(tokens::SPACE_SM)
-        .padding(tokens::SPACE_LG)
+        .gap(tokens::SPACE_2)
+        .padding(tokens::SPACE_4)
         .width(Size::Fill(1.0))
         .height(Size::Fill(1.0));
     }
@@ -460,7 +460,7 @@ pub fn history_view(tab: &RepoTab) -> El {
     let selected_oid = tab.selected_commit;
 
     let header = row([text(header_text).caption().muted()])
-        .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_SM))
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
         .fill(tokens::MUTED)
         .stroke(tokens::BORDER);
 

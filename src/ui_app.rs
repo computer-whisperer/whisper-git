@@ -12,7 +12,7 @@ use aetna_core::{
     prelude::*,
     toast::ToastSpec,
     widgets::{
-        resize_handle::{self, ResizeDrag, resize_handle},
+        resize_handle::{self, ResizeDrag, Side, resize_handle},
         text_area, text_input,
     },
 };
@@ -434,27 +434,32 @@ impl App for WhisperApp {
 
         // Resize-handle drags. Each handle owns its anchor state on
         // `WhisperApp`; PointerUp persists the new width to disk so
-        // the layout survives a relaunch.
-        //
-        // Sidebar: aetna's `apply_event_fixed` works as-is — the value
-        // is the LEFT sibling and grows when the pointer moves right.
+        // the layout survives a relaunch. The `Side` parameter tells
+        // aetna which sibling owns the value — `Start` for the
+        // left-anchored sidebar, `End` for the right-anchored pane
+        // (so drag-left grows it, drag-right shrinks it).
         if resize_handle::apply_event_fixed(
             &mut self.sidebar_w,
             &mut self.sidebar_drag,
             &event,
             "sidebar:resize",
             Axis::Row,
+            Side::Start,
             tokens::SIDEBAR_WIDTH_MIN,
             tokens::SIDEBAR_WIDTH_MAX,
         ) {
             self.config.sidebar_w = self.sidebar_w;
         }
-        // Right pane: aetna's helper assumes the controlled value sits
-        // on the LEFT side of the handle, so its delta has the wrong
-        // sign for a right-side pane (drag-left should grow it). Roll
-        // a small custom handler that negates the delta and inverts
-        // the keyboard nudges.
-        if self.apply_right_resize(&event) {
+        if resize_handle::apply_event_fixed(
+            &mut self.right_pane_w,
+            &mut self.right_drag,
+            &event,
+            "right:resize",
+            Axis::Row,
+            Side::End,
+            RIGHT_PANE_MIN,
+            RIGHT_PANE_MAX,
+        ) {
             self.config.right_pane_w = self.right_pane_w;
         }
         if matches!(event.kind, UiEventKind::PointerUp)
@@ -1116,73 +1121,6 @@ impl WhisperApp {
     // success via toast / failure via error modal.
     // -------------------------------------------------------------
 
-    /// Mirror of `resize_handle::apply_event_fixed` for a value that
-    /// sits on the *right* side of its handle. The aetna helper's
-    /// formula `next = initial + (pointer - anchor)` is correct for a
-    /// left-anchored value (sidebar) but inverted for a right-anchored
-    /// pane: dragging the pointer left should *grow* the right pane,
-    /// not shrink it. Returns true when the value changed (matches the
-    /// aetna helper's contract so the caller's persistence logic stays
-    /// uniform).
-    fn apply_right_resize(&mut self, event: &UiEvent) -> bool {
-        if event.route() != Some("right:resize") {
-            return false;
-        }
-        let drag = &mut self.right_drag;
-        match event.kind {
-            UiEventKind::PointerDown => {
-                if let Some(pos) = event.pointer {
-                    drag.anchor = Some(pos.0);
-                    drag.initial = self.right_pane_w;
-                }
-                false
-            }
-            UiEventKind::Drag => {
-                let (Some(anchor), Some(pos)) = (drag.anchor, event.pointer) else {
-                    return false;
-                };
-                // Inverted: pointer moving right *shrinks* the right
-                // pane (boundary moves right, pane width = right_edge -
-                // boundary, so width decreases).
-                let next =
-                    (drag.initial - (pos.0 - anchor)).clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
-                let changed = (next - self.right_pane_w).abs() > f32::EPSILON;
-                self.right_pane_w = next;
-                changed
-            }
-            UiEventKind::PointerUp => {
-                drag.anchor = None;
-                false
-            }
-            UiEventKind::KeyDown => {
-                // Mirror aetna's KEYBOARD_STEP_PX / KEYBOARD_PAGE_STEP_PX
-                // but invert direction: ArrowRight shrinks the pane,
-                // ArrowLeft grows it. Home/End jump to MIN/MAX.
-                let Some(press) = event.key_press.as_ref() else {
-                    return false;
-                };
-                let next = match press.key {
-                    UiKey::ArrowRight | UiKey::ArrowDown => {
-                        self.right_pane_w - resize_handle::KEYBOARD_STEP_PX
-                    }
-                    UiKey::ArrowLeft | UiKey::ArrowUp => {
-                        self.right_pane_w + resize_handle::KEYBOARD_STEP_PX
-                    }
-                    UiKey::PageDown => self.right_pane_w - resize_handle::KEYBOARD_PAGE_STEP_PX,
-                    UiKey::PageUp => self.right_pane_w + resize_handle::KEYBOARD_PAGE_STEP_PX,
-                    UiKey::Home => RIGHT_PANE_MAX, // grow to max
-                    UiKey::End => RIGHT_PANE_MIN,  // shrink to min
-                    _ => return false,
-                };
-                let next = next.clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
-                let changed = (next - self.right_pane_w).abs() > f32::EPSILON;
-                self.right_pane_w = next;
-                changed
-            }
-            _ => false,
-        }
-    }
-
     /// Drain all per-tab async slots plus the app-scoped clone slot;
     /// called once per frame from `before_build`. Visits every tab so
     /// background work in a non-foreground tab still completes cleanly.
@@ -1612,7 +1550,7 @@ fn tab_bar(app: &WhisperApp) -> El {
             .tooltip("Close tab");
         tabs.push(
             row([trigger, close])
-                .gap(tokens::SPACE_XS)
+                .gap(tokens::SPACE_1)
                 .align(Align::Center),
         );
     }
@@ -1624,8 +1562,8 @@ fn tab_bar(app: &WhisperApp) -> El {
     row(tabs)
         .fill(tokens::MUTED)
         .stroke(tokens::BORDER)
-        .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-        .gap(tokens::SPACE_XS)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .gap(tokens::SPACE_1)
         .align(Align::Center)
 }
 
@@ -1639,11 +1577,11 @@ fn header_bar(active: Option<&RepoTab>) -> El {
                 cb.to_string()
             };
             row([icon(IconName::GitBranch), text(label).label()])
-                .gap(tokens::SPACE_XS)
+                .gap(tokens::SPACE_1)
                 .align(Align::Center)
         }
         None => row([icon(IconName::GitBranch), text("(no repo)").muted()])
-            .gap(tokens::SPACE_XS)
+            .gap(tokens::SPACE_1)
             .align(Align::Center),
     };
 
@@ -1673,7 +1611,7 @@ fn header_bar(active: Option<&RepoTab>) -> El {
                 .tooltip("Settings"),
         ]),
     ])
-    .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_SM))
+    .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
     .opacity(if actions_enabled { 1.0 } else { 0.85 });
 
     card([card_content([bar])]).width(Size::Fill(1.0))
@@ -1701,14 +1639,14 @@ fn shortcut_bar() -> El {
         kbd("Ctrl+W", "Close tab"),
         kbd("Ctrl+/", "Toggle shortcuts"),
     ])
-    .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_XS))
-    .gap(tokens::SPACE_LG)
+    .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1))
+    .gap(tokens::SPACE_4)
     .align(Align::Center)
 }
 
 fn kbd(chord: &str, label: &str) -> El {
     row([badge(chord).muted(), text(label).caption()])
-        .gap(tokens::SPACE_XS)
+        .gap(tokens::SPACE_1)
         .align(Align::Center)
 }
 
@@ -1726,8 +1664,8 @@ fn no_worktree_placeholder() -> El {
              to start staging changes here.",
         ),
     ])
-    .padding(tokens::SPACE_LG)
-    .gap(tokens::SPACE_MD)
+    .padding(tokens::SPACE_4)
+    .gap(tokens::SPACE_3)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }
@@ -1760,8 +1698,8 @@ fn main_placeholder(active: Option<&RepoTab>) -> El {
             paragraph("Press Ctrl+O or click + in the tab bar to open a repository."),
         ]),
     };
-    body.padding(tokens::SPACE_LG)
-        .gap(tokens::SPACE_MD)
+    body.padding(tokens::SPACE_4)
+        .gap(tokens::SPACE_3)
         .height(Size::Fill(1.0))
         .width(Size::Fill(1.0))
 }

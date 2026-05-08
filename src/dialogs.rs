@@ -40,10 +40,10 @@ pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
             spacer(),
             button("Done").key("settings:close").primary(),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center),
     ])
-    .gap(tokens::SPACE_MD);
+    .gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_SETTINGS_KEY, "Settings", [body])
 }
@@ -62,7 +62,7 @@ fn row_size_selector(current: f32) -> El {
     } else {
         large.primary()
     };
-    row([normal, large]).gap(tokens::SPACE_XS)
+    row([normal, large]).gap(tokens::SPACE_1)
 }
 
 /// Generic confirm dialog. `ok_label` is typically "Delete" /
@@ -83,10 +83,10 @@ pub fn confirm_modal(title: &str, body: &str, ok_label: &str, destructive: bool)
                     .primary()
             },
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center),
     ])
-    .gap(tokens::SPACE_MD);
+    .gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_CONFIRM_KEY, title, [body_el])
 }
@@ -97,7 +97,7 @@ pub fn error_modal(title: &str, body: &str) -> El {
             icon(IconName::AlertCircle).text_color(tokens::DESTRUCTIVE),
             paragraph(body.to_string()),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center),
         row([
             spacer(),
@@ -105,7 +105,7 @@ pub fn error_modal(title: &str, body: &str) -> El {
         ])
         .align(Align::Center),
     ])
-    .gap(tokens::SPACE_MD);
+    .gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_ERROR_KEY, title, [body_el])
 }
@@ -144,7 +144,7 @@ pub fn clone_modal(form: &CloneForm, selection: &Selection, in_flight: bool) -> 
             .key("clone:url")
             .width(Size::Fill(1.0)),
     ])
-    .gap(tokens::SPACE_XS)
+    .gap(tokens::SPACE_1)
     .width(Size::Fill(1.0));
 
     let dest_field = column([
@@ -155,11 +155,11 @@ pub fn clone_modal(form: &CloneForm, selection: &Selection, in_flight: bool) -> 
                 .width(Size::Fill(1.0)),
             button("Browse\u{2026}").key("clone:browse").ghost(),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center)
         .width(Size::Fill(1.0)),
     ])
-    .gap(tokens::SPACE_XS)
+    .gap(tokens::SPACE_1)
     .width(Size::Fill(1.0));
 
     let bare_field = field_row("Bare clone", switch(form.bare).key("clone:bare"));
@@ -177,10 +177,10 @@ pub fn clone_modal(form: &CloneForm, selection: &Selection, in_flight: bool) -> 
         button("Cancel").key("modal:clone:cancel").ghost(),
         primary,
     ])
-    .gap(tokens::SPACE_SM)
+    .gap(tokens::SPACE_2)
     .align(Align::Center);
 
-    let body = column([url_field, dest_field, bare_field, actions]).gap(tokens::SPACE_MD);
+    let body = column([url_field, dest_field, bare_field, actions]).gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_CLONE_KEY, "Clone repository", [body])
 }
@@ -211,7 +211,7 @@ pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) ->
             button("Save").key("token:github:save").primary(),
             button("Cancel").key("token:github:cancel").ghost(),
         ])
-        .gap(tokens::SPACE_SM)
+        .gap(tokens::SPACE_2)
         .align(Align::Center)
         .width(Size::Fill(1.0))
     } else {
@@ -235,7 +235,7 @@ pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) ->
             children.push(button("Clear").key("token:github:clear").destructive());
         }
         row(children)
-            .gap(tokens::SPACE_SM)
+            .gap(tokens::SPACE_2)
             .align(Align::Center)
             .width(Size::Fill(1.0))
     };
@@ -247,12 +247,12 @@ pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) ->
             .caption()
             .muted(),
     ])
-    .gap(tokens::SPACE_XS);
+    .gap(tokens::SPACE_1);
 
     let actions = row([spacer(), button("Done").key("modal:token:close").primary()])
         .align(Align::Center);
 
-    let body = column([github_block, actions]).gap(tokens::SPACE_MD);
+    let body = column([github_block, actions]).gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_TOKEN_KEY, "Manage tokens", [body])
 }

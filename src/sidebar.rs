@@ -52,8 +52,8 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
     ])
     .key(format!("section:{}", section.key()))
     .focusable()
-    .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-    .gap(tokens::SPACE_XS)
+    .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+    .gap(tokens::SPACE_1)
     .align(Align::Center)
 }
 
@@ -126,18 +126,18 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
                 spacer(),
                 badge(branches.len().to_string()).muted(),
             ])
-            .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-            .gap(tokens::SPACE_XS)
+            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+            .gap(tokens::SPACE_1)
             .align(Align::Center),
         );
         for branch in branches {
             let key = format!("remote:{}/{}", remote, branch);
             rows.push(
                 item_row(IconName::GitBranch, &branch, None, false, false, key).padding(Sides {
-                    left: tokens::SPACE_LG,
-                    right: tokens::SPACE_SM,
-                    top: tokens::SPACE_XS,
-                    bottom: tokens::SPACE_XS,
+                    left: tokens::SPACE_4,
+                    right: tokens::SPACE_2,
+                    top: tokens::SPACE_1,
+                    bottom: tokens::SPACE_1,
                 }),
             );
         }
@@ -271,8 +271,8 @@ fn item_row(
     let row_el = row(content)
         .key(key)
         .focusable()
-        .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-        .gap(tokens::SPACE_XS)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .gap(tokens::SPACE_1)
         .align(Align::Center);
 
     match (is_head, is_selected) {

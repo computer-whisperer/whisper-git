@@ -70,8 +70,8 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
             let pill = row(children)
                 .key(key)
                 .focusable()
-                .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-                .gap(tokens::SPACE_XS)
+                .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+                .gap(tokens::SPACE_1)
                 .align(Align::Center);
             Some(if is_active { pill.current() } else { pill })
         })
@@ -82,8 +82,8 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
     // pane and the commit box ends up shoved to the bottom.
     Some(
         row(pills)
-            .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-            .gap(tokens::SPACE_XS)
+            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+            .gap(tokens::SPACE_1)
             .align(Align::Center)
             .fill(tokens::MUTED)
             .stroke(tokens::BORDER)
@@ -180,7 +180,7 @@ fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
                 .muted(),
         ])
         .align(Align::Center)
-        .gap(tokens::SPACE_SM),
+        .gap(tokens::SPACE_2),
         text_input(&view.commit_subject, selection, "subject")
             .key("subject")
             .width(Size::Fill(1.0)),
@@ -197,8 +197,8 @@ fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
         ])
         .align(Align::Center),
     ])
-    .padding(tokens::SPACE_MD)
-    .gap(tokens::SPACE_SM)
+    .padding(tokens::SPACE_3)
+    .gap(tokens::SPACE_2)
     .fill(tokens::ACCENT)
     .stroke(tokens::BORDER)
 }
@@ -226,8 +226,8 @@ fn file_section(
     }
     let header = row(header_children)
         .align(Align::Center)
-        .gap(tokens::SPACE_SM)
-        .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS))
+        .gap(tokens::SPACE_2)
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
         .fill(if is_danger {
             tokens::DESTRUCTIVE.with_alpha(40)
         } else {
@@ -240,7 +240,7 @@ fn file_section(
             text("(none)")
                 .caption()
                 .muted()
-                .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_XS)),
+                .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1)),
         ]
     } else {
         files
@@ -287,7 +287,7 @@ fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
     ])
     .key(format!("diff:{}", file.path))
     .focusable()
-    .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS))
-    .gap(tokens::SPACE_SM)
+    .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
+    .gap(tokens::SPACE_2)
     .align(Align::Center)
 }
