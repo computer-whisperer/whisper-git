@@ -576,8 +576,9 @@ impl WhisperApp {
             return;
         }
 
-        // tab:{idx}, tab_close:{idx}
-        if let Some(idx_str) = key.strip_prefix("tab_close:") {
+        // editor_tabs: tabs:tab:{idx} (select), tabs:close:{idx} (close),
+        // tabs:add (route to open-repo picker).
+        if let Some(idx_str) = key.strip_prefix("tabs:close:") {
             if let Ok(idx) = idx_str.parse::<usize>() {
                 self.close_tab(idx);
             }
@@ -589,6 +590,10 @@ impl WhisperApp {
             {
                 self.active_tab = idx;
             }
+            return;
+        }
+        if key == "tabs:add" {
+            self.open_repo_dialog();
             return;
         }
 
@@ -1693,35 +1698,23 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
 // ---------------------------------------------------------------------------
 
 fn tab_bar(app: &WhisperApp) -> El {
-    use aetna_core::widgets::tabs::tab_trigger;
-
-    // tabs_list doesn't accept per-option children, so we compose tabs
-    // by hand here (each chip carries a Close button next to its
-    // tab_trigger). The outer row keeps the same MUTED-track recipe
-    // tabs_list uses internally.
-    let mut tabs: Vec<El> = Vec::new();
-    for (i, t) in app.tabs.iter().enumerate() {
-        let trigger = tab_trigger("tabs", i, t.repo_name.clone(), i == app.active_tab);
-        let close = icon_button(IconName::X)
-            .key(format!("tab_close:{i}"))
-            .tooltip("Close tab");
-        tabs.push(
-            row([trigger, close])
-                .gap(tokens::SPACE_1)
-                .align(Align::Center),
-        );
-    }
-    tabs.push(
-        icon_button(IconName::Plus)
-            .key("open_repo")
-            .tooltip("Open repository (Ctrl+O)"),
-    );
-    row(tabs)
-        .fill(tokens::MUTED)
-        .stroke(tokens::BORDER)
-        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-        .gap(tokens::SPACE_1)
-        .align(Align::Center)
+    // Aetna's `editor_tabs` is a closeable, addable tab strip — exactly
+    // the doc-tab shape we want here. Tab values are the indices as
+    // strings; the strip's routed keys are `tabs:tab:{i}`,
+    // `tabs:close:{i}`, and `tabs:add`. We keep our own dispatch in
+    // `handle_action` rather than delegating to `editor_tabs::apply_event`
+    // because (a) closing the last tab should leave whisper-git on the
+    // welcome view (not refuse), and (b) `+` opens the rfd file picker
+    // asynchronously rather than minting a fresh value synchronously.
+    let active = app.active_tab.to_string();
+    aetna_core::widgets::editor_tabs::editor_tabs(
+        "tabs",
+        &active,
+        app.tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i.to_string(), t.repo_name.clone())),
+    )
 }
 
 /// An in-flight async op surfaces in the header as `[spinner] verb · 12s`.
