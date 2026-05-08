@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use whisper_git::{
     WhisperApp,
-    repo_tab::{RepoTab, RepoView},
+    repo_tab::{RepoTab, RepoView, TimedOp},
     ui_app::{ActiveModal, ContextMenuState, ContextTarget},
 };
 
@@ -212,6 +212,25 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        // Header progress affordance — fresh fetch.
+        scenes.push(("header_fetch_busy".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.tabs[0].fetch_op = Some(synthetic_op("from origin", 4));
+            app
+        }));
+        // Header progress affordance — fetch past the 60s stall threshold.
+        scenes.push(("header_fetch_stalled".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.tabs[0].fetch_op = Some(synthetic_op("from origin", 75));
+            app
+        }));
+        // Two simultaneous ops — fresh push alongside a long-running cherry-pick.
+        scenes.push(("header_push_and_mutation".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.tabs[0].push_op = Some(synthetic_op("main \u{2192} origin", 8));
+            app.tabs[0].mutation_op = Some(synthetic_op("cherry-pick abc1234", 90));
+            app
+        }));
     }
 
     if opened.len() >= 2 {
@@ -233,4 +252,17 @@ fn reopen(t: &RepoTab) -> RepoTab {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     RepoTab::open(path).expect("reopen succeeded once already")
+}
+
+/// Build a `TimedOp` for header-busy bundle scenes. The receiver is
+/// connected to a leaked sender so it never disconnects while the build
+/// renders; backdating `started` exercises the stall threshold.
+fn synthetic_op(label: &str, age_secs: u64) -> TimedOp {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Bundle dumps build once and exit, but leak the sender so we don't
+    // accidentally race the rx::Disconnected path if anyone polls.
+    Box::leak(Box::new(tx));
+    let mut op = TimedOp::new(rx, label);
+    op.started = std::time::Instant::now() - std::time::Duration::from_secs(age_secs);
+    op
 }

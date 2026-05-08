@@ -339,7 +339,7 @@ impl App for WhisperApp {
         if !self.tabs.is_empty() {
             chrome.push(tab_bar(self));
         }
-        chrome.push(header_bar(self.active()));
+        chrome.push(header_bar(self.active(), self.clone_op.as_ref()));
         if self.shortcut_bar_visible {
             chrome.push(shortcut_bar());
         }
@@ -1597,7 +1597,13 @@ fn tab_bar(app: &WhisperApp) -> El {
         .align(Align::Center)
 }
 
-fn header_bar(active: Option<&RepoTab>) -> El {
+/// An in-flight async op surfaces in the header as `[spinner] verb · 12s`.
+/// After this many seconds the spinner switches to the warning color and
+/// gains a "(still running)" suffix — a soft hint that the user may want
+/// to investigate before assuming the op will finish.
+const STALL_WARN_SECS: u64 = 60;
+
+fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     let branch = match active {
         Some(t) => {
             let cb = t.current_branch();
@@ -1618,33 +1624,107 @@ fn header_bar(active: Option<&RepoTab>) -> El {
     let actions_enabled = active.is_some();
     let view_mode = active.map(|t| t.view_mode).unwrap_or(RepoView::Working);
 
-    let bar = toolbar([
-        branch,
-        view_mode_segment(view_mode),
-        spacer(),
-        toolbar_group([
-            button_with_icon(IconName::Download, "Fetch")
-                .key("fetch")
-                .tooltip("git fetch"),
-            button_with_icon(IconName::Download, "Pull")
-                .key("pull")
-                .tooltip("git pull"),
-            button_with_icon(IconName::Upload, "Push")
-                .key("push")
-                .tooltip("git push"),
-            button_with_icon(IconName::GitCommit, "Commit")
-                .key("commit")
-                .primary()
-                .tooltip("Stage and commit (Ctrl+Enter)"),
-            icon_button(IconName::Settings)
-                .key("settings")
-                .tooltip("Settings"),
-        ]),
-    ])
-    .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
-    .opacity(if actions_enabled { 1.0 } else { 0.85 });
+    let fetch_busy = active.map(|t| t.fetch_op.is_some()).unwrap_or(false);
+    let push_busy = active.map(|t| t.push_op.is_some()).unwrap_or(false);
+
+    let mut fetch_btn = button_with_icon(IconName::Download, "Fetch")
+        .key("fetch")
+        .tooltip("git fetch");
+    if fetch_busy {
+        fetch_btn = fetch_btn.disabled();
+    }
+    let mut push_btn = button_with_icon(IconName::Upload, "Push")
+        .key("push")
+        .tooltip("git push");
+    if push_busy {
+        push_btn = push_btn.disabled();
+    }
+
+    let mut bar_items: Vec<El> = vec![branch, view_mode_segment(view_mode)];
+    let status_lines = op_status_lines(active, clone_op);
+    if !status_lines.is_empty() {
+        bar_items.push(
+            column(status_lines)
+                .gap(tokens::SPACE_1)
+                .align(Align::Center),
+        );
+    }
+    bar_items.push(spacer());
+    bar_items.push(toolbar_group([
+        fetch_btn,
+        button_with_icon(IconName::Download, "Pull")
+            .key("pull")
+            .tooltip("git pull"),
+        push_btn,
+        button_with_icon(IconName::GitCommit, "Commit")
+            .key("commit")
+            .primary()
+            .tooltip("Stage and commit (Ctrl+Enter)"),
+        icon_button(IconName::Settings)
+            .key("settings")
+            .tooltip("Settings"),
+    ]));
+
+    let bar = toolbar(bar_items)
+        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
+        .opacity(if actions_enabled { 1.0 } else { 0.85 });
 
     card([card_content([bar])]).width(Size::Fill(1.0))
+}
+
+/// Build one inline status row per in-flight op for the active tab plus
+/// the app-scoped clone, if any. Each row is `[spinner, "Verb label · Ns"]`
+/// with a warning treatment after `STALL_WARN_SECS`.
+fn op_status_lines(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> Vec<El> {
+    let mut lines: Vec<El> = Vec::new();
+    if let Some(tab) = active {
+        if let Some(op) = &tab.fetch_op {
+            lines.push(status_row("Fetch", &op.label, op.started.elapsed().as_secs()));
+        }
+        if let Some(op) = &tab.pull_op {
+            lines.push(status_row("Pull", &op.label, op.started.elapsed().as_secs()));
+        }
+        if let Some(op) = &tab.push_op {
+            lines.push(status_row("Push", &op.label, op.started.elapsed().as_secs()));
+        }
+        if let Some(op) = &tab.mutation_op {
+            // mutation labels already carry their own verb ("cherry-pick abc1234"),
+            // so don't prefix.
+            lines.push(status_row("", &op.label, op.started.elapsed().as_secs()));
+        }
+    }
+    if let Some(op) = clone_op {
+        lines.push(status_row(
+            "Clone",
+            &op.dest_label,
+            op.started.elapsed().as_secs(),
+        ));
+    }
+    lines
+}
+
+fn status_row(verb: &str, label: &str, secs: u64) -> El {
+    use aetna_core::widgets::spinner::spinner_with_color;
+    let stalled = secs >= STALL_WARN_SECS;
+    let arc_color = if stalled {
+        tokens::DESTRUCTIVE
+    } else {
+        tokens::PRIMARY
+    };
+    let suffix = if stalled { " (still running)" } else { "" };
+    let text_str = if verb.is_empty() {
+        format!("{label} \u{00b7} {secs}s{suffix}")
+    } else {
+        format!("{verb} {label} \u{00b7} {secs}s{suffix}")
+    };
+    let label_el = if stalled {
+        text(text_str).caption().text_color(tokens::DESTRUCTIVE)
+    } else {
+        text(text_str).caption().muted()
+    };
+    row([spinner_with_color(arc_color), label_el])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
 }
 
 /// Two-button segmented control in the header that toggles the

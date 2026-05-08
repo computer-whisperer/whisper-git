@@ -87,16 +87,19 @@ The phase numbering is mostly historical at this point. Done:
 - **Aetna upstream catch-up** — numeric `SPACE_*`, `Side::Start/End` for resize
 - **Phase 7a** — delete legacy `ui/`, `views/`, `app_*.rs`, `messages/`,
   `renderer/`, `watcher.rs`, etc.; prune unused Cargo deps
+- **Phase 7b** — Welcome view (hero + Open / Clone / recent repos);
+  `git-client-icon.svg` wired as the hero logo
+- **Header progress affordance** — disable Fetch / Push while their op
+  is in flight; inline `[spinner] Verb label · Ns` status row in the
+  toolbar; destructive-tinted "(still running)" past 60 s; covers
+  `clone_op` too
 
 Deferred / pending (no fixed order):
 
-- **Phase 7b** — Welcome view (port from `views/welcome.rs` in git
-  history; wire new logo from `assets/`)
 - **Async slice 2** — Pull / Merge / Rebase / Force-push (need branch pickers)
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream
 - **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
 - **Watcher + filesystem refresh** — currently synchronous on user action only
-- **Header progress affordance** — disabled-while-running, spinner, 60s warning
 - **Submodule drill-down navigation** — old `submodule_nav.rs` is uncompiled
 
 ## Architectural decisions worth knowing
