@@ -77,15 +77,17 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
         })
         .collect();
 
+    // The pill bar is intrinsically one row tall — without an explicit
+    // height the wrapping `scroll` greedily expands to fill the staging
+    // pane and the commit box ends up shoved to the bottom.
     Some(
-        scroll([row(pills)
+        row(pills)
             .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
             .gap(tokens::SPACE_XS)
-            .align(Align::Center)])
-        .key("worktree_selector:scroll")
-        .fill(tokens::MUTED)
-        .stroke(tokens::BORDER)
-        .width(Size::Fill(1.0)),
+            .align(Align::Center)
+            .fill(tokens::MUTED)
+            .stroke(tokens::BORDER)
+            .width(Size::Fill(1.0)),
     )
 }
 
