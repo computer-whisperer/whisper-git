@@ -24,7 +24,7 @@ use std::time::Instant;
 use crate::commit_graph::GraphLayout;
 use crate::git::{
     BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult, StashEntry,
-    SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
+    SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
 
 /// In-flight async git op — receiver for the worker-thread result plus
@@ -301,17 +301,15 @@ impl RepoTab {
         self.worktrees = self.repo.worktrees().unwrap_or_default();
         self.submodules = self.repo.submodules().unwrap_or_default();
         self.stashes = self.repo.stash_list();
-        self.commits = self.repo.commit_graph(COMMIT_LIMIT).unwrap_or_default();
-        self.graph_layout.build(&self.commits);
-
-        if let Some(oid) = self.selected_commit
-            && !self.commits.iter().any(|c| c.id == oid)
-        {
-            self.selected_commit = None;
-            self.commit_detail = None;
-        } else if let Some(oid) = self.selected_commit {
-            self.load_commit_detail(oid);
-        }
+        // Pull orphan commits from reflogs alongside the topo walk so
+        // unreachable work — finished rebases, dropped branches —
+        // doesn't disappear. Falls back to plain commit_graph on error
+        // so a flaky reflog doesn't blank the History view.
+        self.commits = self
+            .repo
+            .commit_graph_with_orphans(COMMIT_LIMIT)
+            .or_else(|_| self.repo.commit_graph(COMMIT_LIMIT))
+            .unwrap_or_default();
 
         self.rebuild_worktree_views();
 
@@ -323,6 +321,26 @@ impl RepoTab {
             view.refresh();
         }
 
+        // Inject synthetic "uncommitted changes" rows for each dirty
+        // worktree, sorted into the commit list by their newest-mtime
+        // timestamp so they sit chronologically with their parent. This
+        // is what lets the History view show in-progress work alongside
+        // committed history.
+        let synthetics = self.build_synthetic_entries();
+        if !synthetics.is_empty() {
+            insert_synthetics_sorted(&mut self.commits, synthetics);
+        }
+        self.graph_layout.build(&self.commits);
+
+        if let Some(oid) = self.selected_commit
+            && !self.commits.iter().any(|c| c.id == oid)
+        {
+            self.selected_commit = None;
+            self.commit_detail = None;
+        } else if let Some(oid) = self.selected_commit {
+            self.load_commit_detail(oid);
+        }
+
         // Rewrite branch_tips' `is_head` to reflect the active worktree's
         // HEAD rather than the reference repo's HEAD. For multi-worktree
         // repos these can differ; the sidebar uses `current_branch()`
@@ -332,6 +350,53 @@ impl RepoTab {
         for tip in &mut self.branch_tips {
             tip.is_head = !tip.is_remote && tip.name == current;
         }
+    }
+
+    /// Build a synthetic "uncommitted changes" entry per dirty worktree
+    /// view. Each entry carries the worktree's name (for the WT: pill),
+    /// HEAD oid as parent, dirty file count, and computed insertion /
+    /// deletion stats.
+    ///
+    /// Unlike the old `git::create_synthetic_entries` (which only knew
+    /// about libgit2's linked worktrees and silently skipped the main
+    /// worktree in multi-worktree setups), this walks every WorktreeView
+    /// the tab tracks — main + linked — so dirty state is never invisible.
+    fn build_synthetic_entries(&self) -> Vec<CommitInfo> {
+        let mut out = Vec::new();
+        for (path, view) in &self.worktree_views {
+            let count = view.status.total_files();
+            if count == 0 {
+                continue;
+            }
+            let head = match view.head_oid {
+                Some(o) => o,
+                None => continue,
+            };
+            let parent_time = self
+                .commits
+                .iter()
+                .find(|c| c.id == head)
+                .map(|c| c.time)
+                .unwrap_or(0);
+            // Build a transient WorktreeInfo so we can reuse the existing
+            // `synthetic_for_worktree` constructor (sentinel oid hash, mtime
+            // probing). The real `worktrees` field stays libgit2-shape.
+            let wt_info = WorktreeInfo {
+                name: view.name.clone(),
+                path: path.to_string_lossy().to_string(),
+                branch: view.current_branch.clone(),
+                head_oid: view.head_oid,
+                is_dirty: Some(true),
+                dirty_file_count: Some(count),
+            };
+            if let Some(mut entry) = CommitInfo::synthetic_for_worktree(&wt_info, parent_time) {
+                let (ins, del) = view.repo.working_tree_diff_stats();
+                entry.insertions = ins;
+                entry.deletions = del;
+                out.push(entry);
+            }
+        }
+        out
     }
 
     /// Build / prune the worktree-view map. Preserves drafts on existing
@@ -479,7 +544,18 @@ impl RepoTab {
 
     /// Switch the History view's selected commit. Clears the cached
     /// detail when `oid` is `None`; otherwise loads metadata + diff.
+    /// Synthetic rows have sentinel oids that aren't backed by real
+    /// commit objects — selecting one would just produce a perpetual
+    /// "Loading…" pane, so they're ignored here. The WT pill remains
+    /// the affordance for switching to that worktree.
     pub fn select_commit(&mut self, oid: Option<git2::Oid>) {
+        let is_synthetic = oid
+            .and_then(|o| self.commits.iter().find(|c| c.id == o))
+            .map(|c| c.is_synthetic)
+            .unwrap_or(false);
+        if is_synthetic {
+            return;
+        }
         if self.selected_commit == oid && self.commit_detail.is_some() {
             return;
         }

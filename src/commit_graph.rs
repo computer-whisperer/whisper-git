@@ -197,6 +197,10 @@ fn graph_cell(lane: usize, color: Color, selected: bool) -> El {
 }
 
 fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, selected: bool) -> El {
+    if commit.is_synthetic {
+        return synthetic_row(commit, layout, idx, selected);
+    }
+
     let (lane, color) = match layout {
         Some(l) => (l.lane, l.color),
         None => (0, ORPHAN_COLOR),
@@ -208,21 +212,88 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
         commit.summary.clone()
     };
 
-    let row_el = row([
+    let mut children: Vec<El> = vec![
         graph_cell(lane, color, selected),
         text(commit.short_id.clone()).mono().muted(),
-        text(summary),
-        spacer(),
-        text(format!("{} · {}", commit.author, when)).muted(),
-    ])
-    .key(format!("commit:{idx}"))
-    .focusable()
-    .gap(tokens::SPACE_MD)
-    .padding(Sides::xy(tokens::SPACE_SM, 0.0))
-    .height(Size::Fixed(ROW_HEIGHT))
-    .align(Align::Center);
+    ];
+    if commit.is_orphaned {
+        // Orphans aren't reachable from any branch tip — surface that
+        // explicitly. The reflog source ("HEAD@{3}: rebase (finish)")
+        // goes in the tooltip on the badge, since it's verbose.
+        let mut b = badge("orphan").muted();
+        if let Some(src) = &commit.orphan_source {
+            b = b.tooltip(src.clone());
+        }
+        children.push(b);
+    }
+    children.push(text(summary));
+    children.push(spacer());
+    children.push(text(format!("{} · {}", commit.author, when)).muted());
+
+    let row_el = row(children)
+        .key(format!("commit:{idx}"))
+        .focusable()
+        .gap(tokens::SPACE_MD)
+        .padding(Sides::xy(tokens::SPACE_SM, 0.0))
+        .height(Size::Fixed(ROW_HEIGHT))
+        .align(Align::Center);
 
     if selected { row_el.selected() } else { row_el }
+}
+
+/// Render a synthetic "uncommitted changes" row.
+///
+/// Visually distinct from real commits — amber lane node, no SHA, an
+/// inline `WT:{name}` button that re-routes to the worktree-switch
+/// handler so users can jump straight to the right staging area from
+/// the History view. Selection is suppressed (see
+/// `RepoTab::select_commit`), so the row click is a no-op except via
+/// the WT pill.
+fn synthetic_row(
+    commit: &CommitInfo,
+    layout: Option<&CommitLayout>,
+    idx: usize,
+    selected: bool,
+) -> El {
+    let amber = tokens::WARNING;
+    let lane = layout.map(|l| l.lane).unwrap_or(0);
+
+    let mut children: Vec<El> = vec![graph_cell(lane, amber, selected)];
+    if let Some(name) = commit.synthetic_wt_name.as_deref() {
+        // Custom amber pill rather than `button(...).ghost()` so we can
+        // color the label and frame to match the synthetic row's amber
+        // tint. Routed under `worktree:{name}` so the same handler the
+        // sidebar uses dispatches the switch.
+        children.push(
+            row([text(format!("WT: {name}")).caption().text_color(amber)])
+                .key(format!("worktree:{name}"))
+                .focusable()
+                .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
+                .gap(tokens::SPACE_XS)
+                .align(Align::Center)
+                .fill(amber.with_alpha(40))
+                .stroke(amber.with_alpha(120))
+                .tooltip("Switch to this worktree"),
+        );
+    }
+    children.push(
+        text(if commit.summary.is_empty() {
+            "Uncommitted changes".to_string()
+        } else {
+            commit.summary.clone()
+        })
+        .text_color(amber),
+    );
+    children.push(spacer());
+    children.push(text(commit.relative_time()).muted().caption());
+
+    row(children)
+        .key(format!("commit:{idx}"))
+        .focusable()
+        .gap(tokens::SPACE_MD)
+        .padding(Sides::xy(tokens::SPACE_SM, 0.0))
+        .height(Size::Fixed(ROW_HEIGHT))
+        .align(Align::Center)
 }
 
 /// History pane composer. Returns the center-pane `El` for the
