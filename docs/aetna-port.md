@@ -96,11 +96,14 @@ The phase numbering is mostly historical at this point. Done:
 - **Async slice 2a** — Pull (default tracking, no picker yet); Force
   push surfaces as a Confirm modal when a regular push gets rejected
   non-fast-forward (`ConfirmAction::ForcePush` reuses `push_op`)
+- **Async slice 2b** — Merge / Rebase via the sidebar branch context
+  menu (right-click the source/base branch, pick "Merge into HEAD" /
+  "Rebase HEAD onto"). Both write through `mutation_op`. Rebase runs
+  with `--autostash` so a dirty tree doesn't abort it.
 
 Deferred / pending (no fixed order):
 
-- **Async slice 2b** — Pull/Merge/Rebase pickers (pick source/base
-  branch + per-op flags like `--rebase`, `--no-ff`, `--autostash`)
+- **Pull picker** — pick a non-tracking source, toggle `--rebase`
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream
 - **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
 - **Watcher + filesystem refresh** — currently synchronous on user action only

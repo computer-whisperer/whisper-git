@@ -1017,6 +1017,18 @@ impl WhisperApp {
                     t.repo.checkout_remote_branch(&remote, &branch)
                 });
             }
+            ("merge", ContextTarget::LocalBranch(name)) => {
+                self.merge_branch(name);
+            }
+            ("merge", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.merge_branch(format!("{remote}/{branch}"));
+            }
+            ("rebase", ContextTarget::LocalBranch(name)) => {
+                self.rebase_onto(name);
+            }
+            ("rebase", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.rebase_onto(format!("{remote}/{branch}"));
+            }
             ("delete", ContextTarget::LocalBranch(name)) => {
                 self.active_modal = Some(ActiveModal::Confirm {
                     title: "Delete branch".to_string(),
@@ -1479,6 +1491,38 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Reverting {short}…")));
     }
 
+    /// `git merge <source>` into the current branch. Reached from the
+    /// branch context menu in the sidebar — `source` is the picked
+    /// branch's name (`"feature/x"` for local, `"origin/main"` for
+    /// remote-tracking).
+    fn merge_branch(&mut self, source: String) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::merge_branch_async(wd, source.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("merge {source}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Merging {source}…")));
+    }
+
+    /// `git rebase --autostash <base>`. `--autostash` preserves
+    /// uncommitted work across the rebase rather than failing on a dirty
+    /// tree — matches what experienced users typically want and avoids
+    /// "couldn't rebase, fix your tree first" footguns. `base` is the
+    /// picked branch (`"main"` for local, `"origin/main"` for
+    /// remote-tracking).
+    fn rebase_onto(&mut self, base: String) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::rebase_with_options_async(wd, base.clone(), true, false, proxy);
+        let Some(tab) = self.active_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("rebase onto {base}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Rebasing onto {base}…")));
+    }
+
     /// Run a sync git op on the active tab. On success, refresh status
     /// + emit a success toast tagged with `label`. On failure, emit an
     /// error toast carrying the underlying message.
@@ -1620,9 +1664,15 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
     let items: Vec<El> = match &state.target {
         ContextTarget::LocalBranch(_) => vec![
             menu_item("Checkout").key("ctx:checkout"),
+            menu_item("Merge into HEAD").key("ctx:merge"),
+            menu_item("Rebase HEAD onto").key("ctx:rebase"),
             menu_item("Delete").key("ctx:delete"),
         ],
-        ContextTarget::RemoteBranch { .. } => vec![menu_item("Checkout").key("ctx:checkout")],
+        ContextTarget::RemoteBranch { .. } => vec![
+            menu_item("Checkout").key("ctx:checkout"),
+            menu_item("Merge into HEAD").key("ctx:merge"),
+            menu_item("Rebase HEAD onto").key("ctx:rebase"),
+        ],
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
         ContextTarget::Worktree(_) => vec![menu_item("Switch to worktree").key("ctx:switch")],
         ContextTarget::Stash(_) => vec![menu_item("Drop").key("ctx:drop")],
