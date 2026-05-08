@@ -373,7 +373,7 @@ impl WhisperApp {
             }
             return;
         }
-        if let Some(idx_str) = key.strip_prefix("tab:") {
+        if let Some(idx_str) = key.strip_prefix("tabs:tab:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && idx < self.tabs.len()
             {
@@ -467,12 +467,12 @@ impl WhisperApp {
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
             }
-            "view:working" => {
+            "view:tab:working" => {
                 if let Some(tab) = self.active_mut() {
                     tab.view_mode = RepoView::Working;
                 }
             }
-            "view:history" => {
+            "view:tab:history" => {
                 if let Some(tab) = self.active_mut() {
                     tab.view_mode = RepoView::History;
                 }
@@ -895,12 +895,24 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
 // ---------------------------------------------------------------------------
 
 fn tab_bar(app: &WhisperApp) -> El {
-    let mut tabs: Vec<El> = app
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, t)| tab_chip(t.repo_name.clone(), i, i == app.active_tab))
-        .collect();
+    use aetna_core::widgets::tabs::tab_trigger;
+
+    // tabs_list doesn't accept per-option children, so we compose tabs
+    // by hand here (each chip carries a Close button next to its
+    // tab_trigger). The outer row keeps the same MUTED-track recipe
+    // tabs_list uses internally.
+    let mut tabs: Vec<El> = Vec::new();
+    for (i, t) in app.tabs.iter().enumerate() {
+        let trigger = tab_trigger("tabs", i, t.repo_name.clone(), i == app.active_tab);
+        let close = icon_button(IconName::X)
+            .key(format!("tab_close:{i}"))
+            .tooltip("Close tab");
+        tabs.push(
+            row([trigger, close])
+                .gap(tokens::SPACE_XS)
+                .align(Align::Center),
+        );
+    }
     tabs.push(
         icon_button(IconName::Plus)
             .key("open_repo")
@@ -912,22 +924,6 @@ fn tab_bar(app: &WhisperApp) -> El {
         .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
         .gap(tokens::SPACE_XS)
         .align(Align::Center)
-}
-
-fn tab_chip(label: String, idx: usize, active: bool) -> El {
-    let inner = row([
-        text(label).label(),
-        icon_button(IconName::X)
-            .key(format!("tab_close:{idx}"))
-            .tooltip("Close tab"),
-    ])
-    .gap(tokens::SPACE_XS)
-    .align(Align::Center);
-
-    let chip = inner
-        .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-        .key(format!("tab:{idx}"));
-    if active { chip.selected() } else { chip }
 }
 
 fn header_bar(active: Option<&RepoTab>) -> El {
@@ -950,56 +946,49 @@ fn header_bar(active: Option<&RepoTab>) -> El {
     let actions_enabled = active.is_some();
     let view_mode = active.map(|t| t.view_mode).unwrap_or(RepoView::Working);
 
-    row([
+    let bar = toolbar([
         branch,
         view_mode_segment(view_mode),
         spacer(),
-        button_with_icon(IconName::Download, "Fetch")
-            .key("fetch")
-            .tooltip("git fetch"),
-        button_with_icon(IconName::Download, "Pull")
-            .key("pull")
-            .tooltip("git pull"),
-        button_with_icon(IconName::Upload, "Push")
-            .key("push")
-            .tooltip("git push"),
-        button_with_icon(IconName::GitCommit, "Commit")
-            .key("commit")
-            .primary()
-            .tooltip("Stage and commit (Ctrl+Enter)"),
-        icon_button(IconName::Settings)
-            .key("settings")
-            .tooltip("Settings"),
+        toolbar_group([
+            button_with_icon(IconName::Download, "Fetch")
+                .key("fetch")
+                .tooltip("git fetch"),
+            button_with_icon(IconName::Download, "Pull")
+                .key("pull")
+                .tooltip("git pull"),
+            button_with_icon(IconName::Upload, "Push")
+                .key("push")
+                .tooltip("git push"),
+            button_with_icon(IconName::GitCommit, "Commit")
+                .key("commit")
+                .primary()
+                .tooltip("Stage and commit (Ctrl+Enter)"),
+            icon_button(IconName::Settings)
+                .key("settings")
+                .tooltip("Settings"),
+        ]),
     ])
-    .fill(tokens::CARD)
-    .stroke(tokens::BORDER)
     .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_SM))
-    .gap(tokens::SPACE_SM)
-    .align(Align::Center)
-    .opacity(if actions_enabled { 1.0 } else { 0.85 })
+    .opacity(if actions_enabled { 1.0 } else { 0.85 });
+
+    card([card_content([bar])]).width(Size::Fill(1.0))
 }
 
 /// Two-button segmented control in the header that toggles the
 /// center pane between the working diff and the commit history.
+/// Routed keys: `view:tab:working` / `view:tab:history`.
 fn view_mode_segment(current: RepoView) -> El {
-    let working = button("Working").key("view:working");
-    let working = if current == RepoView::Working {
-        working.primary()
-    } else {
-        working.ghost()
+    use aetna_core::widgets::tabs::tabs_list;
+    let current_str = match current {
+        RepoView::Working => "working",
+        RepoView::History => "history",
     };
-    let history = button("History").key("view:history");
-    let history = if current == RepoView::History {
-        history.primary()
-    } else {
-        history.ghost()
-    };
-    row([working, history])
-        .fill(tokens::MUTED)
-        .stroke(tokens::BORDER)
-        .padding(Sides::all(tokens::SPACE_XS))
-        .gap(0.0)
-        .align(Align::Center)
+    tabs_list(
+        "view",
+        &current_str,
+        [("working", "Working"), ("history", "History")],
+    )
 }
 
 fn shortcut_bar() -> El {

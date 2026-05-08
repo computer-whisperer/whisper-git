@@ -18,11 +18,12 @@ pub fn commit_details_pane(tab: &RepoTab) -> El {
         (None, _) => placeholder("Select a commit to inspect."),
     };
 
-    column([body])
-        .width(Size::Fixed(PANE_WIDTH))
-        .height(Size::Fill(1.0))
-        .fill(tokens::CARD)
-        .stroke(tokens::BORDER)
+    card([card_content([body])
+        .gap(0.0)
+        .padding(0.0)
+        .height(Size::Fill(1.0))])
+    .width(Size::Fixed(PANE_WIDTH))
+    .height(Size::Fill(1.0))
 }
 
 fn placeholder(msg: &str) -> El {

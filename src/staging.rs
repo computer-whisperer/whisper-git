@@ -51,12 +51,12 @@ pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
         SurfaceRole::Sunken,
     ));
 
-    column(sections)
-        .fill(tokens::CARD)
-        .stroke(tokens::BORDER)
-        .width(Size::Fixed(STAGING_WIDTH))
-        .height(Size::Fill(1.0))
+    card([card_content(sections)
         .gap(0.0)
+        .padding(0.0)
+        .height(Size::Fill(1.0))])
+    .width(Size::Fixed(STAGING_WIDTH))
+    .height(Size::Fill(1.0))
 }
 
 fn commit_message(tab: &RepoTab, selection: &Selection) -> El {

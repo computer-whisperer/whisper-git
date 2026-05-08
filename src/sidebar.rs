@@ -6,11 +6,9 @@
 //! `remote:<remote>/<branch>`, `tag:<name>`, `submodule:<name>`,
 //! `worktree:<name>`, `stash:<idx>`.
 
-use aetna_core::{El, IconName, prelude::*};
+use aetna_core::{El, IconName, prelude::*, widgets::sidebar::sidebar as sidebar_panel};
 
 use crate::repo_tab::{RepoTab, SidebarSection, SidebarSelection};
-
-pub const SIDEBAR_WIDTH: f32 = 260.0;
 
 pub fn sidebar(tab: &RepoTab) -> El {
     let sections: Vec<El> = SidebarSection::ALL
@@ -19,14 +17,11 @@ pub fn sidebar(tab: &RepoTab) -> El {
         .map(|s| section_block(tab, s))
         .collect();
 
-    let body = column(sections).gap(0.0);
+    let body = column(sections).gap(0.0).width(Size::Fill(1.0));
 
-    scroll([body])
-        .key("sidebar:scroll")
-        .fill(tokens::CARD)
-        .stroke(tokens::BORDER)
-        .width(Size::Fixed(SIDEBAR_WIDTH))
-        .height(Size::Fill(1.0))
+    sidebar_panel([scroll([body]).key("sidebar:scroll")])
+        .padding(0.0)
+        .gap(0.0)
 }
 
 fn section_block(tab: &RepoTab, section: SidebarSection) -> El {

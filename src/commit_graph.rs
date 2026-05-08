@@ -274,7 +274,7 @@ pub fn history_view(tab: &RepoTab) -> El {
         .fill(tokens::MUTED)
         .stroke(tokens::BORDER);
 
-    column([
+    card([card_content([
         header,
         virtual_list(commits.len(), ROW_HEIGHT, move |i| {
             let c = &commits[i];
@@ -285,8 +285,8 @@ pub fn history_view(tab: &RepoTab) -> El {
         .height(Size::Fill(1.0)),
     ])
     .gap(0.0)
-    .fill(tokens::CARD)
-    .stroke(tokens::BORDER)
+    .padding(0.0)
+    .height(Size::Fill(1.0))])
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }

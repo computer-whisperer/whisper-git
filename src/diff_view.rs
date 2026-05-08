@@ -44,15 +44,15 @@ pub fn diff_view(tab: &RepoTab) -> El {
         column(rows).gap(tokens::SPACE_MD).padding(tokens::SPACE_MD)
     };
 
-    column([
+    card([card_content([
         header,
         scroll([body]).key("diff:scroll").height(Size::Fill(1.0)),
     ])
     .gap(0.0)
+    .padding(0.0)
+    .height(Size::Fill(1.0))])
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
-    .fill(tokens::CARD)
-    .stroke(tokens::BORDER)
 }
 
 fn placeholder() -> El {
