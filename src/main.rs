@@ -83,7 +83,9 @@ fn main() -> Result<()> {
     }
 
     let viewport = Rect::new(0.0, 0.0, DEFAULT_WIDTH as f32, DEFAULT_HEIGHT as f32);
-    host::run("Whisper Git", viewport, app)?;
+    host::run("Whisper Git", viewport, app, |a, p| {
+        a.proxy = Some(p);
+    })?;
     crash_log::mark_clean_exit();
     Ok(())
 }

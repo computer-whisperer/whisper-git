@@ -26,9 +26,40 @@ use crate::commit_graph;
 use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
-use crate::repo_tab::{RepoTab, RepoView, SidebarSection};
+use crate::git::{RemoteOpResult, classify_git_error};
+use crate::repo_tab::{RepoTab, RepoView, SidebarSection, TimedOp};
 use crate::sidebar;
 use crate::staging;
+
+/// Discriminator for the four per-tab async slots. Carries the
+/// human-readable verbs used in toasts / error modal titles.
+#[derive(Clone, Copy)]
+enum AsyncKind {
+    Fetch,
+    Pull,
+    Push,
+    Mutation,
+}
+
+impl AsyncKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Fetch => "Fetch",
+            Self::Pull => "Pull",
+            Self::Push => "Push",
+            Self::Mutation => "Operation",
+        }
+    }
+
+    fn past(self) -> &'static str {
+        match self {
+            Self::Fetch => "Fetched",
+            Self::Pull => "Pulled",
+            Self::Push => "Pushed",
+            Self::Mutation => "Done",
+        }
+    }
+}
 
 /// Pending action that gates a Confirm modal. Carried through `on_event`
 /// from the originating action to the OK button.
@@ -174,6 +205,11 @@ pub struct WhisperApp {
     pub active_modal: Option<ActiveModal>,
     /// Open context menu (one at a time). Outside-click dismisses.
     pub context_menu: Option<ContextMenuState>,
+    /// Wakes the event loop when an async git op completes. Set by the
+    /// host immediately after the loop is built (see [`host::run`]).
+    /// `None` for headless use (`with_tabs` / dump_bundles); attempting
+    /// to start an op without a proxy emits an error toast.
+    pub proxy: Option<winit::event_loop::EventLoopProxy<()>>,
 }
 
 impl WhisperApp {
@@ -205,6 +241,7 @@ impl WhisperApp {
             config,
             active_modal: None,
             context_menu: None,
+            proxy: None,
         }
     }
 
@@ -221,6 +258,7 @@ impl WhisperApp {
             config: Config::default(),
             active_modal: None,
             context_menu: None,
+            proxy: None,
         }
     }
 
@@ -234,6 +272,10 @@ impl WhisperApp {
 }
 
 impl App for WhisperApp {
+    fn before_build(&mut self) {
+        self.poll_async_ops();
+    }
+
     fn build(&self, _cx: &BuildCx) -> El {
         let mut chrome: Vec<El> = Vec::with_capacity(3);
         if !self.tabs.is_empty() {
@@ -457,9 +499,11 @@ impl WhisperApp {
         match key {
             "open_repo" => self.open_repo_dialog(),
             "close_tab" => self.close_tab(self.active_tab),
-            "fetch" => self.toasts.push(ToastSpec::info("Fetch (Phase 4c)")),
-            "pull" => self.toasts.push(ToastSpec::info("Pull (Phase 4c)")),
-            "push" => self.toasts.push(ToastSpec::info("Push (Phase 4c)")),
+            "fetch" => self.fetch(),
+            "pull" => self
+                .toasts
+                .push(ToastSpec::info("Pull needs branch picker (next slice)")),
+            "push" => self.push(),
             "commit" => self.commit(),
             "stage_all" => self.stage_all(),
             "unstage_all" => self.unstage_all(),
@@ -673,16 +717,10 @@ impl WhisperApp {
                 });
             }
             ("cherry_pick", ContextTarget::Commit(oid)) => {
-                self.toasts.push(ToastSpec::info(format!(
-                    "Cherry-pick {} (async phase)",
-                    &oid.to_string()[..7]
-                )));
+                self.cherry_pick(oid);
             }
             ("revert", ContextTarget::Commit(oid)) => {
-                self.toasts.push(ToastSpec::info(format!(
-                    "Revert {} (async phase)",
-                    &oid.to_string()[..7]
-                )));
+                self.revert(oid);
             }
             _ => {}
         }
@@ -739,6 +777,211 @@ impl WhisperApp {
                 });
             }
         }
+    }
+
+    // -------------------------------------------------------------
+    // Async op infrastructure.
+    //
+    // Each remote op spawns a `git` CLI thread (see `git/async_ops.rs`)
+    // that sends a `RemoteOpResult` back over a channel and wakes the
+    // event loop via `EventLoopProxy`. We poll the channels in
+    // `before_build`; on completion, refresh the tab and surface
+    // success via toast / failure via error modal.
+    // -------------------------------------------------------------
+
+    /// Drain all per-tab async slots; called once per frame from
+    /// `before_build`. Visits every tab so background work in a
+    /// non-foreground tab still completes cleanly.
+    pub fn poll_async_ops(&mut self) {
+        for idx in 0..self.tabs.len() {
+            self.poll_async_ops_for_tab(idx);
+        }
+    }
+
+    fn poll_async_ops_for_tab(&mut self, idx: usize) {
+        // Match-and-take pattern: try_recv each slot, take the slot
+        // if Ready/Disconnected so we drop the receiver. We extract
+        // the slot by mem::replace before mutating self further.
+        for kind in [
+            AsyncKind::Fetch,
+            AsyncKind::Pull,
+            AsyncKind::Push,
+            AsyncKind::Mutation,
+        ] {
+            let Some(tab) = self.tabs.get_mut(idx) else {
+                return;
+            };
+            let slot = match kind {
+                AsyncKind::Fetch => &mut tab.fetch_op,
+                AsyncKind::Pull => &mut tab.pull_op,
+                AsyncKind::Push => &mut tab.push_op,
+                AsyncKind::Mutation => &mut tab.mutation_op,
+            };
+            let outcome = match slot {
+                Some(op) => match op.rx.try_recv() {
+                    Ok(result) => Some(Ok((std::mem::take(&mut op.label), result))),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
+                },
+                None => None,
+            };
+            let Some(outcome) = outcome else { continue };
+            // Clear slot before calling refresh so a refresh that
+            // happens to inspect the slot sees it empty.
+            match kind {
+                AsyncKind::Fetch => tab.fetch_op = None,
+                AsyncKind::Pull => tab.pull_op = None,
+                AsyncKind::Push => tab.push_op = None,
+                AsyncKind::Mutation => tab.mutation_op = None,
+            }
+            tab.refresh();
+            match outcome {
+                Ok((label, RemoteOpResult { success: true, .. })) => {
+                    self.toasts
+                        .push(ToastSpec::success(format!("{} {}", kind.past(), label)));
+                }
+                Ok((
+                    _label,
+                    RemoteOpResult {
+                        success: false,
+                        error,
+                    },
+                )) => {
+                    let (summary, _retryable) = classify_git_error(kind.name(), &error);
+                    self.active_modal = Some(ActiveModal::Error {
+                        title: format!("{} failed", kind.name()),
+                        body: if summary.is_empty() {
+                            error.clone()
+                        } else {
+                            format!("{summary}\n\n{error}")
+                        },
+                    });
+                }
+                Err(()) => {
+                    self.active_modal = Some(ActiveModal::Error {
+                        title: format!("{} failed", kind.name()),
+                        body: format!(
+                            "{} terminated unexpectedly (worker thread disconnected)",
+                            kind.name()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Common entry point: bail with a toast if `slot` is occupied or
+    /// if there's no proxy / no remotes. Returns the workdir path for
+    /// the caller to hand to the async function.
+    fn prepare_remote_op(
+        &mut self,
+        kind: AsyncKind,
+        require_remote: bool,
+    ) -> Option<(std::path::PathBuf, winit::event_loop::EventLoopProxy<()>)> {
+        let proxy = match self.proxy.clone() {
+            Some(p) => p,
+            None => {
+                self.toasts.push(ToastSpec::error(format!(
+                    "{} unavailable: event loop proxy missing",
+                    kind.name()
+                )));
+                return None;
+            }
+        };
+        let active_idx = self.active_tab;
+        let tab = match self.tabs.get(active_idx) {
+            Some(t) => t,
+            None => return None,
+        };
+        if require_remote && !tab.repo.has_remotes() {
+            self.toasts.push(ToastSpec::error(
+                "No remotes configured for this repository",
+            ));
+            return None;
+        }
+        let busy = match kind {
+            AsyncKind::Fetch => tab.fetch_op.is_some(),
+            AsyncKind::Pull => tab.pull_op.is_some(),
+            AsyncKind::Push => tab.push_op.is_some(),
+            AsyncKind::Mutation => tab.mutation_op.is_some(),
+        };
+        if busy {
+            self.toasts.push(ToastSpec::info(format!(
+                "{} already in progress",
+                kind.name()
+            )));
+            return None;
+        }
+        Some((tab.repo.git_command_dir(), proxy))
+    }
+
+    fn fetch(&mut self) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Fetch, true) else {
+            return;
+        };
+        let Some(tab) = self.active_mut() else { return };
+        let remote = tab
+            .repo
+            .default_remote()
+            .unwrap_or_else(|_| "origin".to_string());
+        // Auto-fix missing fetch refspec for bare-cloned remotes — the
+        // old whisper-git pattern. Silent on success since this is a
+        // common state on fresh `git clone --bare` repos.
+        if tab.repo.remote_missing_fetch_refspec(&remote) {
+            let _ = tab.repo.add_default_fetch_refspec(&remote);
+        }
+        let rx = crate::git::fetch_remote_async(wd, remote.clone(), proxy);
+        tab.fetch_op = Some(TimedOp::new(rx, format!("from {remote}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Fetching from {remote}…")));
+    }
+
+    fn push(&mut self) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
+            return;
+        };
+        let Some(tab) = self.active_mut() else { return };
+        let remote = tab
+            .repo
+            .default_remote()
+            .unwrap_or_else(|_| "origin".to_string());
+        let branch = tab.current_branch.clone();
+        if branch.is_empty() {
+            self.toasts
+                .push(ToastSpec::error("Push: HEAD is detached, no branch"));
+            return;
+        }
+        let rx = crate::git::push_remote_async(wd, remote.clone(), branch.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        tab.push_op = Some(TimedOp::new(rx, format!("{branch} → {remote}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
+    }
+
+    fn cherry_pick(&mut self, oid: git2::Oid) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let sha = oid.to_string();
+        let rx = crate::git::cherry_pick_async(wd, sha.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        let short = &sha[..7];
+        tab.mutation_op = Some(TimedOp::new(rx, format!("cherry-pick {short}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Cherry-picking {short}…")));
+    }
+
+    fn revert(&mut self, oid: git2::Oid) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let sha = oid.to_string();
+        let rx = crate::git::revert_commit_async(wd, sha.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        let short = &sha[..7];
+        tab.mutation_op = Some(TimedOp::new(rx, format!("revert {short}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Reverting {short}…")));
     }
 
     /// Run a sync git op on the active tab. On success, refresh status

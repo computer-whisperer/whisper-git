@@ -37,9 +37,15 @@ use winit::{
     window::{Window, WindowId},
 };
 
-pub fn run<A: App + 'static>(title: &'static str, viewport: Rect, app: A) -> Result<()> {
+pub fn run<A: App + 'static>(
+    title: &'static str,
+    viewport: Rect,
+    mut app: A,
+    on_proxy: impl FnOnce(&mut A, winit::event_loop::EventLoopProxy<()>),
+) -> Result<()> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+    on_proxy(&mut app, event_loop.create_proxy());
 
     let library = VulkanLibrary::new().context("no Vulkan library")?;
     let required_extensions =
@@ -138,6 +144,17 @@ impl<A: App> ApplicationHandler for Host<A> {
             recreate_swapchain: false,
         });
         self.rcx.as_ref().unwrap().window.request_redraw();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // Background-thread async git ops wake the loop via
+        // `EventLoopProxy<()>::send_event(())`. The result drain
+        // happens in `App::before_build`, so all we need to do here
+        // is request a redraw — the prepare path picks up the new
+        // toast / modal state.
+        if let Some(rcx) = self.rcx.as_ref() {
+            rcx.window.request_redraw();
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

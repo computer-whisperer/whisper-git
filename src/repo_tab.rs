@@ -7,11 +7,36 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
+
 use crate::commit_graph::GraphLayout;
 use crate::git::{
-    BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo,
-    WorkingDirStatus, WorktreeInfo,
+    BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult, StashEntry,
+    SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
 };
+
+/// In-flight async git op — receiver for the worker-thread result plus
+/// metadata for toast / error wording. Carried per-tab per-op-kind so
+/// only one of each (fetch / pull / push / mutation) runs at a time
+/// for a given repo.
+pub struct TimedOp {
+    pub rx: Receiver<RemoteOpResult>,
+    pub started: Instant,
+    /// Human-readable label baked into the success toast / error
+    /// summary: `"origin"`, `"main → origin/main"`, `"abc1234"`, etc.
+    pub label: String,
+}
+
+impl TimedOp {
+    pub fn new(rx: Receiver<RemoteOpResult>, label: impl Into<String>) -> Self {
+        Self {
+            rx,
+            started: Instant::now(),
+            label: label.into(),
+        }
+    }
+}
 
 /// Cached detail for the currently selected commit. Loaded once per
 /// selection change so the History details pane doesn't hit libgit2 on
@@ -139,6 +164,15 @@ pub struct RepoTab {
     /// [`Self::select_commit`] when the selection changes or
     /// invalidated alongside `refresh()` when the commit disappears.
     pub commit_detail: Option<CommitDetail>,
+    /// In-flight async ops, keyed by op kind. Only one of each runs
+    /// concurrently per tab; new requests while a slot is filled are
+    /// rejected with an "already in progress" toast in the caller.
+    pub fetch_op: Option<TimedOp>,
+    pub pull_op: Option<TimedOp>,
+    pub push_op: Option<TimedOp>,
+    /// Working-tree mutation ops (cherry-pick, revert). Single slot
+    /// shared across kinds since they all conflict with each other.
+    pub mutation_op: Option<TimedOp>,
 }
 
 impl RepoTab {
@@ -163,6 +197,10 @@ impl RepoTab {
             graph_layout: GraphLayout::new(),
             selected_commit: None,
             commit_detail: None,
+            fetch_op: None,
+            pull_op: None,
+            push_op: None,
+            mutation_op: None,
             repo,
         };
         tab.refresh();
