@@ -97,6 +97,14 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
 
     let Some(state) = state else { return };
     match state {
+        "welcome" => {
+            app.tabs.clear();
+            app.config.recent_repos = vec![
+                "/home/example/Projects/whisper-git".to_string(),
+                "/home/example/Projects/aetna".to_string(),
+                "/home/example/work/dotfiles".to_string(),
+            ];
+        }
         "history" => {
             if let Some(tab) = app.tabs.first_mut() {
                 tab.view_mode = RepoView::History;

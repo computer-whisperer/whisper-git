@@ -73,11 +73,22 @@ fn main() -> Result<()> {
 fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
     let mut scenes: Vec<(String, WhisperApp)> = Vec::new();
 
-    // Always render the empty state.
+    // Welcome view — empty config (no recent repos).
     scenes.push((
-        "chrome_no_repo".to_string(),
+        "welcome_empty".to_string(),
         WhisperApp::with_tabs(Vec::new()),
     ));
+    // Welcome view with a populated recent-repos list. Synthetic paths
+    // exercise the recent-row layout without depending on real repos.
+    scenes.push(("welcome_recents".to_string(), {
+        let mut app = WhisperApp::with_tabs(Vec::new());
+        app.config.recent_repos = vec![
+            "/home/example/Projects/whisper-git".to_string(),
+            "/home/example/Projects/aetna".to_string(),
+            "/home/example/work/dotfiles".to_string(),
+        ];
+        app
+    }));
 
     if let Some(first) = opened.first() {
         scenes.push((

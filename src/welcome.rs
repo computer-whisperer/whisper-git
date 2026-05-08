@@ -1,0 +1,111 @@
+//! Welcome view — shown when no repo tab is open.
+//!
+//! Centered hero (placeholder logo glyph + title + tagline), then a
+//! Open / Clone action row, and a recent-repos column when
+//! `Config::recent_repos` is non-empty. Click targets emit:
+//!
+//! - `open_repo` — reuses the existing open-folder picker
+//! - `welcome:clone` — opens the clone modal
+//! - `welcome:recent:{idx}` — opens the persisted recent path at that index
+//!
+//! The hero icon is a stand-in. The new logo asset (`assets/git-client-icon.svg`)
+//! will replace it once the SVG → aetna icon-source plumbing is wired.
+
+use std::path::Path;
+
+use aetna_core::{El, IconName, prelude::*};
+
+const HERO_ICON_PX: f32 = 64.0;
+const RECENT_COLUMN_WIDTH: f32 = 560.0;
+
+pub fn welcome_view(recent: &[String]) -> El {
+    // Hero spans the full content column so its `align(Center)` actually
+    // centers the icon/title/tagline within the 560 px frame instead of
+    // hugging them tight together.
+    let hero = column([
+        icon(IconName::GitBranch)
+            .icon_size(HERO_ICON_PX)
+            .text_color(tokens::PRIMARY),
+        h1("whisper-git"),
+        paragraph("GPU-accelerated Git client").muted(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center)
+    .width(Size::Fill(1.0));
+
+    // Spacer flanks let the buttons keep their hug widths while
+    // centering inside the 560 px row.
+    let actions = row([
+        spacer(),
+        button_with_icon(IconName::Folder, "Open Local\u{2026}")
+            .key("open_repo")
+            .primary(),
+        button_with_icon(IconName::Download, "Clone Remote\u{2026}").key("welcome:clone"),
+        spacer(),
+    ])
+    .gap(tokens::SPACE_2)
+    .width(Size::Fill(1.0));
+
+    let mut stack: Vec<El> = vec![hero, actions];
+    if !recent.is_empty() {
+        stack.push(recent_section(recent));
+    }
+
+    // Inner column: fixed 560 wide, no align — Fill children expand to
+    // the full width. Outer column centers it horizontally via the
+    // surrounding spacers + align(Center).
+    let content = column(stack)
+        .gap(tokens::SPACE_5)
+        .width(Size::Fixed(RECENT_COLUMN_WIDTH));
+
+    column([spacer(), content, spacer()])
+        .gap(0.0)
+        .align(Align::Center)
+        .height(Size::Fill(1.0))
+        .width(Size::Fill(1.0))
+        .padding(tokens::SPACE_4)
+}
+
+fn recent_section(recent: &[String]) -> El {
+    let mut items: Vec<El> = Vec::with_capacity(recent.len() + 1);
+    items.push(
+        row([h3("Recent"), spacer()])
+            .align(Align::Center)
+            .width(Size::Fill(1.0)),
+    );
+    for (idx, path) in recent.iter().enumerate() {
+        items.push(recent_row(idx, path));
+    }
+    column(items)
+        .gap(tokens::SPACE_1)
+        .width(Size::Fill(1.0))
+}
+
+fn recent_row(idx: usize, path_str: &str) -> El {
+    let path = Path::new(path_str);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path_str.to_string());
+    let parent = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let label = column([
+        text(name).bold(),
+        text(parent).caption().muted(),
+    ])
+    .gap(0.0);
+
+    row([
+        icon(IconName::Folder).muted(),
+        label,
+    ])
+    .key(format!("welcome:recent:{idx}"))
+    .focusable()
+    .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
+    .gap(tokens::SPACE_2)
+    .align(Align::Center)
+    .width(Size::Fill(1.0))
+}

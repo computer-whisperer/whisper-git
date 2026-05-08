@@ -42,6 +42,7 @@ use crate::repo_tab::{RepoTab, RepoView, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
 use crate::staging;
+use crate::welcome;
 
 /// Discriminator for the four per-tab async slots. Carries the
 /// human-readable verbs used in toasts / error modal titles.
@@ -392,7 +393,7 @@ impl App for WhisperApp {
                 }
                 row(children).gap(0.0).height(Size::Fill(1.0))
             }
-            None => main_placeholder(None),
+            None => welcome::welcome_view(&self.config.recent_repos),
         };
 
         let main = column([chrome_el, body]).gap(0.0);
@@ -672,6 +673,16 @@ impl WhisperApp {
             }
             return;
         }
+        // welcome:recent:{idx} — open the persisted recent path at idx.
+        if let Some(idx_str) = key.strip_prefix("welcome:recent:") {
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && let Some(path) = self.config.recent_repos.get(idx).cloned()
+            {
+                self.open_repo_path(std::path::PathBuf::from(path));
+            }
+            return;
+        }
+
         // Sidebar item clicks — Phase 3 just announces them.
         for prefix in [
             "branch:",
@@ -691,6 +702,11 @@ impl WhisperApp {
 
         match key {
             "open_repo" => self.open_repo_dialog(),
+            "welcome:clone" => {
+                let mut form = CloneForm::default();
+                form.dest = std::env::var("HOME").unwrap_or_default();
+                self.active_modal = Some(ActiveModal::Clone(form));
+            }
             "close_tab" => self.close_tab(self.active_tab),
             "fetch" => self.fetch(),
             "pull" => self
@@ -751,10 +767,24 @@ impl WhisperApp {
             .set_title("Open repository")
             .pick_folder();
         let Some(path) = picked else { return };
+        self.open_repo_path(path);
+    }
+
+    /// Open a known path as a new repo tab. Shared between the file
+    /// picker (`open_repo_dialog`) and the welcome view's recent-repos
+    /// list. On success the path is promoted in `recent_repos` and the
+    /// config is persisted; on failure an Error modal surfaces the
+    /// reason.
+    fn open_repo_path(&mut self, path: std::path::PathBuf) {
         match RepoTab::open(&path) {
             Ok(tab) => {
                 self.tabs.push(tab);
                 self.active_tab = self.tabs.len() - 1;
+                let path_str = path.to_string_lossy().into_owned();
+                if let Err(e) = self.config.add_recent_repo(&path_str) {
+                    self.toasts
+                        .push(ToastSpec::error(format!("Save recent failed: {e}")));
+                }
                 self.toasts
                     .push(ToastSpec::success(format!("Opened {}", path.display())));
             }
@@ -1670,36 +1700,3 @@ fn no_worktree_placeholder() -> El {
     .width(Size::Fill(1.0))
 }
 
-fn main_placeholder(active: Option<&RepoTab>) -> El {
-    let body = match active {
-        Some(t) => column([
-            h2(format!("{}", t.repo_name)),
-            text(format!(
-                "Branch: {} · {} local · {} remote · {} tags · {} stashes · {} worktrees · {} submodules",
-                {
-                    let cb = t.current_branch();
-                    if cb.is_empty() { "(detached)" } else { cb }
-                },
-                t.local_branches().len(),
-                t.remote_branches().iter().map(|(_, b)| b.len()).sum::<usize>(),
-                t.tags.len(),
-                t.stashes.len(),
-                t.worktrees.len(),
-                t.submodules.len(),
-            ))
-            .muted(),
-            paragraph(
-                "Phase 3 wires the branch sidebar from real git data. \
-                 Staging / diff / graph still placeholders.",
-            ),
-        ]),
-        None => column([
-            h2("No repository open"),
-            paragraph("Press Ctrl+O or click + in the tab bar to open a repository."),
-        ]),
-    };
-    body.padding(tokens::SPACE_4)
-        .gap(tokens::SPACE_3)
-        .height(Size::Fill(1.0))
-        .width(Size::Fill(1.0))
-}
