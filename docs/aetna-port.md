@@ -93,10 +93,14 @@ The phase numbering is mostly historical at this point. Done:
   is in flight; inline `[spinner] Verb label · Ns` status row in the
   toolbar; destructive-tinted "(still running)" past 60 s; covers
   `clone_op` too
+- **Async slice 2a** — Pull (default tracking, no picker yet); Force
+  push surfaces as a Confirm modal when a regular push gets rejected
+  non-fast-forward (`ConfirmAction::ForcePush` reuses `push_op`)
 
 Deferred / pending (no fixed order):
 
-- **Async slice 2** — Pull / Merge / Rebase / Force-push (need branch pickers)
+- **Async slice 2b** — Pull/Merge/Rebase pickers (pick source/base
+  branch + per-op flags like `--rebase`, `--no-ff`, `--autostash`)
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream
 - **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
 - **Watcher + filesystem refresh** — currently synchronous on user action only

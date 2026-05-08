@@ -84,6 +84,13 @@ pub enum ConfirmAction {
     DropStash(usize),
     /// `git reset --hard <oid>` from a commit-row context menu.
     ResetHard(git2::Oid),
+    /// `git push --force-with-lease` after a regular push was rejected
+    /// non-fast-forward. Carries the same remote/branch the original
+    /// push targeted so the retry hits the same ref.
+    ForcePush {
+        remote: String,
+        branch: String,
+    },
 }
 
 /// Per-section right-click target. Carries the exact identity needed to
@@ -1136,7 +1143,26 @@ impl WhisperApp {
                     t.repo.reset_to_commit(oid, git2::ResetType::Hard)
                 });
             }
+            ConfirmAction::ForcePush { remote, branch } => {
+                self.force_push(remote, branch);
+            }
         }
+    }
+
+    /// `git push --force-with-lease <remote> <branch>`. Reached only via
+    /// the rejected-push Confirm modal, so the user has explicitly opted
+    /// in. Writes through the same `push_op` slot as a regular push, so
+    /// the header progress affordance and the failure-handling path
+    /// don't need a separate code path.
+    fn force_push(&mut self, remote: String, branch: String) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
+            return;
+        };
+        let rx = crate::git::push_force_async(wd, remote.clone(), branch.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        tab.push_op = Some(TimedOp::new(rx, format!("{branch} \u{2192} {remote} (force)")));
+        self.toasts
+            .push(ToastSpec::info(format!("Force-pushing {branch} to {remote}…")));
     }
 
     // -------------------------------------------------------------
@@ -1254,21 +1280,47 @@ impl WhisperApp {
                         .push(ToastSpec::success(format!("{} {}", kind.past(), label)));
                 }
                 Ok((
-                    _label,
+                    label,
                     RemoteOpResult {
                         success: false,
                         error,
                     },
                 )) => {
-                    let (summary, _retryable) = classify_git_error(kind.name(), &error);
-                    self.active_modal = Some(ActiveModal::Error {
-                        title: format!("{} failed", kind.name()),
-                        body: if summary.is_empty() {
-                            error.clone()
-                        } else {
-                            format!("{summary}\n\n{error}")
-                        },
-                    });
+                    let (summary, retryable) = classify_git_error(kind.name(), &error);
+                    let body = if summary.is_empty() {
+                        error.clone()
+                    } else {
+                        format!("{summary}\n\n{error}")
+                    };
+                    // Rejected pushes get a Force-push offer rather than a
+                    // dead-end Error modal. The label was set at op kickoff
+                    // as `"<branch> → <remote>"` — split it back so the
+                    // retry hits the same ref.
+                    if matches!(kind, AsyncKind::Push)
+                        && retryable
+                        && let Some((branch, remote)) = label.split_once(" \u{2192} ")
+                    {
+                        self.active_modal = Some(ActiveModal::Confirm {
+                            title: "Push rejected".to_string(),
+                            body: format!(
+                                "{body}\n\n\
+                                 Force push will overwrite remote history. \
+                                 Only do this if you're certain no one else has based work on \
+                                 {branch}."
+                            ),
+                            ok_label: "Force push".to_string(),
+                            destructive: true,
+                            action: ConfirmAction::ForcePush {
+                                remote: remote.to_string(),
+                                branch: branch.to_string(),
+                            },
+                        });
+                    } else {
+                        self.active_modal = Some(ActiveModal::Error {
+                            title: format!("{} failed", kind.name()),
+                            body,
+                        });
+                    }
                 }
                 Err(()) => {
                     self.active_modal = Some(ActiveModal::Error {

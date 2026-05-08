@@ -171,6 +171,24 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        scenes.push(("modal_confirm_force_push".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(ActiveModal::Confirm {
+                title: "Push rejected".to_string(),
+                body: "Push rejected: Remote has new commits. Pull first, or use Force Push.\n\n\
+                       remote rejected the push: non-fast-forward updates were rejected\n\n\
+                       Force push will overwrite remote history. Only do this if you're certain \
+                       no one else has based work on main."
+                    .to_string(),
+                ok_label: "Force push".to_string(),
+                destructive: true,
+                action: whisper_git::ui_app::ConfirmAction::ForcePush {
+                    remote: "origin".to_string(),
+                    branch: "main".to_string(),
+                },
+            });
+            app
+        }));
         scenes.push(("modal_error".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.active_modal = Some(ActiveModal::Error {
