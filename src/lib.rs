@@ -1,9 +1,8 @@
 //! whisper-git library crate.
 //!
-//! Phase 0 surface: just the placeholder `WhisperApp` impl plus the
-//! windowed and screenshot-mode hosts. The pre-port app modules live
-//! on disk under `src/` but are intentionally not declared here while
-//! the port is in flight.
+//! UI is built on the aetna toolkit; the renderer is `aetna-vulkano`
+//! over our own `Arc<Device>` / `Arc<Queue>`. The git backend under
+//! `git/` is preserved verbatim from the pre-port app.
 
 pub mod commit_details;
 pub mod commit_graph;

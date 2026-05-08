@@ -52,16 +52,15 @@ aetna-ui/
 │   ├── config.rs               # settings.json persistence
 │   ├── token_store.rs          # PRESERVED — system keychain integration
 │   ├── crash_log.rs            # PRESERVED
-│   └── app_*.rs / async_polling.rs / submodule_nav.rs / ai.rs / ci.rs / …
-│                               # LEGACY — on disk for reference, not in lib.rs
 └── docs/aetna-port.md          # this file
 ```
 
-`lib.rs` lists the *active* modules. The pre-port `app_*.rs`,
-`async_polling.rs`, `views/`, `ui/`, `messages/`, `rendering.rs` files
-are still on disk for reference but **not compiled**. They're treated as
-fossil — read for prior decisions, copy patterns from, but don't try to
-revive in place.
+`lib.rs` lists the entire compiled surface. The pre-port `app_*.rs`,
+`async_polling.rs`, `views/`, `ui/`, `messages/`, `rendering.rs`,
+`submodule_nav.rs`, `watcher.rs`, `ai.rs`, `ci.rs`, `github.rs`, and
+`gitlab.rs` files were deleted in Phase 7a; if you need a prior
+implementation as reference, retrieve it from git history
+(`git show HEAD~N:src/views/welcome.rs`).
 
 ## Phase status
 
@@ -86,10 +85,13 @@ The phase numbering is mostly historical at this point. Done:
 - **Resizable sidebars** — left/right with `resize_handle` + persisted widths
 - **OS cursor wiring** — propagate aetna's resolved cursor to winit
 - **Aetna upstream catch-up** — numeric `SPACE_*`, `Side::Start/End` for resize
+- **Phase 7a** — delete legacy `ui/`, `views/`, `app_*.rs`, `messages/`,
+  `renderer/`, `watcher.rs`, etc.; prune unused Cargo deps
 
 Deferred / pending (no fixed order):
 
-- **Phase 7** — Welcome view + delete legacy `ui/`, `views/`, `app_*.rs`, etc.
+- **Phase 7b** — Welcome view (port from `views/welcome.rs` in git
+  history; wire new logo from `assets/`)
 - **Async slice 2** — Pull / Merge / Rebase / Force-push (need branch pickers)
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream
 - **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
