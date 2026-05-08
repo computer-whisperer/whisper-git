@@ -196,7 +196,79 @@ fn graph_cell(lane: usize, color: Color, selected: bool) -> El {
         .fill(color)
 }
 
-fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, selected: bool) -> El {
+/// Static, themable pill chrome — small caption pinned to a tinted
+/// background with a half-alpha border. Used for branch / tag / HEAD /
+/// orphan / clean-worktree rendering inside commit rows.
+///
+/// `route_key` makes the pill clickable (worktree switch); when None
+/// the pill is purely informational. The `tooltip` hangs verbose
+/// metadata (reflog source for orphans, full branch names) without
+/// crowding the row.
+fn pill(
+    label: impl Into<String>,
+    fg: Color,
+    bg_alpha: u8,
+    route_key: Option<String>,
+    tooltip: Option<String>,
+) -> El {
+    let mut row_el = row([text(label.into()).caption().text_color(fg)])
+        .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
+        .gap(tokens::SPACE_XS)
+        .align(Align::Center)
+        .fill(fg.with_alpha(bg_alpha))
+        .stroke(fg.with_alpha(120));
+    if let Some(key) = route_key {
+        row_el = row_el.key(key).focusable();
+    }
+    if let Some(tip) = tooltip {
+        row_el = row_el.tooltip(tip);
+    }
+    row_el
+}
+
+/// Decoration set for a single commit row — branch tips at this
+/// commit, tags at this commit, clean worktrees whose HEAD is this
+/// commit. Pre-computed in `history_view` so the per-row closure
+/// stays cheap.
+#[derive(Clone, Default)]
+struct RowPills {
+    /// (branch name, kind) pairs.
+    branches: Vec<(String, BranchKind)>,
+    tags: Vec<String>,
+    /// Names of clean worktrees pointing here. Dirty worktrees show
+    /// their pill on the synthetic row instead, so this list excludes
+    /// them.
+    clean_worktrees: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+enum BranchKind {
+    /// Active worktree's branch — green.
+    Head,
+    /// Local non-head — slate-blue / primary.
+    Local,
+    /// Remote-tracking branch — info / cyan.
+    Remote,
+}
+
+impl BranchKind {
+    fn color(self) -> Color {
+        match self {
+            Self::Head => tokens::SUCCESS,
+            Self::Local => tokens::PRIMARY,
+            Self::Remote => tokens::INFO,
+        }
+    }
+}
+
+fn build_row(
+    commit: &CommitInfo,
+    layout: Option<&CommitLayout>,
+    pills: &RowPills,
+    is_detached_head_here: bool,
+    idx: usize,
+    selected: bool,
+) -> El {
     if commit.is_synthetic {
         return synthetic_row(commit, layout, idx, selected);
     }
@@ -216,16 +288,58 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
         graph_cell(lane, color, selected),
         text(commit.short_id.clone()).mono().muted(),
     ];
-    if commit.is_orphaned {
-        // Orphans aren't reachable from any branch tip — surface that
-        // explicitly. The reflog source ("HEAD@{3}: rebase (finish)")
-        // goes in the tooltip on the badge, since it's verbose.
-        let mut b = badge("orphan").muted();
-        if let Some(src) = &commit.orphan_source {
-            b = b.tooltip(src.clone());
-        }
-        children.push(b);
+
+    // Pill priority order matches the old graph: clean worktrees
+    // first (most likely to be cut by overflow), then branches, then
+    // tags, then a HEAD pill for detached-HEAD rows, then orphan
+    // marker. Aetna handles row overflow itself — there's no manual
+    // "+N" overflow badge for now.
+    for wt_name in &pills.clean_worktrees {
+        children.push(pill(
+            format!("WT: {wt_name}"),
+            tokens::WARNING,
+            40,
+            Some(format!("worktree:{wt_name}")),
+            Some("Switch to this worktree".to_string()),
+        ));
     }
+    for (name, kind) in &pills.branches {
+        children.push(pill(
+            name.clone(),
+            kind.color(),
+            44,
+            None,
+            Some(name.clone()),
+        ));
+    }
+    for tag in &pills.tags {
+        children.push(pill(
+            format!("\u{25C6} {tag}"),
+            tokens::WARNING,
+            40,
+            None,
+            Some(tag.clone()),
+        ));
+    }
+    if is_detached_head_here && pills.branches.is_empty() {
+        children.push(pill(
+            "HEAD",
+            tokens::SUCCESS,
+            44,
+            None,
+            Some("Detached HEAD".to_string()),
+        ));
+    }
+    if commit.is_orphaned {
+        children.push(pill(
+            "ORPHAN",
+            ORPHAN_COLOR,
+            44,
+            None,
+            commit.orphan_source.clone(),
+        ));
+    }
+
     children.push(text(summary));
     children.push(spacer());
     children.push(text(format!("{} · {}", commit.author, when)).muted());
@@ -244,7 +358,7 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
 /// Render a synthetic "uncommitted changes" row.
 ///
 /// Visually distinct from real commits — amber lane node, no SHA, an
-/// inline `WT:{name}` button that re-routes to the worktree-switch
+/// inline `WT:{name}` pill that re-routes to the worktree-switch
 /// handler so users can jump straight to the right staging area from
 /// the History view. Selection is suppressed (see
 /// `RepoTab::select_commit`), so the row click is a no-op except via
@@ -260,21 +374,13 @@ fn synthetic_row(
 
     let mut children: Vec<El> = vec![graph_cell(lane, amber, selected)];
     if let Some(name) = commit.synthetic_wt_name.as_deref() {
-        // Custom amber pill rather than `button(...).ghost()` so we can
-        // color the label and frame to match the synthetic row's amber
-        // tint. Routed under `worktree:{name}` so the same handler the
-        // sidebar uses dispatches the switch.
-        children.push(
-            row([text(format!("WT: {name}")).caption().text_color(amber)])
-                .key(format!("worktree:{name}"))
-                .focusable()
-                .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
-                .gap(tokens::SPACE_XS)
-                .align(Align::Center)
-                .fill(amber.with_alpha(40))
-                .stroke(amber.with_alpha(120))
-                .tooltip("Switch to this worktree"),
-        );
+        children.push(pill(
+            format!("WT: {name}"),
+            amber,
+            40,
+            Some(format!("worktree:{name}")),
+            Some("Switch to this worktree".to_string()),
+        ));
     }
     children.push(
         text(if commit.summary.is_empty() {
@@ -329,13 +435,26 @@ pub fn history_view(tab: &RepoTab) -> El {
     };
 
     // virtual_list takes a Fn(usize) -> El, so we clone the data the
-    // closure needs — Vec<CommitInfo> + Vec<CommitLayout>. The layout
-    // lookup goes through a flat parallel Vec instead of the HashMap
-    // so the closure stays Send + Sync.
+    // closure needs — Vec<CommitInfo> + Vec<CommitLayout> + parallel
+    // pill data. The layout / pill lookups go through flat parallel
+    // Vecs instead of HashMaps so the closure stays Send + Sync.
     let layouts: Vec<Option<CommitLayout>> = tab
         .commits
         .iter()
         .map(|c| tab.graph_layout.get(&c.id).cloned())
+        .collect();
+    let pills_per_row = build_row_pills(tab);
+    let active_head_oid = tab.active_view().and_then(|v| v.head_oid);
+    let detached_flags: Vec<bool> = tab
+        .commits
+        .iter()
+        .map(|c| {
+            // Surface the detached-HEAD pill only when no branch tip
+            // points here — otherwise the branch pill already conveys
+            // "this is HEAD" via its green tint.
+            active_head_oid == Some(c.id)
+                && !tab.branch_tips.iter().any(|t| t.oid == c.id && !t.is_remote)
+        })
         .collect();
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
@@ -350,7 +469,14 @@ pub fn history_view(tab: &RepoTab) -> El {
         virtual_list(commits.len(), ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
-            build_row(c, layouts[i].as_ref(), i, selected)
+            build_row(
+                c,
+                layouts[i].as_ref(),
+                &pills_per_row[i],
+                detached_flags[i],
+                i,
+                selected,
+            )
         })
         .key("commits")
         .height(Size::Fill(1.0)),
@@ -361,3 +487,64 @@ pub fn history_view(tab: &RepoTab) -> El {
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }
+
+/// Pre-compute the `RowPills` for each commit: walk branch tips,
+/// tags, and clean worktree views, indexing them by their oid, then
+/// gather them onto each commit row in `tab.commits` order. Faster
+/// than per-row filtering on big histories.
+fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
+    let mut by_oid_branches: HashMap<Oid, Vec<(String, BranchKind)>> = HashMap::new();
+    for tip in &tab.branch_tips {
+        // Drop `origin/HEAD`-style symref aliases — git2 enumerates them
+        // as branches, but they're just pointers to a real branch and
+        // would double up the pill set.
+        if tip.is_remote && matches!(tip.name.split_once('/'), Some((_, "HEAD"))) {
+            continue;
+        }
+        let kind = if tip.is_remote {
+            BranchKind::Remote
+        } else if tip.is_head {
+            BranchKind::Head
+        } else {
+            BranchKind::Local
+        };
+        by_oid_branches
+            .entry(tip.oid)
+            .or_default()
+            .push((tip.name.clone(), kind));
+    }
+
+    let mut by_oid_tags: HashMap<Oid, Vec<String>> = HashMap::new();
+    for tag in &tab.tags {
+        by_oid_tags
+            .entry(tag.oid)
+            .or_default()
+            .push(tag.name.clone());
+    }
+
+    // Clean worktrees: those whose status reports zero dirty files. A
+    // dirty worktree's pill belongs on the synthetic row above its
+    // HEAD, not on the HEAD itself, so we exclude them here.
+    let mut by_oid_clean_wts: HashMap<Oid, Vec<String>> = HashMap::new();
+    for view in tab.worktree_views.values() {
+        if view.status.total_files() != 0 {
+            continue;
+        }
+        if let Some(head) = view.head_oid {
+            by_oid_clean_wts
+                .entry(head)
+                .or_default()
+                .push(view.name.clone());
+        }
+    }
+
+    tab.commits
+        .iter()
+        .map(|c| RowPills {
+            branches: by_oid_branches.get(&c.id).cloned().unwrap_or_default(),
+            tags: by_oid_tags.get(&c.id).cloned().unwrap_or_default(),
+            clean_worktrees: by_oid_clean_wts.get(&c.id).cloned().unwrap_or_default(),
+        })
+        .collect()
+}
+
