@@ -1,31 +1,35 @@
 //! Welcome view — shown when no repo tab is open.
 //!
-//! Centered hero (placeholder logo glyph + title + tagline), then a
-//! Open / Clone action row, and a recent-repos column when
-//! `Config::recent_repos` is non-empty. Click targets emit:
+//! Centered hero (logo + title + tagline), then a Open / Clone action
+//! row, and a recent-repos column when `Config::recent_repos` is
+//! non-empty. Click targets emit:
 //!
 //! - `open_repo` — reuses the existing open-folder picker
 //! - `welcome:clone` — opens the clone modal
 //! - `welcome:recent:{idx}` — opens the persisted recent path at that index
-//!
-//! The hero icon is a stand-in. The new logo asset (`assets/git-client-icon.svg`)
-//! will replace it once the SVG → aetna icon-source plumbing is wired.
 
 use std::path::Path;
+use std::sync::LazyLock;
 
-use aetna_core::{El, IconName, prelude::*};
+use aetna_core::{El, IconName, SvgIcon, prelude::*};
 
-const HERO_ICON_PX: f32 = 64.0;
+const HERO_ICON_PX: f32 = 96.0;
 const RECENT_COLUMN_WIDTH: f32 = 560.0;
+
+/// App logo, parsed once on first paint. The asset is multi-tone, so
+/// we use `parse` (preserves the SVG's own colors) rather than
+/// `parse_current_color`.
+static LOGO: LazyLock<SvgIcon> = LazyLock::new(|| {
+    SvgIcon::parse(include_str!("../assets/git-client-icon.svg"))
+        .expect("git-client-icon.svg failed to parse")
+});
 
 pub fn welcome_view(recent: &[String]) -> El {
     // Hero spans the full content column so its `align(Center)` actually
     // centers the icon/title/tagline within the 560 px frame instead of
     // hugging them tight together.
     let hero = column([
-        icon(IconName::GitBranch)
-            .icon_size(HERO_ICON_PX)
-            .text_color(tokens::PRIMARY),
+        icon(&*LOGO).icon_size(HERO_ICON_PX),
         h1("whisper-git"),
         paragraph("GPU-accelerated Git client").muted(),
     ])
