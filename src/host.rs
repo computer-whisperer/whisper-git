@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use aetna_core::{App, BuildCx, KeyModifiers, PointerButton, Rect, UiKey};
+use aetna_core::{App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiKey};
 use aetna_vulkano::Runner;
 use anyhow::{Context, Result};
 use vulkano::{
@@ -34,7 +34,7 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{Key, NamedKey},
-    window::{Window, WindowId},
+    window::{CursorIcon, Window, WindowId},
 };
 
 pub fn run<A: App + 'static>(
@@ -298,6 +298,13 @@ impl<A: App> ApplicationHandler for Host<A> {
                 );
                 let prepare = rcx.runner.prepare(&mut tree, viewport, scale_factor);
 
+                // Reflect the resolved aetna cursor onto the OS window
+                // each frame. winit dedupes set_cursor under the hood
+                // when the icon hasn't changed, so this is a cheap call
+                // even when nothing's hovered.
+                let cursor = rcx.runner.ui_state().cursor(&tree);
+                rcx.window.set_cursor(winit_cursor(cursor));
+
                 let (image_index, suboptimal, acquire_future) =
                     match acquire_next_image(rcx.swapchain.clone(), None) {
                         Ok(r) => r,
@@ -557,5 +564,32 @@ fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Aetna `Cursor` → winit `CursorIcon` 1:1 map. Aetna's enum mirrors
+/// CSS / winit's vocabulary so this is a straight translation; the
+/// wildcard arm is a forward-compat safety net since `Cursor` is
+/// `non_exhaustive`. Mirrors the helper in
+/// `aetna-winit-wgpu/src/lib.rs::winit_cursor` (we'd re-export it but
+/// that crate ties in wgpu, which we don't want as a transitive dep
+/// just for this one function).
+fn winit_cursor(c: Cursor) -> CursorIcon {
+    match c {
+        Cursor::Default => CursorIcon::Default,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        _ => CursorIcon::Default,
     }
 }

@@ -433,9 +433,11 @@ impl App for WhisperApp {
         }
 
         // Resize-handle drags. Each handle owns its anchor state on
-        // `WhisperApp`; the helper folds PointerDown/Drag/PointerUp +
-        // arrow keys into the size value. PointerUp persists the new
-        // width to disk so the layout survives a relaunch.
+        // `WhisperApp`; PointerUp persists the new width to disk so
+        // the layout survives a relaunch.
+        //
+        // Sidebar: aetna's `apply_event_fixed` works as-is — the value
+        // is the LEFT sibling and grows when the pointer moves right.
         if resize_handle::apply_event_fixed(
             &mut self.sidebar_w,
             &mut self.sidebar_drag,
@@ -447,15 +449,12 @@ impl App for WhisperApp {
         ) {
             self.config.sidebar_w = self.sidebar_w;
         }
-        if resize_handle::apply_event_fixed(
-            &mut self.right_pane_w,
-            &mut self.right_drag,
-            &event,
-            "right:resize",
-            Axis::Row,
-            RIGHT_PANE_MIN,
-            RIGHT_PANE_MAX,
-        ) {
+        // Right pane: aetna's helper assumes the controlled value sits
+        // on the LEFT side of the handle, so its delta has the wrong
+        // sign for a right-side pane (drag-left should grow it). Roll
+        // a small custom handler that negates the delta and inverts
+        // the keyboard nudges.
+        if self.apply_right_resize(&event) {
             self.config.right_pane_w = self.right_pane_w;
         }
         if matches!(event.kind, UiEventKind::PointerUp)
@@ -1116,6 +1115,73 @@ impl WhisperApp {
     // `before_build`; on completion, refresh the tab and surface
     // success via toast / failure via error modal.
     // -------------------------------------------------------------
+
+    /// Mirror of `resize_handle::apply_event_fixed` for a value that
+    /// sits on the *right* side of its handle. The aetna helper's
+    /// formula `next = initial + (pointer - anchor)` is correct for a
+    /// left-anchored value (sidebar) but inverted for a right-anchored
+    /// pane: dragging the pointer left should *grow* the right pane,
+    /// not shrink it. Returns true when the value changed (matches the
+    /// aetna helper's contract so the caller's persistence logic stays
+    /// uniform).
+    fn apply_right_resize(&mut self, event: &UiEvent) -> bool {
+        if event.route() != Some("right:resize") {
+            return false;
+        }
+        let drag = &mut self.right_drag;
+        match event.kind {
+            UiEventKind::PointerDown => {
+                if let Some(pos) = event.pointer {
+                    drag.anchor = Some(pos.0);
+                    drag.initial = self.right_pane_w;
+                }
+                false
+            }
+            UiEventKind::Drag => {
+                let (Some(anchor), Some(pos)) = (drag.anchor, event.pointer) else {
+                    return false;
+                };
+                // Inverted: pointer moving right *shrinks* the right
+                // pane (boundary moves right, pane width = right_edge -
+                // boundary, so width decreases).
+                let next =
+                    (drag.initial - (pos.0 - anchor)).clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
+                let changed = (next - self.right_pane_w).abs() > f32::EPSILON;
+                self.right_pane_w = next;
+                changed
+            }
+            UiEventKind::PointerUp => {
+                drag.anchor = None;
+                false
+            }
+            UiEventKind::KeyDown => {
+                // Mirror aetna's KEYBOARD_STEP_PX / KEYBOARD_PAGE_STEP_PX
+                // but invert direction: ArrowRight shrinks the pane,
+                // ArrowLeft grows it. Home/End jump to MIN/MAX.
+                let Some(press) = event.key_press.as_ref() else {
+                    return false;
+                };
+                let next = match press.key {
+                    UiKey::ArrowRight | UiKey::ArrowDown => {
+                        self.right_pane_w - resize_handle::KEYBOARD_STEP_PX
+                    }
+                    UiKey::ArrowLeft | UiKey::ArrowUp => {
+                        self.right_pane_w + resize_handle::KEYBOARD_STEP_PX
+                    }
+                    UiKey::PageDown => self.right_pane_w - resize_handle::KEYBOARD_PAGE_STEP_PX,
+                    UiKey::PageUp => self.right_pane_w + resize_handle::KEYBOARD_PAGE_STEP_PX,
+                    UiKey::Home => RIGHT_PANE_MAX, // grow to max
+                    UiKey::End => RIGHT_PANE_MIN,  // shrink to min
+                    _ => return false,
+                };
+                let next = next.clamp(RIGHT_PANE_MIN, RIGHT_PANE_MAX);
+                let changed = (next - self.right_pane_w).abs() > f32::EPSILON;
+                self.right_pane_w = next;
+                changed
+            }
+            _ => false,
+        }
+    }
 
     /// Drain all per-tab async slots plus the app-scoped clone slot;
     /// called once per frame from `before_build`. Visits every tab so
