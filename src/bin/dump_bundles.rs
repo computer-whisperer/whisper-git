@@ -169,6 +169,30 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        scenes.push(("modal_clone".to_string(), {
+            use whisper_git::dialogs::CloneForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            let mut form = CloneForm::default();
+            form.url = "https://github.com/example/widget.git".to_string();
+            form.dest = "/home/example/Projects/widget".to_string();
+            app.active_modal = Some(ActiveModal::Clone(form));
+            app
+        }));
+        scenes.push(("modal_token".to_string(), {
+            use whisper_git::dialogs::TokenForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(ActiveModal::Token(TokenForm::default()));
+            app
+        }));
+        scenes.push(("modal_token_edit".to_string(), {
+            use whisper_git::dialogs::TokenForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            let mut form = TokenForm::default();
+            form.editing_github = true;
+            form.github_input = "ghp_demo123".to_string();
+            app.active_modal = Some(ActiveModal::Token(form));
+            app
+        }));
         scenes.push(("sidebar_context_menu".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.context_menu = Some(ContextMenuState {

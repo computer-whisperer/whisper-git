@@ -27,7 +27,9 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
+use crate::dialogs::{CloneForm, TokenForm};
 use crate::repo_tab::{RepoTab, RepoView, SidebarSection, TimedOp};
+use crate::token_store;
 use crate::sidebar;
 use crate::staging;
 
@@ -111,6 +113,12 @@ pub enum ActiveModal {
         title: String,
         body: String,
     },
+    /// Clone-a-remote dialog. Carries the live form state so the
+    /// inputs persist while the user is editing.
+    Clone(CloneForm),
+    /// Manage Tokens dialog. Holds the inline-edit buffer for the
+    /// GitHub token field; persistence goes through `token_store`.
+    Token(TokenForm),
 }
 
 /// commit_node.wgsl — copied verbatim from the aetna `custom_paint`
@@ -210,6 +218,18 @@ pub struct WhisperApp {
     /// `None` for headless use (`with_tabs` / dump_bundles); attempting
     /// to start an op without a proxy emits an error toast.
     pub proxy: Option<winit::event_loop::EventLoopProxy<()>>,
+    /// In-flight `git clone`. App-scoped (not per-tab) since the new
+    /// repo doesn't have a tab yet — on success we open it as one.
+    pub clone_op: Option<CloneOp>,
+}
+
+/// In-flight clone tracker. Carries the receiver, the started time
+/// (currently informational), and the destination path for the
+/// success-path tab open.
+pub struct CloneOp {
+    pub rx: std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
+    pub started: std::time::Instant,
+    pub dest_label: String,
 }
 
 impl WhisperApp {
@@ -242,6 +262,7 @@ impl WhisperApp {
             active_modal: None,
             context_menu: None,
             proxy: None,
+            clone_op: None,
         }
     }
 
@@ -259,6 +280,7 @@ impl WhisperApp {
             active_modal: None,
             context_menu: None,
             proxy: None,
+            clone_op: None,
         }
     }
 
@@ -331,6 +353,13 @@ impl App for WhisperApp {
                 ..
             } => dialogs::confirm_modal(title, body, ok_label, *destructive),
             ActiveModal::Error { title, body } => dialogs::error_modal(title, body),
+            ActiveModal::Clone(form) => {
+                dialogs::clone_modal(form, &self.selection, self.clone_op.is_some())
+            }
+            ActiveModal::Token(form) => {
+                let github_set = token_store::get_github_token().is_some();
+                dialogs::token_modal(form, &self.selection, github_set)
+            }
         });
         let menu_layer = self
             .context_menu
@@ -364,6 +393,25 @@ impl App for WhisperApp {
                 &event,
             );
             text_area::apply_event(&mut view.commit_body, &mut self.selection, "body", &event);
+        }
+
+        // Modal text fields. Routed by key — only the active modal's
+        // fields are present in the tree, so non-matching events are
+        // ignored harmlessly.
+        match &mut self.active_modal {
+            Some(ActiveModal::Clone(form)) => {
+                text_input::apply_event(&mut form.url, &mut self.selection, "clone:url", &event);
+                text_input::apply_event(&mut form.dest, &mut self.selection, "clone:dest", &event);
+            }
+            Some(ActiveModal::Token(form)) => {
+                text_input::apply_event(
+                    &mut form.github_input,
+                    &mut self.selection,
+                    "token:github",
+                    &event,
+                );
+            }
+            _ => {}
         }
 
         if matches!(event.kind, UiEventKind::SecondaryClick) && self.handle_secondary_click(&event)
@@ -407,6 +455,7 @@ impl App for WhisperApp {
             name: "commit_node",
             wgsl: COMMIT_NODE_WGSL,
             samples_backdrop: false,
+            samples_time: false,
         }]
     }
 
@@ -677,6 +726,15 @@ impl WhisperApp {
             return true;
         }
 
+        if key.starts_with("clone:") {
+            self.handle_clone_route(key);
+            return true;
+        }
+        if key.starts_with("token:") {
+            self.handle_token_route(key);
+            return true;
+        }
+
         match key {
             "modal:confirm:cancel" => {
                 self.active_modal = None;
@@ -692,8 +750,128 @@ impl WhisperApp {
                 self.active_modal = None;
                 true
             }
+            "modal:clone:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:token:close" => {
+                self.active_modal = None;
+                true
+            }
             _ => false,
         }
+    }
+
+    fn handle_clone_route(&mut self, key: &str) {
+        match key {
+            "clone:bare" => {
+                if let Some(ActiveModal::Clone(form)) = &mut self.active_modal {
+                    form.bare = !form.bare;
+                }
+            }
+            "clone:browse" => {
+                let picked = rfd::FileDialog::new()
+                    .set_title("Choose destination")
+                    .pick_folder();
+                if let Some(p) = picked
+                    && let Some(ActiveModal::Clone(form)) = &mut self.active_modal
+                {
+                    form.dest = p.to_string_lossy().to_string();
+                }
+            }
+            "clone:start" => self.start_clone(),
+            _ => {}
+        }
+    }
+
+    fn handle_token_route(&mut self, key: &str) {
+        match key {
+            "token:github:edit" => {
+                if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                    form.editing_github = true;
+                    form.github_input.clear();
+                }
+            }
+            "token:github:cancel" => {
+                if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                    form.editing_github = false;
+                    form.github_input.clear();
+                }
+            }
+            "token:github:save" => {
+                let value = if let Some(ActiveModal::Token(form)) = &self.active_modal {
+                    form.github_input.trim().to_string()
+                } else {
+                    return;
+                };
+                if value.is_empty() {
+                    self.toasts
+                        .push(ToastSpec::warning("Token is empty — leaving unchanged"));
+                    return;
+                }
+                if token_store::set_github_token(&value) {
+                    self.toasts.push(ToastSpec::success("GitHub token saved"));
+                    if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                        form.editing_github = false;
+                        form.github_input.clear();
+                    }
+                } else {
+                    self.toasts
+                        .push(ToastSpec::error("Couldn't write to keychain"));
+                }
+            }
+            "token:github:clear" => {
+                if token_store::delete_github_token() {
+                    self.toasts.push(ToastSpec::success("GitHub token cleared"));
+                } else {
+                    self.toasts
+                        .push(ToastSpec::error("Couldn't clear keychain entry"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Spawn a `git clone` thread for the URL/dest in the current
+    /// Clone modal. Validates the inputs first, surfaces errors as
+    /// toasts (rather than blocking the modal flow), and parks the
+    /// receiver on `clone_op` for `poll_async_ops` to drain.
+    fn start_clone(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            self.toasts
+                .push(ToastSpec::error("Clone unavailable: event loop proxy missing"));
+            return;
+        };
+        if self.clone_op.is_some() {
+            self.toasts
+                .push(ToastSpec::info("A clone is already in progress"));
+            return;
+        }
+        let Some(ActiveModal::Clone(form)) = &self.active_modal else {
+            return;
+        };
+        let url = form.url.trim().to_string();
+        let dest = form.dest.trim().to_string();
+        let bare = form.bare;
+        if url.is_empty() {
+            self.toasts.push(ToastSpec::warning("Repository URL is required"));
+            return;
+        }
+        if dest.is_empty() {
+            self.toasts
+                .push(ToastSpec::warning("Destination directory is required"));
+            return;
+        }
+        let dest_path = std::path::PathBuf::from(&dest);
+        let dest_label = dest_path.display().to_string();
+        let rx = crate::git::clone_async(url.clone(), dest_path, bare, proxy);
+        self.clone_op = Some(CloneOp {
+            rx,
+            started: std::time::Instant::now(),
+            dest_label: dest_label.clone(),
+        });
+        self.toasts
+            .push(ToastSpec::info(format!("Cloning into {dest_label}\u{2026}")));
     }
 
     fn handle_context_action(&mut self, action: &str) {
@@ -787,6 +965,16 @@ impl WhisperApp {
                 self.config.shortcut_bar_visible = self.shortcut_bar_visible;
                 self.persist_config();
             }
+            "clone" => {
+                // Clone-from-Settings: pre-fill destination with $HOME so
+                // first-time users land in a sensible default location.
+                let mut form = CloneForm::default();
+                form.dest = std::env::var("HOME").unwrap_or_default();
+                self.active_modal = Some(ActiveModal::Clone(form));
+            }
+            "tokens" => {
+                self.active_modal = Some(ActiveModal::Token(TokenForm::default()));
+            }
             other => {
                 if let Some(scale_str) = other.strip_prefix("row_size:")
                     && let Ok(scale) = scale_str.parse::<f32>()
@@ -838,12 +1026,65 @@ impl WhisperApp {
     // success via toast / failure via error modal.
     // -------------------------------------------------------------
 
-    /// Drain all per-tab async slots; called once per frame from
-    /// `before_build`. Visits every tab so background work in a
-    /// non-foreground tab still completes cleanly.
+    /// Drain all per-tab async slots plus the app-scoped clone slot;
+    /// called once per frame from `before_build`. Visits every tab so
+    /// background work in a non-foreground tab still completes cleanly.
     pub fn poll_async_ops(&mut self) {
         for idx in 0..self.tabs.len() {
             self.poll_async_ops_for_tab(idx);
+        }
+        self.poll_clone_op();
+    }
+
+    fn poll_clone_op(&mut self) {
+        // Match-and-take: drain the receiver, drop the slot once Ready
+        // or Disconnected, then act on the result. On success the
+        // dialog auto-closes and the new repo opens as a tab; on
+        // failure we surface an Error modal carrying the captured
+        // stderr (the modal's body wraps long messages).
+        let outcome = match &self.clone_op {
+            Some(op) => match op.rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
+                    "Clone worker disconnected unexpectedly".to_string(),
+                )),
+            },
+            None => None,
+        };
+        let Some(outcome) = outcome else { return };
+        self.clone_op = None;
+        match outcome {
+            Ok(path) => {
+                // Dismiss the Clone modal if it's still open. Users can
+                // dismiss it manually mid-clone too — we still open the
+                // tab when the op completes.
+                if matches!(self.active_modal, Some(ActiveModal::Clone(_))) {
+                    self.active_modal = None;
+                }
+                match RepoTab::open(&path) {
+                    Ok(tab) => {
+                        self.tabs.push(tab);
+                        self.active_tab = self.tabs.len() - 1;
+                        self.toasts.push(ToastSpec::success(format!(
+                            "Cloned {}",
+                            path.display()
+                        )));
+                    }
+                    Err(e) => {
+                        self.active_modal = Some(ActiveModal::Error {
+                            title: "Clone succeeded but open failed".to_string(),
+                            body: format!("{}: {e}", path.display()),
+                        });
+                    }
+                }
+            }
+            Err(stderr) => {
+                self.active_modal = Some(ActiveModal::Error {
+                    title: "Clone failed".to_string(),
+                    body: stderr,
+                });
+            }
         }
     }
 

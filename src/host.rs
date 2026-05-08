@@ -122,7 +122,7 @@ impl<A: App> ApplicationHandler for Host<A> {
         let extent: [u32; 2] = window.inner_size().into();
         runner.set_surface_size(extent[0], extent[1]);
         for s in self.app.shaders() {
-            runner.register_shader_with(s.name, s.wgsl, s.samples_backdrop);
+            runner.register_shader_with(s.name, s.wgsl, s.samples_backdrop, s.samples_time);
         }
 
         let framebuffers = build_framebuffers(&images, runner.render_pass());

@@ -63,7 +63,7 @@ pub fn run<A: App + 'static>(
     runner.set_theme(app.theme());
     runner.set_surface_size(width, height);
     for s in app.shaders() {
-        runner.register_shader_with(s.name, s.wgsl, s.samples_backdrop);
+        runner.register_shader_with(s.name, s.wgsl, s.samples_backdrop, s.samples_time);
     }
 
     // Offscreen target — single image, no swapchain. TRANSFER_SRC so we

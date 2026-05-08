@@ -91,6 +91,7 @@ fn main() -> Result<()> {
 }
 
 fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
+    use whisper_git::dialogs::{CloneForm, TokenForm};
     use whisper_git::repo_tab::RepoView;
     use whisper_git::ui_app::{ActiveModal, ConfirmAction};
 
@@ -150,6 +151,21 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 body: "remote rejected the push: non-fast-forward updates were rejected"
                     .to_string(),
             });
+        }
+        "clone" => {
+            let mut form = CloneForm::default();
+            form.url = "https://github.com/example/widget.git".to_string();
+            form.dest = "/home/example/Projects/widget".to_string();
+            app.active_modal = Some(ActiveModal::Clone(form));
+        }
+        "token" => {
+            app.active_modal = Some(ActiveModal::Token(TokenForm::default()));
+        }
+        "token-edit" => {
+            let mut form = TokenForm::default();
+            form.editing_github = true;
+            form.github_input = "ghp_demo123".to_string();
+            app.active_modal = Some(ActiveModal::Token(form));
         }
         "context-menu" => {
             use whisper_git::ui_app::{ContextMenuState, ContextTarget};
