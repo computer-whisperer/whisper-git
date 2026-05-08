@@ -21,7 +21,8 @@ pub fn commit_details_pane(tab: &RepoTab) -> El {
     column([body])
         .width(Size::Fixed(PANE_WIDTH))
         .height(Size::Fill(1.0))
-        .surface_role(SurfaceRole::Sunken)
+        .fill(tokens::CARD)
+        .stroke(tokens::BORDER)
 }
 
 fn placeholder(msg: &str) -> El {

@@ -27,7 +27,8 @@ pub fn diff_view(tab: &RepoTab) -> El {
         badge(if staged { "staged" } else { "unstaged" }).muted(),
     ];
     let header = row(header_children.drain(..))
-        .surface_role(SurfaceRole::Panel)
+        .fill(tokens::MUTED)
+        .stroke(tokens::BORDER)
         .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_SM))
         .gap(tokens::SPACE_SM)
         .align(Align::Center);
@@ -50,7 +51,8 @@ pub fn diff_view(tab: &RepoTab) -> El {
     .gap(0.0)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
-    .surface_role(SurfaceRole::Panel)
+    .fill(tokens::CARD)
+    .stroke(tokens::BORDER)
 }
 
 fn placeholder() -> El {
@@ -104,13 +106,15 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
     .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
     .gap(tokens::SPACE_SM)
     .align(Align::Center)
-    .surface_role(SurfaceRole::Raised);
+    .fill(tokens::ACCENT)
+    .stroke(tokens::BORDER);
 
     let lines: Vec<El> = hunk.lines.iter().map(line_row).collect();
 
     column([header, column(lines).gap(0.0)])
         .gap(0.0)
-        .surface_role(SurfaceRole::Panel)
+        .fill(tokens::CARD)
+        .stroke(tokens::BORDER)
 }
 
 fn line_row(line: &DiffLine) -> El {

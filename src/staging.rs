@@ -52,7 +52,8 @@ pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
     ));
 
     column(sections)
-        .surface_role(SurfaceRole::Panel)
+        .fill(tokens::CARD)
+        .stroke(tokens::BORDER)
         .width(Size::Fixed(STAGING_WIDTH))
         .height(Size::Fill(1.0))
         .gap(0.0)
@@ -87,7 +88,8 @@ fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
     ])
     .padding(tokens::SPACE_MD)
     .gap(tokens::SPACE_SM)
-    .surface_role(SurfaceRole::Raised)
+    .fill(tokens::ACCENT)
+    .stroke(tokens::BORDER)
 }
 
 fn file_section(
@@ -96,7 +98,8 @@ fn file_section(
     bulk_action: Option<(&str, &str, bool)>,
     role: SurfaceRole,
 ) -> El {
-    let title_el = if role == SurfaceRole::Danger {
+    let is_danger = role == SurfaceRole::Danger;
+    let title_el = if is_danger {
         text(title.to_string())
             .caption()
             .text_color(tokens::DESTRUCTIVE)
@@ -114,7 +117,12 @@ fn file_section(
         .align(Align::Center)
         .gap(tokens::SPACE_SM)
         .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_XS))
-        .surface_role(role);
+        .fill(if is_danger {
+            tokens::DESTRUCTIVE.with_alpha(40)
+        } else {
+            tokens::MUTED
+        })
+        .stroke(tokens::BORDER);
 
     let body: Vec<El> = if files.is_empty() {
         vec![

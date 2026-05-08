@@ -222,11 +222,7 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
     .height(Size::Fixed(ROW_HEIGHT))
     .align(Align::Center);
 
-    if selected {
-        row_el.surface_role(SurfaceRole::Selected)
-    } else {
-        row_el
-    }
+    if selected { row_el.selected() } else { row_el }
 }
 
 /// History pane composer. Returns the center-pane `El` for the
@@ -275,7 +271,8 @@ pub fn history_view(tab: &RepoTab) -> El {
 
     let header = row([text(header_text).caption().muted()])
         .padding(Sides::xy(tokens::SPACE_MD, tokens::SPACE_SM))
-        .surface_role(SurfaceRole::Sunken);
+        .fill(tokens::MUTED)
+        .stroke(tokens::BORDER);
 
     column([
         header,
@@ -288,7 +285,8 @@ pub fn history_view(tab: &RepoTab) -> El {
         .height(Size::Fill(1.0)),
     ])
     .gap(0.0)
-    .surface_role(SurfaceRole::Panel)
+    .fill(tokens::CARD)
+    .stroke(tokens::BORDER)
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
 }

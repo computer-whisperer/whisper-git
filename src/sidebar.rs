@@ -23,7 +23,8 @@ pub fn sidebar(tab: &RepoTab) -> El {
 
     scroll([body])
         .key("sidebar:scroll")
-        .surface_role(SurfaceRole::Panel)
+        .fill(tokens::CARD)
+        .stroke(tokens::BORDER)
         .width(Size::Fixed(SIDEBAR_WIDTH))
         .height(Size::Fill(1.0))
 }
@@ -270,8 +271,8 @@ fn item_row(
         .align(Align::Center);
 
     match (is_head, is_selected) {
-        (true, _) => row_el.surface_role(SurfaceRole::Current),
-        (_, true) => row_el.surface_role(SurfaceRole::Selected),
+        (true, _) => row_el.current(),
+        (_, true) => row_el.selected(),
         _ => row_el,
     }
 }

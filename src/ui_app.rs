@@ -907,7 +907,8 @@ fn tab_bar(app: &WhisperApp) -> El {
             .tooltip("Open repository (Ctrl+O)"),
     );
     row(tabs)
-        .surface_role(SurfaceRole::Sunken)
+        .fill(tokens::MUTED)
+        .stroke(tokens::BORDER)
         .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
         .gap(tokens::SPACE_XS)
         .align(Align::Center)
@@ -923,13 +924,10 @@ fn tab_chip(label: String, idx: usize, active: bool) -> El {
     .gap(tokens::SPACE_XS)
     .align(Align::Center);
 
-    let mut chip = inner
+    let chip = inner
         .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
         .key(format!("tab:{idx}"));
-    if active {
-        chip = chip.surface_role(SurfaceRole::Selected);
-    }
-    chip
+    if active { chip.selected() } else { chip }
 }
 
 fn header_bar(active: Option<&RepoTab>) -> El {
@@ -973,7 +971,8 @@ fn header_bar(active: Option<&RepoTab>) -> El {
             .key("settings")
             .tooltip("Settings"),
     ])
-    .surface_role(SurfaceRole::Panel)
+    .fill(tokens::CARD)
+    .stroke(tokens::BORDER)
     .padding(Sides::xy(tokens::SPACE_LG, tokens::SPACE_SM))
     .gap(tokens::SPACE_SM)
     .align(Align::Center)
@@ -996,7 +995,8 @@ fn view_mode_segment(current: RepoView) -> El {
         history.ghost()
     };
     row([working, history])
-        .surface_role(SurfaceRole::Sunken)
+        .fill(tokens::MUTED)
+        .stroke(tokens::BORDER)
         .padding(Sides::all(tokens::SPACE_XS))
         .gap(0.0)
         .align(Align::Center)
