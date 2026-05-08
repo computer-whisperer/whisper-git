@@ -33,12 +33,12 @@ pub const LANE_COLORS: [Color; 6] = [
     tokens::WARNING,
     tokens::INFO,
     tokens::DESTRUCTIVE,
-    tokens::TEXT_FOREGROUND,
+    tokens::FOREGROUND,
 ];
 
 /// The orphan color — used when a commit is reachable only through
 /// reflogs. Matches the muted text color so orphans visually recede.
-pub const ORPHAN_COLOR: Color = tokens::TEXT_MUTED_FOREGROUND;
+pub const ORPHAN_COLOR: Color = tokens::MUTED_FOREGROUND;
 
 #[derive(Clone, Debug)]
 pub struct CommitLayout {
@@ -172,12 +172,8 @@ impl GraphLayout {
 /// One row's graph cell — paints a vertical lane line plus a circle
 /// node via the `commit_node` shader (registered in `ui_app.rs`).
 fn graph_cell(lane: usize, color: Color, selected: bool) -> El {
-    let bg = tokens::BG_APP;
-    let ring_color = if selected {
-        tokens::TEXT_FOREGROUND
-    } else {
-        color
-    };
+    let bg = tokens::BACKGROUND;
+    let ring_color = if selected { tokens::FOREGROUND } else { color };
     let ring_w = if selected { 2.5 } else { 1.5 };
     let radius = 5.0;
     let line_w = 2.0;
@@ -206,7 +202,7 @@ fn build_row(commit: &CommitInfo, layout: Option<&CommitLayout>, idx: usize, sel
         None => (0, ORPHAN_COLOR),
     };
     let row_bg = if selected {
-        tokens::BG_RAISED
+        tokens::MUTED
     } else {
         Color::rgba(0, 0, 0, 0)
     };

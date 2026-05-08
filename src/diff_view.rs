@@ -116,7 +116,7 @@ fn line_row(line: &DiffLine) -> El {
     let color = match line.origin {
         '+' => tokens::SUCCESS,
         '-' => tokens::DESTRUCTIVE,
-        _ => tokens::TEXT_FOREGROUND,
+        _ => tokens::FOREGROUND,
     };
     let prefix = match line.origin {
         '+' | '-' | ' ' => line.origin,

@@ -261,7 +261,7 @@ fn capture_to_buffer(
 }
 
 fn clear_color() -> [f32; 4] {
-    let c = aetna_core::tokens::BG_APP;
+    let c = aetna_core::tokens::BACKGROUND;
     [
         srgb_to_linear(c.r as f32 / 255.0),
         srgb_to_linear(c.g as f32 / 255.0),
