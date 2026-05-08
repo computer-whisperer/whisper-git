@@ -119,16 +119,16 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "diff" => {
             // Pick the first changed file so the diff viewer has content
             // to render. Fall through silently when no repos are open.
-            if let Some(tab) = app.tabs.first_mut() {
-                let pick = tab
+            if let Some(view) = app.tabs.first_mut().and_then(|t| t.active_view_mut()) {
+                let pick = view
                     .status
                     .unstaged
                     .first()
-                    .or_else(|| tab.status.untracked.first())
-                    .or_else(|| tab.status.staged.first())
+                    .or_else(|| view.status.untracked.first())
+                    .or_else(|| view.status.staged.first())
                     .map(|f| f.path.clone());
                 if let Some(p) = pick {
-                    tab.selected_diff_file = Some(p);
+                    view.selected_diff_file = Some(p);
                 }
             }
         }

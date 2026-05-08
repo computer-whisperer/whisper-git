@@ -290,10 +290,22 @@ impl App for WhisperApp {
         let body = match self.active() {
             Some(tab) => {
                 let (center, right) = match tab.view_mode {
-                    RepoView::Working => (
-                        diff_view::diff_view(tab),
-                        staging::staging_well(tab, &self.selection),
-                    ),
+                    RepoView::Working => match tab.active_view() {
+                        Some(view) => {
+                            let staging_pane = match staging::worktree_selector(tab) {
+                                Some(sel) => column([
+                                    sel,
+                                    staging::staging_well(view, &self.selection),
+                                ])
+                                .gap(0.0)
+                                .width(Size::Fixed(staging::STAGING_WIDTH))
+                                .height(Size::Fill(1.0)),
+                                None => staging::staging_well(view, &self.selection),
+                            };
+                            (diff_view::diff_view(view), staging_pane)
+                        }
+                        None => (no_worktree_placeholder(), spacer().width(Size::Fixed(0.0))),
+                    },
                     RepoView::History => (
                         commit_graph::history_view(tab),
                         commit_details::commit_details_pane(tab),
@@ -336,18 +348,22 @@ impl App for WhisperApp {
             return;
         }
 
-        // Text-editing routes consume the event for the active tab's
-        // commit-message fields. Index-based borrow so we can hand
-        // `self.selection` to the apply_event helpers without conflict.
+        // Text-editing routes consume the event for the active worktree's
+        // commit-message fields. Drafts are per-worktree — switching
+        // worktrees swaps which subject/body buffer the inputs touch.
         let active_idx = self.active_tab;
-        if let Some(tab) = self.tabs.get_mut(active_idx) {
+        if let Some(view) = self
+            .tabs
+            .get_mut(active_idx)
+            .and_then(|t| t.active_view_mut())
+        {
             text_input::apply_event(
-                &mut tab.commit_subject,
+                &mut view.commit_subject,
                 &mut self.selection,
                 "subject",
                 &event,
             );
-            text_area::apply_event(&mut tab.commit_body, &mut self.selection, "body", &event);
+            text_area::apply_event(&mut view.commit_body, &mut self.selection, "body", &event);
         }
 
         if matches!(event.kind, UiEventKind::SecondaryClick) && self.handle_secondary_click(&event)
@@ -436,16 +452,31 @@ impl WhisperApp {
 
         // Stage / unstage / diff-preview routes.
         if let Some(path) = key.strip_prefix("stage_file:") {
-            self.run_op("Stage", |t| t.repo.stage_file(path));
+            let path = path.to_string();
+            self.run_op("Stage", move |t| {
+                t.active_repo().stage_file(&path)
+            });
             return;
         }
         if let Some(path) = key.strip_prefix("unstage_file:") {
-            self.run_op("Unstage", |t| t.repo.unstage_file(path));
+            let path = path.to_string();
+            self.run_op("Unstage", move |t| {
+                t.active_repo().unstage_file(&path)
+            });
             return;
         }
         if let Some(path) = key.strip_prefix("diff:") {
+            if let Some(view) = self.active_mut().and_then(|t| t.active_view_mut()) {
+                view.selected_diff_file = Some(path.to_string());
+            }
+            return;
+        }
+        // wt_select:{path} — switch the active worktree. The path is
+        // routed verbatim (worktree names aren't always unique across
+        // nested checkouts).
+        if let Some(path) = key.strip_prefix("wt_select:") {
             if let Some(tab) = self.active_mut() {
-                tab.selected_diff_file = Some(path.to_string());
+                tab.select_worktree(std::path::PathBuf::from(path));
             }
             return;
         }
@@ -464,7 +495,9 @@ impl WhisperApp {
                 && let Ok(idx) = idx_str.parse::<usize>()
             {
                 let path = path.to_string();
-                self.run_op("Stage hunk", move |t| t.repo.stage_hunk(&path, idx));
+                self.run_op("Stage hunk", move |t| {
+                    t.active_repo().stage_hunk(&path, idx)
+                });
             }
             return;
         }
@@ -473,18 +506,34 @@ impl WhisperApp {
                 && let Ok(idx) = idx_str.parse::<usize>()
             {
                 let path = path.to_string();
-                self.run_op("Unstage hunk", move |t| t.repo.unstage_hunk(&path, idx));
+                self.run_op("Unstage hunk", move |t| {
+                    t.active_repo().unstage_hunk(&path, idx)
+                });
             }
             return;
         }
 
+        // Sidebar worktree click — promote it to active. Sibling sections
+        // still emit placeholder toasts (Phase 4c wires those).
+        if let Some(name) = key.strip_prefix("worktree:") {
+            if let Some(tab) = self.active_mut() {
+                let path = tab
+                    .worktrees
+                    .iter()
+                    .find(|w| w.name == name)
+                    .map(|w| std::path::PathBuf::from(&w.path));
+                if let Some(p) = path {
+                    tab.select_worktree(p);
+                }
+            }
+            return;
+        }
         // Sidebar item clicks — Phase 3 just announces them.
         for prefix in [
             "branch:",
             "remote:",
             "tag:",
             "submodule:",
-            "worktree:",
             "stash:",
         ] {
             if let Some(name) = key.strip_prefix(prefix) {
@@ -912,7 +961,10 @@ impl WhisperApp {
             )));
             return None;
         }
-        Some((tab.repo.git_command_dir(), proxy))
+        // Run the git CLI in the active worktree's working directory so
+        // ops resolve HEAD against that worktree (push picks up the right
+        // branch, fetch updates the right remote-tracking refs).
+        Some((tab.active_repo().git_command_dir(), proxy))
     }
 
     fn fetch(&mut self) {
@@ -945,7 +997,7 @@ impl WhisperApp {
             .repo
             .default_remote()
             .unwrap_or_else(|_| "origin".to_string());
-        let branch = tab.current_branch.clone();
+        let branch = tab.current_branch().to_string();
         if branch.is_empty() {
             self.toasts
                 .push(ToastSpec::error("Push: HEAD is detached, no branch"));
@@ -1014,16 +1066,19 @@ impl WhisperApp {
             // already handles per-path errors gracefully and keeps us
             // out of process-spawn territory. Collect paths first so
             // we don't hold an immutable borrow across the mutating
-            // calls.
-            let paths: Vec<String> = t
+            // calls. Both reads and writes go through the active
+            // worktree's repo so the staging applies to the right
+            // working tree.
+            let Some(view) = t.active_view() else { return Ok(()) };
+            let paths: Vec<String> = view
                 .status
                 .unstaged
                 .iter()
-                .chain(t.status.untracked.iter())
+                .chain(view.status.untracked.iter())
                 .map(|f| f.path.clone())
                 .collect();
             for p in paths {
-                t.repo.stage_file(&p)?;
+                view.repo.stage_file(&p)?;
             }
             Ok(())
         });
@@ -1031,9 +1086,11 @@ impl WhisperApp {
 
     fn unstage_all(&mut self) {
         self.run_op("Unstage all", |t| {
-            let paths: Vec<String> = t.status.staged.iter().map(|f| f.path.clone()).collect();
+            let Some(view) = t.active_view() else { return Ok(()) };
+            let paths: Vec<String> =
+                view.status.staged.iter().map(|f| f.path.clone()).collect();
             for p in paths {
-                t.repo.unstage_file(&p)?;
+                view.repo.unstage_file(&p)?;
             }
             Ok(())
         });
@@ -1044,28 +1101,33 @@ impl WhisperApp {
         let Some(tab) = self.tabs.get_mut(active_idx) else {
             return;
         };
-        if tab.commit_subject.trim().is_empty() {
+        let Some(view) = tab.active_view_mut() else {
+            self.toasts
+                .push(ToastSpec::warning("No worktree selected"));
+            return;
+        };
+        if view.commit_subject.trim().is_empty() {
             self.toasts
                 .push(ToastSpec::warning("Commit subject is empty"));
             return;
         }
-        if tab.status.staged.is_empty() {
+        if view.status.staged.is_empty() {
             self.toasts.push(ToastSpec::warning("No staged changes"));
             return;
         }
-        let message = if tab.commit_body.trim().is_empty() {
-            tab.commit_subject.clone()
+        let message = if view.commit_body.trim().is_empty() {
+            view.commit_subject.clone()
         } else {
             format!(
                 "{}\n\n{}",
-                tab.commit_subject.trim(),
-                tab.commit_body.trim()
+                view.commit_subject.trim(),
+                view.commit_body.trim()
             )
         };
-        match tab.repo.commit(&message) {
+        match view.repo.commit(&message) {
             Ok(oid) => {
-                tab.commit_subject.clear();
-                tab.commit_body.clear();
+                view.commit_subject.clear();
+                view.commit_body.clear();
                 tab.refresh();
                 let short = oid.to_string()[..7].to_string();
                 self.toasts
@@ -1172,10 +1234,11 @@ fn tab_bar(app: &WhisperApp) -> El {
 fn header_bar(active: Option<&RepoTab>) -> El {
     let branch = match active {
         Some(t) => {
-            let label = if t.current_branch.is_empty() {
+            let cb = t.current_branch();
+            let label = if cb.is_empty() {
                 "(detached)".to_string()
             } else {
-                t.current_branch.clone()
+                cb.to_string()
             };
             row([icon(IconName::GitBranch), text(label).label()])
                 .gap(tokens::SPACE_XS)
@@ -1251,16 +1314,35 @@ fn kbd(chord: &str, label: &str) -> El {
         .align(Align::Center)
 }
 
+/// Center-pane placeholder shown when the repo has no working tree to
+/// operate on (effectively bare with zero linked worktrees). The
+/// staging well + diff viewer have nothing to display until the user
+/// adds a worktree, so we surface that explicitly rather than rendering
+/// empty panes.
+fn no_worktree_placeholder() -> El {
+    column([
+        h2("No worktree selected"),
+        paragraph(
+            "This repository has no working tree available. Add a linked \
+             worktree (`git worktree add`) and select it in the sidebar \
+             to start staging changes here.",
+        ),
+    ])
+    .padding(tokens::SPACE_LG)
+    .gap(tokens::SPACE_MD)
+    .height(Size::Fill(1.0))
+    .width(Size::Fill(1.0))
+}
+
 fn main_placeholder(active: Option<&RepoTab>) -> El {
     let body = match active {
         Some(t) => column([
             h2(format!("{}", t.repo_name)),
             text(format!(
                 "Branch: {} · {} local · {} remote · {} tags · {} stashes · {} worktrees · {} submodules",
-                if t.current_branch.is_empty() {
-                    "(detached)"
-                } else {
-                    &t.current_branch
+                {
+                    let cb = t.current_branch();
+                    if cb.is_empty() { "(detached)" } else { cb }
                 },
                 t.local_branches().len(),
                 t.remote_branches().iter().map(|(_, b)| b.len()).sum::<usize>(),

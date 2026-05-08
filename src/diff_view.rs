@@ -8,18 +8,18 @@
 use aetna_core::{El, prelude::*};
 
 use crate::git::{DiffHunk, DiffLine, FileStatus};
-use crate::repo_tab::RepoTab;
+use crate::repo_tab::WorktreeView;
 
-pub fn diff_view(tab: &RepoTab) -> El {
-    let Some(path) = tab.selected_diff_file.as_deref() else {
+pub fn diff_view(view: &WorktreeView) -> El {
+    let Some(path) = view.selected_diff_file.as_deref() else {
         return placeholder();
     };
 
     // Show staged hunks if the file lives in the staged list; otherwise
     // show the unstaged side of the diff. (A file can be in both — the
     // user toggles via the diff hunk Stage/Unstage buttons.)
-    let staged = file_is_staged(tab, path);
-    let hunks = tab.repo.diff_working_file(path, staged).unwrap_or_default();
+    let staged = file_is_staged(view, path);
+    let hunks = view.repo.diff_working_file(path, staged).unwrap_or_default();
 
     let mut header_children: Vec<El> = vec![
         text(path.to_string()).label(),
@@ -69,8 +69,8 @@ fn placeholder() -> El {
     .width(Size::Fill(1.0))
 }
 
-fn file_is_staged(tab: &RepoTab, path: &str) -> bool {
-    if tab
+fn file_is_staged(view: &WorktreeView, path: &str) -> bool {
+    if view
         .status
         .staged
         .iter()
@@ -78,8 +78,8 @@ fn file_is_staged(tab: &RepoTab, path: &str) -> bool {
     {
         // If it's *also* in unstaged, prefer unstaged (where the user is
         // actively editing). Otherwise show the staged side.
-        !tab.status.unstaged.iter().any(|f| f.path == path)
-            && !tab.status.untracked.iter().any(|f| f.path == path)
+        !view.status.unstaged.iter().any(|f| f.path == path)
+            && !view.status.untracked.iter().any(|f| f.path == path)
     } else {
         false
     }

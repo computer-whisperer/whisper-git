@@ -80,7 +80,7 @@ fn section_body(tab: &RepoTab, section: SidebarSection) -> Option<El> {
 }
 
 fn local_body(tab: &RepoTab) -> El {
-    let current = tab.current_branch.as_str();
+    let current = tab.current_branch();
     let selected = match &tab.sidebar.selected {
         Some(SidebarSelection::Local(n)) => Some(n.as_str()),
         _ => None,
@@ -191,6 +191,13 @@ fn worktrees_body(tab: &RepoTab) -> Option<El> {
     if tab.worktrees.is_empty() {
         return None;
     }
+    // Compare by Path components rather than raw strings so trailing
+    // slashes (libgit2 sometimes adds them, `repo.workdir()` sometimes
+    // doesn't) don't desync the highlight from the actual selection.
+    let active_components: Option<Vec<_>> = tab
+        .active_worktree
+        .as_ref()
+        .map(|p| p.components().collect());
     let rows: Vec<El> = tab
         .worktrees
         .iter()
@@ -200,11 +207,14 @@ fn worktrees_body(tab: &RepoTab) -> Option<El> {
             } else {
                 w.branch.clone()
             };
+            let w_components: Vec<_> =
+                std::path::Path::new(&w.path).components().collect();
+            let is_active = active_components.as_ref() == Some(&w_components);
             item_row(
                 IconName::LayoutDashboard,
                 &w.name,
                 Some(detail),
-                false,
+                is_active,
                 false,
                 format!("worktree:{}", w.name),
             )

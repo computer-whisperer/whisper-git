@@ -14,22 +14,131 @@
 use aetna_core::{El, IconName, Selection, prelude::*};
 
 use crate::git::{FileStatus, FileStatusKind};
-use crate::repo_tab::RepoTab;
+use crate::repo_tab::{RepoTab, WorktreeView};
 
 pub const STAGING_WIDTH: f32 = 420.0;
 
-pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
-    let staged = &tab.status.staged;
-    let unstaged_all: Vec<&FileStatus> = tab
+/// Pill bar for picking which worktree the staging well operates on.
+///
+/// Hidden when there's only one worktree (the bar would have nothing to
+/// switch between, just clutter). Each pill carries:
+/// - the worktree's display name (shortened against the common prefix
+///   of all worktree names — e.g. `feat/x` and `feat/y` show as `x` and
+///   `y` rather than burning width on the shared prefix)
+/// - a dirty-count badge when the worktree's libgit2 metadata reports
+///   one
+/// - a `.current()` chainable on the active pill so the style profile
+///   system paints it as page-current rather than just selected
+///
+/// Pills are routed under the `wt_select:{path}` key — `ui_app.rs`
+/// strips that prefix and calls `RepoTab::select_worktree` with the
+/// resolved path. Paths are used as the routing key (rather than
+/// names) since names aren't unique across linked worktrees if you
+/// have nested setups.
+pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
+    if !tab.has_worktree_selector() {
+        return None;
+    }
+    let names: Vec<String> = tab
+        .worktree_order
+        .iter()
+        .filter_map(|p| tab.worktree_views.get(p).map(|v| v.name.clone()))
+        .collect();
+    let display = compute_display_names(&names);
+    let active = tab.active_worktree.clone();
+
+    let pills: Vec<El> = tab
+        .worktree_order
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            let view = tab.worktree_views.get(path)?;
+            let label = display.get(i).cloned().unwrap_or_else(|| view.name.clone());
+            let dirty = view.status.unstaged.len()
+                + view.status.untracked.len()
+                + view.status.staged.len()
+                + view.status.conflicted.len();
+            let is_active = active.as_ref() == Some(path);
+            let mut children: Vec<El> = vec![
+                icon(IconName::LayoutDashboard).muted(),
+                text(label).label(),
+            ];
+            if dirty > 0 {
+                children.push(badge(format!("{dirty}")).muted());
+            }
+            let key = format!("wt_select:{}", path.to_string_lossy());
+            let pill = row(children)
+                .key(key)
+                .focusable()
+                .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
+                .gap(tokens::SPACE_XS)
+                .align(Align::Center);
+            Some(if is_active { pill.current() } else { pill })
+        })
+        .collect();
+
+    Some(
+        scroll([row(pills)
+            .padding(Sides::xy(tokens::SPACE_SM, tokens::SPACE_XS))
+            .gap(tokens::SPACE_XS)
+            .align(Align::Center)])
+        .key("worktree_selector:scroll")
+        .fill(tokens::MUTED)
+        .stroke(tokens::BORDER)
+        .width(Size::Fill(1.0)),
+    )
+}
+
+/// Strip the longest common prefix (up to the last separator: `-`,
+/// `_`, or `/`) from a list of worktree names so pill labels read
+/// short. Single-name lists pass through; if shortening would
+/// produce an empty label, the originals are returned.
+fn compute_display_names(names: &[String]) -> Vec<String> {
+    if names.len() < 2 {
+        return names.to_vec();
+    }
+    let first = &names[0];
+    let prefix_len = first.len().min(
+        names[1..]
+            .iter()
+            .map(|n| {
+                first
+                    .chars()
+                    .zip(n.chars())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            })
+            .min()
+            .unwrap_or(0),
+    );
+    let common = &first[..prefix_len];
+    let strip_len = common
+        .rfind(['-', '_', '/'])
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if strip_len == 0 {
+        return names.to_vec();
+    }
+    let result: Vec<String> = names.iter().map(|n| n[strip_len..].to_string()).collect();
+    if result.iter().any(|s| s.is_empty()) {
+        names.to_vec()
+    } else {
+        result
+    }
+}
+
+pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
+    let staged = &view.status.staged;
+    let unstaged_all: Vec<&FileStatus> = view
         .status
         .unstaged
         .iter()
-        .chain(tab.status.untracked.iter())
+        .chain(view.status.untracked.iter())
         .collect();
-    let conflicted = &tab.status.conflicted;
+    let conflicted = &view.status.conflicted;
 
     let mut sections: Vec<El> = Vec::new();
-    sections.push(commit_message(tab, selection));
+    sections.push(commit_message(view, selection));
     if !conflicted.is_empty() {
         sections.push(file_section(
             "Conflicted",
@@ -59,21 +168,21 @@ pub fn staging_well(tab: &RepoTab, selection: &Selection) -> El {
     .height(Size::Fill(1.0))
 }
 
-fn commit_message(tab: &RepoTab, selection: &Selection) -> El {
+fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
     column([
         row([
             text("Commit").label(),
             spacer(),
-            text(format!("{} staged", tab.status.staged.len()))
+            text(format!("{} staged", view.status.staged.len()))
                 .caption()
                 .muted(),
         ])
         .align(Align::Center)
         .gap(tokens::SPACE_SM),
-        text_input(&tab.commit_subject, selection, "subject")
+        text_input(&view.commit_subject, selection, "subject")
             .key("subject")
             .width(Size::Fill(1.0)),
-        text_area(&tab.commit_body, selection, "body")
+        text_area(&view.commit_body, selection, "body")
             .key("body")
             .width(Size::Fill(1.0))
             .height(Size::Fixed(120.0)),
