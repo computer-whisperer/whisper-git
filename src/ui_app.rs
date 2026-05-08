@@ -709,9 +709,7 @@ impl WhisperApp {
             }
             "close_tab" => self.close_tab(self.active_tab),
             "fetch" => self.fetch(),
-            "pull" => self
-                .toasts
-                .push(ToastSpec::info("Pull needs branch picker (next slice)")),
+            "pull" => self.pull(),
             "push" => self.push(),
             "commit" => self.commit(),
             "stage_all" => self.stage_all(),
@@ -1376,6 +1374,33 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
     }
 
+    /// Pull the upstream of the current branch — `git pull <remote> <branch>`,
+    /// where `<remote>` is `default_remote()` (the upstream's remote when
+    /// tracking info exists; falls back to `origin`) and `<branch>` is
+    /// the current branch shorthand. Detached HEAD is rejected up-front
+    /// since pull has no source to use.
+    fn pull(&mut self) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Pull, true) else {
+            return;
+        };
+        let Some(tab) = self.active_mut() else { return };
+        let remote = tab
+            .repo
+            .default_remote()
+            .unwrap_or_else(|_| "origin".to_string());
+        let branch = tab.current_branch().to_string();
+        if branch.is_empty() {
+            self.toasts
+                .push(ToastSpec::error("Pull: HEAD is detached, no branch"));
+            return;
+        }
+        let rx = crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy);
+        let Some(tab) = self.active_mut() else { return };
+        tab.pull_op = Some(TimedOp::new(rx, format!("{remote}/{branch}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Pulling {remote}/{branch}…")));
+    }
+
     fn cherry_pick(&mut self, oid: git2::Oid) {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
             return;
@@ -1625,6 +1650,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     let view_mode = active.map(|t| t.view_mode).unwrap_or(RepoView::Working);
 
     let fetch_busy = active.map(|t| t.fetch_op.is_some()).unwrap_or(false);
+    let pull_busy = active.map(|t| t.pull_op.is_some()).unwrap_or(false);
     let push_busy = active.map(|t| t.push_op.is_some()).unwrap_or(false);
 
     let mut fetch_btn = button_with_icon(IconName::Download, "Fetch")
@@ -1632,6 +1658,12 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         .tooltip("git fetch");
     if fetch_busy {
         fetch_btn = fetch_btn.disabled();
+    }
+    let mut pull_btn = button_with_icon(IconName::Download, "Pull")
+        .key("pull")
+        .tooltip("git pull");
+    if pull_busy {
+        pull_btn = pull_btn.disabled();
     }
     let mut push_btn = button_with_icon(IconName::Upload, "Push")
         .key("push")
@@ -1652,9 +1684,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     bar_items.push(spacer());
     bar_items.push(toolbar_group([
         fetch_btn,
-        button_with_icon(IconName::Download, "Pull")
-            .key("pull")
-            .tooltip("git pull"),
+        pull_btn,
         push_btn,
         button_with_icon(IconName::GitCommit, "Commit")
             .key("commit")
