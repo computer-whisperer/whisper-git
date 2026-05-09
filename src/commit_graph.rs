@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use aetna_core::{Color, El, prelude::*};
 use git2::Oid;
 
+use crate::ci::{CiState, ProviderCommitRollup};
 use crate::git::CommitInfo;
 use crate::repo_tab::RepoTab;
 
@@ -169,6 +170,47 @@ impl GraphLayout {
     }
 }
 
+/// Compact CI dot for one provider's per-commit rollup. Color reflects
+/// the overall state across that provider's checks at this SHA; the
+/// tooltip enumerates each check by name + status. A 9 px square with
+/// `.radius(4.5)` reads as a circle and matches aetna's existing
+/// stroke conventions on small chrome.
+fn ci_dot(rollup: &ProviderCommitRollup) -> El {
+    let state = rollup.rollup.counts.overall_state();
+    let color = match state {
+        CiState::Success => tokens::SUCCESS,
+        CiState::Failure => tokens::DESTRUCTIVE,
+        CiState::Pending => tokens::WARNING,
+        CiState::None => tokens::MUTED_FOREGROUND,
+    };
+    let mut tip = format!("{}: ", rollup.provider.short_label());
+    if rollup.rollup.checks.is_empty() {
+        tip.push_str("no checks");
+    } else {
+        let parts: Vec<String> = rollup
+            .rollup
+            .checks
+            .iter()
+            .map(|c| {
+                let mark = match c.state {
+                    CiState::Success => "\u{2713}",  // ✓
+                    CiState::Failure => "\u{2717}",  // ✗
+                    CiState::Pending => "\u{22ef}",  // ⋯
+                    CiState::None => "\u{2014}",     // —
+                };
+                format!("{mark} {}", c.label)
+            })
+            .collect();
+        tip.push_str(&parts.join(", "));
+    }
+    El::new(Kind::Group)
+        .width(Size::Fixed(9.0))
+        .height(Size::Fixed(9.0))
+        .fill(color)
+        .radius(4.5)
+        .tooltip(tip)
+}
+
 /// One row's graph cell — paints a vertical lane line plus a circle
 /// node via the `commit_node` shader (registered in `ui_app.rs`).
 fn graph_cell(lane: usize, color: Color, selected: bool) -> El {
@@ -265,6 +307,7 @@ fn build_row(
     commit: &CommitInfo,
     layout: Option<&CommitLayout>,
     pills: &RowPills,
+    ci_rollups: Option<&[ProviderCommitRollup]>,
     is_detached_head_here: bool,
     idx: usize,
     selected: bool,
@@ -288,6 +331,11 @@ fn build_row(
         graph_cell(lane, color, selected),
         text(commit.short_id.clone()).mono().muted(),
     ];
+    if let Some(rollups) = ci_rollups {
+        for r in rollups {
+            children.push(ci_dot(r));
+        }
+    }
 
     // Pill priority order matches the old graph: clean worktrees
     // first (most likely to be cut by overflow), then branches, then
@@ -456,6 +504,11 @@ pub fn history_view(tab: &RepoTab) -> El {
                 && !tab.branch_tips.iter().any(|t| t.oid == c.id && !t.is_remote)
         })
         .collect();
+    let ci_per_row: Vec<Option<Vec<ProviderCommitRollup>>> = tab
+        .commits
+        .iter()
+        .map(|c| tab.ci_per_commit.get(&c.id.to_string()).cloned())
+        .collect();
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
@@ -470,6 +523,7 @@ pub fn history_view(tab: &RepoTab) -> El {
                 c,
                 layouts[i].as_ref(),
                 &pills_per_row[i],
+                ci_per_row[i].as_deref(),
                 detached_flags[i],
                 i,
                 selected,

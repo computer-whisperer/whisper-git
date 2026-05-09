@@ -21,11 +21,15 @@ use anyhow::{Context, Result};
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
+use winit::event_loop::EventLoopProxy;
+
+use crate::ci::{CiFetchResult, ProviderCiResult, ProviderCommitRollup};
 use crate::commit_graph::GraphLayout;
 use crate::git::{
     BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult, StashEntry,
     SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
+use crate::{github, gitlab, token_store};
 
 /// In-flight async git op — receiver for the worker-thread result plus
 /// metadata for toast / error wording. Carried per-tab per-op-kind so
@@ -253,6 +257,25 @@ pub struct RepoTab {
     /// Working-tree mutation ops (cherry-pick, revert). Single slot
     /// shared across kinds since they all conflict with each other.
     pub mutation_op: Option<TimedOp>,
+
+    // ---- CI status ----
+    /// Latest results, one per provider. The header bar reads these for
+    /// the branch-level summary; the graph rows index `ci_per_commit`
+    /// (derived) by SHA for per-commit dots.
+    pub ci_results: Vec<ProviderCiResult>,
+    /// In-flight CI fetches — one per provider per fetch attempt. Drained
+    /// each frame; on Ready, the matching `ci_results` entry is replaced.
+    pub ci_receivers: Vec<Receiver<ProviderCiResult>>,
+    /// When the last CI fetch was kicked off, regardless of outcome.
+    /// Drives the dynamic poll cadence in `WhisperApp::poll_ci_refresh`.
+    pub last_ci_fetch: Option<Instant>,
+    /// When the most recent successful push completed. Within 5 minutes
+    /// the CI poll cadence boosts to 15 s so users see new runs appear
+    /// quickly after they push.
+    pub last_push_time: Option<Instant>,
+    /// Per-commit rollups derived from `ci_results`. Recomputed whenever
+    /// a new provider result lands.
+    pub ci_per_commit: HashMap<String, Vec<ProviderCommitRollup>>,
 }
 
 impl RepoTab {
@@ -278,6 +301,11 @@ impl RepoTab {
             pull_op: None,
             push_op: None,
             mutation_op: None,
+            ci_results: Vec::new(),
+            ci_receivers: Vec::new(),
+            last_ci_fetch: None,
+            last_push_time: None,
+            ci_per_commit: HashMap::new(),
             repo,
         };
         tab.refresh();
@@ -582,6 +610,80 @@ impl RepoTab {
             .collect();
         v.sort_unstable();
         v
+    }
+
+    /// Kick off CI fetches for every configured remote that maps to a
+    /// known provider. One worker thread per (provider, remote) — each
+    /// thread sends its result back via `ci_receivers` and wakes the
+    /// event loop through `proxy`. Sets `last_ci_fetch` regardless of
+    /// how many fetches actually launched, so the poll cadence backs off
+    /// even when no remote is recognised.
+    ///
+    /// Tokens come from the system keychain via `token_store`. A missing
+    /// GitHub token short-circuits — we'd just get a 401 spam. GitLab
+    /// per-host tokens look up by the API base hostname.
+    pub fn trigger_ci_fetch(&mut self, proxy: EventLoopProxy<()>) {
+        self.last_ci_fetch = Some(Instant::now());
+        let github_token = token_store::get_github_token();
+        let mut seen_github = false;
+        let mut seen_gitlab: HashSet<String> = HashSet::new();
+        for remote in &self.remotes {
+            let url = match self.repo.remote_url(remote) {
+                Some(u) => u,
+                None => continue,
+            };
+            if !seen_github
+                && let Some(token) = github_token.as_deref()
+                && let Some(rx) = github::fetch_ci_status_async(token, &url, proxy.clone())
+            {
+                self.ci_receivers.push(rx);
+                seen_github = true;
+                continue;
+            }
+            if let Some(parsed) = gitlab::parse_gitlab_remote(&url) {
+                if !seen_gitlab.insert(parsed.api_base.clone()) {
+                    continue;
+                }
+                let host = parsed
+                    .api_base
+                    .strip_prefix("https://")
+                    .or_else(|| parsed.api_base.strip_prefix("http://"))
+                    .unwrap_or(&parsed.api_base);
+                if let Some(token) = token_store::get_gitlab_token(host)
+                    && let Some(rx) = gitlab::fetch_ci_status_async(&token, &url, proxy.clone())
+                {
+                    self.ci_receivers.push(rx);
+                }
+            }
+        }
+    }
+
+    /// Drain in-flight CI receivers. For each Ready result, replace any
+    /// existing entry for the same provider, keep the list sorted by
+    /// provider, and rebuild `ci_per_commit`. Returns true if any new
+    /// result landed (so the caller can request a redraw).
+    pub fn drain_ci_receivers(&mut self) -> bool {
+        use std::sync::mpsc::TryRecvError;
+        let mut changed = false;
+        self.ci_receivers.retain(|rx| match rx.try_recv() {
+            Ok(result) => {
+                self.ci_results
+                    .retain(|r| r.provider != result.provider);
+                self.ci_results.push(result);
+                self.ci_results.sort_by_key(|r| r.provider.sort_key());
+                changed = true;
+                false
+            }
+            Err(TryRecvError::Empty) => true,
+            Err(TryRecvError::Disconnected) => false,
+        });
+        if changed {
+            let merged = CiFetchResult {
+                providers: self.ci_results.clone(),
+            };
+            self.ci_per_commit = merged.per_commit_provider_rollups();
+        }
+        changed
     }
 
     /// Remote branches grouped by remote name. Within each remote, the

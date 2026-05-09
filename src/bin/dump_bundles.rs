@@ -264,6 +264,15 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.tabs[0].mutation_op = Some(synthetic_op("cherry-pick abc1234", 90));
             app
         }));
+        // CI surfaces — header-bar badges + per-commit dots in the
+        // graph. Synthetic ProviderCiResults exercise both providers
+        // and a mix of states so the bundle covers the full visual
+        // vocabulary in one scene.
+        scenes.push(("history_with_ci".to_string(), {
+            let mut t = reopen(first);
+            inject_synthetic_ci(&mut t);
+            WhisperApp::with_tabs(vec![t])
+        }));
     }
 
     if opened.len() >= 2 {
@@ -298,4 +307,123 @@ fn synthetic_op(label: &str, age_secs: u64) -> TimedOp {
     let mut op = TimedOp::new(rx, label);
     op.started = std::time::Instant::now() - std::time::Duration::from_secs(age_secs);
     op
+}
+
+/// Synthetic CI fixture: a GitHub failure on the head commit, a GitLab
+/// success, and per-commit rollups across the first few real commits so
+/// the graph rows show the dot strip. Exercises every state — Success,
+/// Failure, Pending — for both surfaces in one bundle.
+fn inject_synthetic_ci(tab: &mut RepoTab) {
+    use std::collections::HashMap;
+    use whisper_git::ci::{
+        CiCheckStatus, CiCommitRollup, CiCounts, CiFetchResult, CiProvider, CiState, CiStatus,
+        ProviderCiResult,
+    };
+
+    let real: Vec<git2::Oid> = tab
+        .commits
+        .iter()
+        .filter(|c| !c.is_synthetic)
+        .take(6)
+        .map(|c| c.id)
+        .collect();
+    if real.is_empty() {
+        return;
+    }
+    let head = real[0].to_string();
+
+    let gh_runs = vec![
+        CiCheckStatus {
+            label: "build".into(),
+            state: CiState::Failure,
+            url: Some("https://example.com/runs/build".into()),
+        },
+        CiCheckStatus {
+            label: "test".into(),
+            state: CiState::Success,
+            url: None,
+        },
+        CiCheckStatus {
+            label: "lint".into(),
+            state: CiState::Pending,
+            url: None,
+        },
+    ];
+    let gh_counts = CiCounts::from_states(gh_runs.iter().map(|c| c.state));
+    let mut gh_per_commit: HashMap<String, CiCommitRollup> = HashMap::new();
+    gh_per_commit.insert(
+        head.clone(),
+        CiCommitRollup {
+            counts: gh_counts,
+            checks: gh_runs.clone(),
+        },
+    );
+    // Mix in success / pending across older commits so the dot strip
+    // varies down the rows.
+    for (i, oid) in real.iter().enumerate().skip(1) {
+        let state = match i % 3 {
+            0 => CiState::Success,
+            1 => CiState::Pending,
+            _ => CiState::Failure,
+        };
+        let counts = CiCounts::from_states(std::iter::once(state));
+        gh_per_commit.insert(
+            oid.to_string(),
+            CiCommitRollup {
+                counts,
+                checks: vec![CiCheckStatus {
+                    label: "build".into(),
+                    state,
+                    url: None,
+                }],
+            },
+        );
+    }
+    let github = ProviderCiResult {
+        provider: CiProvider::GitHub,
+        status: CiStatus {
+            state: CiState::Failure,
+            summary: "1 failed, 1 pending, 1 passed".into(),
+            url: Some("https://github.com/example/repo/actions".into()),
+            counts: Some(gh_counts),
+        },
+        per_commit_rollups: gh_per_commit,
+    };
+
+    let mut gl_per_commit: HashMap<String, CiCommitRollup> = HashMap::new();
+    gl_per_commit.insert(
+        head.clone(),
+        CiCommitRollup {
+            counts: CiCounts {
+                success: 1,
+                failure: 0,
+                pending: 0,
+            },
+            checks: vec![CiCheckStatus {
+                label: "Pipeline #4242".into(),
+                state: CiState::Success,
+                url: Some("https://gitlab.example/pipeline/4242".into()),
+            }],
+        },
+    );
+    let gitlab = ProviderCiResult {
+        provider: CiProvider::GitLab,
+        status: CiStatus {
+            state: CiState::Success,
+            summary: "Pipeline passed".into(),
+            url: Some("https://gitlab.example/pipelines".into()),
+            counts: Some(CiCounts {
+                success: 1,
+                failure: 0,
+                pending: 0,
+            }),
+        },
+        per_commit_rollups: gl_per_commit,
+    };
+
+    tab.ci_results = vec![github, gitlab];
+    let merged = CiFetchResult {
+        providers: tab.ci_results.clone(),
+    };
+    tab.ci_per_commit = merged.per_commit_provider_rollups();
 }

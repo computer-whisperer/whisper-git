@@ -622,6 +622,22 @@ impl WhisperApp {
             return;
         }
 
+        // ci:open:{idx} — open the provider's URL in the system browser.
+        // The index is into `active().ci_results`; values shift as
+        // results refresh, but only between frames so the route the
+        // user clicked is always valid by the time we read it.
+        if let Some(idx_str) = key.strip_prefix("ci:open:") {
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && let Some(url) = self
+                    .active()
+                    .and_then(|t| t.ci_results.get(idx))
+                    .and_then(|r| r.status.url.clone())
+            {
+                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+            }
+            return;
+        }
+
         // section:LOCAL etc.
         if let Some(section_key) = key.strip_prefix("section:") {
             if let Some(section) = parse_section(section_key)
@@ -1245,6 +1261,57 @@ impl WhisperApp {
             self.poll_async_ops_for_tab(idx);
         }
         self.poll_clone_op();
+        self.drain_ci_receivers();
+        self.poll_ci_refresh();
+    }
+
+    /// Drain CI fetch receivers for every tab. Quiet when nothing's
+    /// in flight — just one `try_recv` per (tab, in-flight provider).
+    fn drain_ci_receivers(&mut self) {
+        for tab in &mut self.tabs {
+            tab.drain_ci_receivers();
+        }
+    }
+
+    /// Per-tab CI refresh on a dynamic interval:
+    /// - 15 s when any provider is Pending or a push completed within
+    ///   the last 5 minutes (so users see CI light up shortly after
+    ///   they push).
+    /// - 5 min otherwise.
+    ///
+    /// Skips tabs with an in-flight fetch to avoid stacking requests
+    /// when the network is slow. The first call kicks off immediately
+    /// (no `last_ci_fetch` yet).
+    fn poll_ci_refresh(&mut self) {
+        use std::time::Instant;
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        for tab in &mut self.tabs {
+            if !tab.ci_receivers.is_empty() {
+                continue;
+            }
+            let any_pending = tab
+                .ci_results
+                .iter()
+                .any(|r| r.status.state == crate::ci::CiState::Pending);
+            let recently_pushed = tab
+                .last_push_time
+                .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+            let interval_secs = if any_pending || recently_pushed {
+                15
+            } else {
+                300
+            };
+            let due = match tab.last_ci_fetch {
+                None => true,
+                Some(last) => now.duration_since(last).as_secs() >= interval_secs,
+            };
+            if due {
+                tab.trigger_ci_fetch(proxy.clone());
+            }
+        }
     }
 
     fn poll_clone_op(&mut self) {
@@ -1340,6 +1407,16 @@ impl WhisperApp {
                 Ok((label, RemoteOpResult { success: true, .. })) => {
                     self.toasts
                         .push(ToastSpec::success(format!("{} {}", kind.past(), label)));
+                    // Push success: stamp the time so poll_ci_refresh
+                    // boosts to the 15 s cadence, and kick off an
+                    // immediate fetch so the new commit's runs surface
+                    // as soon as GitHub/GitLab pick them up.
+                    if matches!(kind, AsyncKind::Push) {
+                        tab.last_push_time = Some(std::time::Instant::now());
+                        if let Some(proxy) = self.proxy.clone() {
+                            tab.trigger_ci_fetch(proxy);
+                        }
+                    }
                 }
                 Ok((
                     label,
@@ -1811,6 +1888,9 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     }
 
     let mut bar_items: Vec<El> = vec![branch];
+    if let Some(tab) = active {
+        bar_items.extend(ci_badges(tab));
+    }
     let status_lines = op_status_lines(active, clone_op);
     if !status_lines.is_empty() {
         bar_items.push(
@@ -1897,6 +1977,68 @@ fn status_row(verb: &str, label: &str, secs: u64) -> El {
     row([spinner_with_color(arc_color), label_el])
         .gap(tokens::SPACE_2)
         .align(Align::Center)
+}
+
+/// Per-provider CI badges for the header bar. One row per provider in
+/// `tab.ci_results` — brand mark + state icon, tinted by state, with
+/// the human-readable summary as tooltip and a click route that opens
+/// the provider URL via `xdg-open`.
+fn ci_badges(tab: &RepoTab) -> Vec<El> {
+    use crate::ci::CiState;
+    use crate::widgets::brand_icons;
+    if tab.ci_results.is_empty() {
+        return Vec::new();
+    }
+    tab.ci_results
+        .iter()
+        .enumerate()
+        .map(|(idx, result)| {
+            let (state_icon, color) = match result.status.state {
+                CiState::Success => (Some(IconName::Check), tokens::SUCCESS),
+                CiState::Failure => (Some(IconName::AlertCircle), tokens::DESTRUCTIVE),
+                CiState::Pending => (Some(IconName::Activity), tokens::WARNING),
+                CiState::None => (None, tokens::MUTED_FOREGROUND),
+            };
+            let mut children: Vec<El> = vec![
+                icon(brand_icons::for_provider(result.provider))
+                    .icon_size(14.0)
+                    .text_color(color),
+            ];
+            if let Some(name) = state_icon {
+                children.push(icon(name).icon_size(14.0).text_color(color));
+            }
+            if let Some(counts) = result.status.counts {
+                let total = counts.total();
+                if total > 0 {
+                    let label = match result.status.state {
+                        CiState::Failure => format!("{} fail", counts.failure),
+                        CiState::Pending => format!("{} run", counts.pending),
+                        CiState::Success => format!("{}/{}", counts.success, total),
+                        CiState::None => String::new(),
+                    };
+                    if !label.is_empty() {
+                        children.push(text(label).caption().text_color(color));
+                    }
+                }
+            }
+            let mut badge = row(children)
+                .gap(tokens::SPACE_1)
+                .align(Align::Center)
+                .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+                .fill(color.with_alpha(28))
+                .stroke(color.with_alpha(96));
+            if result.status.url.is_some() {
+                badge = badge
+                    .key(format!("ci:open:{idx}"))
+                    .focusable();
+            }
+            badge.tooltip(format!(
+                "{} \u{00b7} {}",
+                result.provider.short_label(),
+                result.status.summary
+            ))
+        })
+        .collect()
 }
 
 fn shortcut_bar() -> El {
