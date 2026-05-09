@@ -9,10 +9,12 @@ use aetna_core::{El, prelude::*};
 use crate::git::{self, FileStatus};
 use crate::repo_tab::{RepoTab, WorktreeView};
 use crate::widgets::diff::{
-    DiffData, DiffHunk, DiffHunkAction, DiffLine, DiffLineKind, diff,
+    DiffData, DiffHunk, DiffHunkAction, DiffLine, DiffLineKind, DiffMode, diff,
 };
 
-pub fn diff_view(tab: &RepoTab) -> El {
+pub const DIFF_MODE_TOGGLE_KEY: &str = "diff:mode_toggle";
+
+pub fn diff_view(tab: &RepoTab, mode: DiffMode) -> El {
     let Some(view) = tab.active_view() else {
         return empty_diff("No active worktree.");
     };
@@ -20,11 +22,13 @@ pub fn diff_view(tab: &RepoTab) -> El {
         return empty_diff("No file selected.");
     };
 
-    let data = if let Some(oid) = tab.selected_commit {
+    let mut data = if let Some(oid) = tab.selected_commit {
         commit_diff(view, oid, path)
     } else {
         working_diff(view, path)
     };
+    data.mode = mode;
+    data.mode_toggle_key = Some(DIFF_MODE_TOGGLE_KEY.to_string());
     diff(&data)
 }
 
@@ -41,6 +45,8 @@ fn working_diff(view: &WorktreeView, path: &str) -> DiffData {
         title: path.to_string(),
         badge: Some(badge),
         hunks: widget_hunks,
+        mode: DiffMode::Unified,
+        mode_toggle_key: None,
     }
 }
 
@@ -58,6 +64,8 @@ fn commit_diff(view: &WorktreeView, oid: git2::Oid, path: &str) -> DiffData {
         title: path.to_string(),
         badge: Some(short),
         hunks: widget_hunks,
+        mode: DiffMode::Unified,
+        mode_toggle_key: None,
     }
 }
 

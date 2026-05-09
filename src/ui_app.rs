@@ -359,7 +359,14 @@ impl App for WhisperApp {
                 // well or in a selected commit's file list). The graph
                 // is the home base — Escape unwinds back to it.
                 let center = match tab.active_view() {
-                    Some(view) if view.selected_diff_file.is_some() => diff_view::diff_view(tab),
+                    Some(view) if view.selected_diff_file.is_some() => {
+                        let mode = if self.config.diff_split {
+                            crate::widgets::diff::DiffMode::Split
+                        } else {
+                            crate::widgets::diff::DiffMode::Unified
+                        };
+                        diff_view::diff_view(tab, mode)
+                    }
                     _ => commit_graph::history_view(tab),
                 };
 
@@ -638,6 +645,13 @@ impl WhisperApp {
             self.run_op("Unstage", move |t| {
                 t.active_repo().unstage_file(&path)
             });
+            return;
+        }
+        // diff:mode_toggle — flip between unified and split. Persist
+        // the new preference so the user's choice survives a relaunch.
+        if key == diff_view::DIFF_MODE_TOGGLE_KEY {
+            self.config.diff_split = !self.config.diff_split;
+            let _ = self.config.save();
             return;
         }
         if let Some(path) = key.strip_prefix("diff:") {

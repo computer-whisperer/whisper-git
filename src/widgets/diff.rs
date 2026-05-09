@@ -59,6 +59,20 @@ pub struct DiffData {
     pub title: String,
     pub badge: Option<String>,
     pub hunks: Vec<DiffHunk>,
+    pub mode: DiffMode,
+    /// Routed key for the mode-toggle button in the file header.
+    /// `None` hides the toggle (e.g., the host doesn't want a button
+    /// because it provides its own UI for switching).
+    pub mode_toggle_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum DiffMode {
+    /// Single column with `+` / `-` lines stacked, Github default.
+    #[default]
+    Unified,
+    /// Two columns (old | new) with paired changes side-by-side.
+    Split,
 }
 
 impl DiffData {
@@ -113,6 +127,9 @@ pub fn diff(data: &DiffData) -> El {
     if let Some(b) = data.badge.as_ref() {
         header_children.push(badge(b.clone()).muted());
     }
+    if let Some(key) = data.mode_toggle_key.as_ref() {
+        header_children.push(mode_toggle_button(data.mode, key));
+    }
     let header_row = row(header_children)
         .gap(tokens::SPACE_2)
         .align(Align::Center);
@@ -120,7 +137,11 @@ pub fn diff(data: &DiffData) -> El {
     let body: El = if data.hunks.is_empty() {
         column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_4)
     } else {
-        let blocks: Vec<El> = data.hunks.iter().map(hunk_block).collect();
+        let blocks: Vec<El> = data
+            .hunks
+            .iter()
+            .map(|h| hunk_block(h, data.mode))
+            .collect();
         column(blocks).gap(tokens::SPACE_3).padding(tokens::SPACE_3)
     };
 
@@ -138,7 +159,19 @@ pub fn diff(data: &DiffData) -> El {
     .width(Size::Fill(1.0))
 }
 
-fn hunk_block(hunk: &DiffHunk) -> El {
+fn mode_toggle_button(mode: DiffMode, key: &str) -> El {
+    let (label, tip) = match mode {
+        DiffMode::Unified => ("Split", "Switch to side-by-side view"),
+        DiffMode::Split => ("Unified", "Switch to single-column view"),
+    };
+    button(label.to_string())
+        .key(key.to_string())
+        .ghost()
+        .small()
+        .tooltip(tip.to_string())
+}
+
+fn hunk_block(hunk: &DiffHunk, mode: DiffMode) -> El {
     let mut header_children: Vec<El> = Vec::with_capacity(3);
     let (range, context) = split_hunk_header(&hunk.header);
     header_children.push(text(range).code().text_color(tokens::INFO));
@@ -157,13 +190,19 @@ fn hunk_block(hunk: &DiffHunk) -> El {
         .gap(tokens::SPACE_2)
         .align(Align::Center);
 
-    let lines: Vec<El> = hunk.lines.iter().map(line_row).collect();
+    let body: Vec<El> = match mode {
+        DiffMode::Unified => hunk.lines.iter().map(unified_line_row).collect(),
+        DiffMode::Split => pair_lines(&hunk.lines)
+            .iter()
+            .map(split_pair_row)
+            .collect(),
+    };
 
     card([
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
             .fill(tokens::MUTED),
-        card_content(lines).padding(0.0),
+        card_content(body).padding(0.0),
     ])
 }
 
@@ -190,18 +229,10 @@ fn split_hunk_header(header: &str) -> (String, Option<String>) {
     (trimmed.to_string(), None)
 }
 
-fn line_row(line: &DiffLine) -> El {
-    let (row_bg, gutter_overlay) = match line.kind {
-        DiffLineKind::Addition => (
-            Some(tokens::SUCCESS.with_alpha(ROW_BG_ALPHA)),
-            tokens::SUCCESS.with_alpha(GUTTER_TINT_ALPHA),
-        ),
-        DiffLineKind::Deletion => (
-            Some(tokens::DESTRUCTIVE.with_alpha(ROW_BG_ALPHA)),
-            tokens::DESTRUCTIVE.with_alpha(GUTTER_TINT_ALPHA),
-        ),
-        DiffLineKind::Context => (None, tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA)),
-    };
+/// One row in unified mode: [old_no | new_no | content], a single
+/// row tinted by the line kind.
+fn unified_line_row(line: &DiffLine) -> El {
+    let (row_bg, gutter_overlay) = backgrounds_for(line.kind);
 
     let old_no = line
         .old_lineno
@@ -212,16 +243,6 @@ fn line_row(line: &DiffLine) -> El {
         .map(|n| n.to_string())
         .unwrap_or_default();
 
-    let lineno_col = |s: String| {
-        text(s)
-            .mono()
-            .caption()
-            .muted()
-            .nowrap_text()
-            .text_align(TextAlign::End)
-            .width(Size::Fixed(LINENO_COL_WIDTH))
-            .padding(Sides::xy(tokens::SPACE_2, 0.0))
-    };
     let gutter = row([lineno_col(old_no), lineno_col(new_no)])
         .fill(gutter_overlay)
         .align(Align::Center);
@@ -233,6 +254,147 @@ fn line_row(line: &DiffLine) -> El {
     } else {
         row_el
     }
+}
+
+fn lineno_col(s: String) -> El {
+    text(s)
+        .mono()
+        .caption()
+        .muted()
+        .nowrap_text()
+        .text_align(TextAlign::End)
+        .width(Size::Fixed(LINENO_COL_WIDTH))
+        .padding(Sides::xy(tokens::SPACE_2, 0.0))
+}
+
+fn backgrounds_for(kind: DiffLineKind) -> (Option<Color>, Color) {
+    match kind {
+        DiffLineKind::Addition => (
+            Some(tokens::SUCCESS.with_alpha(ROW_BG_ALPHA)),
+            tokens::SUCCESS.with_alpha(GUTTER_TINT_ALPHA),
+        ),
+        DiffLineKind::Deletion => (
+            Some(tokens::DESTRUCTIVE.with_alpha(ROW_BG_ALPHA)),
+            tokens::DESTRUCTIVE.with_alpha(GUTTER_TINT_ALPHA),
+        ),
+        DiffLineKind::Context => (None, tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA)),
+    }
+}
+
+/// One row in split mode: [old_lineno | old_content | new_lineno | new_content].
+/// Either side may be `None` (orphan add/delete with no paired counterpart).
+fn split_pair_row(pair: &PairedRow) -> El {
+    let left = side_half(pair.left.as_ref(), Side::Left);
+    let right = side_half(pair.right.as_ref(), Side::Right);
+    row([left, right]).align(Align::Stretch)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Render one half of a split row. `None` is an orphan placeholder
+/// (the other side has a +/- with no paired counterpart) — we paint
+/// the row tint without content so the eye sees "this side is empty
+/// here, the change is on the other side."
+fn side_half(line: Option<&DiffLine>, side: Side) -> El {
+    let lineno = line
+        .and_then(|l| match side {
+            Side::Left => l.old_lineno,
+            Side::Right => l.new_lineno,
+        })
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+
+    let kind_for_tint = line.map(|l| l.kind).unwrap_or(DiffLineKind::Context);
+    // Empty-orphan halves get the *opposite* side's tint so a
+    // missing left (paired with an addition on the right) shows as
+    // a subtle gray-equivalent missing slot rather than a fake
+    // green/red. We use a slightly stronger MUTED tint to mark "no
+    // line here."
+    let (row_bg, gutter_overlay) = if line.is_some() {
+        backgrounds_for(kind_for_tint)
+    } else {
+        let muted = tokens::MUTED.with_alpha(ROW_BG_ALPHA);
+        let muted_gutter = tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA + 24);
+        (Some(muted), muted_gutter)
+    };
+
+    let gutter = row([lineno_col(lineno)])
+        .fill(gutter_overlay)
+        .align(Align::Center);
+
+    let content = match line {
+        Some(l) => line_content(l),
+        None => text(String::new())
+            .mono()
+            .nowrap_text()
+            .padding(Sides::xy(tokens::SPACE_2, 0.0))
+            .width(Size::Fill(1.0)),
+    };
+
+    let half = row([gutter, content])
+        .align(Align::Center)
+        .width(Size::Fill(1.0));
+
+    if let Some(bg) = row_bg {
+        half.fill(bg)
+    } else {
+        half
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PairedRow {
+    left: Option<DiffLine>,
+    right: Option<DiffLine>,
+}
+
+/// Pair lines for split rendering. Context lines pair with themselves.
+/// Consecutive runs of `-` and `+` lines pair index-by-index; if one
+/// run is longer, the extra lines pair with `None` on the other side.
+///
+/// This is the standard "myers-ish naive pairing" most diff viewers
+/// use; it doesn't try to find the best LCS within a hunk. For real
+/// code review the result is usually right because libgit2's
+/// `highlight_ranges` already nudges nearby `-` / `+` lines into the
+/// expected pairing.
+fn pair_lines(lines: &[DiffLine]) -> Vec<PairedRow> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        match lines[i].kind {
+            DiffLineKind::Context => {
+                out.push(PairedRow {
+                    left: Some(lines[i].clone()),
+                    right: Some(lines[i].clone()),
+                });
+                i += 1;
+            }
+            DiffLineKind::Addition | DiffLineKind::Deletion => {
+                let mut deletions: Vec<DiffLine> = Vec::new();
+                let mut additions: Vec<DiffLine> = Vec::new();
+                while i < lines.len() {
+                    match lines[i].kind {
+                        DiffLineKind::Deletion => deletions.push(lines[i].clone()),
+                        DiffLineKind::Addition => additions.push(lines[i].clone()),
+                        DiffLineKind::Context => break,
+                    }
+                    i += 1;
+                }
+                let n = deletions.len().max(additions.len());
+                for j in 0..n {
+                    out.push(PairedRow {
+                        left: deletions.get(j).cloned(),
+                        right: additions.get(j).cloned(),
+                    });
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Render a line's content as a single shaped row. When the line
@@ -327,6 +489,8 @@ mod tests {
         let data = DiffData {
             title: "f.rs".into(),
             badge: None,
+            mode: DiffMode::default(),
+            mode_toggle_key: None,
             hunks: vec![
                 DiffHunk {
                     header: "@@ -1,2 +1,3 @@".into(),
@@ -345,6 +509,61 @@ mod tests {
             ],
         };
         assert_eq!(data.stats(), (3, 1));
+    }
+
+    fn line(kind: DiffLineKind, content: &str) -> DiffLine {
+        DiffLine {
+            kind,
+            content: content.into(),
+            old_lineno: None,
+            new_lineno: None,
+            highlights: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pair_lines_pairs_consecutive_dels_with_adds() {
+        let lines = vec![
+            line(DiffLineKind::Context, "ctx1"),
+            line(DiffLineKind::Deletion, "old1"),
+            line(DiffLineKind::Deletion, "old2"),
+            line(DiffLineKind::Addition, "new1"),
+            line(DiffLineKind::Addition, "new2"),
+            line(DiffLineKind::Context, "ctx2"),
+        ];
+        let pairs = pair_lines(&lines);
+        assert_eq!(pairs.len(), 4);
+        // ctx pairs with itself.
+        assert_eq!(pairs[0].left.as_ref().unwrap().content, "ctx1");
+        assert_eq!(pairs[0].right.as_ref().unwrap().content, "ctx1");
+        // The 2-deletion / 2-addition run pairs index-by-index.
+        assert_eq!(pairs[1].left.as_ref().unwrap().content, "old1");
+        assert_eq!(pairs[1].right.as_ref().unwrap().content, "new1");
+        assert_eq!(pairs[2].left.as_ref().unwrap().content, "old2");
+        assert_eq!(pairs[2].right.as_ref().unwrap().content, "new2");
+        // Trailing context.
+        assert_eq!(pairs[3].left.as_ref().unwrap().content, "ctx2");
+        assert_eq!(pairs[3].right.as_ref().unwrap().content, "ctx2");
+    }
+
+    #[test]
+    fn pair_lines_orphans_extra_dels_or_adds() {
+        // 1 deletion + 3 additions — the first addition pairs with
+        // the deletion, the other two are orphans (left=None).
+        let lines = vec![
+            line(DiffLineKind::Deletion, "old"),
+            line(DiffLineKind::Addition, "new1"),
+            line(DiffLineKind::Addition, "new2"),
+            line(DiffLineKind::Addition, "new3"),
+        ];
+        let pairs = pair_lines(&lines);
+        assert_eq!(pairs.len(), 3);
+        assert_eq!(pairs[0].left.as_ref().unwrap().content, "old");
+        assert_eq!(pairs[0].right.as_ref().unwrap().content, "new1");
+        assert!(pairs[1].left.is_none());
+        assert_eq!(pairs[1].right.as_ref().unwrap().content, "new2");
+        assert!(pairs[2].left.is_none());
+        assert_eq!(pairs[2].right.as_ref().unwrap().content, "new3");
     }
 
     #[test]

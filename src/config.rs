@@ -39,6 +39,9 @@ pub struct Config {
     /// commit details pane in History view.
     #[serde(default = "default_right_w")]
     pub right_pane_w: f32,
+    /// `true` for side-by-side diff view; `false` for unified.
+    #[serde(default)]
+    pub diff_split: bool,
 }
 
 fn default_sidebar_w() -> f32 {
@@ -78,6 +81,7 @@ impl Default for Config {
             gitlab_tokens: HashMap::new(),
             sidebar_w: default_sidebar_w(),
             right_pane_w: default_right_w(),
+            diff_split: false,
         }
     }
 }

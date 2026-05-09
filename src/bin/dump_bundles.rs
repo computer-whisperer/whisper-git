@@ -126,11 +126,22 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 WhisperApp::with_tabs(vec![{
                     let mut t = reopen(first);
                     if let Some(view) = t.active_view_mut() {
-                        view.selected_diff_file = Some(diff_target);
+                        view.selected_diff_file = Some(diff_target.clone());
                     }
                     t
                 }]),
             ));
+            scenes.push(("diff_view_split".to_string(), {
+                let mut app = WhisperApp::with_tabs(vec![{
+                    let mut t = reopen(first);
+                    if let Some(view) = t.active_view_mut() {
+                        view.selected_diff_file = Some(diff_target);
+                    }
+                    t
+                }]);
+                app.config.diff_split = true;
+                app
+            }));
         }
         scenes.push(("history_view".to_string(), {
             let mut t = reopen(first);
