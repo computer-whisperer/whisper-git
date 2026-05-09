@@ -133,36 +133,36 @@ pub struct CloneForm {
 /// off `git::clone_async` and closes the modal. The async result lands
 /// in `WhisperApp::clone_op` and either creates a new tab or surfaces
 /// an Error modal.
-pub fn clone_modal(form: &CloneForm, selection: &Selection, in_flight: bool) -> El {
-    // Stacked label/input layout — `field_row` puts a spacer between the
-    // label and control, which leaves a long URL or path squeezed onto
-    // the right edge of the panel. Stacking gives the input the full
-    // panel width.
-    let url_field = column([
-        text("Repository URL").label(),
-        text_input(&form.url, selection, "clone:url")
-            .key("clone:url")
-            .width(Size::Fill(1.0)),
-    ])
-    .gap(tokens::SPACE_1)
-    .width(Size::Fill(1.0));
-
-    let dest_field = column([
-        text("Destination").label(),
-        row([
-            text_input(&form.dest, selection, "clone:dest")
-                .key("clone:dest")
+pub fn clone_modal(state: &CloneForm, selection: &Selection, in_flight: bool) -> El {
+    // Long fields stack their label above the control via `form_item` —
+    // `field_row` would squeeze a URL or path onto the right edge of the
+    // panel, which the README's catalog explicitly flags as the wrong
+    // shape for stacked-field intent.
+    let url_field = form_item([
+        form_label("Repository URL"),
+        form_control(
+            text_input(&state.url, selection, "clone:url")
+                .key("clone:url")
                 .width(Size::Fill(1.0)),
-            button("Browse\u{2026}").key("clone:browse").ghost(),
-        ])
-        .gap(tokens::SPACE_2)
-        .align(Align::Center)
-        .width(Size::Fill(1.0)),
-    ])
-    .gap(tokens::SPACE_1)
-    .width(Size::Fill(1.0));
+        ),
+    ]);
 
-    let bare_field = field_row("Bare clone", switch(form.bare).key("clone:bare"));
+    let dest_field = form_item([
+        form_label("Destination"),
+        form_control(
+            row([
+                text_input(&state.dest, selection, "clone:dest")
+                    .key("clone:dest")
+                    .width(Size::Fill(1.0)),
+                button("Browse\u{2026}").key("clone:browse").ghost(),
+            ])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center)
+            .width(Size::Fill(1.0)),
+        ),
+    ]);
+
+    let bare_field = field_row("Bare clone", switch(state.bare).key("clone:bare"));
 
     let primary = if in_flight {
         // Disabled-ish: the action handler short-circuits when an op is
@@ -180,7 +180,7 @@ pub fn clone_modal(form: &CloneForm, selection: &Selection, in_flight: bool) -> 
     .gap(tokens::SPACE_2)
     .align(Align::Center);
 
-    let body = column([url_field, dest_field, bare_field, actions]).gap(tokens::SPACE_3);
+    let body = form([url_field, dest_field, bare_field, actions]);
 
     overlays_panel(MODAL_CLONE_KEY, "Clone repository", [body])
 }
@@ -202,10 +202,10 @@ pub struct TokenForm {
 /// to GitHub — Set / Replace / Clear inline controls, no GitLab
 /// multi-host list yet. The actual keychain reads/writes go through
 /// `token_store`.
-pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) -> El {
-    let github_controls: El = if form.editing_github {
+pub fn token_modal(state: &TokenForm, selection: &Selection, github_set: bool) -> El {
+    let github_controls: El = if state.editing_github {
         row([
-            text_input(&form.github_input, selection, "token:github")
+            text_input(&state.github_input, selection, "token:github")
                 .key("token:github")
                 .width(Size::Fill(1.0)),
             button("Save").key("token:github:save").primary(),
@@ -216,9 +216,9 @@ pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) ->
         .width(Size::Fill(1.0))
     } else {
         let status: El = if github_set {
-            text("\u{2713} configured").text_color(tokens::SUCCESS)
+            badge("Configured").success()
         } else {
-            text("not set").muted()
+            badge("Not set").muted()
         };
         let mut children: Vec<El> = vec![
             status,
@@ -240,19 +240,16 @@ pub fn token_modal(form: &TokenForm, selection: &Selection, github_set: bool) ->
             .width(Size::Fill(1.0))
     };
 
-    let github_block = column([
-        text("GitHub").label(),
-        github_controls,
-        text("Stored in the system keychain via the `keyring` crate.")
-            .caption()
-            .muted(),
-    ])
-    .gap(tokens::SPACE_1);
+    let github_block = form_item([
+        form_label("GitHub"),
+        form_control(github_controls),
+        form_description("Stored in the system keychain via the `keyring` crate."),
+    ]);
 
     let actions = row([spacer(), button("Done").key("modal:token:close").primary()])
         .align(Align::Center);
 
-    let body = column([github_block, actions]).gap(tokens::SPACE_3);
+    let body = form([github_block, actions]);
 
     overlays_panel(MODAL_TOKEN_KEY, "Manage tokens", [body])
 }
