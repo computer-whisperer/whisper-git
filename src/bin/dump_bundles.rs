@@ -317,6 +317,16 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             let mut outer = reopen(first);
             let mut inner = reopen(first);
             inner.repo_name = "vendor/embassy".to_string();
+            // Pin the parent's expected commit a few rows below HEAD so
+            // the PINNED pill is visibly distinct from the HEAD/branch
+            // pills on the top row. Picking the 4th real commit gives
+            // the typical "the parent is N commits behind us" shape.
+            inner.pinned_oid = inner
+                .commits
+                .iter()
+                .filter(|c| !c.is_synthetic)
+                .nth(3)
+                .map(|c| c.id);
             outer.nav_stack.push(inner);
             WhisperApp::with_tabs(vec![outer])
         }));

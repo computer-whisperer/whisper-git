@@ -287,6 +287,13 @@ pub struct RepoTab {
     /// at root. Nested submodules push further entries onto the same
     /// outermost stack — there's only ever one stack per opened tab.
     pub nav_stack: Vec<RepoTab>,
+    /// OID the *parent* worktree pins this RepoTab to (the SHA stored
+    /// in the parent's index/tree as the submodule's expected commit).
+    /// Set when this RepoTab was pushed onto a nav_stack via
+    /// [`Self::enter_submodule`]; `None` at root since no one pins
+    /// the user's outermost repo. Drives the "PINNED" pill on the
+    /// commit-graph row that matches.
+    pub pinned_oid: Option<git2::Oid>,
 }
 
 impl RepoTab {
@@ -317,6 +324,7 @@ impl RepoTab {
             last_push_time: None,
             ci_per_commit: HashMap::new(),
             nav_stack: Vec::new(),
+            pinned_oid: None,
             repo,
         };
         tab.refresh();
@@ -663,14 +671,22 @@ impl RepoTab {
         // Resolve against the focused worktree's working directory
         // (not the focused tab's reference repo) so submodules of a
         // linked worktree open at the right path.
-        let workdir = active
+        let view = active
             .active_view()
-            .map(|v| v.path.clone())
-            .or_else(|| active.repo.workdir().map(Path::to_path_buf))
             .context("focused view has no working directory to resolve submodule against")?;
-        let abs_path = workdir.join(sm_path);
-        let new_tab = RepoTab::open(&abs_path)
+        let abs_path = view.path.join(sm_path);
+        // Capture what the parent's HEAD pins this submodule to so
+        // the drilled-in graph can highlight the matching commit.
+        // Match by path (libgit2 reports paths verbatim; names can be
+        // arbitrary).
+        let pinned_oid = view
+            .submodules
+            .iter()
+            .find(|s| s.path == sm_path)
+            .and_then(|s| s.head_oid);
+        let mut new_tab = RepoTab::open(&abs_path)
             .with_context(|| format!("opening submodule at {}", abs_path.display()))?;
+        new_tab.pinned_oid = pinned_oid;
         self.nav_stack.push(new_tab);
         Ok(())
     }

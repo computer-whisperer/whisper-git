@@ -309,6 +309,7 @@ fn build_row(
     pills: &RowPills,
     ci_rollups: Option<&[ProviderCommitRollup]>,
     is_detached_head_here: bool,
+    is_pinned: bool,
     idx: usize,
     selected: bool,
 ) -> El {
@@ -335,6 +336,20 @@ fn build_row(
         for r in rollups {
             children.push(ci_dot(r));
         }
+    }
+    // PINNED appears immediately after the SHA so it's adjacent to the
+    // commit identity — semantically it's an annotation about *which*
+    // commit the parent expects, not part of the worktree/branch
+    // labelling that follows. Only set when this RepoTab is a drilled-in
+    // submodule view and the row's OID matches the parent's pin.
+    if is_pinned {
+        children.push(pill(
+            "PINNED",
+            tokens::INFO,
+            44,
+            None,
+            Some("Parent repo pins this commit".to_string()),
+        ));
     }
 
     // Pill priority order matches the old graph: clean worktrees
@@ -509,6 +524,11 @@ pub fn history_view(tab: &RepoTab) -> El {
         .iter()
         .map(|c| tab.ci_per_commit.get(&c.id.to_string()).cloned())
         .collect();
+    let pinned_flags: Vec<bool> = tab
+        .commits
+        .iter()
+        .map(|c| tab.pinned_oid == Some(c.id))
+        .collect();
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
@@ -525,6 +545,7 @@ pub fn history_view(tab: &RepoTab) -> El {
                 &pills_per_row[i],
                 ci_per_row[i].as_deref(),
                 detached_flags[i],
+                pinned_flags[i],
                 i,
                 selected,
             )
