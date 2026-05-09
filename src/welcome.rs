@@ -63,7 +63,6 @@ pub fn welcome_view(recent: &[String]) -> El {
         .width(Size::Fixed(RECENT_COLUMN_WIDTH));
 
     column([spacer(), content, spacer()])
-        .gap(0.0)
         .align(Align::Center)
         .height(Size::Fill(1.0))
         .width(Size::Fill(1.0))

@@ -258,7 +258,7 @@ fn file_section(
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
             .fill(header_fill),
-        card_content(body).padding(0.0).gap(0.0),
+        card_content(body).padding(0.0),
     ]);
     if is_danger {
         card_el = card_el.surface_role(SurfaceRole::Danger);

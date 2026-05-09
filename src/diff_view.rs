@@ -111,7 +111,7 @@ fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
             .fill(tokens::ACCENT),
-        card_content(lines).padding(0.0).gap(0.0),
+        card_content(lines).padding(0.0),
     ])
 }
 

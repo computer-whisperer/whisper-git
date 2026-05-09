@@ -350,7 +350,7 @@ impl App for WhisperApp {
         if self.shortcut_bar_visible {
             chrome.push(shortcut_bar());
         }
-        let chrome_el = column(chrome).gap(0.0);
+        let chrome_el = column(chrome);
 
         let body = match self.active() {
             Some(tab) => {
@@ -370,7 +370,6 @@ impl App for WhisperApp {
                                     sel,
                                     staging::staging_well(view, &self.selection),
                                 ])
-                                .gap(0.0)
                                 .height(Size::Fill(1.0)),
                                 None => staging::staging_well(view, &self.selection),
                             };
@@ -398,12 +397,12 @@ impl App for WhisperApp {
                     children.push(resize_handle(Axis::Row).key("right:resize"));
                     children.push(right.width(Size::Fixed(self.right_pane_w)));
                 }
-                row(children).gap(0.0).height(Size::Fill(1.0))
+                row(children).height(Size::Fill(1.0))
             }
             None => welcome::welcome_view(&self.config.recent_repos),
         };
 
-        let main = column([chrome_el, body]).gap(0.0);
+        let main = column([chrome_el, body]);
         let modal_layer = self.active_modal.as_ref().map(|m| match m {
             ActiveModal::Settings => {
                 dialogs::settings_modal(&self.config, self.shortcut_bar_visible)

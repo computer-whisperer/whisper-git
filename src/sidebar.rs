@@ -17,11 +17,9 @@ pub fn sidebar(tab: &RepoTab) -> El {
         .map(|s| section_block(tab, s))
         .collect();
 
-    let body = column(sections).gap(0.0).width(Size::Fill(1.0));
+    let body = column(sections).width(Size::Fill(1.0));
 
-    sidebar_panel([scroll([body]).key("sidebar:scroll")])
-        .padding(0.0)
-        .gap(0.0)
+    sidebar_panel([scroll([body]).key("sidebar:scroll")]).padding(0.0)
 }
 
 fn section_block(tab: &RepoTab, section: SidebarSection) -> El {
@@ -33,7 +31,7 @@ fn section_block(tab: &RepoTab, section: SidebarSection) -> El {
             children.push(body);
         }
     }
-    column(children).gap(0.0)
+    column(children)
 }
 
 fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El {
@@ -108,7 +106,7 @@ fn local_body(tab: &RepoTab) -> El {
             )
         })
         .collect();
-    column(rows).gap(0.0)
+    column(rows)
 }
 
 fn remote_body(tab: &RepoTab) -> Option<El> {
@@ -142,7 +140,7 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
             );
         }
     }
-    Some(column(rows).gap(0.0))
+    Some(column(rows))
 }
 
 fn tags_body(tab: &RepoTab) -> Option<El> {
@@ -163,7 +161,7 @@ fn tags_body(tab: &RepoTab) -> Option<El> {
             )
         })
         .collect();
-    Some(column(rows).gap(0.0))
+    Some(column(rows))
 }
 
 fn submodules_body(tab: &RepoTab) -> Option<El> {
@@ -184,7 +182,7 @@ fn submodules_body(tab: &RepoTab) -> Option<El> {
             )
         })
         .collect();
-    Some(column(rows).gap(0.0))
+    Some(column(rows))
 }
 
 fn worktrees_body(tab: &RepoTab) -> Option<El> {
@@ -220,7 +218,7 @@ fn worktrees_body(tab: &RepoTab) -> Option<El> {
             )
         })
         .collect();
-    Some(column(rows).gap(0.0))
+    Some(column(rows))
 }
 
 fn stashes_body(tab: &RepoTab) -> Option<El> {
@@ -242,7 +240,7 @@ fn stashes_body(tab: &RepoTab) -> Option<El> {
             )
         })
         .collect();
-    Some(column(rows).gap(0.0))
+    Some(column(rows))
 }
 
 fn item_row(
