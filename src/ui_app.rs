@@ -796,6 +796,17 @@ impl WhisperApp {
             }
         }
 
+        // Submodule click from staging well or commit detail. Drill-down
+        // navigation lands in a follow-up; for now we surface the path
+        // in a toast so the affordance reads as "we noticed your click,
+        // it just doesn't do anything yet."
+        if let Some(path) = key.strip_prefix("submodule:open:") {
+            self.toasts.push(ToastSpec::info(format!(
+                "Submodule drill-down not yet wired: {path}"
+            )));
+            return;
+        }
+
         match key {
             "open_repo" => self.open_repo_dialog(),
             "welcome:clone" => {

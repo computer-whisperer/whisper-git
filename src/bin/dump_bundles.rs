@@ -289,6 +289,24 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             inject_synthetic_ci(&mut t);
             WhisperApp::with_tabs(vec![t])
         }));
+        // Submodule surfaces — a synthetic submodule list on the active
+        // worktree (drives the staging-well section) and synthetic
+        // pinned entries on the selected commit's CommitDetail (drives
+        // the commit-detail card). Real repos are unlikely to be
+        // checked out with submodules in this env, so we synthesize
+        // both here to cover the visuals.
+        scenes.push(("staging_with_submodules".to_string(), {
+            let mut t = reopen(first);
+            inject_synthetic_submodules_active_view(&mut t);
+            WhisperApp::with_tabs(vec![t])
+        }));
+        scenes.push(("commit_detail_with_submodules".to_string(), {
+            let mut t = reopen(first);
+            let pick = t.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id);
+            t.select_commit(pick);
+            inject_synthetic_submodules_commit_detail(&mut t);
+            WhisperApp::with_tabs(vec![t])
+        }));
     }
 
     if opened.len() >= 2 {
@@ -442,4 +460,107 @@ fn inject_synthetic_ci(tab: &mut RepoTab) {
         providers: tab.ci_results.clone(),
     };
     tab.ci_per_commit = merged.per_commit_provider_rollups();
+}
+
+/// Synthetic submodules on the active worktree view — covers each
+/// visible status (clean / staged-pointer / modified / drift) so the
+/// staging-well section paints the full vocabulary.
+fn inject_synthetic_submodules_active_view(tab: &mut RepoTab) {
+    use whisper_git::git::SubmoduleInfo;
+    let path = match tab.active_worktree.clone() {
+        Some(p) => p,
+        None => return,
+    };
+    let view = match tab.worktree_views.get_mut(&path) {
+        Some(v) => v,
+        None => return,
+    };
+    let head = git2::Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    let other = git2::Oid::from_str("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+    view.submodules = vec![
+        SubmoduleInfo {
+            name: "vendor/embassy".into(),
+            path: "vendor/embassy".into(),
+            branch: "main".into(),
+            is_dirty: Some(false),
+            head_oid: Some(head),
+            index_oid: Some(head),
+            workdir_oid: Some(head),
+        },
+        SubmoduleInfo {
+            name: "vendor/nanoarrow".into(),
+            path: "vendor/nanoarrow".into(),
+            branch: "release/1.0".into(),
+            is_dirty: Some(true),
+            head_oid: Some(head),
+            index_oid: Some(head),
+            workdir_oid: Some(head),
+        },
+        SubmoduleInfo {
+            name: "third_party/oggopus".into(),
+            path: "third_party/oggopus".into(),
+            branch: "main".into(),
+            is_dirty: Some(false),
+            head_oid: Some(head),
+            index_oid: Some(other),
+            workdir_oid: Some(other),
+        },
+        SubmoduleInfo {
+            name: "third_party/trouble".into(),
+            path: "third_party/trouble".into(),
+            branch: "main".into(),
+            is_dirty: Some(false),
+            head_oid: Some(head),
+            index_oid: Some(head),
+            workdir_oid: Some(other),
+        },
+    ];
+}
+
+/// Synthetic CommitSubmoduleEntry list on the cached commit detail —
+/// covers the changed (parent → pinned), new, and unchanged rows so
+/// the commit-detail card paints the full vocabulary. Trims the
+/// real commit's full_message down to the subject so the card lands
+/// inside the bundle viewport (otherwise it sits below the fold and
+/// only the interactive scroll exposes it).
+fn inject_synthetic_submodules_commit_detail(tab: &mut RepoTab) {
+    use whisper_git::git::CommitSubmoduleEntry;
+    let detail = match tab.commit_detail.as_mut() {
+        Some(d) => d,
+        None => return,
+    };
+    detail.info.full_message = detail
+        .info
+        .full_message
+        .lines()
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let parent = git2::Oid::from_str("1111111111111111111111111111111111111111").unwrap();
+    let pinned = git2::Oid::from_str("2222222222222222222222222222222222222222").unwrap();
+    let unchanged = git2::Oid::from_str("3333333333333333333333333333333333333333").unwrap();
+    let new_pin = git2::Oid::from_str("4444444444444444444444444444444444444444").unwrap();
+    detail.submodule_entries = vec![
+        CommitSubmoduleEntry {
+            name: "vendor/embassy".into(),
+            path: "vendor/embassy".into(),
+            pinned_oid: pinned,
+            changed: true,
+            parent_oid: Some(parent),
+        },
+        CommitSubmoduleEntry {
+            name: "vendor/new-arrival".into(),
+            path: "vendor/new-arrival".into(),
+            pinned_oid: new_pin,
+            changed: true,
+            parent_oid: None,
+        },
+        CommitSubmoduleEntry {
+            name: "third_party/oggopus".into(),
+            path: "third_party/oggopus".into(),
+            pinned_oid: unchanged,
+            changed: false,
+            parent_oid: Some(unchanged),
+        },
+    ];
 }

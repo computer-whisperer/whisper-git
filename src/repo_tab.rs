@@ -27,8 +27,9 @@ use crate::ci::{CiFetchResult, ProviderCiResult, ProviderCommitRollup};
 use crate::commit_graph::GraphLayout;
 use crate::config::Config;
 use crate::git::{
-    BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult, StashEntry,
-    SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
+    BranchTip, CommitInfo, CommitSubmoduleEntry, DiffFile, FullCommitInfo, GitRepo,
+    RemoteOpResult, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
+    insert_synthetics_sorted,
 };
 use crate::{github, gitlab, token_store};
 
@@ -60,6 +61,11 @@ impl TimedOp {
 pub struct CommitDetail {
     pub info: FullCommitInfo,
     pub files: Vec<DiffFile>,
+    /// Submodules pinned at this commit, with `changed = true` for any
+    /// pin that drifted from the first parent. The list is pre-sorted
+    /// changed-first by `submodules_at_commit` so callers can render
+    /// straight through.
+    pub submodule_entries: Vec<CommitSubmoduleEntry>,
 }
 
 /// Cap for `commit_graph()` — first cut, no infinite-scroll. Plenty for
@@ -592,7 +598,12 @@ impl RepoTab {
             }
         };
         let files = self.repo.diff_for_commit(oid).unwrap_or_default();
-        self.commit_detail = Some(CommitDetail { info, files });
+        let submodule_entries = self.repo.submodules_at_commit(oid).unwrap_or_default();
+        self.commit_detail = Some(CommitDetail {
+            info,
+            files,
+            submodule_entries,
+        });
     }
 
     /// Local branches sorted alphabetically.

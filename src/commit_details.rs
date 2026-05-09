@@ -73,15 +73,18 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         .gap(tokens::SPACE_1),
     ]);
 
-    scroll([column([
+    let mut cards: Vec<El> = vec![
         identity_card,
         titled_card(subject, body_children),
         files_card(detail),
-    ])
-    .gap(tokens::SPACE_3)
-    .padding(tokens::SPACE_3)])
-    .key("commit_details:scroll")
-    .height(Size::Fill(1.0))
+    ];
+    if !detail.submodule_entries.is_empty() {
+        cards.push(submodules_card(detail));
+    }
+
+    scroll([column(cards).gap(tokens::SPACE_3).padding(tokens::SPACE_3)])
+        .key("commit_details:scroll")
+        .height(Size::Fill(1.0))
 }
 
 fn files_card(detail: &crate::repo_tab::CommitDetail) -> El {
@@ -133,6 +136,89 @@ fn file_row(f: &crate::git::DiffFile) -> El {
         .align(Align::Center)
         .key(format!("commit_file:{}", f.path))
         .focusable()
+}
+
+/// "Submodules (N changed)" card listing the pinned SHA at this
+/// commit for each registered submodule. Changed entries surface as
+/// `parent_short \u{2192} pinned_short` so reviewers can see what
+/// pointer move the commit made; new submodules show just the pinned
+/// SHA. Rows are click-routed under `submodule:open:<path>` —
+/// drill-down (Phase 4) wires the route.
+fn submodules_card(detail: &crate::repo_tab::CommitDetail) -> El {
+    let entries = &detail.submodule_entries;
+    let changed_count = entries.iter().filter(|e| e.changed).count();
+    let title = if changed_count > 0 {
+        format!("Submodules ({changed_count} changed)")
+    } else {
+        format!("Submodules ({})", entries.len())
+    };
+
+    let summary = row([text(title).label(), spacer()])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center);
+
+    let body: Vec<El> = entries.iter().map(submodule_entry_row).collect();
+
+    card([
+        card_header([summary]).padding(tokens::SPACE_3),
+        card_content(body)
+            .padding(tokens::SPACE_3)
+            .pt(0.0)
+            .gap(tokens::SPACE_1),
+    ])
+}
+
+fn submodule_entry_row(entry: &crate::git::CommitSubmoduleEntry) -> El {
+    let pinned = entry.pinned_oid.to_string();
+    let pinned_short = &pinned[..7];
+    let sha_el = if entry.changed {
+        match entry.parent_oid {
+            Some(parent) => {
+                let parent_str = parent.to_string();
+                let parent_short = &parent_str[..7];
+                row([
+                    text(parent_short.to_string()).mono().muted(),
+                    text(" \u{2192} ".to_string()).mono().muted(),
+                    text(pinned_short.to_string())
+                        .mono()
+                        .text_color(tokens::WARNING),
+                ])
+                .gap(0.0)
+                .align(Align::Center)
+            }
+            None => text(format!("new \u{00b7} {pinned_short}"))
+                .mono()
+                .text_color(tokens::SUCCESS),
+        }
+    } else {
+        text(pinned_short.to_string()).mono().muted()
+    };
+
+    let name_el = if entry.changed {
+        text(entry.name.clone()).text_color(tokens::WARNING)
+    } else {
+        text(entry.name.clone())
+    };
+
+    row([
+        icon(IconName::Folder).muted(),
+        name_el.nowrap_text(),
+        spacer(),
+        sha_el,
+    ])
+    .key(format!("submodule:open:{}", entry.path))
+    .focusable()
+    .style_profile(StyleProfile::Surface)
+    .metrics_role(MetricsRole::ListItem)
+    .cursor(Cursor::Pointer)
+    .paint_overflow(Sides::all(tokens::RING_WIDTH))
+    .radius(tokens::RADIUS_SM)
+    .animate(Timing::SPRING_QUICK)
+    .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+    .gap(tokens::SPACE_2)
+    .align(Align::Center)
+    .height(Size::Fixed(28.0))
+    .tooltip(format!("path: {}", entry.path))
 }
 
 /// Split a commit message into (subject, body). Body is everything

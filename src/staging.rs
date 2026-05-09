@@ -13,7 +13,7 @@
 
 use aetna_core::{El, IconName, Selection, prelude::*};
 
-use crate::git::{FileStatus, FileStatusKind};
+use crate::git::{FileStatus, FileStatusKind, SubmoduleInfo};
 use crate::repo_tab::{RepoTab, WorktreeView};
 
 pub const STAGING_WIDTH: f32 = 420.0;
@@ -148,6 +148,9 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
         Some(("Stage all", "stage_all", true)),
         SurfaceRole::Sunken,
     ));
+    if !view.submodules.is_empty() {
+        sections.push(submodules_section(&view.submodules));
+    }
 
     column(sections)
         .width(Size::Fixed(STAGING_WIDTH))
@@ -294,4 +297,129 @@ fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
     .gap(tokens::SPACE_2)
     .align(Align::Center)
     .height(Size::Fixed(40.0))
+}
+
+/// Submodules registered in the active worktree. Each row shows the
+/// submodule's name + branch + status pill. Rows are click-routed under
+/// `submodule:open:<path>` — Phase 4 (drill-down navigation) wires the
+/// route; for now the click is informational. The header counts both
+/// total submodules and how many show staged-pointer / dirty state so
+/// users see at a glance whether there's submodule work pending.
+fn submodules_section(submodules: &[SubmoduleInfo]) -> El {
+    let pointer_changed = submodules
+        .iter()
+        .filter(|s| pin_changed(s))
+        .count();
+    let dirty = submodules
+        .iter()
+        .filter(|s| s.is_dirty == Some(true))
+        .count();
+
+    let mut header_children: Vec<El> = vec![
+        text("Submodules").caption().muted(),
+        badge(submodules.len().to_string()).muted(),
+        spacer(),
+    ];
+    if pointer_changed > 0 {
+        header_children.push(badge(format!("{pointer_changed} staged")).warning());
+    }
+    if dirty > 0 {
+        header_children.push(badge(format!("{dirty} modified")).warning());
+    }
+
+    let body: Vec<El> = submodules.iter().map(submodule_row).collect();
+
+    card([
+        card_header([row(header_children)
+            .align(Align::Center)
+            .gap(tokens::SPACE_2)])
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
+        .fill(tokens::MUTED),
+        card_content(body).padding(0.0),
+    ])
+}
+
+fn submodule_row(sm: &SubmoduleInfo) -> El {
+    let (status_label, status_color) = submodule_status(sm);
+    let path_short = sm.path.rsplit('/').next().unwrap_or(&sm.path).to_string();
+
+    let mut row_children: Vec<El> = vec![
+        icon(IconName::Folder).muted(),
+        text(if sm.name.is_empty() {
+            path_short
+        } else {
+            sm.name.clone()
+        }),
+    ];
+    if !sm.branch.is_empty() && sm.branch != "unknown" {
+        row_children.push(text(format!("\u{00b7} {}", sm.branch)).caption().muted());
+    }
+    row_children.push(spacer());
+    if let Some(label) = status_label {
+        row_children.push(badge(label).muted().text_color(status_color));
+    }
+
+    row(row_children)
+        .key(format!("submodule:open:{}", sm.path))
+        .focusable()
+        .style_profile(StyleProfile::Surface)
+        .metrics_role(MetricsRole::ListItem)
+        .cursor(Cursor::Pointer)
+        .paint_overflow(Sides::all(tokens::RING_WIDTH))
+        .radius(tokens::RADIUS_SM)
+        .animate(Timing::SPRING_QUICK)
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .height(Size::Fixed(32.0))
+        .tooltip(submodule_tooltip(sm))
+}
+
+/// Compact status label for one submodule. Returns `(label, color)`,
+/// or `(None, color)` for the clean / unknown cases. Priority:
+/// modified (working dir dirty) > staged-pointer (index_oid drifts
+/// from head_oid) > checkout-drift (workdir_oid differs from
+/// head_oid without a corresponding stage) > clean.
+fn submodule_status(sm: &SubmoduleInfo) -> (Option<String>, Color) {
+    if sm.is_dirty == Some(true) {
+        return (Some("modified".to_string()), tokens::WARNING);
+    }
+    if pin_changed(sm) {
+        return (Some("staged".to_string()), tokens::INFO);
+    }
+    if sm.workdir_oid != sm.head_oid && sm.workdir_oid.is_some() {
+        return (Some("drift".to_string()), tokens::DESTRUCTIVE);
+    }
+    if sm.is_dirty.is_none() {
+        // Async dirty check hasn't returned yet — keep the row neutral.
+        return (None, tokens::MUTED_FOREGROUND);
+    }
+    (None, tokens::SUCCESS)
+}
+
+fn pin_changed(sm: &SubmoduleInfo) -> bool {
+    match (sm.index_oid, sm.head_oid) {
+        (Some(idx), Some(head)) => idx != head,
+        _ => false,
+    }
+}
+
+fn submodule_tooltip(sm: &SubmoduleInfo) -> String {
+    let head = sm
+        .head_oid
+        .map(|o| o.to_string()[..7].to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let mut parts = vec![format!("HEAD pin: {head}")];
+    if let Some(idx) = sm.index_oid
+        && Some(idx) != sm.head_oid
+    {
+        parts.push(format!("staged: {}", &idx.to_string()[..7]));
+    }
+    if let Some(wd) = sm.workdir_oid
+        && Some(wd) != sm.head_oid
+    {
+        parts.push(format!("checked out: {}", &wd.to_string()[..7]));
+    }
+    parts.push(format!("path: {}", sm.path));
+    parts.join("\n")
 }
