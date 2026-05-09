@@ -1,10 +1,15 @@
 //! Branch sidebar composition.
 //!
-//! Renders the six collapsible sections (Local / Remote / Tags /
-//! Submodules / Worktrees / Stashes) as plain aetna primitives.
-//! Toggle keys: `section:<KEY>`. Item keys: `branch:<name>`,
-//! `remote:<remote>/<branch>`, `tag:<name>`, `submodule:<name>`,
-//! `worktree:<name>`, `stash:<idx>`.
+//! Renders the four collapsible sections (Local / Remote / Tags /
+//! Stashes) as plain aetna primitives. Toggle keys: `section:<KEY>`.
+//! Item keys: `branch:<name>`, `remote:<remote>/<branch>`,
+//! `tag:<name>`, `stash:<idx>`.
+//!
+//! Worktrees and submodules deliberately don't live here — see
+//! `staging::worktree_selector` for the worktree pill bar (top of
+//! the staging well) and the staging-well / commit-detail submodule
+//! lists for submodules. Both are properties of the active
+//! worktree, not the repo.
 
 use aetna_core::{El, IconName, prelude::*, widgets::sidebar::sidebar as sidebar_panel};
 
@@ -58,8 +63,6 @@ fn section_count(tab: &RepoTab, section: SidebarSection) -> usize {
         SidebarSection::Local => tab.local_branches().len(),
         SidebarSection::Remote => tab.remote_branches().iter().map(|(_, b)| b.len()).sum(),
         SidebarSection::Tags => tab.tags.len(),
-        SidebarSection::Submodules => tab.submodules.len(),
-        SidebarSection::Worktrees => tab.worktrees.len(),
         SidebarSection::Stashes => tab.stashes.len(),
     }
 }
@@ -69,8 +72,6 @@ fn section_body(tab: &RepoTab, section: SidebarSection) -> Option<El> {
         SidebarSection::Local => Some(local_body(tab)),
         SidebarSection::Remote => remote_body(tab),
         SidebarSection::Tags => tags_body(tab),
-        SidebarSection::Submodules => submodules_body(tab),
-        SidebarSection::Worktrees => worktrees_body(tab),
         SidebarSection::Stashes => stashes_body(tab),
     }
 }
@@ -156,63 +157,6 @@ fn tags_body(tab: &RepoTab) -> Option<El> {
                 false,
                 false,
                 format!("tag:{}", t.name),
-            )
-        })
-        .collect();
-    Some(column(rows))
-}
-
-fn submodules_body(tab: &RepoTab) -> Option<El> {
-    if tab.submodules.is_empty() {
-        return None;
-    }
-    let rows: Vec<El> = tab
-        .submodules
-        .iter()
-        .map(|s| {
-            item_row(
-                IconName::Folder,
-                &s.name,
-                None,
-                false,
-                false,
-                format!("submodule:{}", s.name),
-            )
-        })
-        .collect();
-    Some(column(rows))
-}
-
-fn worktrees_body(tab: &RepoTab) -> Option<El> {
-    if tab.worktrees.is_empty() {
-        return None;
-    }
-    // Compare by Path components rather than raw strings so trailing
-    // slashes (libgit2 sometimes adds them, `repo.workdir()` sometimes
-    // doesn't) don't desync the highlight from the actual selection.
-    let active_components: Option<Vec<_>> = tab
-        .active_worktree
-        .as_ref()
-        .map(|p| p.components().collect());
-    let rows: Vec<El> = tab
-        .worktrees
-        .iter()
-        .map(|w| {
-            let detail = if w.branch.is_empty() {
-                "(detached)".to_string()
-            } else {
-                w.branch.clone()
-            };
-            let w_components: Vec<_> =
-                std::path::Path::new(&w.path).components().collect();
-            let is_active = active_components.as_ref() == Some(&w_components);
-            item_row(
-                IconName::LayoutDashboard,
-                &w.name,
-                Some(detail),
-                is_active,
-                false,
-                format!("worktree:{}", w.name),
             )
         })
         .collect();

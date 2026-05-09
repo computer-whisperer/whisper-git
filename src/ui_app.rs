@@ -103,7 +103,6 @@ pub enum ContextTarget {
         branch: String,
     },
     Tag(String),
-    Worktree(String),
     Stash(usize),
     /// A row in the commit history view.
     Commit(git2::Oid),
@@ -758,8 +757,11 @@ impl WhisperApp {
             return;
         }
 
-        // Sidebar worktree click — promote it to active. Sibling sections
-        // still emit placeholder toasts (Phase 4c wires those).
+        // Worktree pill click — promote that worktree to active.
+        // Source: clean-worktree pills + the WT: pill on synthetic
+        // worktree rows in the commit graph (the sidebar no longer
+        // has a Worktrees section; the pill bar at the top of the
+        // staging well is the primary affordance).
         if let Some(name) = key.strip_prefix("worktree:") {
             if let Some(tab) = self.active_mut() {
                 let path = tab
@@ -784,13 +786,7 @@ impl WhisperApp {
         }
 
         // Sidebar item clicks — Phase 3 just announces them.
-        for prefix in [
-            "branch:",
-            "remote:",
-            "tag:",
-            "submodule:",
-            "stash:",
-        ] {
+        for prefix in ["branch:", "remote:", "tag:", "stash:"] {
             if let Some(name) = key.strip_prefix(prefix) {
                 let label = prefix.trim_end_matches(':');
                 self.toasts.push(ToastSpec::info(format!(
@@ -1181,11 +1177,6 @@ impl WhisperApp {
                     destructive: true,
                     action: ConfirmAction::DropStash(idx),
                 });
-            }
-            ("switch", ContextTarget::Worktree(name)) => {
-                self.toasts.push(ToastSpec::info(format!(
-                    "Switch to worktree '{name}' (Phase 5c)"
-                )));
             }
             ("copy_sha", ContextTarget::Commit(oid)) => {
                 let sha = oid.to_string();
@@ -1837,9 +1828,6 @@ fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
     if let Some(name) = route.strip_prefix("tag:") {
         return Some(ContextTarget::Tag(name.to_string()));
     }
-    if let Some(name) = route.strip_prefix("worktree:") {
-        return Some(ContextTarget::Worktree(name.to_string()));
-    }
     if let Some(idx_str) = route.strip_prefix("stash:") {
         if let Ok(idx) = idx_str.parse::<usize>() {
             return Some(ContextTarget::Stash(idx));
@@ -1864,7 +1852,6 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
         ],
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
-        ContextTarget::Worktree(_) => vec![menu_item("Switch to worktree").key("ctx:switch")],
         ContextTarget::Stash(_) => vec![menu_item("Drop").key("ctx:drop")],
         ContextTarget::Commit(_) => vec![
             menu_item("Copy SHA").key("ctx:copy_sha"),

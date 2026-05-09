@@ -66,13 +66,16 @@ pub struct CommitDetail {
 /// the visible viewport even on big repos. Lifted later if needed.
 const COMMIT_LIMIT: usize = 1000;
 
+/// Collapsible top-level sections of the left sidebar. Worktrees and
+/// submodules deliberately don't appear here — both belong to the
+/// active worktree, not the repo, and surface through the worktree
+/// pill bar (top of the staging well) and the staging-well /
+/// commit-detail submodule lists respectively.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum SidebarSection {
     Local,
     Remote,
     Tags,
-    Submodules,
-    Worktrees,
     Stashes,
 }
 
@@ -82,8 +85,6 @@ impl SidebarSection {
             Self::Local => "LOCAL",
             Self::Remote => "REMOTE",
             Self::Tags => "TAGS",
-            Self::Submodules => "SUBMODULES",
-            Self::Worktrees => "WORKTREES",
             Self::Stashes => "STASHES",
         }
     }
@@ -93,20 +94,12 @@ impl SidebarSection {
             Self::Local => "Local",
             Self::Remote => "Remote",
             Self::Tags => "Tags",
-            Self::Submodules => "Submodules",
-            Self::Worktrees => "Worktrees",
             Self::Stashes => "Stashes",
         }
     }
 
-    pub const ALL: [SidebarSection; 6] = [
-        Self::Local,
-        Self::Remote,
-        Self::Tags,
-        Self::Submodules,
-        Self::Worktrees,
-        Self::Stashes,
-    ];
+    pub const ALL: [SidebarSection; 4] =
+        [Self::Local, Self::Remote, Self::Tags, Self::Stashes];
 }
 
 /// A logical entry in the sidebar — the keyboard cursor lands on these.
@@ -115,8 +108,6 @@ pub enum SidebarSelection {
     Local(String),
     Remote { remote: String, branch: String },
     Tag(String),
-    Submodule(String),
-    Worktree(String),
     Stash(usize),
 }
 
