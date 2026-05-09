@@ -57,14 +57,6 @@ pub struct CommitDetail {
     pub files: Vec<DiffFile>,
 }
 
-/// Which center-pane view the tab is currently showing.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
-pub enum RepoView {
-    #[default]
-    Working,
-    History,
-}
-
 /// Cap for `commit_graph()` — first cut, no infinite-scroll. Plenty for
 /// the visible viewport even on big repos. Lifted later if needed.
 const COMMIT_LIMIT: usize = 1000;
@@ -231,10 +223,11 @@ pub struct RepoTab {
     pub graph_layout: GraphLayout,
 
     // ---- View state (repo-scoped) ----
-    /// Center-pane view mode (Working diff vs History graph).
-    pub view_mode: RepoView,
-    /// Currently selected commit (drives the right-pane preview when
-    /// the History view is active).
+    /// Currently selected commit. When `Some`, the right-pane upper
+    /// shows commit detail instead of the staging well; the center pane
+    /// stays on the graph until the user clicks a file (which sets
+    /// [`WorktreeView::selected_diff_file`] and pushes the diff into
+    /// the center).
     pub selected_commit: Option<git2::Oid>,
     /// Cached detail for `selected_commit`, refreshed via
     /// [`Self::select_commit`] when the selection changes.
@@ -276,7 +269,6 @@ impl RepoTab {
             sidebar: SidebarState::default(),
             commits: Vec::new(),
             graph_layout: GraphLayout::new(),
-            view_mode: RepoView::default(),
             selected_commit: None,
             commit_detail: None,
             worktree_views: HashMap::new(),
@@ -537,9 +529,11 @@ impl RepoTab {
             .unwrap_or("")
     }
 
-    /// `true` when there are 2+ worktrees (selector pill bar is visible).
+    /// `true` when there's at least one worktree to render in the
+    /// pill bar. Hidden only when the repo has no working tree at all
+    /// (effectively bare with zero linked worktrees).
     pub fn has_worktree_selector(&self) -> bool {
-        self.worktree_order.len() >= 2
+        !self.worktree_order.is_empty()
     }
 
     /// Switch the History view's selected commit. Clears the cached

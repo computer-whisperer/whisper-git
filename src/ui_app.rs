@@ -38,7 +38,7 @@ use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
 use crate::dialogs::{CloneForm, TokenForm};
-use crate::repo_tab::{RepoTab, RepoView, SidebarSection, TimedOp};
+use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
 use crate::staging;
@@ -354,49 +354,45 @@ impl App for WhisperApp {
 
         let body = match self.active() {
             Some(tab) => {
-                let has_right_pane = !matches!(
-                    (tab.view_mode, tab.active_view()),
-                    (RepoView::Working, None)
-                );
-                let (center, right) = match tab.view_mode {
-                    RepoView::Working => match tab.active_view() {
-                        Some(view) => {
-                            // The selector + staging-well pair share the
-                            // user-resized right-pane width; override the
-                            // default `STAGING_WIDTH` Fixed at the outer
-                            // wrapper so both stay aligned.
-                            let staging_pane = match staging::worktree_selector(tab) {
-                                Some(sel) => column([
-                                    sel,
-                                    staging::staging_well(view, &self.selection),
-                                ])
-                                .height(Size::Fill(1.0)),
-                                None => staging::staging_well(view, &self.selection),
-                            };
-                            (diff_view::diff_view(view), staging_pane)
-                        }
-                        None => (no_worktree_placeholder(), spacer().width(Size::Fixed(0.0))),
-                    },
-                    RepoView::History => (
-                        commit_graph::history_view(tab),
-                        commit_details::commit_details_pane(tab),
-                    ),
+                // Center pane: graph by default; the diff temporarily
+                // takes over when the user picks a file (in the staging
+                // well or in a selected commit's file list). The graph
+                // is the home base — Escape unwinds back to it.
+                let center = match tab.active_view() {
+                    Some(view) if view.selected_diff_file.is_some() => diff_view::diff_view(view),
+                    _ => commit_graph::history_view(tab),
                 };
 
+                // Right pane: worktree pill bar pinned at the top
+                // (always-on handle for one-or-more worktrees + at-a-glance
+                // dirty count), then either the commit detail (when a
+                // commit is selected) or the staging well (default).
+                let right_upper = if tab.selected_commit.is_some() {
+                    commit_details::commit_details_pane(tab)
+                } else if let Some(view) = tab.active_view() {
+                    staging::staging_well(view, &self.selection)
+                } else {
+                    no_worktree_placeholder()
+                };
+                let mut right_children: Vec<El> = Vec::with_capacity(2);
+                if let Some(pills) = staging::worktree_selector(tab) {
+                    right_children.push(pills);
+                }
+                right_children.push(right_upper);
+                let right = column(right_children).height(Size::Fill(1.0));
+
                 // Resizable layout: sidebar | resize_handle | center
-                // (| resize_handle | right). The handle widgets live as
+                // | resize_handle | right. The handle widgets live as
                 // siblings inside the row and route drag events to the
                 // app via their keys; aetna's `apply_event_fixed` folds
                 // the drag delta back into the size value.
-                let mut children: Vec<El> = vec![
+                let children: Vec<El> = vec![
                     sidebar::sidebar(tab).width(Size::Fixed(self.sidebar_w)),
                     resize_handle(Axis::Row).key("sidebar:resize"),
                     center,
+                    resize_handle(Axis::Row).key("right:resize"),
+                    right.width(Size::Fixed(self.right_pane_w)),
                 ];
-                if has_right_pane {
-                    children.push(resize_handle(Axis::Row).key("right:resize"));
-                    children.push(right.width(Size::Fixed(self.right_pane_w)));
-                }
                 row(children).height(Size::Fill(1.0))
             }
             None => welcome::welcome_view(&self.config.recent_repos),
@@ -728,16 +724,6 @@ impl WhisperApp {
             "settings" => self.active_modal = Some(ActiveModal::Settings),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
-            }
-            "view:tab:working" => {
-                if let Some(tab) = self.active_mut() {
-                    tab.view_mode = RepoView::Working;
-                }
-            }
-            "view:tab:history" => {
-                if let Some(tab) = self.active_mut() {
-                    tab.view_mode = RepoView::History;
-                }
             }
             "details:copy_sha" => {
                 if let Some(oid) = self.active().and_then(|t| t.selected_commit) {
@@ -1741,8 +1727,6 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     };
 
     let actions_enabled = active.is_some();
-    let view_mode = active.map(|t| t.view_mode).unwrap_or(RepoView::Working);
-
     let fetch_busy = active.map(|t| t.fetch_op.is_some()).unwrap_or(false);
     let pull_busy = active.map(|t| t.pull_op.is_some()).unwrap_or(false);
     let push_busy = active.map(|t| t.push_op.is_some()).unwrap_or(false);
@@ -1766,7 +1750,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         push_btn = push_btn.disabled();
     }
 
-    let mut bar_items: Vec<El> = vec![branch, view_mode_segment(view_mode)];
+    let mut bar_items: Vec<El> = vec![branch];
     let status_lines = op_status_lines(active, clone_op);
     if !status_lines.is_empty() {
         bar_items.push(
@@ -1853,22 +1837,6 @@ fn status_row(verb: &str, label: &str, secs: u64) -> El {
     row([spinner_with_color(arc_color), label_el])
         .gap(tokens::SPACE_2)
         .align(Align::Center)
-}
-
-/// Two-button segmented control in the header that toggles the
-/// center pane between the working diff and the commit history.
-/// Routed keys: `view:tab:working` / `view:tab:history`.
-fn view_mode_segment(current: RepoView) -> El {
-    use aetna_core::widgets::tabs::tabs_list;
-    let current_str = match current {
-        RepoView::Working => "working",
-        RepoView::History => "history",
-    };
-    tabs_list(
-        "view",
-        &current_str,
-        [("working", "Working"), ("history", "History")],
-    )
 }
 
 fn shortcut_bar() -> El {

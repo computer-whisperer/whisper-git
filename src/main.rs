@@ -92,7 +92,6 @@ fn main() -> Result<()> {
 
 fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
     use whisper_git::dialogs::{CloneForm, TokenForm};
-    use whisper_git::repo_tab::RepoView;
     use whisper_git::ui_app::{ActiveModal, ConfirmAction};
 
     let Some(state) = state else { return };
@@ -107,7 +106,6 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         }
         "history" => {
             if let Some(tab) = app.tabs.first_mut() {
-                tab.view_mode = RepoView::History;
                 let pick = tab.commits.first().map(|c| c.id);
                 tab.select_commit(pick);
             }
@@ -115,7 +113,6 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "commit-menu" => {
             use whisper_git::ui_app::{ContextMenuState, ContextTarget};
             if let Some(tab) = app.tabs.first_mut() {
-                tab.view_mode = RepoView::History;
                 if let Some(oid) = tab.commits.first().map(|c| c.id) {
                     tab.select_commit(Some(oid));
                     app.context_menu = Some(ContextMenuState {
