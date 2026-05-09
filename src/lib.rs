@@ -19,5 +19,6 @@ pub mod staging;
 pub mod token_store;
 pub mod ui_app;
 pub mod welcome;
+pub mod widgets;
 
 pub use ui_app::WhisperApp;
