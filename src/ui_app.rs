@@ -623,12 +623,19 @@ impl WhisperApp {
             }
             return;
         }
-        // wt_select:tab:{path} — switch the active worktree. The path
-        // is the tab_trigger value, routed verbatim (worktree names
-        // aren't always unique across nested checkouts).
+        // wt_select:tab:{path} — switch the active worktree and jump
+        // to the "about this worktree" state: drop any selected commit
+        // and diff so the right pane shows the staging well and the
+        // center returns to the graph. The path is the tab_trigger
+        // value, routed verbatim (worktree names aren't always unique
+        // across nested checkouts).
         if let Some(path) = key.strip_prefix("wt_select:tab:") {
             if let Some(tab) = self.active_mut() {
                 tab.select_worktree(std::path::PathBuf::from(path));
+                tab.select_commit(None);
+                if let Some(view) = tab.active_view_mut() {
+                    view.selected_diff_file = None;
+                }
             }
             return;
         }

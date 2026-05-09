@@ -1,15 +1,16 @@
-//! Right-pane preview for the History view: full SHA + parents,
-//! author + timestamp, full commit message, and the list of changed
-//! files with per-file insertion / deletion stats.
+//! Right-pane upper section when a commit is selected: full SHA +
+//! parents, author + timestamp, full commit message, and the list of
+//! changed files with per-file insertion / deletion stats.
 //!
-//! The data is cached on `RepoTab::commit_detail` so opening the pane
-//! doesn't rerun libgit2 every frame.
+//! Mirrors the staging well's "stack of cards in a plain scroll"
+//! shape so the right pane has one consistent rhythm regardless of
+//! whether it's showing draft state or browse state. The data is
+//! cached on `RepoTab::commit_detail` so opening the pane doesn't
+//! rerun libgit2 every frame.
 
 use aetna_core::{El, IconName, prelude::*};
 
 use crate::repo_tab::RepoTab;
-
-const PANE_WIDTH: f32 = 420.0;
 
 pub fn commit_details_pane(tab: &RepoTab) -> El {
     let pane = match (tab.selected_commit, &tab.commit_detail) {
@@ -17,16 +18,16 @@ pub fn commit_details_pane(tab: &RepoTab) -> El {
         (Some(_), None) => placeholder_pane("Loading…"),
         (None, _) => placeholder_pane("Select a commit to inspect."),
     };
-    pane.width(Size::Fixed(PANE_WIDTH)).height(Size::Fill(1.0))
+    pane.height(Size::Fill(1.0))
 }
 
 fn placeholder_pane(msg: &str) -> El {
-    card([
-        card_content([text(msg.to_string()).muted()])
-            .height(Size::Fill(1.0))
-            .align(Align::Center)
-            .justify(Justify::Center),
-    ])
+    column([text(msg.to_string()).muted()])
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .padding(tokens::SPACE_4)
+        .height(Size::Fill(1.0))
+        .width(Size::Fill(1.0))
 }
 
 fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
@@ -43,46 +44,41 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         vec![paragraph(body).label()]
     };
 
-    let identity = card_header([
-        row([
-            icon(IconName::GitCommit),
-            text(info.short_id.clone()).mono().label(),
-            spacer(),
-            button("Copy SHA")
-                .key("details:copy_sha")
-                .ghost()
-                .tooltip("Copy full commit SHA"),
+    let identity_card = card([
+        card_header([
+            row([
+                icon(IconName::GitCommit),
+                text(info.short_id.clone()).mono().label(),
+                spacer(),
+                button("Copy SHA")
+                    .key("details:copy_sha")
+                    .ghost()
+                    .tooltip("Copy full commit SHA"),
+            ])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center),
+            text(parents_label).muted().caption(),
+            text(format!(
+                "{} <{}> · {}",
+                info.author_name,
+                info.author_email,
+                info.relative_author_time(),
+            ))
+            .muted(),
         ])
-        .gap(tokens::SPACE_2)
-        .align(Align::Center),
-        text(parents_label).muted().caption(),
-        text(format!(
-            "{} <{}> · {}",
-            info.author_name,
-            info.author_email,
-            info.relative_author_time(),
-        ))
-        .muted(),
-    ])
-    .padding(tokens::SPACE_4)
-    .gap(tokens::SPACE_1);
+        .padding(tokens::SPACE_3)
+        .gap(tokens::SPACE_1),
+    ]);
 
-    let scroll_body = scroll([column([
+    scroll([column([
+        identity_card,
         titled_card(subject, body_children),
         files_card(detail),
     ])
     .gap(tokens::SPACE_3)
-    .padding(tokens::SPACE_4)
-    .pt(0.0)])
+    .padding(tokens::SPACE_3)])
     .key("commit_details:scroll")
-    .height(Size::Fill(1.0));
-
-    card([
-        identity,
-        card_content([scroll_body])
-            .padding(0.0)
-            .height(Size::Fill(1.0)),
-    ])
+    .height(Size::Fill(1.0))
 }
 
 fn files_card(detail: &crate::repo_tab::CommitDetail) -> El {
