@@ -397,13 +397,17 @@ fn pair_lines(lines: &[DiffLine]) -> Vec<PairedRow> {
     out
 }
 
-/// Render a line's content as a single shaped row. When the line
-/// carries `highlights`, the row is split into per-range mono text
-/// runs so the brighter highlight background paints exactly under
-/// the changed bytes (mono ensures char-aligned widths). Text stays
-/// FOREGROUND across the board — the row bg + word highlight bg
-/// carry the color signal, and Github-style colored text on tinted
-/// bg hurts readability for context-rich diffs.
+/// Render a line's content. When the line carries `highlights`,
+/// the line is composed as `text_runs([..text(span).background(hot)..])`
+/// so the whole line shapes as a single inline run and the brighter
+/// highlight bg paints tightly under the marked glyphs (per the
+/// `Kind::Inlines` contract). The previous row-of-text-leaves shape
+/// gave each segment its own El bbox, which left visible margins
+/// between consecutive runs.
+///
+/// Text stays FOREGROUND across the board — the row bg + word
+/// highlight bg carry the color signal, and Github-style colored
+/// text on tinted bg hurts readability for context-rich diffs.
 fn line_content(line: &DiffLine) -> El {
     let highlight_bg = match line.kind {
         DiffLineKind::Addition => Some(tokens::SUCCESS.with_alpha(HIGHLIGHT_BG_ALPHA)),
@@ -414,7 +418,7 @@ fn line_content(line: &DiffLine) -> El {
     let trimmed = line.content.trim_end_matches('\n');
     let runs = split_into_runs(trimmed, &line.highlights);
     if runs.len() == 1 || highlight_bg.is_none() {
-        // No highlights (or context line) — single span, simpler tree.
+        // No highlights (or context line) — single shaped span.
         return text(trimmed.to_string())
             .mono()
             .nowrap_text()
@@ -425,11 +429,11 @@ fn line_content(line: &DiffLine) -> El {
     let children: Vec<El> = runs
         .into_iter()
         .map(|(span, hot)| {
-            let t = text(span).mono().nowrap_text();
-            if hot { t.fill(bg) } else { t }
+            let t = text(span).mono();
+            if hot { t.background(bg) } else { t }
         })
         .collect();
-    row(children)
+    text_runs(children)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .width(Size::Fill(1.0))
 }
