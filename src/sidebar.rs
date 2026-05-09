@@ -42,17 +42,15 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
     };
     let count = section_count(tab, section);
 
-    row([
-        icon(caret).muted(),
-        text(section.label()).caption().muted(),
-        spacer(),
-        badge(count.to_string()).muted(),
-    ])
-    .key(format!("section:{}", section.key()))
-    .focusable()
-    .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-    .gap(tokens::SPACE_1)
-    .align(Align::Center)
+    tree_row(
+        [
+            icon(caret).muted(),
+            text(section.label()).caption().muted(),
+            spacer(),
+            badge(count.to_string()).muted(),
+        ],
+        format!("section:{}", section.key()),
+    )
 }
 
 fn section_count(tab: &RepoTab, section: SidebarSection) -> usize {
@@ -243,6 +241,35 @@ fn stashes_body(tab: &RepoTab) -> Option<El> {
     Some(column(rows))
 }
 
+/// The dense `tree_row` recipe the README catalog calls out for sidebar
+/// trees and resource lists. Bakes the envelope (focusable + cursor +
+/// list-item metrics + radius for the focus ring + paint_overflow so
+/// the ring has somewhere to render + spring animation) so hover,
+/// press, focus-visible, and the `.current()` / `.selected()`
+/// chainables all light up like they would on the catalog `item`
+/// widget — just at a denser 28 px height. Children are pre-built so
+/// each section can stack its own chevron / caption / icon / badge /
+/// detail anatomy.
+fn tree_row<I, E>(children: I, key: impl Into<String>) -> El
+where
+    I: IntoIterator<Item = E>,
+    E: Into<El>,
+{
+    row(children)
+        .key(key)
+        .focusable()
+        .style_profile(StyleProfile::Surface)
+        .metrics_role(MetricsRole::ListItem)
+        .cursor(Cursor::Pointer)
+        .paint_overflow(Sides::all(tokens::RING_WIDTH))
+        .radius(tokens::RADIUS_SM)
+        .animate(Timing::SPRING_QUICK)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .gap(tokens::SPACE_1)
+        .align(Align::Center)
+        .height(Size::Fixed(28.0))
+}
+
 fn item_row(
     leading: IconName,
     label: &str,
@@ -266,12 +293,7 @@ fn item_row(
         content.push(spacer());
         content.push(text(d).caption().muted());
     }
-    let row_el = row(content)
-        .key(key)
-        .focusable()
-        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-        .gap(tokens::SPACE_1)
-        .align(Align::Center);
+    let row_el = tree_row(content, key);
 
     match (is_head, is_selected) {
         (true, _) => row_el.current(),
