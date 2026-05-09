@@ -14,6 +14,7 @@ pub const MODAL_CONFIRM_KEY: &str = "modal:confirm";
 pub const MODAL_ERROR_KEY: &str = "modal:error";
 pub const MODAL_CLONE_KEY: &str = "modal:clone";
 pub const MODAL_TOKEN_KEY: &str = "modal:token";
+pub const MODAL_BRANCH_KEY: &str = "modal:branch";
 
 /// Settings panel: small subset of `Config` is editable for now —
 /// avatars, shortcut bar visibility, row scale. Other options
@@ -183,6 +184,51 @@ pub fn clone_modal(state: &CloneForm, selection: &Selection, in_flight: bool) ->
     let body = form([url_field, dest_field, bare_field, actions]);
 
     overlays_panel(MODAL_CLONE_KEY, "Clone repository", [body])
+}
+
+/// Form state for the Create Branch modal — controlled name input
+/// plus the "checkout after create" toggle. Owned by `WhisperApp`
+/// so the user's typing persists across frames.
+#[derive(Clone, Debug, Default)]
+pub struct BranchForm {
+    pub name: String,
+    /// Default `true` — matches the typical "make and switch" flow
+    /// users expect from a `git checkout -b` muscle memory.
+    pub checkout: bool,
+}
+
+/// Create-a-branch modal. Name input + a "Check out after creating"
+/// toggle + a small caption showing what commit the branch will be
+/// created at (the focused tab's selected_commit when one is open,
+/// otherwise the active worktree's HEAD). The action handler routes
+/// through GitRepo::create_branch_at and optionally checkout_branch.
+pub fn branch_modal(state: &BranchForm, selection: &Selection, target_short: &str) -> El {
+    let name_field = form_item([
+        form_label("Branch name"),
+        form_control(
+            text_input(&state.name, selection, "branch:name")
+                .key("branch:name")
+                .width(Size::Fill(1.0)),
+        ),
+        form_description(format!("Will be created at {target_short}.")),
+    ]);
+
+    let checkout_field = field_row(
+        "Check out after creating",
+        switch(state.checkout).key("branch:checkout"),
+    );
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:branch:cancel").ghost(),
+        button("Create").key("branch:create").primary(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([name_field, checkout_field, actions]);
+
+    overlays_panel(MODAL_BRANCH_KEY, "Create branch", [body])
 }
 
 /// Form state for the Token modal — one section for GitHub, one row

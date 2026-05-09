@@ -222,6 +222,32 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.active_modal = Some(ActiveModal::Clone(form));
             app
         }));
+        scenes.push(("modal_branch_create".to_string(), {
+            use whisper_git::dialogs::BranchForm;
+            let mut t = reopen(first);
+            // Pick a real commit oid to display in the "will be created
+            // at <short>" caption — proves the resolution wires into
+            // the modal body.
+            let target = t
+                .commits
+                .iter()
+                .find(|c| !c.is_synthetic)
+                .map(|c| c.id)
+                .unwrap_or_else(|| {
+                    git2::Oid::from_str("0000000000000000000000000000000000000000")
+                        .unwrap()
+                });
+            t.select_commit(Some(target));
+            let mut app = WhisperApp::with_tabs(vec![t]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::Branch {
+                form: BranchForm {
+                    name: "feature/new-onboarding".to_string(),
+                    checkout: true,
+                },
+                target,
+            });
+            app
+        }));
         scenes.push(("modal_token".to_string(), {
             use whisper_git::dialogs::TokenForm;
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);

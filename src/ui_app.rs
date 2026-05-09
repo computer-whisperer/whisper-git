@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
-use crate::dialogs::{CloneForm, TokenForm};
+use crate::dialogs::{BranchForm, CloneForm, TokenForm};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
@@ -192,6 +192,13 @@ pub enum ActiveModal {
     /// Manage Tokens dialog. Holds the inline-edit buffer for the
     /// GitHub token field; persistence goes through `token_store`.
     Token(TokenForm),
+    /// Create-branch dialog. Carries the live form state (name +
+    /// checkout toggle) plus the OID this branch will be created at —
+    /// either the focused tab's selected_commit or its HEAD.
+    Branch {
+        form: BranchForm,
+        target: git2::Oid,
+    },
 }
 
 /// commit_node.wgsl — copied verbatim from the aetna `custom_paint`
@@ -527,6 +534,10 @@ impl App for WhisperApp {
                     .collect();
                 dialogs::token_modal(form, &self.selection, github_set, &gitlab_hosts)
             }
+            ActiveModal::Branch { form, target } => {
+                let target_short = target.to_string()[..7].to_string();
+                dialogs::branch_modal(form, &self.selection, &target_short)
+            }
         });
         let menu_layer = self
             .context_menu
@@ -660,6 +671,14 @@ impl App for WhisperApp {
                         text_input::apply_event(buf, &mut self.selection, &route, &event);
                     }
                 }
+            }
+            Some(ActiveModal::Branch { form, .. }) => {
+                text_input::apply_event(
+                    &mut form.name,
+                    &mut self.selection,
+                    "branch:name",
+                    &event,
+                );
             }
             _ => {}
         }
@@ -1003,6 +1022,7 @@ impl WhisperApp {
 
         match key {
             "open_repo" => self.open_repo_dialog(),
+            "new_branch" => self.open_branch_modal(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
                 form.dest = std::env::var("HOME").unwrap_or_default();
@@ -1151,6 +1171,15 @@ impl WhisperApp {
             self.handle_token_route(key);
             return true;
         }
+        // Only intercept `branch:` keys when the Branch modal is open —
+        // otherwise sidebar `branch:<name>` clicks (handled in
+        // handle_action's jump-to-commit path) would be shadowed.
+        if matches!(self.active_modal, Some(ActiveModal::Branch { .. }))
+            && key.starts_with("branch:")
+        {
+            self.handle_branch_route(key);
+            return true;
+        }
 
         match key {
             "modal:confirm:cancel" => {
@@ -1175,8 +1204,102 @@ impl WhisperApp {
                 self.active_modal = None;
                 true
             }
+            "modal:branch:cancel" => {
+                self.active_modal = None;
+                true
+            }
             _ => false,
         }
+    }
+
+    fn handle_branch_route(&mut self, key: &str) {
+        match key {
+            "branch:checkout" => {
+                if let Some(ActiveModal::Branch { form, .. }) = &mut self.active_modal {
+                    form.checkout = !form.checkout;
+                }
+            }
+            "branch:create" => self.create_branch_from_modal(),
+            _ => {}
+        }
+    }
+
+    /// Apply the create-branch modal's form: validate the name, call
+    /// GitRepo::create_branch_at, optionally checkout, refresh, and
+    /// close the modal. Errors surface as toasts so the user can edit
+    /// and retry without retyping.
+    fn create_branch_from_modal(&mut self) {
+        let (name, target, checkout) = match &self.active_modal {
+            Some(ActiveModal::Branch { form, target }) => {
+                (form.name.trim().to_string(), *target, form.checkout)
+            }
+            _ => return,
+        };
+        if name.is_empty() {
+            self.toasts
+                .push(ToastSpec::warning("Branch name is empty"));
+            return;
+        }
+        let Some(tab) = self.active_focus_mut() else { return };
+        match tab.repo.create_branch_at(&name, target) {
+            Ok(()) => {
+                let mut msg = format!("Created branch {name}");
+                if checkout {
+                    if let Some(view) = tab.active_view_mut() {
+                        match view.repo.checkout_branch(&name) {
+                            Ok(()) => {
+                                msg.push_str(" + checked out");
+                            }
+                            Err(e) => {
+                                self.toasts.push(ToastSpec::error(format!(
+                                    "Created {name}, but checkout failed: {e}"
+                                )));
+                                self.active_modal = None;
+                                if let Some(t) = self.active_focus_mut() {
+                                    t.refresh();
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                self.toasts.push(ToastSpec::success(msg));
+                self.active_modal = None;
+                if let Some(t) = self.active_focus_mut() {
+                    t.refresh();
+                }
+            }
+            Err(e) => {
+                self.toasts
+                    .push(ToastSpec::error(format!("Create branch failed: {e}")));
+            }
+        }
+    }
+
+    /// Open the create-branch modal. Resolves the target OID from the
+    /// focused tab — selected commit if one is open, otherwise the
+    /// active worktree's HEAD. Bails with a toast when neither is
+    /// available (effectively-bare repo with no selection).
+    fn open_branch_modal(&mut self) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        let target = focus
+            .selected_commit
+            .or_else(|| focus.active_view().and_then(|v| v.head_oid));
+        let Some(target) = target else {
+            self.toasts.push(ToastSpec::warning(
+                "Select a commit (or check out a worktree) before creating a branch",
+            ));
+            return;
+        };
+        self.active_modal = Some(ActiveModal::Branch {
+            form: BranchForm {
+                name: String::new(),
+                checkout: true,
+            },
+            target,
+        });
     }
 
     fn handle_clone_route(&mut self, key: &str) {

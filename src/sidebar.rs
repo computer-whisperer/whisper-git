@@ -47,15 +47,25 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
     };
     let count = section_count(tab, section);
 
-    tree_row(
-        [
-            icon(caret).muted(),
-            text(section.label()).caption().muted(),
-            spacer(),
-            badge(count.to_string()).muted(),
-        ],
-        format!("section:{}", section.key()),
-    )
+    let mut children: Vec<El> = vec![
+        icon(caret).muted(),
+        text(section.label()).caption().muted(),
+        spacer(),
+        badge(count.to_string()).muted(),
+    ];
+    // Local section grows a small "+" affordance to open the create-
+    // branch modal. Clicking the + would otherwise toggle the section
+    // collapse via the parent tree_row's route — we keep the route on
+    // the row but the icon button gets its own key to override.
+    if matches!(section, SidebarSection::Local) {
+        children.push(
+            icon_button(IconName::Plus)
+                .key("new_branch")
+                .tooltip("Create branch"),
+        );
+    }
+
+    tree_row(children, format!("section:{}", section.key()))
 }
 
 fn section_count(tab: &RepoTab, section: SidebarSection) -> usize {
