@@ -56,14 +56,18 @@ pub fn diff_view(view: &WorktreeView) -> El {
 
 fn placeholder() -> El {
     column([
-        h2("No diff selected"),
+        h3("No diff selected"),
         paragraph(
             "Click a file in the staging well to preview its diff. \
              Phase 4c will wire Stage / Unstage hunks.",
-        ),
+        )
+        .muted()
+        .text_align(TextAlign::Center),
     ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center)
+    .justify(Justify::Center)
     .padding(tokens::SPACE_4)
-    .gap(tokens::SPACE_3)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }

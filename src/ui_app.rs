@@ -1895,15 +1895,19 @@ fn kbd(chord: &str, label: &str) -> El {
 /// empty panes.
 fn no_worktree_placeholder() -> El {
     column([
-        h2("No worktree selected"),
+        h3("No worktree selected"),
         paragraph(
             "This repository has no working tree available. Add a linked \
              worktree (`git worktree add`) and select it in the sidebar \
              to start staging changes here.",
-        ),
+        )
+        .muted()
+        .text_align(TextAlign::Center),
     ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center)
+    .justify(Justify::Center)
     .padding(tokens::SPACE_4)
-    .gap(tokens::SPACE_3)
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }

@@ -23,9 +23,9 @@ pub fn commit_details_pane(tab: &RepoTab) -> El {
 fn placeholder_pane(msg: &str) -> El {
     card([
         card_content([text(msg.to_string()).muted()])
-            .padding(tokens::SPACE_4)
             .height(Size::Fill(1.0))
-            .align(Align::Center),
+            .align(Align::Center)
+            .justify(Justify::Center),
     ])
 }
 
