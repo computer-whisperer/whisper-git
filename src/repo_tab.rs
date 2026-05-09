@@ -279,6 +279,14 @@ pub struct RepoTab {
     /// Per-commit rollups derived from `ci_results`. Recomputed whenever
     /// a new provider result lands.
     pub ci_per_commit: HashMap<String, Vec<ProviderCommitRollup>>,
+
+    // ---- Submodule drill-down ----
+    /// Stack of drilled-in submodule views. Each entry is a fully
+    /// constructed `RepoTab` opened against the parent's working
+    /// directory; the deepest entry is the user's current view. Empty
+    /// at root. Nested submodules push further entries onto the same
+    /// outermost stack — there's only ever one stack per opened tab.
+    pub nav_stack: Vec<RepoTab>,
 }
 
 impl RepoTab {
@@ -308,6 +316,7 @@ impl RepoTab {
             last_ci_fetch: None,
             last_push_time: None,
             ci_per_commit: HashMap::new(),
+            nav_stack: Vec::new(),
             repo,
         };
         tab.refresh();
@@ -616,6 +625,84 @@ impl RepoTab {
             .collect();
         v.sort_unstable();
         v
+    }
+
+    /// Currently focused view — the deepest entry on `nav_stack` if
+    /// the user has drilled into a submodule, otherwise self. The whole
+    /// renderer + most route handlers consult this rather than `self`
+    /// so submodule focus is invisible to widget code: drilled or not,
+    /// they get a fully-constructed `RepoTab` to render.
+    pub fn active_view_tab(&self) -> &RepoTab {
+        match self.nav_stack.last() {
+            Some(t) => t,
+            None => self,
+        }
+    }
+
+    /// Mutable counterpart to [`Self::active_view_tab`]. Mirrors the
+    /// accessor, but returns `&mut self` when not drilled in (so call
+    /// sites don't need a separate "are we focused?" branch to mutate).
+    pub fn active_view_tab_mut(&mut self) -> &mut RepoTab {
+        if self.nav_stack.is_empty() {
+            self
+        } else {
+            self.nav_stack.last_mut().expect("non-empty checked above")
+        }
+    }
+
+    /// Drill into a submodule by path (relative to the *currently
+    /// focused* worktree). Pushes a freshly-opened `RepoTab` onto the
+    /// nav stack — the renderer naturally swaps to it on the next
+    /// frame. Errors propagate so the caller can surface a toast.
+    ///
+    /// Recursive: drilling from inside a submodule pushes another
+    /// entry on the same stack, so the chain is `outer › child ›
+    /// grandchild` no matter how many levels deep.
+    pub fn enter_submodule(&mut self, sm_path: &str) -> Result<()> {
+        let active = self.active_view_tab();
+        // Resolve against the focused worktree's working directory
+        // (not the focused tab's reference repo) so submodules of a
+        // linked worktree open at the right path.
+        let workdir = active
+            .active_view()
+            .map(|v| v.path.clone())
+            .or_else(|| active.repo.workdir().map(Path::to_path_buf))
+            .context("focused view has no working directory to resolve submodule against")?;
+        let abs_path = workdir.join(sm_path);
+        let new_tab = RepoTab::open(&abs_path)
+            .with_context(|| format!("opening submodule at {}", abs_path.display()))?;
+        self.nav_stack.push(new_tab);
+        Ok(())
+    }
+
+    /// Pop the deepest drilled-in view, returning `true` if anything
+    /// was popped. Escape unwinding calls this before falling through
+    /// to its other unwind steps so a single Escape can climb one level
+    /// at a time.
+    pub fn exit_submodule(&mut self) -> bool {
+        self.nav_stack.pop().is_some()
+    }
+
+    /// Pop until exactly `target_depth` entries remain on the nav stack.
+    /// `target_depth = 0` returns to root. Used by breadcrumb clicks.
+    pub fn exit_to_depth(&mut self, target_depth: usize) {
+        self.nav_stack.truncate(target_depth);
+    }
+
+    /// 0 at root, N when the user has drilled in N levels.
+    pub fn nav_depth(&self) -> usize {
+        self.nav_stack.len()
+    }
+
+    /// Names of every level in the navigation chain, outermost first.
+    /// Drives the breadcrumb chrome.
+    pub fn nav_chain_names(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.nav_stack.len() + 1);
+        out.push(self.repo_name.clone());
+        for t in &self.nav_stack {
+            out.push(t.repo_name.clone());
+        }
+        out
     }
 
     /// Kick off CI fetches for every configured remote that maps to a

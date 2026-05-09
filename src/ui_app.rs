@@ -44,6 +44,55 @@ use crate::sidebar;
 use crate::staging;
 use crate::welcome;
 
+/// Resolve `(outer_idx, depth)` to a `&mut RepoTab`. `depth = None`
+/// returns the outermost; `depth = Some(d)` indexes into the nav_stack
+/// of that outermost. Returns `None` if either index is out of range.
+fn resolve_tab_mut(
+    tabs: &mut [RepoTab],
+    idx: usize,
+    depth: Option<usize>,
+) -> Option<&mut RepoTab> {
+    let outer = tabs.get_mut(idx)?;
+    match depth {
+        None => Some(outer),
+        Some(d) => outer.nav_stack.get_mut(d),
+    }
+}
+
+/// One level's CI poll: checks the dynamic interval against
+/// `last_ci_fetch`, kicks off a refresh when due. Pulled to a free fn
+/// so `poll_ci_refresh` can apply it to the outermost tab and to every
+/// drilled-in level uniformly.
+fn poll_ci_refresh_for(
+    tab: &mut RepoTab,
+    config: &mut Config,
+    proxy: &winit::event_loop::EventLoopProxy<()>,
+    now: std::time::Instant,
+) {
+    if !tab.ci_receivers.is_empty() {
+        return;
+    }
+    let any_pending = tab
+        .ci_results
+        .iter()
+        .any(|r| r.status.state == crate::ci::CiState::Pending);
+    let recently_pushed = tab
+        .last_push_time
+        .is_some_and(|t| now.duration_since(t).as_secs() < 300);
+    let interval_secs = if any_pending || recently_pushed {
+        15
+    } else {
+        300
+    };
+    let due = match tab.last_ci_fetch {
+        None => true,
+        Some(last) => now.duration_since(last).as_secs() >= interval_secs,
+    };
+    if due {
+        tab.trigger_ci_fetch(config, proxy.clone());
+    }
+}
+
 /// Discriminator for the four per-tab async slots. Carries the
 /// human-readable verbs used in toasts / error modal titles.
 #[derive(Clone, Copy)]
@@ -326,12 +375,29 @@ impl WhisperApp {
         }
     }
 
+    /// Outermost RepoTab the user has opened (the one driving the
+    /// editor-tabs strip + tab close). Use [`Self::active_focus`] for
+    /// almost everything else — when the user has drilled into a
+    /// submodule, `active()` still points at the parent while
+    /// `active_focus()` points at the submodule view they're looking at.
     fn active(&self) -> Option<&RepoTab> {
         self.tabs.get(self.active_tab)
     }
 
     fn active_mut(&mut self) -> Option<&mut RepoTab> {
         self.tabs.get_mut(self.active_tab)
+    }
+
+    /// Currently focused view within the active tab — the deepest
+    /// drilled-in submodule, or the tab itself at root. The renderer,
+    /// most ops, and CI all consult this so submodule focus is
+    /// transparent to widget code.
+    fn active_focus(&self) -> Option<&RepoTab> {
+        self.active().map(|t| t.active_view_tab())
+    }
+
+    fn active_focus_mut(&mut self) -> Option<&mut RepoTab> {
+        self.active_mut().map(|t| t.active_view_tab_mut())
     }
 }
 
@@ -345,13 +411,17 @@ impl App for WhisperApp {
         if !self.tabs.is_empty() {
             chrome.push(tab_bar(self));
         }
-        chrome.push(header_bar(self.active(), self.clone_op.as_ref()));
+        chrome.push(header_bar(self.active_focus(), self.clone_op.as_ref()));
         if self.shortcut_bar_visible {
             chrome.push(shortcut_bar());
         }
         let chrome_el = column(chrome);
 
-        let body = match self.active() {
+        // Body composes against the *focused* tab — the deepest
+        // drilled-in submodule when the user has navigated in,
+        // otherwise the outermost tab. Widget code below this point
+        // doesn't need to know about drill-down.
+        let body = match self.active_focus() {
             Some(tab) => {
                 // Center pane: graph by default; the diff temporarily
                 // takes over when the user picks a file (in the staging
@@ -440,9 +510,10 @@ impl App for WhisperApp {
 
     fn on_event(&mut self, event: UiEvent) {
         // Escape unwinds the deepest active state, one step at a time:
-        // (1) close any open modal, (2) clear the selected diff file
-        // (returns center to graph), (3) clear the selected commit
-        // (returns right pane to staging well). Aetna emits an Escape
+        // (1) close any open modal, (2) clear the focused view's diff
+        // (returns center to graph), (3) clear the focused view's
+        // selected commit (returns right pane to staging well), (4) pop
+        // one level of submodule drill-down. Aetna emits an Escape
         // event when the key is pressed and no widget consumes it; our
         // text inputs don't consume Escape, so it always reaches us.
         if matches!(event.kind, UiEventKind::Escape) {
@@ -450,8 +521,8 @@ impl App for WhisperApp {
                 self.active_modal = None;
                 return;
             }
-            if let Some(tab) = self.active_mut() {
-                let cleared_diff = tab
+            if let Some(focus) = self.active_focus_mut() {
+                let cleared_diff = focus
                     .active_view_mut()
                     .map(|v| {
                         let had = v.selected_diff_file.is_some();
@@ -462,10 +533,18 @@ impl App for WhisperApp {
                 if cleared_diff {
                     return;
                 }
-                if tab.selected_commit.is_some() {
-                    tab.select_commit(None);
+                if focus.selected_commit.is_some() {
+                    focus.select_commit(None);
                     return;
                 }
+            }
+            // After per-focus-view unwinding, the next Escape pops one
+            // level of submodule drill-down (so a single Escape climbs
+            // the chain rather than escaping all the way out).
+            if let Some(tab) = self.active_mut()
+                && tab.exit_submodule()
+            {
+                return;
             }
             // Fall through: nothing to unwind, let the event propagate.
         }
@@ -657,7 +736,7 @@ impl WhisperApp {
         // section:LOCAL etc.
         if let Some(section_key) = key.strip_prefix("section:") {
             if let Some(section) = parse_section(section_key)
-                && let Some(tab) = self.active_mut()
+                && let Some(tab) = self.active_focus_mut()
             {
                 tab.sidebar.toggle(section);
             }
@@ -687,7 +766,10 @@ impl WhisperApp {
             return;
         }
         if let Some(path) = key.strip_prefix("diff:") {
-            if let Some(view) = self.active_mut().and_then(|t| t.active_view_mut()) {
+            if let Some(view) = self
+                .active_focus_mut()
+                .and_then(|t| t.active_view_mut())
+            {
                 view.selected_diff_file = Some(path.to_string());
             }
             return;
@@ -699,7 +781,7 @@ impl WhisperApp {
         // value, routed verbatim (worktree names aren't always unique
         // across nested checkouts).
         if let Some(path) = key.strip_prefix("wt_select:tab:") {
-            if let Some(tab) = self.active_mut() {
+            if let Some(tab) = self.active_focus_mut() {
                 tab.select_worktree(std::path::PathBuf::from(path));
                 tab.select_commit(None);
                 if let Some(view) = tab.active_view_mut() {
@@ -715,7 +797,7 @@ impl WhisperApp {
         // upper swap from happening with stale center-pane state.
         if let Some(idx_str) = key.strip_prefix("commit:") {
             if let Ok(idx) = idx_str.parse::<usize>()
-                && let Some(tab) = self.active_mut()
+                && let Some(tab) = self.active_focus_mut()
             {
                 let oid = tab.commits.get(idx).map(|c| c.id);
                 tab.select_commit(oid);
@@ -729,7 +811,10 @@ impl WhisperApp {
         // detail's files list. Pushes the diff into the center pane;
         // diff_view picks `tab.selected_commit` as the source.
         if let Some(path) = key.strip_prefix("commit_file:") {
-            if let Some(view) = self.active_mut().and_then(|t| t.active_view_mut()) {
+            if let Some(view) = self
+                .active_focus_mut()
+                .and_then(|t| t.active_view_mut())
+            {
                 view.selected_diff_file = Some(path.to_string());
             }
             return;
@@ -763,7 +848,7 @@ impl WhisperApp {
         // has a Worktrees section; the pill bar at the top of the
         // staging well is the primary affordance).
         if let Some(name) = key.strip_prefix("worktree:") {
-            if let Some(tab) = self.active_mut() {
+            if let Some(tab) = self.active_focus_mut() {
                 let path = tab
                     .worktrees
                     .iter()
@@ -796,14 +881,26 @@ impl WhisperApp {
             }
         }
 
-        // Submodule click from staging well or commit detail. Drill-down
-        // navigation lands in a follow-up; for now we surface the path
-        // in a toast so the affordance reads as "we noticed your click,
-        // it just doesn't do anything yet."
+        // Submodule drill-down: push the submodule onto the active
+        // tab's nav_stack. Path is relative to the *focused* worktree,
+        // resolved inside RepoTab::enter_submodule so nested drill-down
+        // works without the caller knowing the depth.
         if let Some(path) = key.strip_prefix("submodule:open:") {
-            self.toasts.push(ToastSpec::info(format!(
-                "Submodule drill-down not yet wired: {path}"
-            )));
+            let path = path.to_string();
+            if let Some(tab) = self.active_mut() {
+                match tab.enter_submodule(&path) {
+                    Ok(()) => {
+                        self.toasts.push(ToastSpec::success(format!(
+                            "Entered {path}"
+                        )));
+                    }
+                    Err(e) => {
+                        self.toasts.push(ToastSpec::error(format!(
+                            "Couldn't open submodule {path}: {e}"
+                        )));
+                    }
+                }
+            }
             return;
         }
 
@@ -826,7 +923,7 @@ impl WhisperApp {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
             }
             "details:copy_sha" => {
-                if let Some(oid) = self.active().and_then(|t| t.selected_commit) {
+                if let Some(oid) = self.active_focus().and_then(|t| t.selected_commit) {
                     let sha = oid.to_string();
                     match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(sha.clone())) {
                         Ok(()) => self
@@ -902,7 +999,10 @@ impl WhisperApp {
             let Ok(idx) = idx_str.parse::<usize>() else {
                 return false;
             };
-            let Some(oid) = self.active().and_then(|t| t.commits.get(idx).map(|c| c.id)) else {
+            let Some(oid) = self
+                .active_focus()
+                .and_then(|t| t.commits.get(idx).map(|c| c.id))
+            else {
                 return false;
             };
             ContextTarget::Commit(oid)
@@ -1299,7 +1399,7 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::push_force_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         tab.push_op = Some(TimedOp::new(rx, format!("{branch} \u{2192} {remote} (force)")));
         self.toasts
             .push(ToastSpec::info(format!("Force-pushing {branch} to {remote}…")));
@@ -1316,22 +1416,38 @@ impl WhisperApp {
     // -------------------------------------------------------------
 
     /// Drain all per-tab async slots plus the app-scoped clone slot;
-    /// called once per frame from `before_build`. Visits every tab so
-    /// background work in a non-foreground tab still completes cleanly.
+    /// called once per frame from `before_build`. Visits every tab and
+    /// every drilled-in level inside it, so background work in a
+    /// non-foreground tab — or on a parent repo while the user has
+    /// drilled into a submodule — still completes cleanly.
     pub fn poll_async_ops(&mut self) {
         for idx in 0..self.tabs.len() {
-            self.poll_async_ops_for_tab(idx);
+            // Outermost first.
+            self.poll_async_ops_at(idx, None);
+            // Then each drilled-in submodule level. Re-read depth each
+            // iteration since the outer poll may have refreshed and
+            // exit_submodule could (in principle) shrink the stack.
+            let mut d = 0;
+            while let Some(t) = self.tabs.get(idx)
+                && d < t.nav_stack.len()
+            {
+                self.poll_async_ops_at(idx, Some(d));
+                d += 1;
+            }
         }
         self.poll_clone_op();
         self.drain_ci_receivers();
         self.poll_ci_refresh();
     }
 
-    /// Drain CI fetch receivers for every tab. Quiet when nothing's
-    /// in flight — just one `try_recv` per (tab, in-flight provider).
+    /// Drain CI fetch receivers for every tab + drilled-in level.
+    /// Quiet when nothing's in flight.
     fn drain_ci_receivers(&mut self) {
         for tab in &mut self.tabs {
             tab.drain_ci_receivers();
+            for sub in &mut tab.nav_stack {
+                sub.drain_ci_receivers();
+            }
         }
     }
 
@@ -1353,28 +1469,13 @@ impl WhisperApp {
         // Disjoint borrow: tabs and config are separate fields, so we
         // can hand both into trigger_ci_fetch without `self` at all.
         let config = &mut self.config;
-        for tab in &mut self.tabs {
-            if !tab.ci_receivers.is_empty() {
-                continue;
-            }
-            let any_pending = tab
-                .ci_results
-                .iter()
-                .any(|r| r.status.state == crate::ci::CiState::Pending);
-            let recently_pushed = tab
-                .last_push_time
-                .is_some_and(|t| now.duration_since(t).as_secs() < 300);
-            let interval_secs = if any_pending || recently_pushed {
-                15
-            } else {
-                300
-            };
-            let due = match tab.last_ci_fetch {
-                None => true,
-                Some(last) => now.duration_since(last).as_secs() >= interval_secs,
-            };
-            if due {
-                tab.trigger_ci_fetch(config, proxy.clone());
+        for outer in &mut self.tabs {
+            // Polls one level. Pulled out of the loop body since we
+            // visit both the outermost tab and every drilled-in level
+            // — each one is a fully-independent CI subject.
+            poll_ci_refresh_for(outer, config, &proxy, now);
+            for sub in &mut outer.nav_stack {
+                poll_ci_refresh_for(sub, config, &proxy, now);
             }
         }
     }
@@ -1431,7 +1532,12 @@ impl WhisperApp {
         }
     }
 
-    fn poll_async_ops_for_tab(&mut self, idx: usize) {
+    /// Poll the async ops on either the outermost tab at `idx`
+    /// (`depth = None`) or one specific drilled-in level
+    /// (`depth = Some(d)` indexes into that tab's `nav_stack`).
+    /// Splitting the resolution this way lets us reuse the body for
+    /// every level in the navigation chain without duplicating it.
+    fn poll_async_ops_at(&mut self, idx: usize, depth: Option<usize>) {
         // Match-and-take pattern: try_recv each slot, take the slot
         // if Ready/Disconnected so we drop the receiver. We extract
         // the slot by mem::replace before mutating self further.
@@ -1441,7 +1547,7 @@ impl WhisperApp {
             AsyncKind::Push,
             AsyncKind::Mutation,
         ] {
-            let Some(tab) = self.tabs.get_mut(idx) else {
+            let Some(tab) = resolve_tab_mut(&mut self.tabs, idx, depth) else {
                 return;
             };
             let slot = match kind {
@@ -1557,11 +1663,12 @@ impl WhisperApp {
                 return None;
             }
         };
-        let active_idx = self.active_tab;
-        let tab = match self.tabs.get(active_idx) {
-            Some(t) => t,
-            None => return None,
-        };
+        // Operate on the *focused* RepoTab — when the user has drilled
+        // into a submodule, fetch / push / pull target that submodule's
+        // repo, not the outermost one. The op slot also lives on the
+        // focused tab so concurrent parent + child ops don't share a
+        // single slot.
+        let tab = self.active_focus()?;
         if require_remote && !tab.repo.has_remotes() {
             self.toasts.push(ToastSpec::error(
                 "No remotes configured for this repository",
@@ -1591,7 +1698,7 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Fetch, true) else {
             return;
         };
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         let remote = tab
             .repo
             .default_remote()
@@ -1612,7 +1719,7 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
             return;
         };
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         let remote = tab
             .repo
             .default_remote()
@@ -1624,7 +1731,7 @@ impl WhisperApp {
             return;
         }
         let rx = crate::git::push_remote_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         tab.push_op = Some(TimedOp::new(rx, format!("{branch} → {remote}")));
         self.toasts
             .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
@@ -1639,7 +1746,7 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Pull, true) else {
             return;
         };
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         let remote = tab
             .repo
             .default_remote()
@@ -1651,7 +1758,7 @@ impl WhisperApp {
             return;
         }
         let rx = crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         tab.pull_op = Some(TimedOp::new(rx, format!("{remote}/{branch}")));
         self.toasts
             .push(ToastSpec::info(format!("Pulling {remote}/{branch}…")));
@@ -1663,7 +1770,7 @@ impl WhisperApp {
         };
         let sha = oid.to_string();
         let rx = crate::git::cherry_pick_async(wd, sha.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         let short = &sha[..7];
         tab.mutation_op = Some(TimedOp::new(rx, format!("cherry-pick {short}")));
         self.toasts
@@ -1676,7 +1783,7 @@ impl WhisperApp {
         };
         let sha = oid.to_string();
         let rx = crate::git::revert_commit_async(wd, sha.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         let short = &sha[..7];
         tab.mutation_op = Some(TimedOp::new(rx, format!("revert {short}")));
         self.toasts
@@ -1692,7 +1799,7 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::merge_branch_async(wd, source.clone(), proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         tab.mutation_op = Some(TimedOp::new(rx, format!("merge {source}")));
         self.toasts
             .push(ToastSpec::info(format!("Merging {source}…")));
@@ -1709,7 +1816,7 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::rebase_with_options_async(wd, base.clone(), true, false, proxy);
-        let Some(tab) = self.active_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else { return };
         tab.mutation_op = Some(TimedOp::new(rx, format!("rebase onto {base}")));
         self.toasts
             .push(ToastSpec::info(format!("Rebasing onto {base}…")));
@@ -1722,8 +1829,10 @@ impl WhisperApp {
     where
         F: FnOnce(&mut RepoTab) -> anyhow::Result<()>,
     {
-        let active_idx = self.active_tab;
-        let Some(tab) = self.tabs.get_mut(active_idx) else {
+        // Operate on the focused tab — when drilled into a submodule,
+        // stage / unstage / hunk ops target the submodule's working
+        // directory, not the parent's.
+        let Some(tab) = self.active_focus_mut() else {
             return;
         };
         match op(tab) {
