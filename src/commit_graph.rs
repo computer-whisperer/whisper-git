@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
 use aetna_core::{Color, El, prelude::*};
 use git2::Oid;
 
@@ -47,6 +48,49 @@ pub struct CommitLayout {
     pub color: Color,
 }
 
+/// One edge from a commit to one of its parents. The child sits at
+/// `child_row` on `child_lane`; the parent at `parent_row` on
+/// `parent_lane`. `child_row < parent_row` because commits are stored
+/// newest-first. The connection inherits the child's lane color, per
+/// the pre-port convention.
+#[derive(Clone, Debug)]
+pub struct GraphEdge {
+    pub child_row: usize,
+    pub child_lane: usize,
+    pub parent_row: usize,
+    pub parent_lane: usize,
+    pub color: Color,
+}
+
+/// One cubic-bezier segment that lives in a single row's vertical
+/// strip, expressed in row-local coordinates (y in `[0, ROW_HEIGHT]`).
+/// Cross-lane edges contribute one of these per row they pass through;
+/// same-lane edges emit `RowGeometry::*_verticals` entries instead.
+#[derive(Clone, Debug)]
+pub struct CurveSegment {
+    pub p0: (f32, f32),
+    pub p1: (f32, f32),
+    pub p2: (f32, f32),
+    pub p3: (f32, f32),
+    pub color: Color,
+}
+
+/// Per-row paint data — what verticals to draw in this row's strip,
+/// what curve segments pass through, and whether the row hosts a node.
+/// All coords are row-local (y ∈ [0, ROW_HEIGHT]).
+///
+/// Verticals come in three flavors so the node circle can interrupt
+/// the line cleanly: full-height passes through this row, top-half
+/// only stops at `mid_y` (incoming lane terminating at the node),
+/// bottom-half starts at `mid_y` (outgoing lane spawning at the node).
+#[derive(Clone, Debug, Default)]
+pub struct RowGeometry {
+    pub full_verticals: Vec<(usize, Color)>,
+    pub top_half_verticals: Vec<(usize, Color)>,
+    pub bottom_half_verticals: Vec<(usize, Color)>,
+    pub curves: Vec<CurveSegment>,
+}
+
 /// Lane-assignment state. Walks commits in topological order, keeping
 /// `active_lanes[i] = Some(parent_oid)` for each lane currently
 /// "waiting" for that parent to appear. Tip commits land on the lowest
@@ -57,6 +101,13 @@ pub struct GraphLayout {
     layouts: HashMap<Oid, CommitLayout>,
     active_lanes: Vec<Option<Oid>>,
     pub max_lane: usize,
+    /// Edges built alongside lane assignment — one per commit/parent
+    /// pair where both ends are in the commit list. Ready to read by
+    /// the row-paint pipeline.
+    pub edges: Vec<GraphEdge>,
+    /// Per-row paint data, indexed by row. `row_geometry[i]` is what
+    /// the i-th commit's row should paint in its graph cell.
+    pub row_geometry: Vec<RowGeometry>,
 }
 
 impl GraphLayout {
@@ -68,8 +119,12 @@ impl GraphLayout {
         self.layouts.clear();
         self.active_lanes.clear();
         self.max_lane = 0;
+        self.edges.clear();
+        self.row_geometry.clear();
 
         let commit_set: HashMap<Oid, ()> = commits.iter().map(|c| (c.id, ())).collect();
+        let row_by_oid: HashMap<Oid, usize> =
+            commits.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
 
         for commit in commits {
             let lane = self.find_or_assign_lane(commit);
@@ -90,6 +145,39 @@ impl GraphLayout {
 
             self.update_lanes_for_parents(commit, lane, &commit_set);
             self.update_peak();
+        }
+
+        // Lane assignment done — build the edge list now that every
+        // commit has a known lane. One edge per (commit, in-list parent)
+        // pair; the connection inherits the child's color, matching the
+        // pre-port look.
+        for (child_row, commit) in commits.iter().enumerate() {
+            let Some(child_layout) = self.layouts.get(&commit.id) else {
+                continue;
+            };
+            for parent_id in &commit.parent_ids {
+                let Some(&parent_row) = row_by_oid.get(parent_id) else {
+                    continue;
+                };
+                let Some(parent_layout) = self.layouts.get(parent_id) else {
+                    continue;
+                };
+                self.edges.push(GraphEdge {
+                    child_row,
+                    child_lane: child_layout.lane,
+                    parent_row,
+                    parent_lane: parent_layout.lane,
+                    color: child_layout.color,
+                });
+            }
+        }
+
+        // Per-row paint data — verticals for same-lane edges, curve
+        // segments for cross-lane edges (one per spanned row), and
+        // node entries from the layout.
+        self.row_geometry = vec![RowGeometry::default(); commits.len()];
+        for edge in &self.edges {
+            decompose_edge_into_rows(edge, &mut self.row_geometry);
         }
     }
 
@@ -170,6 +258,195 @@ impl GraphLayout {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Edge → per-row geometry decomposition
+// ---------------------------------------------------------------------------
+
+/// Decompose one edge into per-row paint entries.
+///
+/// Same-lane edges become a sequence of verticals (bottom-half on the
+/// child's row, full-height on intermediate rows, top-half on the
+/// parent's row). Cross-lane edges become a single full-distance cubic
+/// bezier from `(child_lane, child_mid_y)` to `(parent_lane, parent_mid_y)`,
+/// subdivided so each spanned row gets its own row-local segment. The
+/// control-point recipe (`start_y + dy*0.4`, `end_y - dy*0.4`) mirrors
+/// the pre-port `render_graph_connections` so the curve shape is the
+/// same — a long S that hugs the child's lane near the top, transitions
+/// in the middle, then settles into the parent's lane near the bottom.
+fn decompose_edge_into_rows(edge: &GraphEdge, rows: &mut [RowGeometry]) {
+    if edge.child_row >= edge.parent_row {
+        return;
+    }
+
+    if edge.child_lane == edge.parent_lane {
+        let lane = edge.child_lane;
+        // Child's row: bottom half (the line emerges from the node).
+        if let Some(g) = rows.get_mut(edge.child_row) {
+            g.bottom_half_verticals.push((lane, edge.color));
+        }
+        // Strictly-intermediate rows: full vertical.
+        for row in (edge.child_row + 1)..edge.parent_row {
+            if let Some(g) = rows.get_mut(row) {
+                g.full_verticals.push((lane, edge.color));
+            }
+        }
+        // Parent's row: top half (line ends at the parent's node).
+        if let Some(g) = rows.get_mut(edge.parent_row) {
+            g.top_half_verticals.push((lane, edge.color));
+        }
+        return;
+    }
+
+    // Cross-lane: full-distance cubic. We work in a normalized coord
+    // system where x is `lane_index` (so `lane_x` translation happens
+    // at render time) and y is `row_index + frac_in_row * 1.0`. This
+    // keeps the math row-agnostic; per-row scaling to pixel coords
+    // happens when we build the VectorAsset.
+    let child_y = edge.child_row as f32 + 0.5;
+    let parent_y = edge.parent_row as f32 + 0.5;
+    let dy = parent_y - child_y;
+    let curve = Cubic {
+        p0: (edge.child_lane as f32, child_y),
+        p1: (edge.child_lane as f32, child_y + dy * 0.4),
+        p2: (edge.parent_lane as f32, parent_y - dy * 0.4),
+        p3: (edge.parent_lane as f32, parent_y),
+    };
+
+    for row in edge.child_row..=edge.parent_row {
+        let row_top_y = row as f32;
+        let row_bot_y = row as f32 + 1.0;
+        let strip_top = if row == edge.child_row {
+            child_y
+        } else {
+            row_top_y
+        };
+        let strip_bot = if row == edge.parent_row {
+            parent_y
+        } else {
+            row_bot_y
+        };
+        if strip_bot - strip_top < 1e-4 {
+            continue;
+        }
+        // y(t) is monotonic for our control-point pattern, so a
+        // bisection-based root find always converges to a single root
+        // per boundary.
+        let t_a = if row == edge.child_row {
+            0.0
+        } else {
+            curve.t_at_y(strip_top)
+        };
+        let t_b = if row == edge.parent_row {
+            1.0
+        } else {
+            curve.t_at_y(strip_bot)
+        };
+        let sub = curve.subcurve(t_a, t_b);
+        if let Some(g) = rows.get_mut(row) {
+            // Translate from absolute (row_index + frac) y to row-local
+            // pixel y (frac * ROW_HEIGHT). x stays in lane units; the
+            // render pass converts via lane_x().
+            let to_local = |p: (f32, f32)| -> (f32, f32) {
+                (p.0, (p.1 - row_top_y) * ROW_HEIGHT)
+            };
+            g.curves.push(CurveSegment {
+                p0: to_local(sub.p0),
+                p1: to_local(sub.p1),
+                p2: to_local(sub.p2),
+                p3: to_local(sub.p3),
+                color: edge.color,
+            });
+        }
+    }
+}
+
+/// Imperative cubic bezier with a couple of tools for clipping it to
+/// horizontal strips. We carry x and y as separate floats because
+/// downstream consumers want the path in a different coord system
+/// than the math runs in.
+#[derive(Clone, Copy, Debug)]
+struct Cubic {
+    p0: (f32, f32),
+    p1: (f32, f32),
+    p2: (f32, f32),
+    p3: (f32, f32),
+}
+
+impl Cubic {
+    fn y_at(&self, t: f32) -> f32 {
+        let s = 1.0 - t;
+        s * s * s * self.p0.1
+            + 3.0 * s * s * t * self.p1.1
+            + 3.0 * s * t * t * self.p2.1
+            + t * t * t * self.p3.1
+    }
+
+    /// Bisection root-find for `y_at(t) == target`. Assumes `y_at` is
+    /// monotonic increasing, which is the case for the pre-port
+    /// control-point pattern (`start_y < start_y + dy*0.4 < end_y -
+    /// dy*0.4 < end_y` whenever `dy > 0`).
+    fn t_at_y(&self, target: f32) -> f32 {
+        if target <= self.p0.1 {
+            return 0.0;
+        }
+        if target >= self.p3.1 {
+            return 1.0;
+        }
+        let mut lo = 0.0_f32;
+        let mut hi = 1.0_f32;
+        for _ in 0..40 {
+            let mid = (lo + hi) * 0.5;
+            let y = self.y_at(mid);
+            if y < target {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo + hi) * 0.5
+    }
+
+    fn split(&self, t: f32) -> (Cubic, Cubic) {
+        let lerp = |a: (f32, f32), b: (f32, f32)| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        let q01 = lerp(self.p0, self.p1);
+        let q12 = lerp(self.p1, self.p2);
+        let q23 = lerp(self.p2, self.p3);
+        let r012 = lerp(q01, q12);
+        let r123 = lerp(q12, q23);
+        let s = lerp(r012, r123);
+        (
+            Cubic {
+                p0: self.p0,
+                p1: q01,
+                p2: r012,
+                p3: s,
+            },
+            Cubic {
+                p0: s,
+                p1: r123,
+                p2: q23,
+                p3: self.p3,
+            },
+        )
+    }
+
+    /// Subcurve over `[a, b] ⊆ [0, 1]`. Two splits suffice: split at
+    /// `a`, take the right half, then re-parameterize and split that
+    /// at the corresponding inner `t` for the original `b`.
+    fn subcurve(&self, a: f32, b: f32) -> Cubic {
+        if a <= 0.0 && b >= 1.0 {
+            return *self;
+        }
+        let (_, right) = self.split(a.clamp(0.0, 1.0));
+        if b >= 1.0 {
+            return right;
+        }
+        let new_t = ((b - a) / (1.0 - a)).clamp(0.0, 1.0);
+        let (left, _) = right.split(new_t);
+        left
+    }
+}
+
 /// Compact CI dot for one provider's per-commit rollup. Color reflects
 /// the overall state across that provider's checks at this SHA; the
 /// tooltip enumerates each check by name + status. A 9 px square with
@@ -211,31 +488,122 @@ fn ci_dot(rollup: &ProviderCommitRollup) -> El {
         .tooltip(tip)
 }
 
-/// One row's graph cell — paints a vertical lane line plus a circle
-/// node via the `commit_node` shader (registered in `ui_app.rs`).
-fn graph_cell(lane: usize, color: Color, selected: bool) -> El {
-    let bg = tokens::BACKGROUND;
-    let ring_color = if selected { tokens::FOREGROUND } else { color };
-    let ring_w = if selected { 2.5 } else { 1.5 };
-    let radius = 5.0;
-    let line_w = 2.0;
-    // Clamp visually so very deep graphs don't push the node off the
-    // cell — beyond LANE_COUNT_VISUAL we stack onto the rightmost lane.
-    let visual_lane = lane.min(LANE_COUNT_VISUAL as usize - 1);
-    let lane_frac = (visual_lane as f32 + 0.5) / LANE_COUNT_VISUAL as f32;
+/// Stroke width for lane verticals and cross-lane connector curves.
+const LINE_WIDTH: f32 = 2.0;
+/// Node circle radius. The selected ring sits on top with a thicker
+/// stroke for emphasis.
+const NODE_RADIUS: f32 = 5.0;
+/// Selected-state stroke width for the ring overlay.
+const SELECTED_RING_WIDTH: f32 = 2.5;
 
-    El::new(Kind::Custom("graph_cell"))
+/// Convert a (possibly out-of-range) lane index into the visible
+/// lane's center x within `GRAPH_WIDTH`. Lanes beyond
+/// `LANE_COUNT_VISUAL` clamp to the rightmost slot — matches the
+/// pre-port behavior so deep graphs don't push content off the cell.
+fn lane_center_x(lane: usize) -> f32 {
+    let visual_lane = lane.min(LANE_COUNT_VISUAL as usize - 1);
+    let lane_w = GRAPH_WIDTH / LANE_COUNT_VISUAL as f32;
+    visual_lane as f32 * lane_w + lane_w * 0.5
+}
+
+/// Build a row's graph cell as a single `vector()` element.
+///
+/// The asset combines, in z-order:
+///   1. lane verticals (`full`, `top_half`, `bottom_half`),
+///   2. cross-lane bezier segments,
+///   3. the node circle (filled disk, plus a foreground ring on top
+///      when this row is selected).
+///
+/// Strokes use `LineCap::Butt` and the geometry extends fully to the
+/// view-box edges — the smoke test (`bin/vector_smoke`) confirmed this
+/// tiles cleanly at row boundaries with no MSDF AA seams.
+fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected: bool) -> El {
+    let mut paths: Vec<VectorPath> = Vec::new();
+
+    let push_vertical = |paths: &mut Vec<VectorPath>, lane: usize, color: Color, y0: f32, y1: f32| {
+        let x = lane_center_x(lane);
+        paths.push(
+            PathBuilder::new()
+                .move_to(x, y0)
+                .line_to(x, y1)
+                .stroke_solid(color, LINE_WIDTH)
+                .stroke_line_cap(VectorLineCap::Butt)
+                .build(),
+        );
+    };
+
+    let mid_y = ROW_HEIGHT * 0.5;
+    for &(lane, color) in &geom.full_verticals {
+        push_vertical(&mut paths, lane, color, 0.0, ROW_HEIGHT);
+    }
+    for &(lane, color) in &geom.top_half_verticals {
+        push_vertical(&mut paths, lane, color, 0.0, mid_y);
+    }
+    for &(lane, color) in &geom.bottom_half_verticals {
+        push_vertical(&mut paths, lane, color, mid_y, ROW_HEIGHT);
+    }
+    for seg in &geom.curves {
+        // CurveSegment carries x in lane units; render-time scaling
+        // converts to pixels via `lane_center_x` of `floor(x)` plus
+        // the fractional offset across one lane width. Same for
+        // controls — they're already in lane-unit coords and snap
+        // cleanly at integer x.
+        let lane_w = GRAPH_WIDTH / LANE_COUNT_VISUAL as f32;
+        let to_x = |lane_units: f32| lane_units.min((LANE_COUNT_VISUAL - 1) as f32) * lane_w + lane_w * 0.5;
+        paths.push(
+            PathBuilder::new()
+                .move_to(to_x(seg.p0.0), seg.p0.1)
+                .cubic_to(
+                    to_x(seg.p1.0),
+                    seg.p1.1,
+                    to_x(seg.p2.0),
+                    seg.p2.1,
+                    to_x(seg.p3.0),
+                    seg.p3.1,
+                )
+                .stroke_solid(seg.color, LINE_WIDTH)
+                .stroke_line_cap(VectorLineCap::Butt)
+                .build(),
+        );
+    }
+
+    // Node disk — filled circle approximated with cubics. Cubic-bezier
+    // approximation of a unit circle uses control-point distance ≈
+    // 0.5523 × radius from each endpoint (Stanislaw's constant).
+    let cx = lane_center_x(node_lane);
+    let cy = mid_y;
+    let r = NODE_RADIUS;
+    let k = r * 0.5523;
+    paths.push(
+        PathBuilder::new()
+            .move_to(cx + r, cy)
+            .cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
+            .cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
+            .cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
+            .cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
+            .fill_solid(node_color)
+            .build(),
+    );
+    if selected {
+        // Foreground ring sits on top of the disk, painted as a stroke
+        // around the circle with the selection color.
+        paths.push(
+            PathBuilder::new()
+                .move_to(cx + r, cy)
+                .cubic_to(cx + r, cy - k, cx + k, cy - r, cx, cy - r)
+                .cubic_to(cx - k, cy - r, cx - r, cy - k, cx - r, cy)
+                .cubic_to(cx - r, cy + k, cx - k, cy + r, cx, cy + r)
+                .cubic_to(cx + k, cy + r, cx + r, cy + k, cx + r, cy)
+                .stroke_solid(tokens::FOREGROUND, SELECTED_RING_WIDTH)
+                .stroke_line_cap(VectorLineCap::Butt)
+                .build(),
+        );
+    }
+
+    let asset = VectorAsset::from_paths([0.0, 0.0, GRAPH_WIDTH, ROW_HEIGHT], paths);
+    vector(asset)
         .width(Size::Fixed(GRAPH_WIDTH))
         .height(Size::Fixed(ROW_HEIGHT))
-        .shader(
-            ShaderBinding::custom("commit_node")
-                .color("vec_a", bg)
-                .color("vec_b", ring_color)
-                .vec4("vec_c", [radius, ring_w, line_w, lane_frac]),
-        )
-        // Tag the cell with lane color so the bundle still reflects
-        // lane palette even though the shader paints the visual.
-        .fill(color)
 }
 
 /// Static, themable pill chrome — small caption pinned to a tinted
@@ -303,9 +671,11 @@ impl BranchKind {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_row(
     commit: &CommitInfo,
     layout: Option<&CommitLayout>,
+    geom: &RowGeometry,
     pills: &RowPills,
     ci_rollups: Option<&[ProviderCommitRollup]>,
     is_detached_head_here: bool,
@@ -314,7 +684,7 @@ fn build_row(
     selected: bool,
 ) -> El {
     if commit.is_synthetic {
-        return synthetic_row(commit, layout, idx, selected);
+        return synthetic_row(commit, layout, geom, idx, selected);
     }
 
     let (lane, color) = match layout {
@@ -329,7 +699,7 @@ fn build_row(
     };
 
     let mut children: Vec<El> = vec![
-        graph_cell(lane, color, selected),
+        graph_cell(geom, lane, color, selected),
         text(commit.short_id.clone()).mono().muted(),
     ];
     if let Some(rollups) = ci_rollups {
@@ -429,13 +799,14 @@ fn build_row(
 fn synthetic_row(
     commit: &CommitInfo,
     layout: Option<&CommitLayout>,
+    geom: &RowGeometry,
     idx: usize,
     selected: bool,
 ) -> El {
     let amber = tokens::WARNING;
     let lane = layout.map(|l| l.lane).unwrap_or(0);
 
-    let mut children: Vec<El> = vec![graph_cell(lane, amber, selected)];
+    let mut children: Vec<El> = vec![graph_cell(geom, lane, amber, selected)];
     if let Some(name) = commit.synthetic_wt_name.as_deref() {
         children.push(pill(
             format!("WT: {name}"),
@@ -506,6 +877,7 @@ pub fn history_view(tab: &RepoTab) -> El {
         .iter()
         .map(|c| tab.graph_layout.get(&c.id).cloned())
         .collect();
+    let geom_per_row: Vec<RowGeometry> = tab.graph_layout.row_geometry.clone();
     let pills_per_row = build_row_pills(tab);
     let active_head_oid = tab.active_view().and_then(|v| v.head_oid);
     let detached_flags: Vec<bool> = tab
@@ -539,9 +911,16 @@ pub fn history_view(tab: &RepoTab) -> El {
         card_content([virtual_list(commits.len(), ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
+            // Empty fallback geom keeps the row paintable when the
+            // layout pass hasn't caught up to the commit list yet
+            // (e.g., right after a refresh — graph_layout.build runs
+            // synchronously, so this normally never triggers).
+            let empty = RowGeometry::default();
+            let geom = geom_per_row.get(i).unwrap_or(&empty);
             build_row(
                 c,
                 layouts[i].as_ref(),
+                geom,
                 &pills_per_row[i],
                 ci_per_row[i].as_deref(),
                 detached_flags[i],
@@ -617,5 +996,118 @@ fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
             clean_worktrees: by_oid_clean_wts.get(&c.id).cloned().unwrap_or_default(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_color() -> Color {
+        tokens::PRIMARY
+    }
+
+    #[test]
+    fn cubic_t_at_y_recovers_endpoints() {
+        let c = Cubic {
+            p0: (0.0, 0.0),
+            p1: (0.0, 0.4),
+            p2: (3.0, 0.6),
+            p3: (3.0, 1.0),
+        };
+        assert!((c.t_at_y(0.0) - 0.0).abs() < 1e-3);
+        assert!((c.t_at_y(1.0) - 1.0).abs() < 1e-3);
+        // y(0.5) should be 0.5 by symmetry of the control-point pattern.
+        assert!((c.y_at(c.t_at_y(0.5)) - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn cubic_subcurve_endpoints_match_y_at() {
+        let c = Cubic {
+            p0: (0.0, 0.0),
+            p1: (0.0, 0.4),
+            p2: (3.0, 0.6),
+            p3: (3.0, 1.0),
+        };
+        let sub = c.subcurve(0.25, 0.75);
+        // Sub-curve start should equal full-curve y(0.25); end should
+        // equal full-curve y(0.75) — within bisection tolerance.
+        let target_a = c.y_at(0.25);
+        let target_b = c.y_at(0.75);
+        assert!((sub.p0.1 - target_a).abs() < 1e-3);
+        assert!((sub.p3.1 - target_b).abs() < 1e-3);
+    }
+
+    #[test]
+    fn decompose_same_lane_emits_top_full_bottom_verticals() {
+        let edge = GraphEdge {
+            child_row: 0,
+            child_lane: 1,
+            parent_row: 3,
+            parent_lane: 1,
+            color: dummy_color(),
+        };
+        let mut rows = vec![RowGeometry::default(); 4];
+        decompose_edge_into_rows(&edge, &mut rows);
+        // child row gets bottom-half (line emerges below the node).
+        assert_eq!(rows[0].bottom_half_verticals.len(), 1);
+        assert_eq!(rows[0].full_verticals.len(), 0);
+        assert_eq!(rows[0].top_half_verticals.len(), 0);
+        // intermediate rows get full verticals.
+        assert_eq!(rows[1].full_verticals.len(), 1);
+        assert_eq!(rows[2].full_verticals.len(), 1);
+        // parent row gets top-half (line ends at the node).
+        assert_eq!(rows[3].top_half_verticals.len(), 1);
+    }
+
+    #[test]
+    fn decompose_cross_lane_emits_one_curve_per_spanned_row() {
+        let edge = GraphEdge {
+            child_row: 0,
+            child_lane: 0,
+            parent_row: 3,
+            parent_lane: 2,
+            color: dummy_color(),
+        };
+        let mut rows = vec![RowGeometry::default(); 4];
+        decompose_edge_into_rows(&edge, &mut rows);
+        // 4 spanned rows = 4 curve segments; no verticals on cross-lane.
+        assert_eq!(rows[0].curves.len(), 1);
+        assert_eq!(rows[1].curves.len(), 1);
+        assert_eq!(rows[2].curves.len(), 1);
+        assert_eq!(rows[3].curves.len(), 1);
+        for r in &rows {
+            assert!(r.full_verticals.is_empty());
+            assert!(r.top_half_verticals.is_empty());
+            assert!(r.bottom_half_verticals.is_empty());
+        }
+    }
+
+    #[test]
+    fn decompose_cross_lane_segment_y_spans_row_strip() {
+        // Each row's curve segment should start at row-local y matching
+        // the strip's top and end at the strip's bottom — modulo the
+        // child row (starts at mid_y) and parent row (ends at mid_y).
+        let edge = GraphEdge {
+            child_row: 0,
+            child_lane: 0,
+            parent_row: 2,
+            parent_lane: 1,
+            color: dummy_color(),
+        };
+        let mut rows = vec![RowGeometry::default(); 3];
+        decompose_edge_into_rows(&edge, &mut rows);
+
+        let row0_curve = &rows[0].curves[0];
+        assert!((row0_curve.p0.1 - ROW_HEIGHT * 0.5).abs() < 0.5);
+        assert!((row0_curve.p3.1 - ROW_HEIGHT).abs() < 0.5);
+
+        let row1_curve = &rows[1].curves[0];
+        assert!((row1_curve.p0.1 - 0.0).abs() < 0.5);
+        assert!((row1_curve.p3.1 - ROW_HEIGHT).abs() < 0.5);
+
+        let row2_curve = &rows[2].curves[0];
+        assert!((row2_curve.p0.1 - 0.0).abs() < 0.5);
+        assert!((row2_curve.p3.1 - ROW_HEIGHT * 0.5).abs() < 0.5);
+    }
 }
 
