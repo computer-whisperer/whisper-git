@@ -3,7 +3,6 @@
 //! Manages application settings (avatars, scroll speed, row scale, etc.) via serde_json serialization.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -25,11 +24,12 @@ pub struct Config {
     pub ratchet_scroll: bool,
     #[serde(default = "default_ai_provider")]
     pub ai_provider: String,
+    /// Registered GitLab hosts (e.g. "gitlab.com", "gitlab.company.com").
+    /// Just the host registry — the token modal enumerates these and
+    /// looks up actual secrets from the keychain via `token_store`.
+    /// Auto-populated when a GitLab remote is detected during CI fetch.
     #[serde(default)]
-    pub github_token: Option<String>,
-    /// GitLab tokens keyed by hostname (e.g. "gitlab.com", "gitlab.company.com")
-    #[serde(default)]
-    pub gitlab_tokens: HashMap<String, String>,
+    pub gitlab_hosts: Vec<String>,
     /// User-resized left sidebar width (logical px). Persisted across
     /// restarts via this config so the layout the user worked into
     /// survives a relaunch.
@@ -77,8 +77,7 @@ impl Default for Config {
             show_orphaned_commits: true,
             ratchet_scroll: true,
             ai_provider: default_ai_provider(),
-            github_token: None,
-            gitlab_tokens: HashMap::new(),
+            gitlab_hosts: Vec::new(),
             sidebar_w: default_sidebar_w(),
             right_pane_w: default_right_w(),
             diff_split: false,
@@ -119,18 +118,16 @@ impl Config {
         Ok(())
     }
 
-    /// Look up a GitLab token by the API base URL from a parsed remote
-    /// (e.g. "https://gitlab.com" matches key "gitlab.com").
-    pub fn gitlab_token_for_host(&self, api_base: &str) -> Option<&str> {
-        // api_base is like "https://gitlab.com" — extract host
-        let host = api_base
-            .strip_prefix("https://")
-            .or_else(|| api_base.strip_prefix("http://"))
-            .unwrap_or(api_base);
-        self.gitlab_tokens
-            .get(host)
-            .map(|s| s.as_str())
-            .filter(|t| !t.is_empty())
+    /// Register `host` (e.g. "gitlab.com") if not already known. Returns
+    /// `true` when the registry changed so the caller can persist.
+    /// Hosts are kept sorted to give the modal a stable display order.
+    pub fn register_gitlab_host(&mut self, host: &str) -> bool {
+        if self.gitlab_hosts.iter().any(|h| h == host) {
+            return false;
+        }
+        self.gitlab_hosts.push(host.to_string());
+        self.gitlab_hosts.sort();
+        true
     }
 
     /// Add a repo path to the recent repos list (most recent first, deduped).

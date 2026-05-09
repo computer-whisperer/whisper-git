@@ -423,7 +423,13 @@ impl App for WhisperApp {
             }
             ActiveModal::Token(form) => {
                 let github_set = token_store::get_github_token().is_some();
-                dialogs::token_modal(form, &self.selection, github_set)
+                let gitlab_hosts: Vec<(String, bool)> = self
+                    .config
+                    .gitlab_hosts
+                    .iter()
+                    .map(|h| (h.clone(), token_store::get_gitlab_token(h).is_some()))
+                    .collect();
+                dialogs::token_modal(form, &self.selection, github_set, &gitlab_hosts)
             }
         });
         let menu_layer = self
@@ -538,6 +544,17 @@ impl App for WhisperApp {
                     "token:github",
                     &event,
                 );
+                // Each in-edit GitLab host owns a routed text input
+                // keyed `token:gitlab:input:<host>`. Iterate the form's
+                // editing set so we don't pay a per-host fold for hosts
+                // the user isn't currently editing.
+                let host_keys: Vec<String> = form.gitlab_inputs.keys().cloned().collect();
+                for host in host_keys {
+                    let route = format!("token:gitlab:input:{host}");
+                    if let Some(buf) = form.gitlab_inputs.get_mut(&host) {
+                        text_input::apply_event(buf, &mut self.selection, &route, &event);
+                    }
+                }
             }
             _ => {}
         }
@@ -1024,7 +1041,50 @@ impl WhisperApp {
                         .push(ToastSpec::error("Couldn't clear keychain entry"));
                 }
             }
-            _ => {}
+            other => {
+                if let Some(host) = other.strip_prefix("token:gitlab:edit:") {
+                    if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                        form.gitlab_inputs.insert(host.to_string(), String::new());
+                    }
+                } else if let Some(host) = other.strip_prefix("token:gitlab:cancel:") {
+                    if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                        form.gitlab_inputs.remove(host);
+                    }
+                } else if let Some(host) = other.strip_prefix("token:gitlab:save:") {
+                    let value = if let Some(ActiveModal::Token(form)) = &self.active_modal {
+                        form.gitlab_inputs
+                            .get(host)
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_default()
+                    } else {
+                        return;
+                    };
+                    if value.is_empty() {
+                        self.toasts.push(ToastSpec::warning(
+                            "Token is empty — leaving unchanged",
+                        ));
+                        return;
+                    }
+                    if token_store::set_gitlab_token(host, &value) {
+                        self.toasts
+                            .push(ToastSpec::success(format!("GitLab token saved ({host})")));
+                        if let Some(ActiveModal::Token(form)) = &mut self.active_modal {
+                            form.gitlab_inputs.remove(host);
+                        }
+                    } else {
+                        self.toasts
+                            .push(ToastSpec::error("Couldn't write to keychain"));
+                    }
+                } else if let Some(host) = other.strip_prefix("token:gitlab:clear:") {
+                    if token_store::delete_gitlab_token(host) {
+                        self.toasts
+                            .push(ToastSpec::success(format!("GitLab token cleared ({host})")));
+                    } else {
+                        self.toasts
+                            .push(ToastSpec::error("Couldn't clear keychain entry"));
+                    }
+                }
+            }
         }
     }
 
@@ -1288,6 +1348,9 @@ impl WhisperApp {
             return;
         };
         let now = Instant::now();
+        // Disjoint borrow: tabs and config are separate fields, so we
+        // can hand both into trigger_ci_fetch without `self` at all.
+        let config = &mut self.config;
         for tab in &mut self.tabs {
             if !tab.ci_receivers.is_empty() {
                 continue;
@@ -1309,7 +1372,7 @@ impl WhisperApp {
                 Some(last) => now.duration_since(last).as_secs() >= interval_secs,
             };
             if due {
-                tab.trigger_ci_fetch(proxy.clone());
+                tab.trigger_ci_fetch(config, proxy.clone());
             }
         }
     }
@@ -1414,7 +1477,7 @@ impl WhisperApp {
                     if matches!(kind, AsyncKind::Push) {
                         tab.last_push_time = Some(std::time::Instant::now());
                         if let Some(proxy) = self.proxy.clone() {
-                            tab.trigger_ci_fetch(proxy);
+                            tab.trigger_ci_fetch(&mut self.config, proxy);
                         }
                     }
                 }

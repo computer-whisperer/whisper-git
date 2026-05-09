@@ -237,6 +237,22 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.active_modal = Some(ActiveModal::Token(form));
             app
         }));
+        // Token modal with two registered GitLab hosts — one row in
+        // edit mode, one in idle "configured" state — to exercise the
+        // multi-host layout independently of the GitHub block.
+        scenes.push(("modal_token_gitlab".to_string(), {
+            use whisper_git::dialogs::TokenForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.config.gitlab_hosts = vec![
+                "gitlab.com".to_string(),
+                "gitlab.company.example".to_string(),
+            ];
+            let mut form = TokenForm::default();
+            form.gitlab_inputs
+                .insert("gitlab.company.example".to_string(), "glpat_demo".to_string());
+            app.active_modal = Some(ActiveModal::Token(form));
+            app
+        }));
         scenes.push(("sidebar_context_menu".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
             app.context_menu = Some(ContextMenuState {

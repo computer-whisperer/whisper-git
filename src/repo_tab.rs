@@ -25,6 +25,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::ci::{CiFetchResult, ProviderCiResult, ProviderCommitRollup};
 use crate::commit_graph::GraphLayout;
+use crate::config::Config;
 use crate::git::{
     BranchTip, CommitInfo, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult, StashEntry,
     SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
@@ -619,14 +620,16 @@ impl RepoTab {
     /// how many fetches actually launched, so the poll cadence backs off
     /// even when no remote is recognised.
     ///
-    /// Tokens come from the system keychain via `token_store`. A missing
-    /// GitHub token short-circuits — we'd just get a 401 spam. GitLab
-    /// per-host tokens look up by the API base hostname.
-    pub fn trigger_ci_fetch(&mut self, proxy: EventLoopProxy<()>) {
+    /// Tokens come from the system keychain via `token_store`. GitLab
+    /// hosts seen here are also auto-registered into `config.gitlab_hosts`
+    /// (and the config persisted) so the token modal has something to
+    /// enumerate even before the user has set a token for the host.
+    pub fn trigger_ci_fetch(&mut self, config: &mut Config, proxy: EventLoopProxy<()>) {
         self.last_ci_fetch = Some(Instant::now());
         let github_token = token_store::get_github_token();
         let mut seen_github = false;
         let mut seen_gitlab: HashSet<String> = HashSet::new();
+        let mut config_dirty = false;
         for remote in &self.remotes {
             let url = match self.repo.remote_url(remote) {
                 Some(u) => u,
@@ -649,12 +652,22 @@ impl RepoTab {
                     .strip_prefix("https://")
                     .or_else(|| parsed.api_base.strip_prefix("http://"))
                     .unwrap_or(&parsed.api_base);
+                if config.register_gitlab_host(host) {
+                    config_dirty = true;
+                }
                 if let Some(token) = token_store::get_gitlab_token(host)
                     && let Some(rx) = gitlab::fetch_ci_status_async(&token, &url, proxy.clone())
                 {
                     self.ci_receivers.push(rx);
                 }
             }
+        }
+        if config_dirty {
+            // Best-effort save — a write error is non-fatal here (the
+            // host stays in memory; next save will pick it up). We
+            // intentionally don't surface a toast for this background
+            // path since it'd be noise on every CI poll.
+            let _ = config.save();
         }
     }
 

@@ -185,24 +185,38 @@ pub fn clone_modal(state: &CloneForm, selection: &Selection, in_flight: bool) ->
     overlays_panel(MODAL_CLONE_KEY, "Clone repository", [body])
 }
 
-/// Form state for the Token modal — currently just the GitHub token
-/// input (GitLab multi-host support comes back when we re-enable
-/// `gitlab.rs`).
+/// Form state for the Token modal — one section for GitHub, one row
+/// per registered GitLab host. The Vec/HashMap shape mirrors the
+/// modal's render path: each host is independently editable, and we
+/// only carry input state for hosts the user is actively editing.
 #[derive(Clone, Debug, Default)]
 pub struct TokenForm {
-    /// Live text-input contents. Empty when the user hasn't started
-    /// editing or just cleared the existing value.
+    /// Live text-input contents for the GitHub field. Empty when the
+    /// user hasn't started editing or just cleared the existing value.
     pub github_input: String,
     /// `true` while the user is actively editing the GitHub field —
     /// drives the Save / Cancel button pair vs the Set / Clear pair.
     pub editing_github: bool,
+    /// Per-host GitLab input buffers. A host being a key here means the
+    /// row is in editing mode; absence means the row shows status +
+    /// Set/Replace/Clear buttons.
+    pub gitlab_inputs: std::collections::HashMap<String, String>,
 }
 
-/// Token management modal. Mirrors the old `token_dialog` but trimmed
-/// to GitHub — Set / Replace / Clear inline controls, no GitLab
-/// multi-host list yet. The actual keychain reads/writes go through
-/// `token_store`.
-pub fn token_modal(state: &TokenForm, selection: &Selection, github_set: bool) -> El {
+/// Token management modal. One block for GitHub, one block per
+/// registered GitLab host (sourced from `Config::gitlab_hosts`). All
+/// secrets live in the system keychain via `token_store`; this modal
+/// reads/writes through `token:*` routes that the app handles.
+///
+/// `gitlab_hosts` is `(host, configured)` for each registered GitLab
+/// host. Hosts come from `Config::gitlab_hosts` (auto-populated on
+/// CI fetch); the configured flag comes from a `token_store` lookup.
+pub fn token_modal(
+    state: &TokenForm,
+    selection: &Selection,
+    github_set: bool,
+    gitlab_hosts: &[(String, bool)],
+) -> El {
     let github_controls: El = if state.editing_github {
         row([
             text_input(&state.github_input, selection, "token:github")
@@ -246,10 +260,101 @@ pub fn token_modal(state: &TokenForm, selection: &Selection, github_set: bool) -
         form_description("Stored in the system keychain via the `keyring` crate."),
     ]);
 
+    let mut sections: Vec<El> = vec![github_block];
+
+    if gitlab_hosts.is_empty() {
+        sections.push(form_item([
+            form_label("GitLab"),
+            form_description(
+                "GitLab hosts appear here automatically when whisper-git \
+                 sees a remote that points at one (e.g. `gitlab.com` or a \
+                 self-hosted instance). Open a repo with a GitLab remote \
+                 to register the host.",
+            ),
+        ]));
+    } else {
+        let mut rows: Vec<El> = Vec::with_capacity(gitlab_hosts.len());
+        for (host, configured) in gitlab_hosts {
+            rows.push(gitlab_host_row(state, selection, host, *configured));
+        }
+        sections.push(form_item([
+            form_label("GitLab"),
+            form_control(column(rows).gap(tokens::SPACE_2).width(Size::Fill(1.0))),
+            form_description("One token per host. Per-host secrets go in the keychain."),
+        ]));
+    }
+
     let actions = row([spacer(), button("Done").key("modal:token:close").primary()])
         .align(Align::Center);
+    sections.push(actions);
 
-    let body = form([github_block, actions]);
+    let body = form(sections);
 
     overlays_panel(MODAL_TOKEN_KEY, "Manage tokens", [body])
+}
+
+/// Render one row of the GitLab section. Mirrors the GitHub row's
+/// edit/idle split but scopes routes by host suffix (`token:gitlab:
+/// edit:gitlab.com`, etc.) so the app can dispatch them correctly.
+fn gitlab_host_row(
+    state: &TokenForm,
+    selection: &Selection,
+    host: &str,
+    configured: bool,
+) -> El {
+    let editing = state.gitlab_inputs.contains_key(host);
+    let host_label = text(host.to_string())
+        .label()
+        .width(Size::Fixed(180.0));
+
+    let controls: El = if editing {
+        let buf = state.gitlab_inputs.get(host).cloned().unwrap_or_default();
+        row([
+            text_input(&buf, selection, &format!("token:gitlab:input:{host}"))
+                .key(format!("token:gitlab:input:{host}"))
+                .width(Size::Fill(1.0)),
+            button("Save")
+                .key(format!("token:gitlab:save:{host}"))
+                .primary(),
+            button("Cancel")
+                .key(format!("token:gitlab:cancel:{host}"))
+                .ghost(),
+        ])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .width(Size::Fill(1.0))
+    } else {
+        let status: El = if configured {
+            badge("Configured").success()
+        } else {
+            badge("Not set").muted()
+        };
+        let mut children: Vec<El> = vec![
+            status,
+            spacer(),
+            button(if configured {
+                "Replace\u{2026}"
+            } else {
+                "Set\u{2026}"
+            })
+            .key(format!("token:gitlab:edit:{host}"))
+            .ghost(),
+        ];
+        if configured {
+            children.push(
+                button("Clear")
+                    .key(format!("token:gitlab:clear:{host}"))
+                    .destructive(),
+            );
+        }
+        row(children)
+            .gap(tokens::SPACE_2)
+            .align(Align::Center)
+            .width(Size::Fill(1.0))
+    };
+
+    row([host_label, controls])
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .width(Size::Fill(1.0))
 }
