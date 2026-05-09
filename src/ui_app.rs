@@ -2321,23 +2321,66 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
 // ---------------------------------------------------------------------------
 
 fn tab_bar(app: &WhisperApp) -> El {
-    // Aetna's `editor_tabs` is a closeable, addable tab strip — exactly
-    // the doc-tab shape we want here. Tab values are the indices as
-    // strings; the strip's routed keys are `tabs:tab:{i}`,
-    // `tabs:close:{i}`, and `tabs:add`. We keep our own dispatch in
-    // `handle_action` rather than delegating to `editor_tabs::apply_event`
-    // because (a) closing the last tab should leave whisper-git on the
-    // welcome view (not refuse), and (b) `+` opens the rfd file picker
-    // asynchronously rather than minting a fresh value synchronously.
+    // Aetna's `editor_tabs_leading` is the doc-tab strip with optional
+    // per-tab leading content — we use it to pin a small colored CI pip
+    // before the tab name, mirroring the pre-port whisper-git's tab bar.
+    // Tab values are the indices as strings; routed keys are
+    // `tabs:tab:{i}`, `tabs:close:{i}`, `tabs:add`. We keep our own
+    // dispatch in `handle_action` rather than delegating to
+    // `editor_tabs::apply_event` because (a) closing the last tab
+    // should leave whisper-git on the welcome view (not refuse), and
+    // (b) `+` opens the rfd file picker asynchronously rather than
+    // minting a fresh value synchronously.
     let active = app.active_tab.to_string();
-    aetna_core::widgets::editor_tabs::editor_tabs(
+    aetna_core::widgets::editor_tabs::editor_tabs_leading(
         "tabs",
         &active,
-        app.tabs
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (i.to_string(), t.repo_name.clone())),
+        app.tabs.iter().enumerate().map(|(i, t)| {
+            (i.to_string(), t.repo_name.clone(), tab_ci_pip(t))
+        }),
     )
+}
+
+/// Aggregate CI status across `tab.ci_results` and render a small
+/// colored circle for the tab leading slot. Returns `None` when no
+/// provider has reported anything yet — the tab's leading slot stays
+/// empty rather than reserving space for a phantom pip.
+fn tab_ci_pip(tab: &RepoTab) -> Option<El> {
+    use crate::ci::CiState;
+    if tab.ci_results.is_empty() {
+        return None;
+    }
+    let overall = tab.ci_results.iter().fold(CiState::None, |worst, r| {
+        worst_state(worst, r.status.state)
+    });
+    let (color, summary_state) = match overall {
+        CiState::Failure => (tokens::DESTRUCTIVE, "failing"),
+        CiState::Pending => (tokens::WARNING, "running"),
+        CiState::Success => (tokens::SUCCESS, "passing"),
+        CiState::None => return None,
+    };
+    let tip = format!("CI {summary_state}");
+    Some(
+        El::new(aetna_core::tree::Kind::Group)
+            .width(Size::Fixed(8.0))
+            .height(Size::Fixed(8.0))
+            .fill(color)
+            .radius(4.0)
+            .tooltip(tip),
+    )
+}
+
+fn worst_state(a: crate::ci::CiState, b: crate::ci::CiState) -> crate::ci::CiState {
+    use crate::ci::CiState;
+    fn rank(s: CiState) -> u8 {
+        match s {
+            CiState::Failure => 3,
+            CiState::Pending => 2,
+            CiState::Success => 1,
+            CiState::None => 0,
+        }
+    }
+    if rank(a) >= rank(b) { a } else { b }
 }
 
 /// Parent-context strip shown between the breadcrumb and the header
