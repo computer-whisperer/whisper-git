@@ -3,4 +3,5 @@
 //! interfaces are deliberately decoupled from libgit2 / `RepoTab`
 //! types so the widget renders a value, not a query.
 
+pub mod brand_icons;
 pub mod diff;

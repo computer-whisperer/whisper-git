@@ -35,6 +35,9 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 # Native file dialogs
 rfd = "0.17"
 
+# HTTP (CI status fetchers — GitHub Actions, GitLab pipelines)
+ureq = { version = "3", features = ["json"] }
+
 # Utilities
 anyhow = "1.0"
 
