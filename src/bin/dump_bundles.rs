@@ -49,7 +49,7 @@ fn main() -> Result<()> {
         let theme = app.theme();
         let cx = BuildCx::new(&theme);
         let mut tree = app.build(&cx);
-        let bundle = render_bundle(&mut tree, viewport, Some(env!("CARGO_PKG_NAME")));
+        let bundle = render_bundle(&mut tree, viewport);
         let written = write_bundle(&bundle, &out_dir, &name).context("write_bundle")?;
         for p in &written {
             println!("wrote {}", p.display());

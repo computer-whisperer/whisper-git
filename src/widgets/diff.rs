@@ -7,6 +7,12 @@
 //! resolves the right hunks (working-tree vs commit) and builds the
 //! input. Once the API settles this module is a candidate for moving
 //! upstream into aetna's catalog.
+//!
+//! The body is a single [`virtual_list_dyn`]: hunks are flattened into
+//! a row stream where hunk-header rows interleave with line rows, and
+//! only the visible window is materialized per frame. This keeps a
+//! 5,000-line diff cheap to scroll. The flat stream also matches
+//! Github's hunk-header-as-band layout — there is no per-hunk card.
 
 use aetna_core::{El, prelude::*};
 
@@ -94,6 +100,12 @@ impl DiffData {
 }
 
 const LINENO_COL_WIDTH: f32 = 44.0;
+/// Estimated row height for `virtual_list_dyn`. Most rows are single
+/// mono lines (~18px) — hunk-header rows are taller (~32px) but rare.
+/// The library measures actual heights as rows enter the viewport and
+/// caches them, so the estimate just picks the initial scrollbar
+/// thumb size.
+const EST_ROW_HEIGHT: f32 = 22.0;
 /// Row-level wash for changed lines (`+` / `-`). Subtle: the diff
 /// should still read as text, not as alternating colored stripes.
 const ROW_BG_ALPHA: u8 = 48;
@@ -140,26 +152,70 @@ pub fn diff(data: &DiffData) -> El {
     let body: El = if data.hunks.is_empty() {
         column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_4)
     } else {
-        let blocks: Vec<El> = data
-            .hunks
-            .iter()
-            .map(|h| hunk_block(h, data.mode))
-            .collect();
-        column(blocks).gap(tokens::SPACE_3).padding(tokens::SPACE_3)
+        let rows = flatten_rows(&data.hunks, data.mode);
+        virtual_list_dyn(rows.len(), EST_ROW_HEIGHT, move |i| {
+            build_diff_row(&rows[i], i)
+        })
+        .key("diff:scroll")
+        .height(Size::Fill(1.0))
     };
 
     card([
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .fill(tokens::MUTED),
-        card_content([scroll([body])
-            .key("diff:scroll")
-            .height(Size::Fill(1.0))])
-        .padding(0.0)
-        .height(Size::Fill(1.0)),
+        card_content([body])
+            .padding(0.0)
+            .height(Size::Fill(1.0)),
     ])
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
+}
+
+/// One row in the flattened hunk stream. Hunk headers interleave with
+/// line rows so the entire body is a single virtual list.
+#[derive(Clone)]
+enum DiffRow {
+    HunkHeader {
+        header: String,
+        action: Option<DiffHunkAction>,
+    },
+    UnifiedLine(DiffLine),
+    SplitPair(PairedRow),
+}
+
+fn flatten_rows(hunks: &[DiffHunk], mode: DiffMode) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    for hunk in hunks {
+        rows.push(DiffRow::HunkHeader {
+            header: hunk.header.clone(),
+            action: hunk.action.clone(),
+        });
+        match mode {
+            DiffMode::Unified => {
+                for l in &hunk.lines {
+                    rows.push(DiffRow::UnifiedLine(l.clone()));
+                }
+            }
+            DiffMode::Split => {
+                for p in pair_lines(&hunk.lines) {
+                    rows.push(DiffRow::SplitPair(p));
+                }
+            }
+        }
+    }
+    rows
+}
+
+fn build_diff_row(row: &DiffRow, idx: usize) -> El {
+    let key = format!("diff:row:{idx}");
+    match row {
+        DiffRow::HunkHeader { header, action } => {
+            hunk_header_row(header, action.as_ref()).key(key)
+        }
+        DiffRow::UnifiedLine(line) => unified_line_row(line).key(key),
+        DiffRow::SplitPair(pair) => split_pair_row(pair).key(key),
+    }
 }
 
 fn mode_toggle_button(mode: DiffMode, key: &str) -> El {
@@ -174,39 +230,30 @@ fn mode_toggle_button(mode: DiffMode, key: &str) -> El {
         .tooltip(tip.to_string())
 }
 
-fn hunk_block(hunk: &DiffHunk, mode: DiffMode) -> El {
-    let mut header_children: Vec<El> = Vec::with_capacity(3);
-    let (range, context) = split_hunk_header(&hunk.header);
-    header_children.push(text(range).code().text_color(tokens::INFO));
+/// One hunk-header band rendered as a single flat row for the
+/// virtual list. Carries a MUTED fill that visually separates one
+/// hunk's lines from the next — replaces what the old per-hunk card
+/// boundary used to do.
+fn hunk_header_row(header: &str, action: Option<&DiffHunkAction>) -> El {
+    let mut children: Vec<El> = Vec::with_capacity(3);
+    let (range, context) = split_hunk_header(header);
+    children.push(text(range).code().text_color(tokens::INFO));
     if let Some(ctx) = context {
-        header_children.push(text(ctx).code().muted());
+        children.push(text(ctx).code().muted());
     }
-    header_children.push(spacer());
-    if let Some(action) = hunk.action.as_ref() {
-        let mut btn = button(action.label.clone()).key(action.key.clone()).ghost();
-        if let Some(tip) = action.tooltip.as_ref() {
+    children.push(spacer());
+    if let Some(act) = action {
+        let mut btn = button(act.label.clone()).key(act.key.clone()).ghost();
+        if let Some(tip) = act.tooltip.as_ref() {
             btn = btn.tooltip(tip.clone());
         }
-        header_children.push(btn);
+        children.push(btn);
     }
-    let header_row = row(header_children)
+    row(children)
         .gap(tokens::SPACE_2)
-        .align(Align::Center);
-
-    let body: Vec<El> = match mode {
-        DiffMode::Unified => hunk.lines.iter().map(unified_line_row).collect(),
-        DiffMode::Split => pair_lines(&hunk.lines)
-            .iter()
-            .map(split_pair_row)
-            .collect(),
-    };
-
-    card([
-        card_header([header_row])
-            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-            .fill(tokens::MUTED),
-        card_content(body).padding(0.0),
-    ])
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .fill(tokens::MUTED)
 }
 
 /// Parse `@@ -a,b +c,d @@ <context>` into the range chunk
@@ -343,9 +390,15 @@ fn side_half(line: Option<&DiffLine>, side: Side) -> El {
             .width(Size::Fill(1.0)),
     };
 
+    // `.clip()` truncates the content at the half boundary. Without
+    // it, `nowrap_text`'s min-content width forces long lines to
+    // overflow past the half's allocated rect and bleed into the
+    // opposite column. To see a clipped line in full, the user
+    // switches to Unified.
     let half = row([gutter, content])
         .align(Align::Center)
-        .width(Size::Fill(1.0));
+        .width(Size::Fill(1.0))
+        .clip();
 
     if let Some(bg) = row_bg {
         half.fill(bg)
