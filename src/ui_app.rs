@@ -897,15 +897,52 @@ impl WhisperApp {
             return;
         }
 
-        // Sidebar item clicks — Phase 3 just announces them.
-        for prefix in ["branch:", "remote:", "tag:", "stash:"] {
-            if let Some(name) = key.strip_prefix(prefix) {
-                let label = prefix.trim_end_matches(':');
-                self.toasts.push(ToastSpec::info(format!(
-                    "{label}: {name} (Phase 4c wiring)"
-                )));
-                return;
-            }
+        // Sidebar branch/remote/tag click — jump-to-commit. Resolve
+        // the ref to its OID against the focused tab's metadata, then
+        // call select_commit so the row highlights and the right pane
+        // opens commit details. Aetna's virtual_list doesn't yet have a
+        // scroll-to-index API, so off-viewport selections still need
+        // the user to scroll — but the right pane shows the commit so
+        // the click is never silent.
+        if let Some(name) = key.strip_prefix("branch:") {
+            let oid = self
+                .active_focus()
+                .and_then(|t| {
+                    t.branch_tips
+                        .iter()
+                        .find(|b| !b.is_remote && b.name == name)
+                        .map(|b| b.oid)
+                });
+            self.jump_to_commit(oid, name);
+            return;
+        }
+        if let Some(name) = key.strip_prefix("remote:") {
+            let oid = self
+                .active_focus()
+                .and_then(|t| {
+                    t.branch_tips
+                        .iter()
+                        .find(|b| b.is_remote && b.name == name)
+                        .map(|b| b.oid)
+                });
+            self.jump_to_commit(oid, name);
+            return;
+        }
+        if let Some(name) = key.strip_prefix("tag:") {
+            let oid = self
+                .active_focus()
+                .and_then(|t| t.tags.iter().find(|t| t.name == name).map(|t| t.oid));
+            self.jump_to_commit(oid, name);
+            return;
+        }
+        if let Some(idx_str) = key.strip_prefix("stash:") {
+            // Stash apply/pop UX is its own surface — for now selecting
+            // a stash row just acknowledges the click. Drop is handled
+            // via the context menu.
+            self.toasts.push(ToastSpec::info(format!(
+                "Stash {idx_str} apply/pop is not wired yet"
+            )));
+            return;
         }
 
         // Breadcrumb segment click — pop until exactly `depth` entries
@@ -1997,6 +2034,31 @@ impl WhisperApp {
             }
             Ok(())
         });
+    }
+
+    /// Select the commit `oid` on the focused tab, opening the
+    /// commit-detail pane in the right column. Surfaces a toast naming
+    /// the ref so the click never feels silent — particularly since
+    /// the row may be off-screen until aetna grows a scroll-to-index
+    /// API. Quietly no-ops on `None` so callers can pass an unresolved
+    /// lookup result without a separate guard.
+    fn jump_to_commit(&mut self, oid: Option<git2::Oid>, ref_name: &str) {
+        let Some(oid) = oid else {
+            self.toasts
+                .push(ToastSpec::warning(format!("Couldn't resolve {ref_name}")));
+            return;
+        };
+        let short = oid.to_string()[..7].to_string();
+        if let Some(tab) = self.active_focus_mut() {
+            tab.select_commit(Some(oid));
+            // Clear any sticky diff selection so the right-pane swap
+            // (commit detail) actually shows for this jump.
+            if let Some(view) = tab.active_view_mut() {
+                view.selected_diff_file = None;
+            }
+        }
+        self.toasts
+            .push(ToastSpec::info(format!("{ref_name} \u{2192} {short}")));
     }
 
     fn commit(&mut self) {
