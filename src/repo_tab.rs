@@ -154,6 +154,11 @@ pub struct WorktreeView {
     pub current_branch: String,
     /// HEAD OID for this worktree.
     pub head_oid: Option<git2::Oid>,
+    /// Submodules registered in *this worktree*. Submodules are a
+    /// property of the working tree (they live at paths inside it),
+    /// not the repo — so each worktree carries its own list. Refreshed
+    /// alongside `status` whenever the active view re-runs.
+    pub submodules: Vec<SubmoduleInfo>,
     /// Commit-message subject draft (controlled).
     pub commit_subject: String,
     /// Commit-message body draft (controlled).
@@ -176,6 +181,7 @@ impl WorktreeView {
             status: WorkingDirStatus::default(),
             current_branch: String::new(),
             head_oid: None,
+            submodules: Vec::new(),
             commit_subject: String::new(),
             commit_body: String::new(),
             selected_diff_file: None,
@@ -184,11 +190,12 @@ impl WorktreeView {
         Some(view)
     }
 
-    /// Re-query worktree-scoped state (status + branch + HEAD).
+    /// Re-query worktree-scoped state (status + branch + HEAD + submodules).
     pub fn refresh(&mut self) {
         self.status = self.repo.status().unwrap_or_default();
         self.current_branch = self.repo.current_branch().unwrap_or_default();
         self.head_oid = self.repo.head_oid().ok();
+        self.submodules = self.repo.submodules().unwrap_or_default();
     }
 }
 
@@ -205,11 +212,9 @@ pub struct RepoTab {
     pub branch_tips: Vec<BranchTip>,
     pub remotes: Vec<String>,
     pub tags: Vec<TagInfo>,
-    /// Linked-worktree metadata (sidebar Worktrees section). The main
-    /// worktree is *not* in this list — libgit2 only enumerates linked
-    /// worktrees here.
+    /// Linked-worktree metadata. The main worktree is *not* in this
+    /// list — libgit2 only enumerates linked worktrees here.
     pub worktrees: Vec<WorktreeInfo>,
-    pub submodules: Vec<SubmoduleInfo>,
     pub stashes: Vec<StashEntry>,
     pub sidebar: SidebarState,
     /// Reachable commit history, refreshed alongside repo metadata.
@@ -279,7 +284,6 @@ impl RepoTab {
             remotes: Vec::new(),
             tags: Vec::new(),
             worktrees: Vec::new(),
-            submodules: Vec::new(),
             stashes: Vec::new(),
             sidebar: SidebarState::default(),
             commits: Vec::new(),
@@ -311,7 +315,6 @@ impl RepoTab {
         self.remotes = self.repo.remote_names();
         self.tags = self.repo.tags().unwrap_or_default();
         self.worktrees = self.repo.worktrees().unwrap_or_default();
-        self.submodules = self.repo.submodules().unwrap_or_default();
         self.stashes = self.repo.stash_list();
         // Pull orphan commits from reflogs alongside the topo walk so
         // unreachable work — finished rebases, dropped branches —
