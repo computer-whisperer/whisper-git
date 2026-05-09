@@ -2321,9 +2321,12 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
 // ---------------------------------------------------------------------------
 
 fn tab_bar(app: &WhisperApp) -> El {
-    // Aetna's `editor_tabs_leading` is the doc-tab strip with optional
-    // per-tab leading content — we use it to pin a small colored CI pip
-    // before the tab name, mirroring the pre-port whisper-git's tab bar.
+    // Aetna's `editor_tabs` wrapper is the doc-tab strip we want, but
+    // it doesn't thread a per-tab leading element. Per aetna's
+    // dogfood path (see widget_kit.md and the editor_tab doc), apps
+    // that need a leading slot compose the strip themselves with
+    // `editor_tab` calls + the trailing `+` add button.
+    //
     // Tab values are the indices as strings; routed keys are
     // `tabs:tab:{i}`, `tabs:close:{i}`, `tabs:add`. We keep our own
     // dispatch in `handle_action` rather than delegating to
@@ -2331,14 +2334,47 @@ fn tab_bar(app: &WhisperApp) -> El {
     // should leave whisper-git on the welcome view (not refuse), and
     // (b) `+` opens the rfd file picker asynchronously rather than
     // minting a fresh value synchronously.
+    use aetna_core::widgets::button::icon_button;
+    use aetna_core::widgets::editor_tabs::{
+        EditorTabsConfig, editor_tab, editor_tab_add_key,
+    };
+
     let active = app.active_tab.to_string();
-    aetna_core::widgets::editor_tabs::editor_tabs_leading(
-        "tabs",
-        &active,
-        app.tabs.iter().enumerate().map(|(i, t)| {
-            (i.to_string(), t.repo_name.clone(), tab_ci_pip(t))
-        }),
-    )
+    let config = EditorTabsConfig::default();
+
+    let mut children: Vec<El> = app
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let value = i.to_string();
+            let selected = value == active;
+            editor_tab(
+                "tabs",
+                value,
+                tab_ci_pip(t),
+                t.repo_name.clone(),
+                selected,
+                config,
+            )
+        })
+        .collect();
+
+    let add_btn = icon_button(IconName::Plus)
+        .key(editor_tab_add_key("tabs"))
+        .icon_size(tokens::ICON_SM)
+        .ghost()
+        .width(Size::Fixed(tokens::CONTROL_HEIGHT))
+        .height(Size::Fixed(tokens::CONTROL_HEIGHT));
+    children.push(add_btn);
+
+    row(children)
+        .gap(tokens::SPACE_1)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .fill(tokens::MUTED)
+        .width(Size::Fill(1.0))
+        .height(Size::Hug)
 }
 
 /// Aggregate CI status across `tab.ci_results` and render a small

@@ -11,11 +11,9 @@ keywords = ["git", "vulkan", "gui", "graphics"]
 categories = ["development-tools", "gui"]
 
 [dependencies]
-# UI toolkit (path dep until aetna 0.3.0 ships on crates.io).
-# Temporarily pointed at the editor-tab-leading worktree while that PR
-# is in flight. Revert to ../../aetna/aetna.main/... once it merges.
-aetna-core = { path = "../../aetna/aetna.editor-tab-leading/crates/aetna-core" }
-aetna-vulkano = { path = "../../aetna/aetna.editor-tab-leading/crates/aetna-vulkano" }
+# UI toolkit (path dep until aetna 0.3.0 ships on crates.io)
+aetna-core = { path = "../../aetna/aetna.main/crates/aetna-core" }
+aetna-vulkano = { path = "../../aetna/aetna.main/crates/aetna-vulkano" }
 
 # Graphics
 vulkano = "0.35"
