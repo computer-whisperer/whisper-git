@@ -427,12 +427,35 @@ impl App for WhisperApp {
     }
 
     fn on_event(&mut self, event: UiEvent) {
-        // Escape closes whichever modal is open. Aetna emits an Escape
+        // Escape unwinds the deepest active state, one step at a time:
+        // (1) close any open modal, (2) clear the selected diff file
+        // (returns center to graph), (3) clear the selected commit
+        // (returns right pane to staging well). Aetna emits an Escape
         // event when the key is pressed and no widget consumes it; our
         // text inputs don't consume Escape, so it always reaches us.
-        if matches!(event.kind, UiEventKind::Escape) && self.active_modal.is_some() {
-            self.active_modal = None;
-            return;
+        if matches!(event.kind, UiEventKind::Escape) {
+            if self.active_modal.is_some() {
+                self.active_modal = None;
+                return;
+            }
+            if let Some(tab) = self.active_mut() {
+                let cleared_diff = tab
+                    .active_view_mut()
+                    .map(|v| {
+                        let had = v.selected_diff_file.is_some();
+                        v.selected_diff_file = None;
+                        had
+                    })
+                    .unwrap_or(false);
+                if cleared_diff {
+                    return;
+                }
+                if tab.selected_commit.is_some() {
+                    tab.select_commit(None);
+                    return;
+                }
+            }
+            // Fall through: nothing to unwind, let the event propagate.
         }
 
         // Resize-handle drags. Each handle owns its anchor state on
