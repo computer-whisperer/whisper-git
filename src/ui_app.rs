@@ -415,6 +415,9 @@ impl App for WhisperApp {
             && outer.nav_depth() > 0
         {
             chrome.push(breadcrumb_bar(&outer.nav_chain_names()));
+            if let Some(strip) = parent_context_strip(outer) {
+                chrome.push(strip);
+            }
         }
         chrome.push(header_bar(self.active_focus(), self.clone_op.as_ref()));
         if self.shortcut_bar_visible {
@@ -2057,6 +2060,90 @@ fn tab_bar(app: &WhisperApp) -> El {
             .enumerate()
             .map(|(i, t)| (i.to_string(), t.repo_name.clone())),
     )
+}
+
+/// Parent-context strip shown between the breadcrumb and the header
+/// bar when drilled into a submodule. Surfaces what the immediate
+/// parent's HEAD is at and how it relates to the pin so the user
+/// always knows whether the parent has drifted away from this
+/// submodule's pinned commit (or vice versa) without leaving focus
+/// mode.
+///
+/// The strip is intentionally text-first — a compressed graphical
+/// timeline (per the design doc's "compressed parent timeline") is a
+/// future polish; the content here is what users actually need to
+/// answer "wait, what does the parent expect?" Click anywhere on the
+/// strip pops back to the parent view.
+fn parent_context_strip(outer: &RepoTab) -> Option<El> {
+    let focus = outer.active_view_tab();
+    let parent = outer.parent_of_focus()?;
+    let pinned = focus.pinned_oid?;
+    let pinned_short = pinned.to_string()[..7].to_string();
+    let parent_branch = parent.current_branch().to_string();
+    let parent_head = parent.active_view().and_then(|v| v.head_oid);
+    let parent_head_short = parent_head
+        .map(|o| o.to_string()[..7].to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let drift = match parent_head {
+        Some(head) => head != pinned,
+        None => false,
+    };
+
+    let parent_label = if parent_branch.is_empty() {
+        format!("{} (detached)", parent.repo_name)
+    } else {
+        format!("{}/{}", parent.repo_name, parent_branch)
+    };
+
+    let pin_chip = row([
+        text("pin").caption().muted(),
+        text(pinned_short).mono().text_color(tokens::INFO),
+    ])
+    .gap(tokens::SPACE_1)
+    .align(Align::Center);
+
+    let parent_head_color = if drift {
+        tokens::WARNING
+    } else {
+        tokens::SUCCESS
+    };
+    let parent_head_chip = row([
+        text("parent HEAD").caption().muted(),
+        text(parent_head_short)
+            .mono()
+            .text_color(parent_head_color),
+    ])
+    .gap(tokens::SPACE_1)
+    .align(Align::Center);
+
+    let mut bar_items: Vec<El> = vec![
+        icon(IconName::ChevronLeft).muted(),
+        text(parent_label).caption(),
+        pin_chip,
+        parent_head_chip,
+    ];
+    if drift {
+        bar_items.push(
+            badge("drift").muted().text_color(tokens::WARNING),
+        );
+    }
+    bar_items.push(spacer());
+    bar_items.push(
+        text("Return to parent (Esc)")
+            .caption()
+            .muted(),
+    );
+
+    let depth_to_parent = outer.nav_depth().saturating_sub(1);
+    let bar = row(bar_items)
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1))
+        .key(format!("nav:exit_to:{depth_to_parent}"))
+        .focusable()
+        .cursor(Cursor::Pointer)
+        .tooltip("Return to parent view");
+    Some(column([bar, separator()]).width(Size::Fill(1.0)))
 }
 
 /// Sibling-submodule strip shown at the bottom of the body when
