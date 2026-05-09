@@ -474,7 +474,19 @@ impl App for WhisperApp {
                     resize_handle(Axis::Row).key("right:resize"),
                     right.width(Size::Fixed(self.right_pane_w)),
                 ];
-                row(children).height(Size::Fill(1.0))
+                let main_row = row(children).height(Size::Fill(1.0));
+                // Sibling-submodule strip below the main split, only
+                // when drilled in *and* the immediate parent has more
+                // than one submodule (a strip with one entry is just
+                // the current view — pure noise).
+                if let Some(siblings_strip) = self
+                    .active()
+                    .and_then(|outer| sibling_submodule_strip(outer, tab))
+                {
+                    column([main_row, siblings_strip]).height(Size::Fill(1.0))
+                } else {
+                    main_row
+                }
             }
             None => welcome::welcome_view(&self.config.recent_repos),
         };
@@ -894,6 +906,27 @@ impl WhisperApp {
                 && let Some(tab) = self.active_mut()
             {
                 tab.exit_to_depth(depth);
+            }
+            return;
+        }
+
+        // Submodule sibling switch: pop the current view + drill into
+        // a sibling at the same depth. Routed from the sibling strip
+        // at the bottom of the focused body.
+        if let Some(path) = key.strip_prefix("submodule:switch:") {
+            let path = path.to_string();
+            if let Some(tab) = self.active_mut() {
+                match tab.switch_sibling_submodule(&path) {
+                    Ok(()) => {
+                        self.toasts
+                            .push(ToastSpec::success(format!("Switched to {path}")));
+                    }
+                    Err(e) => {
+                        self.toasts.push(ToastSpec::error(format!(
+                            "Couldn't switch to {path}: {e}"
+                        )));
+                    }
+                }
             }
             return;
         }
@@ -2024,6 +2057,82 @@ fn tab_bar(app: &WhisperApp) -> El {
             .enumerate()
             .map(|(i, t)| (i.to_string(), t.repo_name.clone())),
     )
+}
+
+/// Sibling-submodule strip shown at the bottom of the body when
+/// drilled into a submodule. Lists the *immediate parent's* other
+/// registered submodules (i.e. siblings of the current view) as
+/// click-routed pills so users can shift laterally without climbing
+/// back through the breadcrumb. Returns `None` when not drilled in
+/// or when there are no actual siblings (a strip with one entry —
+/// just the current view — would be pure chrome noise).
+///
+/// `outer` is the user-opened tab (the one carrying nav_stack);
+/// `focus` is the currently rendered RepoTab. The current view's
+/// path is excluded from the strip.
+fn sibling_submodule_strip(outer: &RepoTab, focus: &RepoTab) -> Option<El> {
+    if outer.nav_depth() == 0 {
+        return None;
+    }
+    let parent = outer.parent_of_focus()?;
+    let parent_view = parent.active_view()?;
+    if parent_view.submodules.len() < 2 {
+        return None;
+    }
+
+    // Identify the focused submodule by working-dir path so we can
+    // exclude it from the sibling list. Each sibling entry's path is
+    // relative to the parent's worktree, so build the absolute and
+    // compare.
+    let focus_workdir = focus.repo.workdir().map(|p| p.to_path_buf());
+
+    let mut chips: Vec<El> = Vec::with_capacity(parent_view.submodules.len());
+    for sib in &parent_view.submodules {
+        let abs = parent_view.path.join(&sib.path);
+        let is_focused = focus_workdir.as_deref() == Some(abs.as_path());
+        if is_focused {
+            continue;
+        }
+        let dirty = sib.is_dirty == Some(true);
+        let color = if dirty {
+            tokens::WARNING
+        } else {
+            tokens::INFO
+        };
+        let label = sib
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(sib.path.as_str())
+            .to_string();
+        let chip = row([
+            icon(IconName::Folder).muted(),
+            text(label).caption().text_color(color),
+        ])
+        .gap(tokens::SPACE_1)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .fill(color.with_alpha(28))
+        .stroke(color.with_alpha(96))
+        .key(format!("submodule:switch:{}", sib.path))
+        .focusable()
+        .cursor(Cursor::Pointer)
+        .tooltip(format!("Switch to {}", sib.path));
+        chips.push(chip);
+    }
+
+    if chips.is_empty() {
+        return None;
+    }
+
+    let mut strip_children: Vec<El> = vec![text("Siblings").caption().muted()];
+    strip_children.extend(chips);
+
+    let bar = row(strip_children)
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1));
+    Some(column([separator(), bar]).width(Size::Fill(1.0)))
 }
 
 /// Submodule navigation breadcrumb — `outer › child › grandchild`.

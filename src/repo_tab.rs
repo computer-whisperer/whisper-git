@@ -658,6 +658,18 @@ impl RepoTab {
         }
     }
 
+    /// Immediate parent of the focused view — the entry one above the
+    /// stack tip. Returns `self` when drilled in by exactly one level
+    /// (the outermost is the parent). `None` at root since root has
+    /// no parent above it. Drives the sibling-submodule strip.
+    pub fn parent_of_focus(&self) -> Option<&RepoTab> {
+        match self.nav_stack.len() {
+            0 => None,
+            1 => Some(self),
+            n => self.nav_stack.get(n - 2),
+        }
+    }
+
     /// Drill into a submodule by path (relative to the *currently
     /// focused* worktree). Pushes a freshly-opened `RepoTab` onto the
     /// nav stack — the renderer naturally swaps to it on the next
@@ -703,6 +715,18 @@ impl RepoTab {
     /// `target_depth = 0` returns to root. Used by breadcrumb clicks.
     pub fn exit_to_depth(&mut self, target_depth: usize) {
         self.nav_stack.truncate(target_depth);
+    }
+
+    /// Switch laterally to a sibling submodule of the focused view —
+    /// pop the current view off the stack, then drill into `sm_path`
+    /// from the parent's perspective. Net effect: stack depth stays
+    /// the same. No-op if not drilled in (no parent to drill from).
+    pub fn switch_sibling_submodule(&mut self, sm_path: &str) -> Result<()> {
+        if self.nav_stack.is_empty() {
+            anyhow::bail!("not drilled into a submodule; nothing to switch from");
+        }
+        self.nav_stack.pop();
+        self.enter_submodule(sm_path)
     }
 
     /// 0 at root, N when the user has drilled in N levels.

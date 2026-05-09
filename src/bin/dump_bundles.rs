@@ -315,6 +315,12 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         // view paints from the pushed entry.
         scenes.push(("drilled_into_submodule".to_string(), {
             let mut outer = reopen(first);
+            // Seed the parent's worktree with synthetic submodules so
+            // the sibling-submodule strip has something to render. The
+            // first entry (vendor/embassy by name) lines up with the
+            // pushed inner view's repo_name; everything else becomes
+            // a clickable sibling pill.
+            inject_synthetic_submodules_active_view(&mut outer);
             let mut inner = reopen(first);
             inner.repo_name = "vendor/embassy".to_string();
             // Pin the parent's expected commit a few rows below HEAD so
