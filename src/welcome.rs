@@ -71,18 +71,19 @@ pub fn welcome_view(recent: &[String]) -> El {
 }
 
 fn recent_section(recent: &[String]) -> El {
-    let mut items: Vec<El> = Vec::with_capacity(recent.len() + 1);
-    items.push(
+    let rows = recent
+        .iter()
+        .enumerate()
+        .map(|(idx, path)| recent_row(idx, path));
+
+    column([
         row([h3("Recent"), spacer()])
             .align(Align::Center)
             .width(Size::Fill(1.0)),
-    );
-    for (idx, path) in recent.iter().enumerate() {
-        items.push(recent_row(idx, path));
-    }
-    column(items)
-        .gap(tokens::SPACE_1)
-        .width(Size::Fill(1.0))
+        item_group(rows),
+    ])
+    .gap(tokens::SPACE_2)
+    .width(Size::Fill(1.0))
 }
 
 fn recent_row(idx: usize, path_str: &str) -> El {
@@ -96,20 +97,9 @@ fn recent_row(idx: usize, path_str: &str) -> El {
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let label = column([
-        text(name).bold(),
-        text(parent).caption().muted(),
-    ])
-    .gap(0.0);
-
-    row([
-        icon(IconName::Folder).muted(),
-        label,
+    item([
+        item_media_icon(IconName::Folder),
+        item_content([item_title(name), item_description(parent)]),
     ])
     .key(format!("welcome:recent:{idx}"))
-    .focusable()
-    .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
-    .gap(tokens::SPACE_2)
-    .align(Align::Center)
-    .width(Size::Fill(1.0))
 }
