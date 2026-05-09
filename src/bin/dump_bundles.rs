@@ -307,6 +307,19 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             inject_synthetic_submodules_commit_detail(&mut t);
             WhisperApp::with_tabs(vec![t])
         }));
+        // Drilled-in breadcrumb scene — pushes a synthetic submodule
+        // RepoTab onto the nav stack. The "submodule" reuses the same
+        // working repo (the test environment doesn't have a real
+        // submodule lying around) but its repo_name is renamed so the
+        // breadcrumb reads `<repo> › vendor/embassy` and the focused
+        // view paints from the pushed entry.
+        scenes.push(("drilled_into_submodule".to_string(), {
+            let mut outer = reopen(first);
+            let mut inner = reopen(first);
+            inner.repo_name = "vendor/embassy".to_string();
+            outer.nav_stack.push(inner);
+            WhisperApp::with_tabs(vec![outer])
+        }));
     }
 
     if opened.len() >= 2 {

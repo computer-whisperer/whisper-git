@@ -411,6 +411,11 @@ impl App for WhisperApp {
         if !self.tabs.is_empty() {
             chrome.push(tab_bar(self));
         }
+        if let Some(outer) = self.active()
+            && outer.nav_depth() > 0
+        {
+            chrome.push(breadcrumb_bar(&outer.nav_chain_names()));
+        }
         chrome.push(header_bar(self.active_focus(), self.clone_op.as_ref()));
         if self.shortcut_bar_visible {
             chrome.push(shortcut_bar());
@@ -879,6 +884,18 @@ impl WhisperApp {
                 )));
                 return;
             }
+        }
+
+        // Breadcrumb segment click — pop until exactly `depth` entries
+        // remain on the nav stack. depth=0 returns to root; the deepest
+        // segment isn't routed (it's the view you're already on).
+        if let Some(depth_str) = key.strip_prefix("nav:exit_to:") {
+            if let Ok(depth) = depth_str.parse::<usize>()
+                && let Some(tab) = self.active_mut()
+            {
+                tab.exit_to_depth(depth);
+            }
+            return;
         }
 
         // Submodule drill-down: push the submodule onto the active
@@ -2007,6 +2024,44 @@ fn tab_bar(app: &WhisperApp) -> El {
             .enumerate()
             .map(|(i, t)| (i.to_string(), t.repo_name.clone())),
     )
+}
+
+/// Submodule navigation breadcrumb — `outer › child › grandchild`.
+/// Each segment except the last is click-routed under
+/// `nav:exit_to:<depth>` so the user can climb back up by clicking
+/// any ancestor; the last is the view currently on screen and is
+/// rendered without a route. Hidden by the caller when not drilled in.
+fn breadcrumb_bar(names: &[String]) -> El {
+    let mut children: Vec<El> = Vec::with_capacity(names.len() * 2);
+    for (i, name) in names.iter().enumerate() {
+        let is_last = i == names.len() - 1;
+        let segment = if is_last {
+            // Current focus: foreground tint, not focusable.
+            text(name.clone()).label()
+        } else {
+            // Click route pops to depth = i (i = 0 is root).
+            text(name.clone())
+                .label()
+                .text_color(tokens::PRIMARY)
+                .key(format!("nav:exit_to:{i}"))
+                .focusable()
+                .cursor(Cursor::Pointer)
+        };
+        children.push(segment);
+        if !is_last {
+            children.push(
+                text("\u{203A}".to_string())
+                    .caption()
+                    .muted(),
+            );
+        }
+    }
+
+    let bar = row(children)
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1));
+    column([bar, separator()]).width(Size::Fill(1.0))
 }
 
 /// An in-flight async op surfaces in the header as `[spinner] verb · 12s`.
