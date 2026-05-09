@@ -140,6 +140,13 @@ pub enum ConfirmAction {
         remote: String,
         branch: String,
     },
+    /// Stage the parent's submodule pointer at `sm_path` to the new
+    /// commit, then pop back to the parent view. Triggered by the
+    /// post-commit coordination dialog when the user commits in a
+    /// submodule and the new HEAD diverges from the pinned OID.
+    UpdateSubmodulePin {
+        sm_path: String,
+    },
 }
 
 /// Per-section right-click target. Carries the exact identity needed to
@@ -1439,6 +1446,61 @@ impl WhisperApp {
             ConfirmAction::ForcePush { remote, branch } => {
                 self.force_push(remote, branch);
             }
+            ConfirmAction::UpdateSubmodulePin { sm_path } => {
+                self.stage_submodule_pin_update(&sm_path);
+            }
+        }
+    }
+
+    /// Stage the parent's submodule pointer at `sm_path`, then pop the
+    /// drill-down stack one level so the user lands on the parent
+    /// view with the pointer change ready to commit. `sm_path` is
+    /// relative to the parent's worktree — exactly the form
+    /// `index.add_path` expects.
+    ///
+    /// No-op if not drilled in (no parent to stage against). On
+    /// success we surface a toast naming the submodule + new short
+    /// SHA so the user sees the pointer landed.
+    fn stage_submodule_pin_update(&mut self, sm_path: &str) {
+        let Some(outer) = self.active_mut() else {
+            return;
+        };
+        // Capture the new HEAD before we exit (the focused tab carries
+        // it via active_view_tab().active_view()).
+        let new_short = outer
+            .active_view_tab()
+            .active_view()
+            .and_then(|v| v.head_oid)
+            .map(|o| o.to_string()[..7].to_string())
+            .unwrap_or_else(|| "?".to_string());
+        // Pop first so the parent becomes the focused tab. Now stage
+        // through the parent's active worktree's repo.
+        if !outer.exit_submodule() {
+            return;
+        }
+        let Some(parent_view) = outer.active_view_tab_mut().active_view_mut() else {
+            self.toasts.push(ToastSpec::error(
+                "Parent view has no active worktree — cannot stage pointer update",
+            ));
+            return;
+        };
+        match parent_view.repo.stage_file(sm_path) {
+            Ok(()) => {
+                // Refresh the parent so the staged pointer change shows
+                // up in its staging well. Refresh on the OUTERMOST
+                // (which is now the focused view since we popped).
+                if let Some(outer) = self.active_mut() {
+                    outer.refresh();
+                }
+                self.toasts.push(ToastSpec::success(format!(
+                    "Staged {sm_path} \u{2192} {new_short}"
+                )));
+            }
+            Err(e) => {
+                self.toasts.push(ToastSpec::error(format!(
+                    "Couldn't stage {sm_path}: {e}"
+                )));
+            }
         }
     }
 
@@ -1938,10 +2000,15 @@ impl WhisperApp {
     }
 
     fn commit(&mut self) {
-        let active_idx = self.active_tab;
-        let Some(tab) = self.tabs.get_mut(active_idx) else {
+        // Operate on the focused tab — when drilled into a submodule,
+        // the commit lands in the submodule's working dir, and we
+        // detect divergence from the pin afterwards to offer the
+        // post-commit coordination dialog.
+        let Some(tab) = self.active_focus_mut() else {
             return;
         };
+        let pinned_oid = tab.pinned_oid;
+        let pinned_path = tab.pinned_path.clone();
         let Some(view) = tab.active_view_mut() else {
             self.toasts
                 .push(ToastSpec::warning("No worktree selected"));
@@ -1965,19 +2032,45 @@ impl WhisperApp {
                 view.commit_body.trim()
             )
         };
-        match view.repo.commit(&message) {
-            Ok(oid) => {
-                view.commit_subject.clear();
-                view.commit_body.clear();
-                tab.refresh();
-                let short = oid.to_string()[..7].to_string();
-                self.toasts
-                    .push(ToastSpec::success(format!("Committed {short}")));
-            }
+        let new_oid = match view.repo.commit(&message) {
+            Ok(oid) => oid,
             Err(e) => {
                 self.toasts
                     .push(ToastSpec::error(format!("Commit failed: {e}")));
+                return;
             }
+        };
+        view.commit_subject.clear();
+        view.commit_body.clear();
+        tab.refresh();
+        let short = new_oid.to_string()[..7].to_string();
+        self.toasts
+            .push(ToastSpec::success(format!("Committed {short}")));
+
+        // Post-commit coordination: when this commit landed in a
+        // drilled-in submodule and the new HEAD diverges from the
+        // parent's pin, offer to stage the parent's pointer update
+        // so the user doesn't need to remember to climb back up and
+        // `git add <submodule>` themselves.
+        if let Some(sm_path) = pinned_path
+            && pinned_oid != Some(new_oid)
+        {
+            let pin_label = pinned_oid
+                .map(|o| o.to_string()[..7].to_string())
+                .unwrap_or_else(|| "(unset)".to_string());
+            self.active_modal = Some(ActiveModal::Confirm {
+                title: "Update parent's submodule pointer?".to_string(),
+                body: format!(
+                    "You committed in submodule '{sm_path}'. The parent currently \
+                     pins {pin_label}; your new commit is {short}.\n\n\
+                     Choose 'Update pointer' to stage the parent's pointer change \
+                     and return to the parent view, where you can review and commit \
+                     the update. 'Not now' keeps the existing pin and stays here."
+                ),
+                ok_label: "Update pointer".to_string(),
+                destructive: false,
+                action: ConfirmAction::UpdateSubmodulePin { sm_path },
+            });
         }
     }
 }

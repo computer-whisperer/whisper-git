@@ -313,6 +313,41 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         // submodule lying around) but its repo_name is renamed so the
         // breadcrumb reads `<repo> › vendor/embassy` and the focused
         // view paints from the pushed entry.
+        // Post-commit coordination dialog — fires after a commit in
+        // a drilled-in submodule whose new HEAD diverged from the
+        // parent's pin. Synthesized by drilling in + setting the
+        // modal directly so the bundle exercises the layout.
+        scenes.push(("modal_submodule_coordinate".to_string(), {
+            let mut outer = reopen(first);
+            inject_synthetic_submodules_active_view(&mut outer);
+            let mut inner = reopen(first);
+            inner.repo_name = "vendor/embassy".to_string();
+            inner.pinned_oid = inner
+                .commits
+                .iter()
+                .filter(|c| !c.is_synthetic)
+                .nth(3)
+                .map(|c| c.id);
+            inner.pinned_path = Some("vendor/embassy".to_string());
+            outer.nav_stack.push(inner);
+            let mut app = WhisperApp::with_tabs(vec![outer]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::Confirm {
+                title: "Update parent's submodule pointer?".to_string(),
+                body: "You committed in submodule 'vendor/embassy'. The parent \
+                       currently pins 3ce491e; your new commit is baec4ab.\n\n\
+                       Choose 'Update pointer' to stage the parent's pointer \
+                       change and return to the parent view, where you can \
+                       review and commit the update. 'Not now' keeps the \
+                       existing pin and stays here."
+                    .to_string(),
+                ok_label: "Update pointer".to_string(),
+                destructive: false,
+                action: whisper_git::ui_app::ConfirmAction::UpdateSubmodulePin {
+                    sm_path: "vendor/embassy".to_string(),
+                },
+            });
+            app
+        }));
         scenes.push(("drilled_into_submodule".to_string(), {
             let mut outer = reopen(first);
             // Seed the parent's worktree with synthetic submodules so

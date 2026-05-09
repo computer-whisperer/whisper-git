@@ -294,6 +294,12 @@ pub struct RepoTab {
     /// the user's outermost repo. Drives the "PINNED" pill on the
     /// commit-graph row that matches.
     pub pinned_oid: Option<git2::Oid>,
+    /// Path of this submodule *relative to its parent's worktree*,
+    /// as recorded in the parent's `.gitmodules`. Set alongside
+    /// `pinned_oid` on enter_submodule. Drives stage_submodule_update
+    /// (the parent stages by this path) and the post-commit
+    /// coordination dialog's labelling.
+    pub pinned_path: Option<String>,
 }
 
 impl RepoTab {
@@ -325,6 +331,7 @@ impl RepoTab {
             ci_per_commit: HashMap::new(),
             nav_stack: Vec::new(),
             pinned_oid: None,
+            pinned_path: None,
             repo,
         };
         tab.refresh();
@@ -699,6 +706,7 @@ impl RepoTab {
         let mut new_tab = RepoTab::open(&abs_path)
             .with_context(|| format!("opening submodule at {}", abs_path.display()))?;
         new_tab.pinned_oid = pinned_oid;
+        new_tab.pinned_path = Some(sm_path.to_string());
         self.nav_stack.push(new_tab);
         Ok(())
     }
