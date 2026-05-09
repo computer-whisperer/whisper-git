@@ -1,30 +1,58 @@
-//! Working-directory diff viewer.
+//! Diff viewer — takes over the center pane when the user picks a
+//! file (in the staging well or in a selected commit's file list).
 //!
-//! Phase 4b: renders unified-diff hunks with green/red/info coloring,
-//! per-hunk Stage / Unstage buttons. Word-level intra-line highlighting
-//! is deferred to polish; the underlying `DiffLine.highlight_ranges`
-//! data is already populated by `git/diff.rs`.
+//! Two source modes, picked by `tab.selected_commit`:
+//! - `None` → working-tree diff: `repo.diff_working_file(path, staged)`,
+//!   with per-hunk Stage / Unstage actions. Whether the *staged* or
+//!   *unstaged* side is shown depends on which list the file lives in
+//!   (the user toggles by clicking Stage / Unstage on individual hunks).
+//! - `Some(oid)` → commit diff: `repo.diff_file_in_commit(oid, path)`,
+//!   read-only (no Stage / Unstage — the commit is already history).
 
 use aetna_core::{El, prelude::*};
 
 use crate::git::{DiffHunk, DiffLine, FileStatus};
-use crate::repo_tab::WorktreeView;
+use crate::repo_tab::{RepoTab, WorktreeView};
 
-pub fn diff_view(view: &WorktreeView) -> El {
+pub fn diff_view(tab: &RepoTab) -> El {
+    // The body layout only swaps the center to diff_view when active_view
+    // is Some and selected_diff_file is Some — but we still defend in
+    // depth so a stale build() call doesn't panic.
+    let Some(view) = tab.active_view() else {
+        return empty_diff("No active worktree.");
+    };
     let Some(path) = view.selected_diff_file.as_deref() else {
-        return placeholder();
+        return empty_diff("No file selected.");
     };
 
-    // Show staged hunks if the file lives in the staged list; otherwise
-    // show the unstaged side of the diff. (A file can be in both — the
-    // user toggles via the diff hunk Stage/Unstage buttons.)
+    if let Some(oid) = tab.selected_commit {
+        commit_diff(view, oid, path)
+    } else {
+        working_diff(view, path)
+    }
+}
+
+fn working_diff(view: &WorktreeView, path: &str) -> El {
     let staged = file_is_staged(view, path);
     let hunks = view.repo.diff_working_file(path, staged).unwrap_or_default();
+    let badge_label = if staged { "staged" } else { "unstaged" };
+    diff_card(path, badge_label, &hunks, true, staged)
+}
 
+fn commit_diff(view: &WorktreeView, oid: git2::Oid, path: &str) -> El {
+    // diff_file_in_commit returns Vec<DiffFile>; the first (and only)
+    // file's hunks are the ones we want.
+    let files = view.repo.diff_file_in_commit(oid, path).unwrap_or_default();
+    let hunks: Vec<DiffHunk> = files.into_iter().flat_map(|f| f.hunks).collect();
+    let short = oid.to_string()[..7].to_string();
+    diff_card(path, &short, &hunks, false, false)
+}
+
+fn diff_card(path: &str, badge_label: &str, hunks: &[DiffHunk], stage_actions: bool, staged: bool) -> El {
     let header_row = row([
         text(path.to_string()).label(),
         spacer(),
-        badge(if staged { "staged" } else { "unstaged" }).muted(),
+        badge(badge_label.to_string()).muted(),
     ])
     .gap(tokens::SPACE_2)
     .align(Align::Center);
@@ -35,7 +63,7 @@ pub fn diff_view(view: &WorktreeView) -> El {
         let rows: Vec<El> = hunks
             .iter()
             .enumerate()
-            .map(|(idx, h)| hunk_block(h, idx, path, staged))
+            .map(|(idx, h)| hunk_block(h, idx, path, stage_actions, staged))
             .collect();
         column(rows).gap(tokens::SPACE_3).padding(tokens::SPACE_3)
     };
@@ -54,22 +82,13 @@ pub fn diff_view(view: &WorktreeView) -> El {
     .width(Size::Fill(1.0))
 }
 
-fn placeholder() -> El {
-    column([
-        h3("No diff selected"),
-        paragraph(
-            "Click a file in the staging well to preview its diff. \
-             Phase 4c will wire Stage / Unstage hunks.",
-        )
-        .muted()
-        .text_align(TextAlign::Center),
-    ])
-    .gap(tokens::SPACE_2)
-    .align(Align::Center)
-    .justify(Justify::Center)
-    .padding(tokens::SPACE_4)
-    .height(Size::Fill(1.0))
-    .width(Size::Fill(1.0))
+fn empty_diff(msg: &str) -> El {
+    column([text(msg.to_string()).muted()])
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .padding(tokens::SPACE_4)
+        .height(Size::Fill(1.0))
+        .width(Size::Fill(1.0))
 }
 
 fn file_is_staged(view: &WorktreeView, path: &str) -> bool {
@@ -88,26 +107,28 @@ fn file_is_staged(view: &WorktreeView, path: &str) -> bool {
     }
 }
 
-fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, staged: bool) -> El {
-    let action_label = if staged { "Unstage" } else { "Stage" };
-    let action_key = if staged {
-        format!("unstage_hunk:{idx}:{path}")
-    } else {
-        format!("stage_hunk:{idx}:{path}")
-    };
-
-    let header_row = row([
+fn hunk_block(hunk: &DiffHunk, idx: usize, path: &str, stage_actions: bool, staged: bool) -> El {
+    let mut header_children: Vec<El> = vec![
         text(hunk.header.trim().to_string())
             .code()
             .text_color(tokens::INFO),
         spacer(),
-        button(action_label.to_string())
-            .key(action_key)
-            .ghost()
-            .tooltip(format!("{action_label} this hunk")),
-    ])
-    .gap(tokens::SPACE_2)
-    .align(Align::Center);
+    ];
+    if stage_actions {
+        let action_label = if staged { "Unstage" } else { "Stage" };
+        let action_key = if staged {
+            format!("unstage_hunk:{idx}:{path}")
+        } else {
+            format!("stage_hunk:{idx}:{path}")
+        };
+        header_children.push(
+            button(action_label.to_string())
+                .key(action_key)
+                .ghost()
+                .tooltip(format!("{action_label} this hunk")),
+        );
+    }
+    let header_row = row(header_children).gap(tokens::SPACE_2).align(Align::Center);
 
     let lines: Vec<El> = hunk.lines.iter().map(line_row).collect();
 

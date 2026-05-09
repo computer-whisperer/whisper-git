@@ -359,7 +359,7 @@ impl App for WhisperApp {
                 // well or in a selected commit's file list). The graph
                 // is the home base — Escape unwinds back to it.
                 let center = match tab.active_view() {
-                    Some(view) if view.selected_diff_file.is_some() => diff_view::diff_view(view),
+                    Some(view) if view.selected_diff_file.is_some() => diff_view::diff_view(tab),
                     _ => commit_graph::history_view(tab),
                 };
 
@@ -639,13 +639,29 @@ impl WhisperApp {
             }
             return;
         }
-        // commit:{idx} — selects a commit in the History view.
+        // commit:{idx} — selects a commit in the graph. The previous
+        // diff_file (if any) is cleared because it might not exist in
+        // the new commit context, and Escape's role is to unwind one
+        // step at a time — clearing it here keeps the right-pane
+        // upper swap from happening with stale center-pane state.
         if let Some(idx_str) = key.strip_prefix("commit:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && let Some(tab) = self.active_mut()
             {
                 let oid = tab.commits.get(idx).map(|c| c.id);
                 tab.select_commit(oid);
+                if let Some(view) = tab.active_view_mut() {
+                    view.selected_diff_file = None;
+                }
+            }
+            return;
+        }
+        // commit_file:{path} — clicking a file row in the commit
+        // detail's files list. Pushes the diff into the center pane;
+        // diff_view picks `tab.selected_commit` as the source.
+        if let Some(path) = key.strip_prefix("commit_file:") {
+            if let Some(view) = self.active_mut().and_then(|t| t.active_view_mut()) {
+                view.selected_diff_file = Some(path.to_string());
             }
             return;
         }
