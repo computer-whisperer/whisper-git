@@ -627,10 +627,10 @@ impl WhisperApp {
             }
             return;
         }
-        // wt_select:{path} — switch the active worktree. The path is
-        // routed verbatim (worktree names aren't always unique across
-        // nested checkouts).
-        if let Some(path) = key.strip_prefix("wt_select:") {
+        // wt_select:tab:{path} — switch the active worktree. The path
+        // is the tab_trigger value, routed verbatim (worktree names
+        // aren't always unique across nested checkouts).
+        if let Some(path) = key.strip_prefix("wt_select:tab:") {
             if let Some(tab) = self.active_mut() {
                 tab.select_worktree(std::path::PathBuf::from(path));
             }

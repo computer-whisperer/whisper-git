@@ -21,21 +21,21 @@ pub const STAGING_WIDTH: f32 = 420.0;
 /// Pill bar for picking which worktree the staging well operates on.
 ///
 /// Hidden when there's only one worktree (the bar would have nothing to
-/// switch between, just clutter). Each pill carries:
-/// - the worktree's display name (shortened against the common prefix
-///   of all worktree names — e.g. `feat/x` and `feat/y` show as `x` and
-///   `y` rather than burning width on the shared prefix)
-/// - a dirty-count badge when the worktree's libgit2 metadata reports
-///   one
-/// - a `.current()` chainable on the active pill so the style profile
-///   system paints it as page-current rather than just selected
+/// switch between, just clutter). The bar is the catalog
+/// `tabs_list_from_triggers` — each option is a [`tab_trigger_content`]
+/// carrying the worktree's display name (shortened against the common
+/// prefix of all worktree names — e.g. `feat/x` and `feat/y` show as
+/// `x` and `y` rather than burning width on the shared prefix) plus a
+/// dirty-count badge when libgit2 reports one.
 ///
-/// Pills are routed under the `wt_select:{path}` key — `ui_app.rs`
+/// Pills are routed under `wt_select:tab:{path}` — the standard
+/// `{list_key}:tab:{value}` shape that aetna's tabs use. `ui_app.rs`
 /// strips that prefix and calls `RepoTab::select_worktree` with the
-/// resolved path. Paths are used as the routing key (rather than
-/// names) since names aren't unique across linked worktrees if you
-/// have nested setups.
+/// resolved path. Paths are the trigger value (rather than names)
+/// since names aren't unique across nested linked worktrees.
 pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
+    use aetna_core::widgets::tabs::{tab_trigger_content, tabs_list_from_triggers};
+
     if !tab.has_worktree_selector() {
         return None;
     }
@@ -47,7 +47,7 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
     let display = compute_display_names(&names);
     let active = tab.active_worktree.clone();
 
-    let pills: Vec<El> = tab
+    let triggers: Vec<El> = tab
         .worktree_order
         .iter()
         .enumerate()
@@ -61,34 +61,21 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
             let is_active = active.as_ref() == Some(path);
             let mut children: Vec<El> = vec![
                 icon(IconName::LayoutDashboard).muted(),
-                text(label).label(),
+                text(label).label().ellipsis(),
             ];
             if dirty > 0 {
                 children.push(badge(format!("{dirty}")).muted());
             }
-            let key = format!("wt_select:{}", path.to_string_lossy());
-            let pill = row(children)
-                .key(key)
-                .focusable()
-                .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-                .gap(tokens::SPACE_1)
-                .align(Align::Center);
-            Some(if is_active { pill.current() } else { pill })
+            Some(tab_trigger_content(
+                "wt_select",
+                path.to_string_lossy(),
+                children,
+                is_active,
+            ))
         })
         .collect();
 
-    // The pill bar is intrinsically one row tall — without an explicit
-    // height the wrapping `scroll` greedily expands to fill the staging
-    // pane and the commit box ends up shoved to the bottom.
-    Some(
-        row(pills)
-            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-            .gap(tokens::SPACE_1)
-            .align(Align::Center)
-            .fill(tokens::MUTED)
-            .stroke(tokens::BORDER)
-            .width(Size::Fill(1.0)),
-    )
+    Some(tabs_list_from_triggers(triggers))
 }
 
 /// Strip the longest common prefix (up to the last separator: `-`,
