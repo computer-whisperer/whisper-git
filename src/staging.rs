@@ -180,12 +180,8 @@ fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
         ])
         .align(Align::Center)
         .gap(tokens::SPACE_2)])
-        .padding(Sides {
-            left: tokens::SPACE_3,
-            right: tokens::SPACE_3,
-            top: tokens::SPACE_3,
-            bottom: tokens::SPACE_2,
-        }),
+        .padding(tokens::SPACE_3)
+        .pb(tokens::SPACE_2),
         card_content([
             text_input(&view.commit_subject, selection, "subject")
                 .key("subject")

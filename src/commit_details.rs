@@ -72,12 +72,8 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         files_card(detail),
     ])
     .gap(tokens::SPACE_3)
-    .padding(Sides {
-        left: tokens::SPACE_4,
-        right: tokens::SPACE_4,
-        top: 0.0,
-        bottom: tokens::SPACE_4,
-    })])
+    .padding(tokens::SPACE_4)
+    .pt(0.0)])
     .key("commit_details:scroll")
     .height(Size::Fill(1.0));
 
@@ -113,12 +109,8 @@ fn files_card(detail: &crate::repo_tab::CommitDetail) -> El {
     card([
         card_header([summary]).padding(tokens::SPACE_3),
         card_content(body)
-            .padding(Sides {
-                left: tokens::SPACE_3,
-                right: tokens::SPACE_3,
-                top: 0.0,
-                bottom: tokens::SPACE_3,
-            })
+            .padding(tokens::SPACE_3)
+            .pt(0.0)
             .gap(tokens::SPACE_1),
     ])
 }
