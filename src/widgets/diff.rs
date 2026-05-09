@@ -80,7 +80,15 @@ impl DiffData {
 }
 
 const LINENO_COL_WIDTH: f32 = 44.0;
+/// Row-level wash for changed lines (`+` / `-`). Subtle: the diff
+/// should still read as text, not as alternating colored stripes.
 const ROW_BG_ALPHA: u8 = 48;
+/// The line-number gutter sits on top of the row wash with a slightly
+/// darker overlay — Github-style "this column is the gutter, not
+/// content."
+const GUTTER_TINT_ALPHA: u8 = 40;
+/// Brighter wash painted under the changed bytes within a line, on
+/// top of the row wash. Mirrors `<mark>` over the line's colored bg.
 const HIGHLIGHT_BG_ALPHA: u8 = 130;
 
 #[track_caller]
@@ -183,10 +191,16 @@ fn split_hunk_header(header: &str) -> (String, Option<String>) {
 }
 
 fn line_row(line: &DiffLine) -> El {
-    let row_bg = match line.kind {
-        DiffLineKind::Addition => Some(tokens::SUCCESS.with_alpha(ROW_BG_ALPHA)),
-        DiffLineKind::Deletion => Some(tokens::DESTRUCTIVE.with_alpha(ROW_BG_ALPHA)),
-        DiffLineKind::Context => None,
+    let (row_bg, gutter_overlay) = match line.kind {
+        DiffLineKind::Addition => (
+            Some(tokens::SUCCESS.with_alpha(ROW_BG_ALPHA)),
+            tokens::SUCCESS.with_alpha(GUTTER_TINT_ALPHA),
+        ),
+        DiffLineKind::Deletion => (
+            Some(tokens::DESTRUCTIVE.with_alpha(ROW_BG_ALPHA)),
+            tokens::DESTRUCTIVE.with_alpha(GUTTER_TINT_ALPHA),
+        ),
+        DiffLineKind::Context => (None, tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA)),
     };
 
     let old_no = line
@@ -198,24 +212,21 @@ fn line_row(line: &DiffLine) -> El {
         .map(|n| n.to_string())
         .unwrap_or_default();
 
-    let row_el = row([
-        text(format!("{old_no:>4}"))
+    let lineno_col = |s: String| {
+        text(s)
             .mono()
             .caption()
             .muted()
             .nowrap_text()
+            .text_align(TextAlign::End)
             .width(Size::Fixed(LINENO_COL_WIDTH))
-            .padding(Sides::xy(tokens::SPACE_2, 0.0)),
-        text(format!("{new_no:>4}"))
-            .mono()
-            .caption()
-            .muted()
-            .nowrap_text()
-            .width(Size::Fixed(LINENO_COL_WIDTH))
-            .padding(Sides::xy(tokens::SPACE_2, 0.0)),
-        line_content(line),
-    ])
-    .align(Align::Center);
+            .padding(Sides::xy(tokens::SPACE_2, 0.0))
+    };
+    let gutter = row([lineno_col(old_no), lineno_col(new_no)])
+        .fill(gutter_overlay)
+        .align(Align::Center);
+
+    let row_el = row([gutter, line_content(line)]).align(Align::Center);
 
     if let Some(bg) = row_bg {
         row_el.fill(bg)
