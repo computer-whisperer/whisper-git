@@ -134,14 +134,20 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         }
         scenes.push(("history_view".to_string(), {
             let mut t = reopen(first);
-            // Pre-select the most recent commit so the bundle shows the
-            // selected-row treatment (raised bg + bright ring) and the
-            // commit details pane has content to render.
-            let pick = t.commits.first().map(|c| c.id);
+            // Pre-select the first *real* commit (skip synthetic
+            // worktree rows at the top of the graph) so the bundle
+            // shows the right pane in commit-detail mode rather than
+            // falling through to the default staging well.
+            let pick = t.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id);
             t.select_commit(pick);
             WhisperApp::with_tabs(vec![t])
         }));
-        if let Some(commit_oid) = first.commits.first().map(|c| c.id) {
+        if let Some(commit_oid) = first
+            .commits
+            .iter()
+            .find(|c| !c.is_synthetic)
+            .map(|c| c.id)
+        {
             scenes.push(("history_context_menu".to_string(), {
                 let mut t = reopen(first);
                 t.select_commit(Some(commit_oid));
