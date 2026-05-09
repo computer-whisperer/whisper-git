@@ -111,16 +111,19 @@ pub fn diff(data: &DiffData) -> El {
 
     let mut header_children: Vec<El> = vec![text(data.title.clone()).label(), spacer()];
     if !data.hunks.is_empty() {
+        // .caption() applies TEXT_XS metrics but resets font_mono to
+        // false (caption is intentionally proportional). Apply .mono()
+        // after so the JetBrains Mono routing wins back.
         header_children.push(
             text(format!("+{adds}"))
-                .mono()
                 .caption()
+                .mono()
                 .text_color(tokens::SUCCESS),
         );
         header_children.push(
             text(format!("-{dels}"))
-                .mono()
                 .caption()
+                .mono()
                 .text_color(tokens::DESTRUCTIVE),
         );
     }
@@ -257,9 +260,14 @@ fn unified_line_row(line: &DiffLine) -> El {
 }
 
 fn lineno_col(s: String) -> El {
+    // .caption() is the right role for small annotations like line
+    // numbers, but it explicitly resets font_mono to false (caption
+    // text is intentionally proportional). Chain .mono() after so
+    // the JetBrains Mono routing wins back — without that, line
+    // numbers render in Inter and stop aligning vertically.
     text(s)
-        .mono()
         .caption()
+        .mono()
         .muted()
         .nowrap_text()
         .text_align(TextAlign::End)

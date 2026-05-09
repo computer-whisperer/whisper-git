@@ -48,7 +48,10 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         card_header([
             row([
                 icon(IconName::GitCommit),
-                text(info.short_id.clone()).mono().label(),
+                // .label() resets font_mono to false (label is the
+                // "field label" role and intentionally proportional).
+                // Chain .mono() after so the SHA renders in JBM.
+                text(info.short_id.clone()).label().mono(),
                 spacer(),
                 button("Copy SHA")
                     .key("details:copy_sha")
