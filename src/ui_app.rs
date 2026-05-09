@@ -1793,7 +1793,11 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
         .opacity(if actions_enabled { 1.0 } else { 0.85 });
 
-    card([card_content([bar])]).width(Size::Fill(1.0))
+    // Toolbar is app chrome, not a boxed content object — the README's
+    // smells list flags `card([card_content([toolbar(...)])])` for app
+    // headers explicitly. A trailing `separator()` carries the visual
+    // break between header and body without the false card silhouette.
+    column([bar, separator()]).width(Size::Fill(1.0))
 }
 
 /// Build one inline status row per in-flight op for the active tab plus
