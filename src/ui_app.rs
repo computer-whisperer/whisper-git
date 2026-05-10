@@ -37,7 +37,9 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
-use crate::dialogs::{BranchForm, CloneForm, PullForm, TagForm, TokenForm, WorktreeForm};
+use crate::dialogs::{
+    BranchForm, CloneForm, PullForm, PushForm, TagForm, TokenForm, WorktreeForm,
+};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
@@ -219,6 +221,14 @@ pub enum ActiveModal {
     PullPicker {
         form: PullForm,
         sources: Vec<String>,
+    },
+    /// Push-with-options picker. Lets the user choose a remote, an
+    /// override branch, and any of `--force-with-lease`,
+    /// `--set-upstream`, `--tags`. Reached via the caret next to the
+    /// header Push button.
+    PushPicker {
+        form: PushForm,
+        remotes: Vec<String>,
     },
     /// Create-worktree dialog. Reached via the `+` icon on the
     /// trailing edge of the worktree pill bar above the staging well.
@@ -570,6 +580,9 @@ impl App for WhisperApp {
             ActiveModal::PullPicker { form, sources } => {
                 dialogs::pull_modal(form, sources)
             }
+            ActiveModal::PushPicker { form, remotes } => {
+                dialogs::push_modal(form, &self.selection, remotes)
+            }
             ActiveModal::Worktree { form } => {
                 dialogs::worktree_modal(form, &self.selection)
             }
@@ -748,6 +761,20 @@ impl App for WhisperApp {
                     &event,
                     "pull:source",
                     |raw| Some(raw.to_string()),
+                );
+            }
+            Some(ActiveModal::PushPicker { form, .. }) => {
+                aetna_core::widgets::radio::apply_event(
+                    &mut form.remote,
+                    &event,
+                    "push:remote",
+                    |raw| Some(raw.to_string()),
+                );
+                text_input::apply_event(
+                    &mut form.branch,
+                    &mut self.selection,
+                    "push:branch",
+                    &event,
                 );
             }
             Some(ActiveModal::Worktree { form }) => {
@@ -1099,6 +1126,7 @@ impl WhisperApp {
             "new_tag" => self.open_tag_modal(),
             "new_worktree" => self.open_worktree_modal(),
             "pull_options" => self.open_pull_picker(),
+            "push_options" => self.open_push_picker(),
             "ai_generate" => self.generate_commit_message_via_ai(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
@@ -1284,6 +1312,14 @@ impl WhisperApp {
             self.handle_pull_route(key);
             return true;
         }
+        // Same gating for `push:` — bare "push" header button keeps its
+        // default behavior; modal-only fields and execute route through here.
+        if matches!(self.active_modal, Some(ActiveModal::PushPicker { .. }))
+            && key.starts_with("push:")
+        {
+            self.handle_push_route(key);
+            return true;
+        }
         // Same gating for `worktree:` — `wt_select:tab:<path>` is the
         // worktree pill bar's switch-route and doesn't carry the
         // `worktree:` prefix, so it stays reachable when the modal is
@@ -1327,6 +1363,10 @@ impl WhisperApp {
                 true
             }
             "modal:pull:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:push:cancel" => {
                 self.active_modal = None;
                 true
             }
@@ -1595,6 +1635,127 @@ impl WhisperApp {
                 rebase: false,
             },
             sources,
+        });
+    }
+
+    fn handle_push_route(&mut self, key: &str) {
+        match key {
+            "push:force" => {
+                if let Some(ActiveModal::PushPicker { form, .. }) = &mut self.active_modal {
+                    form.force_with_lease = !form.force_with_lease;
+                }
+            }
+            "push:set_upstream" => {
+                if let Some(ActiveModal::PushPicker { form, .. }) = &mut self.active_modal {
+                    form.set_upstream = !form.set_upstream;
+                }
+            }
+            "push:tags" => {
+                if let Some(ActiveModal::PushPicker { form, .. }) = &mut self.active_modal {
+                    form.include_tags = !form.include_tags;
+                }
+            }
+            "push:execute" => self.push_from_modal(),
+            // `push:remote:radio:<value>` and `push:branch` text edits are
+            // folded by `radio::apply_event` / `text_input::apply_event`
+            // up in `on_event`; nothing to do here for those.
+            _ => {}
+        }
+    }
+
+    /// Apply the push-picker form: push the chosen branch to the chosen
+    /// remote with the requested flag combination. Routes through
+    /// `git::push_with_options_async`, parking the receiver on the same
+    /// `push_op` slot as the bare Push button so the header progress
+    /// affordance and post-op refresh don't need a separate code path.
+    fn push_from_modal(&mut self) {
+        let (remote, branch, force, upstream, tags) = match &self.active_modal {
+            Some(ActiveModal::PushPicker { form, .. }) => (
+                form.remote.trim().to_string(),
+                form.branch.trim().to_string(),
+                form.force_with_lease,
+                form.set_upstream,
+                form.include_tags,
+            ),
+            _ => return,
+        };
+        if remote.is_empty() || branch.is_empty() {
+            self.toasts
+                .push(ToastSpec::warning("Push: remote and branch are required"));
+            return;
+        }
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
+            return;
+        };
+        let rx = crate::git::push_with_options_async(
+            wd,
+            remote.clone(),
+            branch.clone(),
+            force,
+            upstream,
+            tags,
+            proxy,
+        );
+        let Some(tab) = self.active_focus_mut() else { return };
+        let mut suffix = Vec::new();
+        if force {
+            suffix.push("force");
+        }
+        if upstream {
+            suffix.push("set-upstream");
+        }
+        if tags {
+            suffix.push("tags");
+        }
+        let label = if suffix.is_empty() {
+            format!("{branch} → {remote}")
+        } else {
+            format!("{branch} → {remote} ({})", suffix.join(", "))
+        };
+        tab.push_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts
+            .push(ToastSpec::info(format!("Pushing {label}…")));
+        self.active_modal = None;
+    }
+
+    /// Open the push-options picker. Pre-fills remote with the focused
+    /// tab's `default_remote()` (when present in the remote list) and
+    /// branch with the current branch shorthand. Detached HEAD opens
+    /// with an empty branch field, which keeps the Push button disabled
+    /// until the user types one.
+    fn open_push_picker(&mut self) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        if !focus.repo.has_remotes() {
+            self.toasts.push(ToastSpec::error(
+                "No remotes configured for this repository",
+            ));
+            return;
+        }
+        let mut remotes = focus.repo.remote_names();
+        remotes.sort();
+        if remotes.is_empty() {
+            self.toasts
+                .push(ToastSpec::warning("No remotes configured"));
+            return;
+        }
+        let default_remote = focus
+            .repo
+            .default_remote()
+            .ok()
+            .filter(|r| remotes.contains(r))
+            .unwrap_or_else(|| remotes[0].clone());
+        let branch = focus.current_branch().to_string();
+        self.active_modal = Some(ActiveModal::PushPicker {
+            form: PushForm {
+                remote: default_remote,
+                branch,
+                force_with_lease: false,
+                set_upstream: false,
+                include_tags: false,
+            },
+            remotes,
         });
     }
 
@@ -3701,6 +3862,15 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     if push_busy {
         push_btn = push_btn.disabled();
     }
+    // Tiny chevron beside Push opens the Push picker (remote/branch
+    // override + --force-with-lease / --set-upstream / --tags). Keeps the
+    // bare Push-button default for the common case.
+    let mut push_options_btn = icon_button(IconName::ChevronDown)
+        .key("push_options")
+        .tooltip("Push with options\u{2026}");
+    if push_busy {
+        push_options_btn = push_options_btn.disabled();
+    }
 
     let mut bar_items: Vec<El> = vec![branch];
     if let Some(tab) = active {
@@ -3720,6 +3890,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         pull_btn,
         pull_options_btn,
         push_btn,
+        push_options_btn,
         button_with_icon(IconName::GitCommit, "Commit")
             .key("commit")
             .primary()

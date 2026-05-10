@@ -318,6 +318,28 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        // Push-picker modal — synthesized remotes so the radio group is
+        // populated even on a fresh test repo with no real remotes.
+        scenes.push(("modal_push_options".to_string(), {
+            use whisper_git::dialogs::PushForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            let remotes = vec![
+                "origin".to_string(),
+                "upstream".to_string(),
+                "fork".to_string(),
+            ];
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::PushPicker {
+                form: PushForm {
+                    remote: "origin".to_string(),
+                    branch: "feature/aetna-port".to_string(),
+                    force_with_lease: false,
+                    set_upstream: true,
+                    include_tags: false,
+                },
+                remotes,
+            });
+            app
+        }));
         scenes.push(("modal_token".to_string(), {
             use whisper_git::dialogs::TokenForm;
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);

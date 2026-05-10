@@ -91,6 +91,10 @@ define_async_git_op! {
     push_force_refspec_async(remote: String, refspec: String) =>
         ["push", "--force-with-lease", remote, refspec], "push";
 
+    /// Spawn a background thread to run `git push --tags <remote>`
+    push_tags_only_async(remote: String) =>
+        ["push", "--tags", remote], "push --tags";
+
     /// Spawn a background thread to run `git pull`
     pull_remote_async(remote: String, branch: String) =>
         ["pull", remote, branch], "pull";
@@ -139,6 +143,35 @@ define_async_git_op! {
     merge_squash_async(branch_name: String) =>
         ["merge", "--squash", branch_name], "merge --squash";
 
+}
+
+/// Spawn a background thread to run `git push` with arbitrary flag combinations.
+///
+/// Backs the push-options modal: any combination of `--force-with-lease`,
+/// `--set-upstream`, and `--tags` may be set. The macro-generated helpers
+/// can't express conditional args, so this is hand-rolled.
+pub fn push_with_options_async(
+    workdir: PathBuf,
+    remote: String,
+    branch: String,
+    force_with_lease: bool,
+    set_upstream: bool,
+    include_tags: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    let mut args: Vec<String> = vec!["push".to_string()];
+    if force_with_lease {
+        args.push("--force-with-lease".to_string());
+    }
+    if set_upstream {
+        args.push("--set-upstream".to_string());
+    }
+    if include_tags {
+        args.push("--tags".to_string());
+    }
+    args.push(remote);
+    args.push(branch);
+    run_git_async(args, workdir, "push", proxy)
 }
 
 /// Spawn a background thread to run `git clone [--bare] <url> <dest>`.

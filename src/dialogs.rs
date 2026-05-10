@@ -17,6 +17,7 @@ pub const MODAL_TOKEN_KEY: &str = "modal:token";
 pub const MODAL_BRANCH_KEY: &str = "modal:branch";
 pub const MODAL_TAG_KEY: &str = "modal:tag";
 pub const MODAL_PULL_KEY: &str = "modal:pull";
+pub const MODAL_PUSH_KEY: &str = "modal:push";
 pub const MODAL_WORKTREE_KEY: &str = "modal:worktree";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
@@ -372,6 +373,81 @@ pub fn pull_modal(state: &PullForm, sources: &[String]) -> El {
     let body = form([source_field, rebase_field, actions]);
 
     overlays_panel(MODAL_PULL_KEY, "Pull from remote", [body])
+}
+
+/// Form state for the Push picker modal — selected remote + branch
+/// override + flag toggles. Populated on open from the focused tab's
+/// remote list and current branch. The plain Push header button keeps
+/// the default-tracking shortcut; this modal is reached via the small
+/// caret next to it.
+#[derive(Clone, Debug, Default)]
+pub struct PushForm {
+    pub remote: String,
+    pub branch: String,
+    pub force_with_lease: bool,
+    pub set_upstream: bool,
+    pub include_tags: bool,
+}
+
+/// Push-with-options modal. Lists every remote as a radio option, plus
+/// a branch text input (defaulted to the current branch) and three
+/// flag switches: `--force-with-lease`, `--set-upstream`, `--tags`.
+pub fn push_modal(state: &PushForm, selection: &Selection, remotes: &[String]) -> El {
+    let radio = radio_group(
+        "push:remote",
+        &state.remote,
+        remotes.iter().map(|s| (s.clone(), s.clone())),
+    );
+    let remote_field = form_item([form_label("Remote"), radio]);
+
+    let branch_field = form_item([
+        form_label("Branch"),
+        form_control(
+            text_input(&state.branch, selection, "push:branch")
+                .key("push:branch")
+                .width(Size::Fill(1.0)),
+        ),
+        form_description(
+            "Local branch to push. Defaults to the current branch.".to_string(),
+        ),
+    ]);
+
+    let force_field = field_row(
+        "Force with lease",
+        switch(state.force_with_lease).key("push:force"),
+    );
+    let upstream_field = field_row(
+        "Set upstream",
+        switch(state.set_upstream).key("push:set_upstream"),
+    );
+    let tags_field = field_row(
+        "Include tags",
+        switch(state.include_tags).key("push:tags"),
+    );
+
+    let mut push_btn = button("Push").key("push:execute").primary();
+    if state.remote.trim().is_empty() || state.branch.trim().is_empty() {
+        push_btn = push_btn.disabled();
+    }
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:push:cancel").ghost(),
+        push_btn,
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([
+        remote_field,
+        branch_field,
+        force_field,
+        upstream_field,
+        tags_field,
+        actions,
+    ]);
+
+    overlays_panel(MODAL_PUSH_KEY, "Push to remote", [body])
 }
 
 /// Form state for the Create Worktree modal — path + source ref +
