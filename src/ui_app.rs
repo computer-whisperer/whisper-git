@@ -925,6 +925,13 @@ impl WhisperApp {
             }
             return;
         }
+        // remote_group:<name> — per-remote collapse inside the Remote section.
+        if let Some(remote) = key.strip_prefix("remote_group:") {
+            if let Some(tab) = self.active_focus_mut() {
+                tab.sidebar.toggle_remote(remote);
+            }
+            return;
+        }
 
         // Stage / unstage / diff-preview routes.
         if let Some(path) = key.strip_prefix("stage_file:") {

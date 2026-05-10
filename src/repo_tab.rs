@@ -160,6 +160,10 @@ pub enum SidebarSelection {
 #[derive(Default)]
 pub struct SidebarState {
     pub collapsed: HashSet<SidebarSection>,
+    /// Per-remote sub-group collapse state inside the Remote section.
+    /// Keyed by remote name (e.g. "origin", "upstream"). Default is
+    /// expanded; entries here are remotes the user has collapsed.
+    pub collapsed_remotes: HashSet<String>,
     pub selected: Option<SidebarSelection>,
 }
 
@@ -172,6 +176,16 @@ impl SidebarState {
 
     pub fn is_collapsed(&self, section: SidebarSection) -> bool {
         self.collapsed.contains(&section)
+    }
+
+    pub fn toggle_remote(&mut self, remote: &str) {
+        if !self.collapsed_remotes.remove(remote) {
+            self.collapsed_remotes.insert(remote.to_string());
+        }
+    }
+
+    pub fn is_remote_collapsed(&self, remote: &str) -> bool {
+        self.collapsed_remotes.contains(remote)
     }
 }
 

@@ -142,18 +142,27 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
     }
     let mut rows: Vec<El> = Vec::new();
     for (remote, branches) in groups {
-        // Sub-group header within Remote section.
-        rows.push(
-            row([
-                icon(IconName::ChevronDown),
+        let collapsed = tab.sidebar.is_remote_collapsed(&remote);
+        let caret = if collapsed {
+            IconName::ChevronRight
+        } else {
+            IconName::ChevronDown
+        };
+        // Sub-group header within Remote section. `tree_row` makes
+        // the whole row a focusable click target so the caret toggles
+        // collapse like the section_header above.
+        rows.push(tree_row(
+            [
+                icon(caret).muted(),
                 text(remote.clone()).caption(),
                 spacer(),
                 badge(branches.len().to_string()).muted(),
-            ])
-            .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-            .gap(tokens::SPACE_1)
-            .align(Align::Center),
-        );
+            ],
+            format!("remote_group:{}", remote),
+        ));
+        if collapsed {
+            continue;
+        }
         for branch in branches {
             let key = format!("remote:{}/{}", remote, branch);
             rows.push(
