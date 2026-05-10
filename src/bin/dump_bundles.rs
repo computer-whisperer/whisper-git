@@ -318,6 +318,34 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        // Merge-options modal — radio group on `--no-ff` so the
+        // conditional commit-message field is rendered too.
+        scenes.push(("modal_merge_options".to_string(), {
+            use whisper_git::dialogs::{MergeForm, MergeStrategy};
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::MergeOptions {
+                form: MergeForm {
+                    strategy: MergeStrategy::NoFf,
+                    no_ff_message: "Merge feature/aetna-port".to_string(),
+                },
+                source: "feature/aetna-port".to_string(),
+            });
+            app
+        }));
+        // Rebase-options modal — autostash on, preserve-merges off,
+        // matching the bare rebase-onto fast path's defaults.
+        scenes.push(("modal_rebase_options".to_string(), {
+            use whisper_git::dialogs::RebaseForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::RebaseOptions {
+                form: RebaseForm {
+                    autostash: true,
+                    rebase_merges: false,
+                },
+                base: "origin/main".to_string(),
+            });
+            app
+        }));
         // Push-picker modal — synthesized remotes so the radio group is
         // populated even on a fresh test repo with no real remotes.
         scenes.push(("modal_push_options".to_string(), {

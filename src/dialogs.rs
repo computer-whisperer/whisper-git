@@ -18,6 +18,8 @@ pub const MODAL_BRANCH_KEY: &str = "modal:branch";
 pub const MODAL_TAG_KEY: &str = "modal:tag";
 pub const MODAL_PULL_KEY: &str = "modal:pull";
 pub const MODAL_PUSH_KEY: &str = "modal:push";
+pub const MODAL_MERGE_KEY: &str = "modal:merge";
+pub const MODAL_REBASE_KEY: &str = "modal:rebase";
 pub const MODAL_WORKTREE_KEY: &str = "modal:worktree";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
@@ -448,6 +450,135 @@ pub fn push_modal(state: &PushForm, selection: &Selection, remotes: &[String]) -
     ]);
 
     overlays_panel(MODAL_PUSH_KEY, "Push to remote", [body])
+}
+
+/// Strategy for the Merge options modal. Maps 1:1 to the four
+/// `git::merge_*_async` helpers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MergeStrategy {
+    /// Default: `git merge <source>`, fast-forward when possible.
+    #[default]
+    Default,
+    /// `--no-ff`: always create a merge commit, even when ff is possible.
+    NoFf,
+    /// `--ff-only`: refuse to merge if ff isn't possible.
+    FfOnly,
+    /// `--squash`: stage the merge result, leave HEAD un-advanced.
+    Squash,
+}
+
+impl MergeStrategy {
+    pub fn as_radio_value(self) -> &'static str {
+        match self {
+            MergeStrategy::Default => "default",
+            MergeStrategy::NoFf => "no_ff",
+            MergeStrategy::FfOnly => "ff_only",
+            MergeStrategy::Squash => "squash",
+        }
+    }
+
+    pub fn from_radio_value(raw: &str) -> Option<Self> {
+        match raw {
+            "default" => Some(MergeStrategy::Default),
+            "no_ff" => Some(MergeStrategy::NoFf),
+            "ff_only" => Some(MergeStrategy::FfOnly),
+            "squash" => Some(MergeStrategy::Squash),
+            _ => None,
+        }
+    }
+}
+
+/// Form state for the Merge options modal — strategy choice plus the
+/// `--no-ff` commit message (only meaningful for `NoFf`; we keep the
+/// buffer always so toggling between strategies preserves typing).
+#[derive(Clone, Debug, Default)]
+pub struct MergeForm {
+    pub strategy: MergeStrategy,
+    pub no_ff_message: String,
+}
+
+/// Merge-with-options modal. Reached from the branch context menu's
+/// "Merge with options…" item. Strategy radio + (when NoFf is picked)
+/// a custom commit-message field. The bare "Merge into HEAD" item
+/// keeps the default-merge fast path.
+pub fn merge_modal(state: &MergeForm, selection: &Selection, source: &str) -> El {
+    let strategies = [
+        ("default".to_string(), "Default (fast-forward when possible)".to_string()),
+        ("no_ff".to_string(), "No fast-forward (--no-ff)".to_string()),
+        ("ff_only".to_string(), "Fast-forward only (--ff-only)".to_string()),
+        ("squash".to_string(), "Squash (--squash)".to_string()),
+    ];
+    let current = state.strategy.as_radio_value().to_string();
+    let radio = radio_group("merge:strategy", &current, strategies);
+    let strategy_field = form_item([
+        form_label("Strategy"),
+        radio,
+        form_description(format!("Will merge {source} into HEAD.")),
+    ]);
+
+    let mut sections: Vec<El> = vec![strategy_field];
+    if state.strategy == MergeStrategy::NoFf {
+        sections.push(form_item([
+            form_label("Merge commit message"),
+            form_control(
+                text_input(&state.no_ff_message, selection, "merge:message")
+                    .key("merge:message")
+                    .width(Size::Fill(1.0)),
+            ),
+            form_description(
+                "Optional. Leave empty to use git's default `Merge branch ‘…’`.".to_string(),
+            ),
+        ]));
+    }
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:merge:cancel").ghost(),
+        button("Merge").key("merge:execute").primary(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+    sections.push(actions);
+
+    let body = form(sections);
+    overlays_panel(MODAL_MERGE_KEY, "Merge with options", [body])
+}
+
+/// Form state for the Rebase options modal — autostash + preserve-merges
+/// toggles. Backed by `git::rebase_with_options_async` which already
+/// understands these flags.
+#[derive(Clone, Debug, Default)]
+pub struct RebaseForm {
+    pub autostash: bool,
+    pub rebase_merges: bool,
+}
+
+/// Rebase-with-options modal. Reached from the branch context menu's
+/// "Rebase with options…" item. Two switches; the bare
+/// "Rebase HEAD onto" item keeps the autostash-on default.
+pub fn rebase_modal(state: &RebaseForm, base: &str) -> El {
+    let autostash_field = field_row(
+        "Autostash dirty changes",
+        switch(state.autostash).key("rebase:autostash"),
+    );
+    let merges_field = field_row(
+        "Preserve merge commits",
+        switch(state.rebase_merges).key("rebase:merges"),
+    );
+
+    let target_caption = paragraph(format!("Will rebase HEAD onto {base}."))
+        .text_color(tokens::MUTED_FOREGROUND);
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:rebase:cancel").ghost(),
+        button("Rebase").key("rebase:execute").primary(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([target_caption, autostash_field, merges_field, actions]);
+    overlays_panel(MODAL_REBASE_KEY, "Rebase with options", [body])
 }
 
 /// Form state for the Create Worktree modal — path + source ref +

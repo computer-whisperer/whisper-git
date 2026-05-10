@@ -38,7 +38,8 @@ use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
 use crate::dialogs::{
-    BranchForm, CloneForm, PullForm, PushForm, TagForm, TokenForm, WorktreeForm,
+    BranchForm, CloneForm, MergeForm, MergeStrategy, PullForm, PushForm, RebaseForm, TagForm,
+    TokenForm, WorktreeForm,
 };
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
@@ -229,6 +230,19 @@ pub enum ActiveModal {
     PushPicker {
         form: PushForm,
         remotes: Vec<String>,
+    },
+    /// Merge-with-options picker. Reached from the branch context menu.
+    /// `source` is the picked branch (`"feature/x"` for local,
+    /// `"origin/main"` for remote-tracking).
+    MergeOptions {
+        form: MergeForm,
+        source: String,
+    },
+    /// Rebase-with-options picker. Reached from the branch context menu.
+    /// `base` is the picked branch — same conventions as MergeOptions.
+    RebaseOptions {
+        form: RebaseForm,
+        base: String,
     },
     /// Create-worktree dialog. Reached via the `+` icon on the
     /// trailing edge of the worktree pill bar above the staging well.
@@ -583,6 +597,12 @@ impl App for WhisperApp {
             ActiveModal::PushPicker { form, remotes } => {
                 dialogs::push_modal(form, &self.selection, remotes)
             }
+            ActiveModal::MergeOptions { form, source } => {
+                dialogs::merge_modal(form, &self.selection, source)
+            }
+            ActiveModal::RebaseOptions { form, base } => {
+                dialogs::rebase_modal(form, base)
+            }
             ActiveModal::Worktree { form } => {
                 dialogs::worktree_modal(form, &self.selection)
             }
@@ -774,6 +794,20 @@ impl App for WhisperApp {
                     &mut form.branch,
                     &mut self.selection,
                     "push:branch",
+                    &event,
+                );
+            }
+            Some(ActiveModal::MergeOptions { form, .. }) => {
+                aetna_core::widgets::radio::apply_event(
+                    &mut form.strategy,
+                    &event,
+                    "merge:strategy",
+                    MergeStrategy::from_radio_value,
+                );
+                text_input::apply_event(
+                    &mut form.no_ff_message,
+                    &mut self.selection,
+                    "merge:message",
                     &event,
                 );
             }
@@ -1320,6 +1354,18 @@ impl WhisperApp {
             self.handle_push_route(key);
             return true;
         }
+        if matches!(self.active_modal, Some(ActiveModal::MergeOptions { .. }))
+            && key.starts_with("merge:")
+        {
+            self.handle_merge_route(key);
+            return true;
+        }
+        if matches!(self.active_modal, Some(ActiveModal::RebaseOptions { .. }))
+            && key.starts_with("rebase:")
+        {
+            self.handle_rebase_route(key);
+            return true;
+        }
         // Same gating for `worktree:` — `wt_select:tab:<path>` is the
         // worktree pill bar's switch-route and doesn't carry the
         // `worktree:` prefix, so it stays reachable when the modal is
@@ -1367,6 +1413,14 @@ impl WhisperApp {
                 true
             }
             "modal:push:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:merge:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:rebase:cancel" => {
                 self.active_modal = None;
                 true
             }
@@ -2099,11 +2153,23 @@ impl WhisperApp {
             ("merge", ContextTarget::RemoteBranch { remote, branch }) => {
                 self.merge_branch(format!("{remote}/{branch}"));
             }
+            ("merge_options", ContextTarget::LocalBranch(name)) => {
+                self.open_merge_options(name);
+            }
+            ("merge_options", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.open_merge_options(format!("{remote}/{branch}"));
+            }
             ("rebase", ContextTarget::LocalBranch(name)) => {
                 self.rebase_onto(name);
             }
             ("rebase", ContextTarget::RemoteBranch { remote, branch }) => {
                 self.rebase_onto(format!("{remote}/{branch}"));
+            }
+            ("rebase_options", ContextTarget::LocalBranch(name)) => {
+                self.open_rebase_options(name);
+            }
+            ("rebase_options", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.open_rebase_options(format!("{remote}/{branch}"));
             }
             ("delete", ContextTarget::LocalBranch(name)) => {
                 self.active_modal = Some(ActiveModal::Confirm {
@@ -3228,6 +3294,67 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Merging {source}…")));
     }
 
+    fn open_merge_options(&mut self, source: String) {
+        self.active_modal = Some(ActiveModal::MergeOptions {
+            form: MergeForm::default(),
+            source,
+        });
+    }
+
+    fn handle_merge_route(&mut self, key: &str) {
+        match key {
+            "merge:execute" => self.merge_from_modal(),
+            // strategy radio + message text edits are folded up in on_event.
+            _ => {}
+        }
+    }
+
+    /// Apply the merge options form. Picks the right `merge_*_async`
+    /// helper for the selected strategy and parks the receiver on
+    /// `mutation_op`, mirroring the bare merge fast path.
+    fn merge_from_modal(&mut self) {
+        let (source, strategy, message) = match &self.active_modal {
+            Some(ActiveModal::MergeOptions { form, source }) => (
+                source.clone(),
+                form.strategy,
+                form.no_ff_message.clone(),
+            ),
+            _ => return,
+        };
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let (rx, label) = match strategy {
+            MergeStrategy::Default => (
+                crate::git::merge_branch_async(wd, source.clone(), proxy),
+                format!("merge {source}"),
+            ),
+            MergeStrategy::NoFf => {
+                let msg = if message.trim().is_empty() {
+                    format!("Merge branch '{source}'")
+                } else {
+                    message.trim().to_string()
+                };
+                (
+                    crate::git::merge_noff_async(wd, source.clone(), msg, proxy),
+                    format!("merge --no-ff {source}"),
+                )
+            }
+            MergeStrategy::FfOnly => (
+                crate::git::merge_ffonly_async(wd, source.clone(), proxy),
+                format!("merge --ff-only {source}"),
+            ),
+            MergeStrategy::Squash => (
+                crate::git::merge_squash_async(wd, source.clone(), proxy),
+                format!("merge --squash {source}"),
+            ),
+        };
+        let Some(tab) = self.active_focus_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts.push(ToastSpec::info(format!("Merging {source}…")));
+        self.active_modal = None;
+    }
+
     fn stash_apply(&mut self, idx: usize) {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
             return;
@@ -3276,6 +3403,72 @@ impl WhisperApp {
         tab.mutation_op = Some(TimedOp::new(rx, format!("rebase onto {base}")));
         self.toasts
             .push(ToastSpec::info(format!("Rebasing onto {base}…")));
+    }
+
+    fn open_rebase_options(&mut self, base: String) {
+        self.active_modal = Some(ActiveModal::RebaseOptions {
+            form: RebaseForm {
+                autostash: true,
+                rebase_merges: false,
+            },
+            base,
+        });
+    }
+
+    fn handle_rebase_route(&mut self, key: &str) {
+        match key {
+            "rebase:autostash" => {
+                if let Some(ActiveModal::RebaseOptions { form, .. }) = &mut self.active_modal {
+                    form.autostash = !form.autostash;
+                }
+            }
+            "rebase:merges" => {
+                if let Some(ActiveModal::RebaseOptions { form, .. }) = &mut self.active_modal {
+                    form.rebase_merges = !form.rebase_merges;
+                }
+            }
+            "rebase:execute" => self.rebase_from_modal(),
+            _ => {}
+        }
+    }
+
+    /// Apply the rebase options form. Backed by
+    /// `git::rebase_with_options_async`, parks the receiver on
+    /// `mutation_op` like the bare rebase fast path.
+    fn rebase_from_modal(&mut self) {
+        let (base, autostash, rebase_merges) = match &self.active_modal {
+            Some(ActiveModal::RebaseOptions { form, base }) => {
+                (base.clone(), form.autostash, form.rebase_merges)
+            }
+            _ => return,
+        };
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::rebase_with_options_async(
+            wd,
+            base.clone(),
+            autostash,
+            rebase_merges,
+            proxy,
+        );
+        let Some(tab) = self.active_focus_mut() else { return };
+        let mut suffix = Vec::new();
+        if autostash {
+            suffix.push("autostash");
+        }
+        if rebase_merges {
+            suffix.push("merges");
+        }
+        let label = if suffix.is_empty() {
+            format!("rebase onto {base}")
+        } else {
+            format!("rebase onto {base} ({})", suffix.join(", "))
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts
+            .push(ToastSpec::info(format!("Rebasing onto {base}…")));
+        self.active_modal = None;
     }
 
     /// Run a sync git op on the active tab. On success, refresh status
@@ -3479,13 +3672,17 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
         ContextTarget::LocalBranch(_) => vec![
             menu_item("Checkout").key("ctx:checkout"),
             menu_item("Merge into HEAD").key("ctx:merge"),
+            menu_item("Merge with options\u{2026}").key("ctx:merge_options"),
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
+            menu_item("Rebase with options\u{2026}").key("ctx:rebase_options"),
             menu_item("Delete").key("ctx:delete"),
         ],
         ContextTarget::RemoteBranch { .. } => vec![
             menu_item("Checkout").key("ctx:checkout"),
             menu_item("Merge into HEAD").key("ctx:merge"),
+            menu_item("Merge with options\u{2026}").key("ctx:merge_options"),
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
+            menu_item("Rebase with options\u{2026}").key("ctx:rebase_options"),
         ],
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
         ContextTarget::Stash(_) => vec![
