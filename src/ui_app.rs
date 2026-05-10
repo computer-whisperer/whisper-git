@@ -558,7 +558,13 @@ impl App for WhisperApp {
                     resize_handle(Axis::Row).key("right:resize"),
                     right.width(Size::Fixed(self.right_pane_w)),
                 ];
-                let main_row = row(children).height(Size::Fill(1.0));
+                // Gap of `RING_WIDTH` so each resize handle's focus
+                // ring band has somewhere to paint without being
+                // occluded by its panel neighbours
+                // (`FocusRingObscured` lint).
+                let main_row = row(children)
+                    .height(Size::Fill(1.0))
+                    .gap(tokens::RING_WIDTH);
                 // Sibling-submodule strip below the main split, only
                 // when drilled in *and* the immediate parent has more
                 // than one submodule (a strip with one entry is just
