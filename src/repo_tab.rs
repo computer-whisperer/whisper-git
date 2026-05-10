@@ -15,6 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 
@@ -31,7 +32,20 @@ use crate::git::{
     RemoteOpResult, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
     insert_synthetics_sorted,
 };
+use crate::git_async::{DirtyCheckResult, RepoStateResult, StatusResult};
 use crate::{github, gitlab, token_store};
+
+/// Unique id allocator for [`RepoTab`]. Used by per-entity dirty-check
+/// results (which flow over a global channel) to route back to the
+/// originating tab — so a closed-then-reopened tab doesn't accidentally
+/// receive a stale result intended for the old tab. Starts at 1 because
+/// 0 is reserved as a sentinel for "fixture / dump_bundles" tabs that
+/// were never meant to spawn workers.
+static NEXT_TAB_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_tab_id() -> u64 {
+    NEXT_TAB_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// In-flight async git op — receiver for the worker-thread result plus
 /// metadata for toast / error wording. Carried per-tab per-op-kind so
@@ -202,6 +216,27 @@ impl WorktreeView {
         Some(view)
     }
 
+    /// Construct from a pre-opened `GitRepo` handle (the worker already
+    /// did the open). Skips the post-construction `refresh()` — the
+    /// async path expects the worker's `RepoStateResult` to populate
+    /// `current_branch` / `head_oid` / `submodules` separately, and the
+    /// next `StatusResult` to populate `status`.
+    pub(crate) fn with_repo(path: PathBuf, name: String, is_main: bool, repo: GitRepo) -> Self {
+        Self {
+            path,
+            name,
+            is_main,
+            repo,
+            status: WorkingDirStatus::default(),
+            current_branch: String::new(),
+            head_oid: None,
+            submodules: Vec::new(),
+            commit_subject: String::new(),
+            commit_body: String::new(),
+            selected_diff_file: None,
+        }
+    }
+
     /// Re-query worktree-scoped state (status + branch + HEAD + submodules).
     pub fn refresh(&mut self) {
         self.status = self.repo.status().unwrap_or_default();
@@ -212,6 +247,13 @@ impl WorktreeView {
 }
 
 pub struct RepoTab {
+    /// Stable id for this tab instance. Used by per-entity dirty-check
+    /// results (which flow over a global channel) to route back here;
+    /// see [`crate::git_async::DirtyCheckResult`]. Survives refresh /
+    /// re-open of the same path *as a different tab* — closing and
+    /// reopening produces a new id, so an in-flight result targeting
+    /// the old id is dropped.
+    pub id: u64,
     /// Reference repo. The handle the tab was opened with — used for
     /// repo-level metadata (branches, remotes, tags, submodules, stashes,
     /// commit graph). For single-worktree repos this also points at the
@@ -286,6 +328,26 @@ pub struct RepoTab {
     /// a new provider result lands.
     pub ci_per_commit: HashMap<String, Vec<ProviderCommitRollup>>,
 
+    // ---- Async refresh slots ----
+    /// In-flight full repo-state refresh (commits, branches, tags,
+    /// worktrees, remotes, submodules, stashes, ahead/behind, plus
+    /// pre-opened per-worktree GitRepo handles). Drained in
+    /// `WhisperApp::poll_async_ops`; result folds back via
+    /// [`Self::apply_state_result`]. Single in-flight per tab —
+    /// trigger sites short-circuit when this is `Some`.
+    pub state_refresh_rx: Option<Receiver<RepoStateResult>>,
+    /// In-flight working-dir status refresh (cheaper than state
+    /// refresh — used for working-tree edits). Drained in
+    /// `WhisperApp::poll_async_ops`; result folds back via
+    /// [`Self::apply_status_result`].
+    pub status_rx: Option<Receiver<StatusResult>>,
+    /// Cheap content hash of `git_dir/refs/`, captured on each
+    /// successful state refresh. The 5 s reconciliation timer in
+    /// `WhisperApp` compares against this and forces a reopen +
+    /// state refresh on divergence — belt-and-braces against missed
+    /// watcher events.
+    pub ref_fingerprint: u64,
+
     // ---- Diff stats per commit ----
     /// In-flight diff-stats fetcher (one-shot, drained on completion).
     /// Populated by `trigger_diff_stats_fetch`; on Ready we apply
@@ -329,10 +391,36 @@ pub struct RepoTab {
     pub pinned_path: Option<String>,
 }
 
+/// Side-effects produced by [`RepoTab::apply_state_result`]. The reducer
+/// is pure (only mutates the tab); this value tells the orchestration
+/// layer what downstream work to schedule. Keeping the spawn decisions
+/// in the orchestrator (`WhisperApp::poll_async_ops`) instead of buried
+/// in the reducer keeps reducer testing simple and the orchestration
+/// auditable.
+#[derive(Default)]
+pub struct StateApplyEffects {
+    /// OIDs whose diff stats should be (re-)computed. The orchestrator
+    /// hands these to `compute_diff_stats_async`.
+    pub diff_stats_for: Vec<git2::Oid>,
+    /// Submodules to dirty-check, fanned out one worker per entry.
+    pub dirty_checks_submodules: Vec<SubmoduleInfo>,
+    /// Worktrees to dirty-check, fanned out one worker per entry.
+    pub dirty_checks_worktrees: Vec<WorktreeInfo>,
+    /// `true` if the resolved worktree set differs from the previous
+    /// one; the watcher needs `update_worktree_watches` to add/drop
+    /// per-worktree watch paths.
+    pub watcher_paths_changed: bool,
+    /// Errors collected during the worker run. Surface as toasts;
+    /// already non-fatal (the tab still has data thanks to stale-data
+    /// guards in the reducer).
+    pub errors: Vec<String>,
+}
+
 impl RepoTab {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let repo = GitRepo::open(&path).context("open repository")?;
         let mut tab = Self {
+            id: next_tab_id(),
             repo_name: repo.repo_name(),
             branch_tips: Vec::new(),
             remotes: Vec::new(),
@@ -356,6 +444,9 @@ impl RepoTab {
             last_ci_fetch: None,
             last_push_time: None,
             ci_per_commit: HashMap::new(),
+            state_refresh_rx: None,
+            status_rx: None,
+            ref_fingerprint: 0,
             diff_stats_rx: None,
             diff_stats_fetched: false,
             search_query: String::new(),
@@ -430,6 +521,293 @@ impl RepoTab {
         for tip in &mut self.branch_tips {
             tip.is_head = !tip.is_remote && tip.name == current;
         }
+    }
+
+    // ========================================================================
+    // Async-refresh reducers
+    // ========================================================================
+    //
+    // Pure folds from a `*Result` value into `RepoTab` state. Side effects
+    // the caller needs to schedule (downstream diff_stats fetch, per-entity
+    // dirty checks, watcher path rebuilds) are returned as a value type so
+    // the orchestration in `WhisperApp::poll_async_ops` stays the place that
+    // *decides* what to spawn, not buried in here.
+
+    /// Fold a finished [`RepoStateResult`] into the tab. Stale-data guards
+    /// preserve existing data on a partial-failure refresh (don't blank the
+    /// graph) and re-apply previous diff-stats by oid (don't flicker the
+    /// +N/-M chips during a refresh).
+    pub fn apply_state_result(&mut self, result: RepoStateResult) -> StateApplyEffects {
+        let frame_diag = std::env::var_os("WHISPER_FRAME_DIAG").is_some();
+        let t0 = std::time::Instant::now();
+
+        // Stale-data guard: if the worker came back empty (transient git
+        // failure, partial result) and we already have data, keep what we
+        // have — the next refresh will get a real result. Without this
+        // the graph blanks for a frame on every flaky refresh.
+        if result.commits.is_empty() && !self.commits.is_empty() {
+            return StateApplyEffects::default();
+        }
+
+        // Snapshot prev diff-stats so the +N/-M chips don't disappear while
+        // a fresh state lands and the diff_stats fetcher is still in flight.
+        let prev_stats: HashMap<git2::Oid, (usize, usize)> = self
+            .commits
+            .iter()
+            .filter(|c| c.insertions > 0 || c.deletions > 0)
+            .map(|c| (c.id, (c.insertions, c.deletions)))
+            .collect();
+
+        let mut commits = result.commits;
+        for c in commits.iter_mut() {
+            if let Some(&(ins, del)) = prev_stats.get(&c.id) {
+                c.insertions = ins;
+                c.deletions = del;
+            }
+        }
+        self.commits = commits;
+        self.branch_tips = result.branch_tips;
+        self.tags = result.tags;
+        self.worktrees = result.worktrees.clone();
+        self.remotes = result.remote_names;
+        self.stashes = result.stashes;
+        self.ref_fingerprint = result.ref_fingerprint;
+        // Clear cached diff-stats marker so the polling loop re-runs the
+        // fetch against the new commit set.
+        self.diff_stats_fetched = false;
+        self.diff_stats_rx = None;
+
+        // Merge pre-opened worktree GitRepo handles into worktree_views.
+        // Existing entries keep their drafts (commit_subject, commit_body,
+        // selected_diff_file) and just swap their repo handle; new
+        // entries get default empty drafts. Stale entries (worktree
+        // pruned from disk) are dropped.
+        let watcher_paths_changed = self.merge_worktree_views(result.worktree_repos);
+
+        // Active view's submodules / current_branch / head_oid come from
+        // the worker, but re-query against the *currently active* view's
+        // repo handle in case the user switched worktrees mid-spawn.
+        let submodules = if let Some(view) = self.active_view() {
+            view.repo.submodules().unwrap_or(result.submodules.clone())
+        } else {
+            result.submodules.clone()
+        };
+        if let Some(view) = self.active_view_mut() {
+            view.submodules = submodules.clone();
+            view.current_branch = view
+                .repo
+                .current_branch()
+                .unwrap_or_else(|_| result.current_branch.clone());
+            view.head_oid = view.repo.head_oid().ok().or(result.head_oid);
+        }
+
+        // Patch branch_tips' is_head against the active worktree's HEAD —
+        // matches the sync `refresh()` path.
+        let current = self.current_branch().to_string();
+        for tip in &mut self.branch_tips {
+            tip.is_head = !tip.is_remote && tip.name == current;
+        }
+
+        self.graph_layout.build(&self.commits);
+
+        // Refresh selected commit detail if the selection's still valid.
+        if let Some(oid) = self.selected_commit
+            && !self.commits.iter().any(|c| c.id == oid)
+        {
+            self.selected_commit = None;
+            self.commit_detail = None;
+        } else if let Some(oid) = self.selected_commit {
+            self.load_commit_detail(oid);
+        }
+
+        if frame_diag {
+            eprintln!(
+                "[frame_diag] apply_state_result(tab={}): {} commits, {} worktrees, {:.1}ms",
+                self.id,
+                self.commits.len(),
+                self.worktrees.len(),
+                t0.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+
+        StateApplyEffects {
+            diff_stats_for: result.real_oids,
+            dirty_checks_submodules: submodules,
+            dirty_checks_worktrees: self.worktrees.clone(),
+            watcher_paths_changed,
+            errors: result.errors,
+        }
+    }
+
+    /// Fold a finished [`StatusResult`] into the active view's status +
+    /// the synthetic uncommitted-changes entry for the active worktree.
+    /// Cheap; called from working-tree-edit paths and from the 30 s
+    /// status safety net timer.
+    pub fn apply_status_result(&mut self, result: StatusResult) {
+        if let Some(status) = result.staging_status
+            && let Some(view) = self.active_view_mut()
+        {
+            view.status = status;
+        }
+
+        // Single-worktree main-repo fast path — refresh the synthetic
+        // entry's (ins, del) so the +N/-M chip on the uncommitted-changes
+        // row tracks the current diff. Multi-worktree synthetic refresh
+        // goes through `apply_dirty_check_result` (per-entity).
+        if self.worktree_views.len() == 1 {
+            self.commits.retain(|c| !c.is_synthetic);
+            let synthetics = self.build_synthetic_entries();
+            if !synthetics.is_empty() {
+                let mut synths = synthetics;
+                if let Some(synth) = synths.first_mut()
+                    && let Some((ins, del)) = result.main_diff_stats
+                {
+                    synth.insertions = ins;
+                    synth.deletions = del;
+                }
+                insert_synthetics_sorted(&mut self.commits, synths);
+                self.graph_layout.build(&self.commits);
+            }
+        }
+    }
+
+    /// Fold one finished [`DirtyCheckResult`] into the tab. Returns
+    /// `true` when a worktree's dirty state changed and the synthetic
+    /// uncommitted-changes rows need rebuilding (caller invokes
+    /// `rebuild_synthetics_after_dirty_change`).
+    pub fn apply_dirty_check_result(&mut self, result: DirtyCheckResult) -> bool {
+        match result {
+            DirtyCheckResult::Submodule {
+                tab_id: _,
+                name,
+                is_dirty,
+            } => {
+                if let Some(view) = self.active_view_mut()
+                    && let Some(sm) = view.submodules.iter_mut().find(|s| s.name == name)
+                {
+                    sm.is_dirty = Some(is_dirty);
+                }
+                false
+            }
+            DirtyCheckResult::Worktree {
+                tab_id: _,
+                path,
+                is_dirty,
+                dirty_file_count,
+                diff_stats,
+            } => {
+                let wt = self.worktrees.iter_mut().find(|w| w.path == path);
+                let Some(wt) = wt else { return false };
+                let changed =
+                    wt.is_dirty != Some(is_dirty) || wt.dirty_file_count != Some(dirty_file_count);
+                wt.is_dirty = Some(is_dirty);
+                wt.dirty_file_count = Some(dirty_file_count);
+                if changed {
+                    self.rebuild_synthetics_after_dirty_change(diff_stats);
+                }
+                changed
+            }
+        }
+    }
+
+    /// Rebuild synthetic "uncommitted changes" rows after a dirty-check
+    /// result flipped a worktree's dirty state. Called from
+    /// [`Self::apply_dirty_check_result`] when `changed == true`.
+    fn rebuild_synthetics_after_dirty_change(&mut self, diff_stats: Option<(usize, usize)>) {
+        self.commits.retain(|c| !c.is_synthetic);
+        let mut synthetics = self.build_synthetic_entries();
+        // The dirty-check carries the *current* diff stats for the worktree
+        // whose state just changed. If a synthetic was emitted for that
+        // worktree, attach the fresh stats so the +N/-M chip is up-to-date
+        // immediately rather than waiting for the next status refresh.
+        if let Some((ins, del)) = diff_stats
+            && let Some(synth) = synthetics.first_mut()
+        {
+            synth.insertions = ins;
+            synth.deletions = del;
+        }
+        if !synthetics.is_empty() {
+            insert_synthetics_sorted(&mut self.commits, synthetics);
+        }
+        self.graph_layout.build(&self.commits);
+    }
+
+    /// Merge worker-pre-opened worktree GitRepo handles into the per-tab
+    /// `worktree_views` map. New entries get default drafts; existing
+    /// entries keep their drafts and selected-diff but swap to the fresh
+    /// repo handle. Returns `true` if the resolved set differs from the
+    /// previous one (the watcher needs `update_worktree_watches`).
+    fn merge_worktree_views(
+        &mut self,
+        mut pre_opened: HashMap<PathBuf, GitRepo>,
+    ) -> bool {
+        let mut new_views: HashMap<PathBuf, WorktreeView> = HashMap::new();
+        let mut order: Vec<(String, PathBuf)> = Vec::new();
+
+        // Main worktree first, so `is_main = true` lands on it.
+        if let Some(main_wd) = self.repo.workdir().map(Path::to_path_buf) {
+            let name = main_wd
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| self.repo_name.clone());
+            let view = if let Some(mut existing) = self.worktree_views.remove(&main_wd) {
+                if let Some(repo) = pre_opened.remove(&main_wd) {
+                    existing.repo = repo;
+                }
+                Some(existing)
+            } else if let Some(repo) = pre_opened.remove(&main_wd) {
+                Some(WorktreeView::with_repo(main_wd.clone(), name.clone(), true, repo))
+            } else {
+                // Worker didn't pre-open the main worktree's path (e.g.
+                // bare repo with no workdir). Fall back to a sync open;
+                // for normal repos the worker covers it.
+                WorktreeView::open(main_wd.clone(), name.clone(), true)
+            };
+            if let Some(v) = view {
+                order.push((v.name.clone(), v.path.clone()));
+                new_views.insert(main_wd, v);
+            }
+        }
+
+        // Linked worktrees from the worker's worktrees list.
+        for wt in &self.worktrees {
+            let path = PathBuf::from(&wt.path);
+            if new_views.contains_key(&path) {
+                continue;
+            }
+            let view = if let Some(mut existing) = self.worktree_views.remove(&path) {
+                if let Some(repo) = pre_opened.remove(&path) {
+                    existing.repo = repo;
+                }
+                Some(existing)
+            } else if let Some(repo) = pre_opened.remove(&path) {
+                Some(WorktreeView::with_repo(path.clone(), wt.name.clone(), false, repo))
+            } else {
+                WorktreeView::open(path.clone(), wt.name.clone(), false)
+            };
+            if let Some(v) = view {
+                order.push((v.name.clone(), v.path.clone()));
+                new_views.insert(path, v);
+            }
+        }
+
+        // Sort by display name for stable order across refreshes.
+        order.sort_by(|a, b| a.0.cmp(&b.0));
+        let new_order: Vec<PathBuf> = order.into_iter().map(|(_, p)| p).collect();
+        let paths_changed = self.worktree_order != new_order;
+        self.worktree_views = new_views;
+        self.worktree_order = new_order;
+
+        // Make sure active_worktree still points at a valid entry.
+        if let Some(active) = self.active_worktree.clone()
+            && !self.worktree_views.contains_key(&active)
+        {
+            self.active_worktree = self.worktree_order.first().cloned();
+        } else if self.active_worktree.is_none() {
+            self.active_worktree = self.worktree_order.first().cloned();
+        }
+
+        paths_changed
     }
 
     /// Build a synthetic "uncommitted changes" entry per dirty worktree

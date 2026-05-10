@@ -251,6 +251,35 @@ pub struct WhisperApp {
     /// (dump_bundles, screenshot mode) don't hold a worker channel
     /// they'll never feed.
     pub avatar_cache: Option<crate::avatar::AvatarCache>,
+    /// Global channel for per-entity dirty-check results. Each spawned
+    /// dirty-check worker (one per submodule, one per worktree) sends
+    /// its result here; the polling loop drains and routes back to the
+    /// originating `RepoTab` by `tab_id`. Keeping the channel global
+    /// rather than per-tab keeps the drain to a single try_recv loop;
+    /// stale results from closed tabs match no live tab and drop
+    /// silently.
+    pub dirty_check_tx: std::sync::mpsc::Sender<crate::git_async::DirtyCheckResult>,
+    pub dirty_check_rx: std::sync::mpsc::Receiver<crate::git_async::DirtyCheckResult>,
+    /// Total per-entity dirty checks currently running across all tabs.
+    /// Decremented when their results land (regardless of which tab they
+    /// targeted). Used to gate "kick off another fanout right now" so
+    /// the system doesn't stack identical workers when the watcher
+    /// fires repeatedly during a long-running scan.
+    pub dirty_checks_in_flight: usize,
+    /// `true` when the active tab needs a fresh status query (working-
+    /// dir staleness from a watcher event, or the 30 s safety net
+    /// expired). Drained by the next polling pass — single bit so
+    /// repeated marks coalesce into one spawn.
+    pub status_dirty: bool,
+    /// Wall time of the last successful status refresh on the active
+    /// tab. Drives the 30 s safety-net timer that flips `status_dirty`
+    /// on if no watcher event has arrived in that window.
+    pub last_status_refresh: std::time::Instant,
+    /// Wall time of the last `ref_fingerprint` check. Compared every
+    /// 5 s against the active tab's cached fingerprint; a divergence
+    /// triggers `repo.reopen()` + a full state refresh — belt-and-
+    /// braces against missed watcher events.
+    pub last_ref_check: std::time::Instant,
 }
 
 /// In-flight clone tracker. Carries the receiver, the started time
@@ -284,6 +313,8 @@ impl WhisperApp {
         let config = Config::load();
         let sidebar_w = config.sidebar_w;
         let right_pane_w = config.right_pane_w;
+        let (dirty_check_tx, dirty_check_rx) = std::sync::mpsc::channel();
+        let now = std::time::Instant::now();
         Self {
             tabs,
             active_tab: 0,
@@ -300,6 +331,12 @@ impl WhisperApp {
             sidebar_drag: ResizeDrag::default(),
             right_drag: ResizeDrag::default(),
             avatar_cache: None,
+            dirty_check_tx,
+            dirty_check_rx,
+            dirty_checks_in_flight: 0,
+            status_dirty: false,
+            last_status_refresh: now,
+            last_ref_check: now,
         }
     }
 
@@ -310,6 +347,8 @@ impl WhisperApp {
         let config = Config::default();
         let sidebar_w = config.sidebar_w;
         let right_pane_w = config.right_pane_w;
+        let (dirty_check_tx, dirty_check_rx) = std::sync::mpsc::channel();
+        let now = std::time::Instant::now();
         Self {
             tabs,
             active_tab: 0,
@@ -326,6 +365,12 @@ impl WhisperApp {
             sidebar_drag: ResizeDrag::default(),
             right_drag: ResizeDrag::default(),
             avatar_cache: None,
+            dirty_check_tx,
+            dirty_check_rx,
+            dirty_checks_in_flight: 0,
+            status_dirty: false,
+            last_status_refresh: now,
+            last_ref_check: now,
         }
     }
 
@@ -1721,12 +1766,182 @@ impl WhisperApp {
             }
         }
         self.poll_clone_op();
+        self.poll_state_refreshes();
+        self.poll_status_refreshes();
+        self.poll_dirty_checks();
         self.drain_ci_receivers();
         self.poll_ci_refresh();
         self.drain_diff_stats();
         self.trigger_diff_stats_fetches();
         self.drain_avatar_completions();
         self.request_visible_avatars();
+    }
+
+    /// Drain finished `RepoStateResult`s for every tab + drilled-in
+    /// level. On a result, fold via [`RepoTab::apply_state_result`],
+    /// surface any errors as toasts, then dispatch the produced effects
+    /// (kick off diff-stats fanout, kick off per-entity dirty checks,
+    /// flag the watcher for path updates).
+    fn poll_state_refreshes(&mut self) {
+        for tab_idx in 0..self.tabs.len() {
+            // Outermost first, then each drilled-in level.
+            self.poll_state_refresh_at(tab_idx, None);
+            let mut d = 0;
+            while let Some(t) = self.tabs.get(tab_idx)
+                && d < t.nav_stack.len()
+            {
+                self.poll_state_refresh_at(tab_idx, Some(d));
+                d += 1;
+            }
+        }
+    }
+
+    fn poll_state_refresh_at(&mut self, tab_idx: usize, depth: Option<usize>) {
+        let result = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(rx) = tab.state_refresh_rx.take() else { return };
+            match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Worker still running — put the receiver back.
+                    tab.state_refresh_rx = Some(rx);
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let Some(result) = result else { return };
+
+        // Apply + collect effects in a scoped borrow.
+        let effects = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            tab.apply_state_result(result)
+        };
+
+        for err in effects.errors {
+            self.toasts.push(ToastSpec::error(err));
+        }
+
+        // Diff-stats fetch for the new commit set. The existing
+        // `trigger_diff_stats_fetches` runs every poll anyway, so this
+        // is informational — but kicking it now starts the fetch in
+        // the same frame instead of waiting for the next.
+        let Some(proxy) = self.proxy.clone() else { return };
+        if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+            tab.trigger_diff_stats_fetch(proxy.clone());
+        }
+
+        // Per-entity dirty-check fanout — one worker per submodule, one
+        // per worktree. `tab_id` on each result lets the global drain
+        // route back here even after a tab close / reopen.
+        let (tab_id, repo_workdir) = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            (tab.id, tab.repo.workdir().map(|p| p.to_path_buf()))
+        };
+        self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+            tab_id,
+            &effects.dirty_checks_submodules,
+            &effects.dirty_checks_worktrees,
+            repo_workdir,
+            &self.dirty_check_tx,
+            &proxy,
+        );
+
+        // Watcher path updates land in step 4 (watcher consumer wiring).
+        // For now, just record the flag for that step to read.
+        let _ = effects.watcher_paths_changed;
+    }
+
+    /// Drain finished `StatusResult`s for every tab + drilled-in level.
+    fn poll_status_refreshes(&mut self) {
+        for tab_idx in 0..self.tabs.len() {
+            self.poll_status_refresh_at(tab_idx, None);
+            let mut d = 0;
+            while let Some(t) = self.tabs.get(tab_idx)
+                && d < t.nav_stack.len()
+            {
+                self.poll_status_refresh_at(tab_idx, Some(d));
+                d += 1;
+            }
+        }
+    }
+
+    fn poll_status_refresh_at(&mut self, tab_idx: usize, depth: Option<usize>) {
+        let result = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(rx) = tab.status_rx.take() else { return };
+            match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    tab.status_rx = Some(rx);
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let Some(result) = result else { return };
+        if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+            tab.apply_status_result(result);
+        }
+        // Stamp last_status_refresh on the active tab's result so the
+        // 30 s safety net doesn't redundantly fire.
+        if depth.is_none() && tab_idx == self.active_tab {
+            self.last_status_refresh = std::time::Instant::now();
+            self.status_dirty = false;
+        }
+    }
+
+    /// Drain the global per-entity dirty-check channel and route each
+    /// result back to its originating `RepoTab` by `tab_id`. Stale
+    /// results from closed tabs match no live tab and drop silently.
+    fn poll_dirty_checks(&mut self) {
+        if self.dirty_checks_in_flight == 0 {
+            return;
+        }
+        loop {
+            match self.dirty_check_rx.try_recv() {
+                Ok(result) => {
+                    self.dirty_checks_in_flight = self.dirty_checks_in_flight.saturating_sub(1);
+                    let target_id = result.tab_id();
+                    if let Some(tab) = self.find_tab_by_id_mut(target_id) {
+                        tab.apply_dirty_check_result(result);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Should never happen — we hold the sender.
+                    self.dirty_checks_in_flight = 0;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Locate a tab (or drilled-in submodule view) by its stable `id`.
+    /// Walks every tab's `nav_stack` so dirty-check results targeting a
+    /// drilled-in level land on the right frame.
+    fn find_tab_by_id_mut(&mut self, id: u64) -> Option<&mut RepoTab> {
+        for tab in &mut self.tabs {
+            if tab.id == id {
+                return Some(tab);
+            }
+            for sub in &mut tab.nav_stack {
+                if sub.id == id {
+                    return Some(sub);
+                }
+            }
+        }
+        None
+    }
+
+    /// Address a tab + optional drill-in depth as a single mut ref.
+    /// `depth: None` is the outer tab; `Some(d)` is `nav_stack[d]`.
+    fn tab_at_mut(&mut self, tab_idx: usize, depth: Option<usize>) -> Option<&mut RepoTab> {
+        let outer = self.tabs.get_mut(tab_idx)?;
+        match depth {
+            None => Some(outer),
+            Some(d) => outer.nav_stack.get_mut(d),
+        }
     }
 
     /// Fold any completed Gravatar downloads into the in-memory cache
