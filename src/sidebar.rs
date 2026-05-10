@@ -53,26 +53,32 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
         spacer(),
         badge(count.to_string()).muted(),
     ];
-    // Local section grows a small "+" affordance to open the create-
-    // branch modal. Clicking the + would otherwise toggle the section
+    // Local + Tags grow a small "+" affordance to open their create
+    // modals. Clicking the + would otherwise toggle the section
     // collapse via the parent tree_row's route — we keep the route on
     // the row but the icon button gets its own key to override.
-    if matches!(section, SidebarSection::Local) {
-        // A bare clickable icon — not `icon_button` — because the
-        // dense 28 px tree_row can't host a button-shaped affordance:
-        // icon_button bakes in a 32 px CONTROL_HEIGHT and surface
-        // chrome that pokes above and below the row, visibly colliding
-        // with the next branch entry. The bare icon honours the row's
-        // metrics, picks up the tree_row's hover/focus envelope via
-        // .focusable(), and reads as an in-row affordance the same
-        // way the chevron caret does.
+    //
+    // A bare clickable icon — not `icon_button` — because the
+    // dense 28 px tree_row can't host a button-shaped affordance:
+    // icon_button bakes in a 32 px CONTROL_HEIGHT and surface
+    // chrome that pokes above and below the row, visibly colliding
+    // with the next entry. The bare icon honours the row's
+    // metrics, picks up the tree_row's hover/focus envelope via
+    // .focusable(), and reads as an in-row affordance the same
+    // way the chevron caret does.
+    let create = match section {
+        SidebarSection::Local => Some(("new_branch", "Create branch")),
+        SidebarSection::Tags => Some(("new_tag", "Create tag")),
+        _ => None,
+    };
+    if let Some((key, tooltip)) = create {
         children.push(
             icon(IconName::Plus)
                 .muted()
-                .key("new_branch")
+                .key(key)
                 .focusable()
                 .cursor(Cursor::Pointer)
-                .tooltip("Create branch"),
+                .tooltip(tooltip),
         );
     }
 

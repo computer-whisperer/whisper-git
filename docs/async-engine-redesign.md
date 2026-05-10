@@ -1,9 +1,8 @@
 # Async Engine Redesign
 
-**Status:** Shipped (2026-05-10) — six commits across `653d270…d7bee1a`.
-Live verification on a giant submoduled repo is the only step still
-pending; headless smoke (screenshot pipeline + dump_bundles + tests)
-is green.
+**Status:** Shipped + verified (2026-05-10) — six commits across `653d270…d7bee1a`.
+Headless smoke (screenshot pipeline + dump_bundles + tests) green;
+live behavior on a giant submoduled repo confirmed by hand.
 **Branch:** `aetna-ui`
 
 ## Background
@@ -360,12 +359,6 @@ The open questions from the design phase, with their resolutions:
   excluded; events inside them surface as `WorkingTree` and trigger
   spurious parent-status walks until the watcher is recreated. Worth
   adding a sibling to `update_worktree_watches`.
-- **Live verification on a giant submoduled repo.** Headless smoke is
-  green (screenshot pipeline + dump_bundles + tests pass). The
-  watcher's actual behavior on external `git commit` / file edits /
-  `git fetch` needs the live UI exercised against e.g. a checkout
-  with esp-idf or a Linux kernel sub-tree. `WHISPER_FRAME_DIAG=1`
-  prints per-result apply timing on stderr.
 - **Mid-call cancellation.** Closing a tab during a refresh drops the
   result correctly via `tab_id` gating, but the worker still runs to
   completion. Adding `Arc<AtomicBool>` cancellation for coarse-grained

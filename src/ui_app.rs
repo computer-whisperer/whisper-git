@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
-use crate::dialogs::{BranchForm, CloneForm, TokenForm};
+use crate::dialogs::{BranchForm, CloneForm, TagForm, TokenForm};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
@@ -204,6 +204,12 @@ pub enum ActiveModal {
     /// either the focused tab's selected_commit or its HEAD.
     Branch {
         form: BranchForm,
+        target: git2::Oid,
+    },
+    /// Create-tag dialog. Mirrors `Branch` but tags are lightweight,
+    /// so the form has no checkout toggle and HEAD doesn't move.
+    Tag {
+        form: TagForm,
         target: git2::Oid,
     },
 }
@@ -544,6 +550,10 @@ impl App for WhisperApp {
                 let target_short = target.to_string()[..7].to_string();
                 dialogs::branch_modal(form, &self.selection, &target_short)
             }
+            ActiveModal::Tag { form, target } => {
+                let target_short = target.to_string()[..7].to_string();
+                dialogs::tag_modal(form, &self.selection, &target_short)
+            }
         });
         let menu_layer = self
             .context_menu
@@ -702,6 +712,14 @@ impl App for WhisperApp {
                     &mut form.name,
                     &mut self.selection,
                     "branch:name",
+                    &event,
+                );
+            }
+            Some(ActiveModal::Tag { form, .. }) => {
+                text_input::apply_event(
+                    &mut form.name,
+                    &mut self.selection,
+                    "tag:name",
                     &event,
                 );
             }
@@ -971,13 +989,10 @@ impl WhisperApp {
             self.jump_to_commit(oid, name);
             return;
         }
-        if let Some(idx_str) = key.strip_prefix("stash:") {
-            // Stash apply/pop UX is its own surface — for now selecting
-            // a stash row just acknowledges the click. Drop is handled
-            // via the context menu.
-            self.toasts.push(ToastSpec::info(format!(
-                "Stash {idx_str} apply/pop is not wired yet"
-            )));
+        if key.starts_with("stash:") {
+            // Stash actions (Apply / Pop / Drop) are right-click only.
+            // `StashEntry` doesn't carry the WIP commit OID, so a row
+            // click has no jump-to-commit target — treat it as a no-op.
             return;
         }
 
@@ -1040,6 +1055,7 @@ impl WhisperApp {
         match key {
             "open_repo" => self.open_repo_dialog(),
             "new_branch" => self.open_branch_modal(),
+            "new_tag" => self.open_tag_modal(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
                 form.dest = std::env::var("HOME").unwrap_or_default();
@@ -1206,6 +1222,15 @@ impl WhisperApp {
             self.handle_branch_route(key);
             return true;
         }
+        // Same gating for `tag:` — sidebar `tag:<name>` jump-to-commit
+        // clicks must still reach the handle_action path when the modal
+        // is closed.
+        if matches!(self.active_modal, Some(ActiveModal::Tag { .. }))
+            && key.starts_with("tag:")
+        {
+            self.handle_tag_route(key);
+            return true;
+        }
 
         match key {
             "modal:confirm:cancel" => {
@@ -1231,6 +1256,10 @@ impl WhisperApp {
                 true
             }
             "modal:branch:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:tag:cancel" => {
                 self.active_modal = None;
                 true
             }
@@ -1328,6 +1357,61 @@ impl WhisperApp {
                 name: String::new(),
                 checkout: true,
             },
+            target,
+        });
+    }
+
+    fn handle_tag_route(&mut self, key: &str) {
+        if key == "tag:create" {
+            self.create_tag_from_modal();
+        }
+    }
+
+    fn create_tag_from_modal(&mut self) {
+        let (name, target) = match &self.active_modal {
+            Some(ActiveModal::Tag { form, target }) => {
+                (form.name.trim().to_string(), *target)
+            }
+            _ => return,
+        };
+        if name.is_empty() {
+            self.toasts.push(ToastSpec::warning("Tag name is empty"));
+            return;
+        }
+        let Some(tab) = self.active_focus_mut() else { return };
+        match tab.repo.create_tag(&name, target) {
+            Ok(()) => {
+                self.toasts
+                    .push(ToastSpec::success(format!("Created tag {name}")));
+                self.active_modal = None;
+                let proxy = self.proxy.clone();
+                let show_orphans = self.config.show_orphaned_commits;
+                if let Some(t) = self.active_focus_mut() {
+                    t.request_state_refresh(proxy.as_ref(), show_orphans);
+                }
+            }
+            Err(e) => {
+                self.toasts
+                    .push(ToastSpec::error(format!("Create tag failed: {e}")));
+            }
+        }
+    }
+
+    fn open_tag_modal(&mut self) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        let target = focus
+            .selected_commit
+            .or_else(|| focus.active_view().and_then(|v| v.head_oid));
+        let Some(target) = target else {
+            self.toasts.push(ToastSpec::warning(
+                "Select a commit (or check out a worktree) before creating a tag",
+            ));
+            return;
+        };
+        self.active_modal = Some(ActiveModal::Tag {
+            form: TagForm::default(),
             target,
         });
     }
@@ -1560,6 +1644,12 @@ impl WhisperApp {
                     action: ConfirmAction::DeleteTag(name),
                 });
             }
+            ("apply", ContextTarget::Stash(idx)) => {
+                self.stash_apply(idx);
+            }
+            ("pop", ContextTarget::Stash(idx)) => {
+                self.stash_pop(idx);
+            }
             ("drop", ContextTarget::Stash(idx)) => {
                 self.active_modal = Some(ActiveModal::Confirm {
                     title: "Drop stash".to_string(),
@@ -1652,11 +1742,8 @@ impl WhisperApp {
             ConfirmAction::DeleteTag(name) => {
                 self.run_op("Delete tag", |t| t.repo.delete_tag(&name));
             }
-            ConfirmAction::DropStash(_idx) => {
-                // GitRepo doesn't expose stash_drop sync today; emit a
-                // placeholder until Phase 4d brings the rest of the
-                // stash op surface online.
-                self.toasts.push(ToastSpec::info("Drop stash (Phase 4d)"));
+            ConfirmAction::DropStash(idx) => {
+                self.stash_drop(idx);
             }
             ConfirmAction::ResetHard(oid) => {
                 self.run_op("Reset hard", move |t| {
@@ -2617,6 +2704,39 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Merging {source}…")));
     }
 
+    fn stash_apply(&mut self, idx: usize) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::stash_apply_async(wd, idx, proxy);
+        let Some(tab) = self.active_focus_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("stash apply @{{{idx}}}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Applying stash @{{{idx}}}…")));
+    }
+
+    fn stash_pop(&mut self, idx: usize) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::stash_pop_index_async(wd, idx, proxy);
+        let Some(tab) = self.active_focus_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("stash pop @{{{idx}}}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Popping stash @{{{idx}}}…")));
+    }
+
+    fn stash_drop(&mut self, idx: usize) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::stash_drop_async(wd, idx, proxy);
+        let Some(tab) = self.active_focus_mut() else { return };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("stash drop @{{{idx}}}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Dropping stash @{{{idx}}}…")));
+    }
+
     /// `git rebase --autostash <base>`. `--autostash` preserves
     /// uncommitted work across the rebase rather than failing on a dirty
     /// tree — matches what experienced users typically want and avoids
@@ -2844,7 +2964,11 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
         ],
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
-        ContextTarget::Stash(_) => vec![menu_item("Drop").key("ctx:drop")],
+        ContextTarget::Stash(_) => vec![
+            menu_item("Apply").key("ctx:apply"),
+            menu_item("Pop").key("ctx:pop"),
+            menu_item("Drop").key("ctx:drop"),
+        ],
         ContextTarget::Commit(_) => vec![
             menu_item("Copy SHA").key("ctx:copy_sha"),
             menu_item("Checkout (detached)").key("ctx:checkout"),

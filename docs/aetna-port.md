@@ -101,13 +101,24 @@ The phase numbering is mostly historical at this point. Done:
   "Rebase HEAD onto"). Both write through `mutation_op`. Rebase runs
   with `--autostash` so a dirty tree doesn't abort it.
 
+Done (since this section was last pruned):
+
+- **Watcher + filesystem refresh** — async engine redesign shipped + verified live
+- **Submodule drill-down navigation** — `nav_stack` chain, breadcrumb, parent context strip, sibling strip, PINNED pill, post-commit coordination
+- **Avatars** — Gravatar with disk cache + identicon fallback
+- **Stash apply / pop / drop** — sidebar context menu wired via `mutation_op`
+- **Tag creation** — sidebar `+` icon in the Tags section opens the create-tag modal
+
 Deferred / pending (no fixed order):
 
 - **Pull picker** — pick a non-tracking source, toggle `--rebase`
+- **Worktree creation** — list + switch already work; needs a "new worktree" dialog
+- **Push / merge / rebase options dialogs** — basic versions wired; no per-op options UI
+- **AI commit message generation** — old `ai.rs` deleted in Phase 7a, not yet ported
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream
+- **`virtual_list` scroll-to-index** — blocks jump-to-commit auto-scroll; deferred upstream
 - **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
-- **Watcher + filesystem refresh** — currently synchronous on user action only
-- **Submodule drill-down navigation** — old `submodule_nav.rs` is uncompiled
+- **`update_submodule_paths` on `RepoWatcher`** — submodules added mid-session aren't excluded
 
 ## Architectural decisions worth knowing
 

@@ -15,6 +15,7 @@ pub const MODAL_ERROR_KEY: &str = "modal:error";
 pub const MODAL_CLONE_KEY: &str = "modal:clone";
 pub const MODAL_TOKEN_KEY: &str = "modal:token";
 pub const MODAL_BRANCH_KEY: &str = "modal:branch";
+pub const MODAL_TAG_KEY: &str = "modal:tag";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
 /// Settings panel: small subset of `Config` is editable for now —
@@ -288,6 +289,40 @@ pub fn branch_modal(state: &BranchForm, selection: &Selection, target_short: &st
     let body = form([name_field, checkout_field, actions]);
 
     overlays_panel(MODAL_BRANCH_KEY, "Create branch", [body])
+}
+
+/// Form state for the Create Tag modal — controlled name input. Tags
+/// are lightweight (`tag_lightweight`), so no message field; HEAD
+/// doesn't move, so no "checkout after" toggle.
+#[derive(Clone, Debug, Default)]
+pub struct TagForm {
+    pub name: String,
+}
+
+/// Create-a-tag modal. Name input + a small caption showing what
+/// commit the tag will point at. Routes through GitRepo::create_tag.
+pub fn tag_modal(state: &TagForm, selection: &Selection, target_short: &str) -> El {
+    let name_field = form_item([
+        form_label("Tag name"),
+        form_control(
+            text_input(&state.name, selection, "tag:name")
+                .key("tag:name")
+                .width(Size::Fill(1.0)),
+        ),
+        form_description(format!("Will be created at {target_short}.")),
+    ]);
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:tag:cancel").ghost(),
+        button("Create").key("tag:create").primary(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([name_field, actions]);
+
+    overlays_panel(MODAL_TAG_KEY, "Create tag", [body])
 }
 
 /// Form state for the Token modal — one section for GitHub, one row

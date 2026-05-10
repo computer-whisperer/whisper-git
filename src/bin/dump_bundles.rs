@@ -263,6 +263,28 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        scenes.push(("modal_tag_create".to_string(), {
+            use whisper_git::dialogs::TagForm;
+            let mut t = reopen(first);
+            let target = t
+                .commits
+                .iter()
+                .find(|c| !c.is_synthetic)
+                .map(|c| c.id)
+                .unwrap_or_else(|| {
+                    git2::Oid::from_str("0000000000000000000000000000000000000000")
+                        .unwrap()
+                });
+            t.select_commit(Some(target));
+            let mut app = WhisperApp::with_tabs(vec![t]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::Tag {
+                form: TagForm {
+                    name: "v0.4.0".to_string(),
+                },
+                target,
+            });
+            app
+        }));
         scenes.push(("modal_token".to_string(), {
             use whisper_git::dialogs::TokenForm;
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
@@ -299,6 +321,14 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.context_menu = Some(ContextMenuState {
                 pos: (90.0, 200.0),
                 target: ContextTarget::LocalBranch("main".to_string()),
+            });
+            app
+        }));
+        scenes.push(("sidebar_context_menu_stash".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.context_menu = Some(ContextMenuState {
+                pos: (90.0, 200.0),
+                target: ContextTarget::Stash(0),
             });
             app
         }));
