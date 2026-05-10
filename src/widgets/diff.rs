@@ -480,9 +480,15 @@ fn line_content(line: &DiffLine) -> El {
     let runs = split_into_runs(trimmed, &line.highlights);
     if runs.len() == 1 || highlight_bg.is_none() {
         // No highlights (or context line) — single shaped span.
+        // `ellipsis` so over-long lines (typical in split mode where
+        // each half is narrower than the gutter+content needs) get a
+        // "…" hint AND the lint understands the truncation as
+        // intentional. Unified mode leaves more room, so the
+        // ellipsis only fires on genuinely long lines.
         return text(trimmed.to_string())
             .mono()
             .nowrap_text()
+            .ellipsis()
             .padding(Sides::xy(tokens::SPACE_2, 0.0))
             .width(Size::Fill(1.0));
     }
