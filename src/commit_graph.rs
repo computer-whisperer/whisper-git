@@ -16,10 +16,10 @@
 
 use std::collections::HashMap;
 
-use aetna_core::Selection;
 use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
 use aetna_core::widgets::text_input::text_input;
-use aetna_core::{Color, El, prelude::*};
+use aetna_core::image::Image;
+use aetna_core::{Color, El, Selection, prelude::*};
 use git2::Oid;
 
 use crate::ci::{CiState, ProviderCommitRollup};
@@ -95,11 +95,23 @@ fn author_color(author: &str) -> Color {
     IDENTICON_COLORS[(hash as usize) % IDENTICON_COLORS.len()]
 }
 
-/// Identicon avatar: deterministic-color disc with the author's
-/// first letter (uppercase) centered. Used as a fallback when no
-/// network avatar is available — and right now it's the only path
-/// since we haven't wired Gravatar / GitHub avatar fetches yet.
-fn author_avatar(author: &str) -> El {
+/// Author avatar — Gravatar image when one's loaded for this email,
+/// identicon fallback otherwise. The identicon is a deterministic-
+/// color disc with the author's first letter (uppercase) centered;
+/// authors that haven't been hashed yet show as a `?`.
+///
+/// `gravatar` is `Some` when the avatar cache has finished fetching
+/// + decoding for this email; `None` covers in-flight, failed (404),
+/// and not-yet-requested.
+fn author_avatar(author: &str, gravatar: Option<Image>) -> El {
+    if let Some(img) = gravatar {
+        return image(img)
+            .width(Size::Fixed(AVATAR_SIZE))
+            .height(Size::Fixed(AVATAR_SIZE))
+            .radius(AVATAR_SIZE * 0.5)
+            .clip()
+            .tooltip(author.to_string());
+    }
     let initial = author
         .chars()
         .next()
@@ -845,6 +857,7 @@ fn build_row(
     is_pinned: bool,
     idx: usize,
     selected: bool,
+    avatar: Option<Image>,
 ) -> El {
     if commit.is_synthetic {
         return synthetic_row(commit, layout, geom, graph_width, idx, selected);
@@ -956,7 +969,7 @@ fn build_row(
     if let Some(chip) = diff_stats_chip(commit) {
         children.push(chip);
     }
-    children.push(author_avatar(&commit.author));
+    children.push(author_avatar(&commit.author, avatar));
     children.push(text(format!("{} · {}", commit.author, when)).muted());
 
     let row_el = row(children)
@@ -1073,7 +1086,11 @@ pub const SEARCH_INPUT_KEY: &str = "history:search";
 /// dim to ~30% opacity so the matching set stands out without
 /// disrupting the graph's visual integrity (filtering would skip
 /// rows and break the lane verticals between adjacent commits).
-pub fn history_view(tab: &RepoTab, selection: &Selection) -> El {
+pub fn history_view(
+    tab: &RepoTab,
+    selection: &Selection,
+    avatars: HashMap<String, Image>,
+) -> El {
     if tab.commits.is_empty() {
         return column([
             text("No commits").muted(),
@@ -1186,6 +1203,7 @@ pub fn history_view(tab: &RepoTab, selection: &Selection) -> El {
             let empty = RowGeometry::default();
             let geom = geom_per_row.get(i).unwrap_or(&empty);
             let matches = match_flags.get(i).copied().unwrap_or(true);
+            let avatar = avatars.get(&c.author_email).cloned();
             let row_el = build_row(
                 c,
                 layouts[i].as_ref(),
@@ -1197,6 +1215,7 @@ pub fn history_view(tab: &RepoTab, selection: &Selection) -> El {
                 pinned_flags[i],
                 i,
                 selected,
+                avatar,
             );
             if matches { row_el } else { row_el.opacity(0.3) }
         })

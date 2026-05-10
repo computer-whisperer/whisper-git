@@ -239,6 +239,11 @@ pub struct WhisperApp {
     /// Drag / PointerUp.
     pub sidebar_drag: ResizeDrag,
     pub right_drag: ResizeDrag,
+    /// Gravatar avatar cache. Lazy — created the first time the
+    /// polling loop runs with a `proxy` available, so headless apps
+    /// (dump_bundles, screenshot mode) don't hold a worker channel
+    /// they'll never feed.
+    pub avatar_cache: Option<crate::avatar::AvatarCache>,
 }
 
 /// In-flight clone tracker. Carries the receiver, the started time
@@ -287,6 +292,7 @@ impl WhisperApp {
             right_pane_w,
             sidebar_drag: ResizeDrag::default(),
             right_drag: ResizeDrag::default(),
+            avatar_cache: None,
         }
     }
 
@@ -312,6 +318,7 @@ impl WhisperApp {
             right_pane_w,
             sidebar_drag: ResizeDrag::default(),
             right_drag: ResizeDrag::default(),
+            avatar_cache: None,
         }
     }
 
@@ -384,7 +391,26 @@ impl App for WhisperApp {
                         };
                         diff_view::diff_view(tab, mode)
                     }
-                    _ => commit_graph::history_view(tab, &self.selection),
+                    _ => {
+                        // Snapshot loaded Gravatars for the rows
+                        // we're about to render. Cheap clone (Image
+                        // is Arc-backed); the closure takes ownership
+                        // and looks up by email.
+                        let avatars = self
+                            .avatar_cache
+                            .as_ref()
+                            .map(|c| {
+                                tab.commits
+                                    .iter()
+                                    .filter_map(|cm| {
+                                        c.get(&cm.author_email)
+                                            .map(|img| (cm.author_email.clone(), img))
+                                    })
+                                    .collect::<std::collections::HashMap<_, _>>()
+                            })
+                            .unwrap_or_default();
+                        commit_graph::history_view(tab, &self.selection, avatars)
+                    }
                 };
 
                 // Right pane: worktree pill bar pinned at the top
@@ -1640,6 +1666,41 @@ impl WhisperApp {
         self.poll_ci_refresh();
         self.drain_diff_stats();
         self.trigger_diff_stats_fetches();
+        self.drain_avatar_completions();
+        self.request_visible_avatars();
+    }
+
+    /// Fold any completed Gravatar downloads into the in-memory cache
+    /// so the next render pass can reach for them via `cache.get(email)`.
+    fn drain_avatar_completions(&mut self) {
+        if let Some(cache) = self.avatar_cache.as_mut() {
+            cache.drain_completions();
+        }
+    }
+
+    /// Kick off Gravatar fetches for every author we know about.
+    /// `AvatarCache::request` is idempotent — repeats short-circuit on
+    /// "already requested" — so we just iterate freely each tick.
+    /// The cache is created lazily on the first poll where `proxy`
+    /// is set, since avatars need an event-loop wake to surface
+    /// completions back to the UI.
+    fn request_visible_avatars(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        let cache = self
+            .avatar_cache
+            .get_or_insert_with(|| crate::avatar::AvatarCache::new(proxy));
+        for tab in &self.tabs {
+            for c in &tab.commits {
+                cache.request(&c.author_email);
+            }
+            for sub in &tab.nav_stack {
+                for c in &sub.commits {
+                    cache.request(&c.author_email);
+                }
+            }
+        }
     }
 
     /// Drain any completed diff-stats fetches across every tab + level.

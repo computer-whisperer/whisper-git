@@ -4,6 +4,7 @@
 //! over our own `Arc<Device>` / `Arc<Queue>`. The git backend under
 //! `git/` is preserved verbatim from the pre-port app.
 
+pub mod avatar;
 pub mod ci;
 pub mod commit_details;
 pub mod commit_graph;

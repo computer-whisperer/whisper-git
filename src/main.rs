@@ -114,6 +114,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 // so the +N/-M chip has data to render in the PNG.
                 tab.fetch_diff_stats_sync();
             }
+            prefetch_avatars_for_screenshot(app);
         }
         "history-search" => {
             if let Some(tab) = app.tabs.first_mut() {
@@ -125,6 +126,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 // screenshot demonstrates the filter visually.
                 tab.search_query = "graph".to_string();
             }
+            prefetch_avatars_for_screenshot(app);
         }
         "commit-menu" => {
             use whisper_git::ui_app::{ContextMenuState, ContextTarget};
@@ -205,4 +207,25 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         }
         other => eprintln!("warning: unknown --screenshot-state '{other}'"),
     }
+}
+
+/// Synchronously fetch Gravatars for every author the screenshot
+/// will render, so the PNG shows real avatars rather than the
+/// identicon fallback. Skips when WHISPER_SKIP_AVATARS is set so
+/// offline / sandboxed dev environments don't hang on the fetch.
+fn prefetch_avatars_for_screenshot(app: &mut WhisperApp) {
+    if std::env::var("WHISPER_SKIP_AVATARS").is_ok() {
+        return;
+    }
+    let mut cache = whisper_git::avatar::AvatarCache::new_sync_only();
+    let emails: Vec<String> = app
+        .tabs
+        .iter()
+        .flat_map(|t| t.commits.iter())
+        .map(|c| c.author_email.clone())
+        .collect();
+    for email in &emails {
+        cache.prefetch_sync(email);
+    }
+    app.avatar_cache = Some(cache);
 }
