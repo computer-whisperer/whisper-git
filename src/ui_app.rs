@@ -1778,6 +1778,8 @@ impl WhisperApp {
         self.poll_dirty_checks();
         self.poll_watcher_inits();
         self.poll_watcher_events();
+        self.poll_status_safety_net();
+        self.poll_ref_reconciliation();
         self.drain_ci_receivers();
         self.poll_ci_refresh();
         self.drain_diff_stats();
@@ -1974,6 +1976,65 @@ impl WhisperApp {
                 self.dispatch_watcher_events_at(tab_idx, Some(d), &proxy, show_orphans);
                 d += 1;
             }
+        }
+    }
+
+    /// 30 s safety-net status refresh on the active tab. Catches the
+    /// case where a watcher event was dropped (inotify queue overflow,
+    /// filesystem races, NFS-style fakery) by re-querying status
+    /// unconditionally on a long interval. Cheap relative to a full
+    /// state refresh — just the working-dir status walk on the active
+    /// view's repo.
+    ///
+    /// Background tabs aren't covered here; they get refreshed when
+    /// the user switches to them or via their own watcher when one
+    /// fires for that tab. The legacy used the same shape — the
+    /// active tab is what the user is staring at, the safety net's
+    /// job is to keep that tab from going stale silently.
+    fn poll_status_safety_net(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_status_refresh).as_secs() >= 30 {
+            self.status_dirty = true;
+        }
+        if !self.status_dirty {
+            return;
+        }
+        let Some(proxy) = self.proxy.clone() else { return };
+        if let Some(tab) = self.active_focus_mut() {
+            tab.trigger_status_refresh(&proxy);
+        }
+        // `poll_status_refresh_at` clears status_dirty when the active
+        // tab's result lands.
+    }
+
+    /// 5 s ref_fingerprint reconciliation on the active tab. Cheap
+    /// hash of `git_dir/refs/` content; if it diverges from the last
+    /// cached value (something updated the refdb that the watcher
+    /// didn't surface) → reopen + trigger a full state refresh.
+    /// Belt-and-braces against missed `GitMetadata` events; the
+    /// reopen specifically handles libgit2's refdb cache going stale
+    /// independently of watcher delivery.
+    ///
+    /// Skipped when `tab.ref_fingerprint == 0` (no baseline yet — the
+    /// initial state refresh hasn't landed) and when a state refresh
+    /// is already in flight.
+    fn poll_ref_reconciliation(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_ref_check).as_secs() < 5 {
+            return;
+        }
+        self.last_ref_check = now;
+
+        let Some(proxy) = self.proxy.clone() else { return };
+        let show_orphans = self.config.show_orphaned_commits;
+        let Some(tab) = self.active_focus_mut() else { return };
+        if tab.ref_fingerprint == 0 || tab.state_refresh_rx.is_some() {
+            return;
+        }
+        let fresh = crate::git::ref_fingerprint(tab.repo.git_dir());
+        if fresh != 0 && fresh != tab.ref_fingerprint {
+            tab.reopen_repo_handles();
+            tab.trigger_state_refresh(&proxy, show_orphans);
         }
     }
 
