@@ -87,6 +87,15 @@ const IDENTICON_COLORS: &[Color] = &[
 /// caption text height.
 const AVATAR_SIZE: f32 = 18.0;
 
+/// Height of the pills band that sits above the main content row when
+/// a commit carries any branch / tag / worktree / HEAD / ORPHAN /
+/// PINNED chrome. Pills themselves are ~20 px tall (caption line
+/// height 16 + 2 × 2 px vertical padding); the extra 8 px in the
+/// band is intentional slack, bottom-aligned, so the breathing room
+/// sits *above* the pills — visually anchoring them to the commit
+/// they describe (below) rather than the unrelated commit above.
+const PILLS_BAND_HEIGHT: f32 = 28.0;
+
 /// Hash an author name to a deterministic color slot.
 fn author_color(author: &str) -> Color {
     let hash: u32 = author
@@ -102,14 +111,17 @@ fn author_color(author: &str) -> Color {
 ///
 /// `gravatar` is `Some` when the avatar cache has finished fetching
 /// + decoding for this email; `None` covers in-flight, failed (404),
-/// and not-yet-requested.
-fn author_avatar(author: &str, gravatar: Option<Image>) -> El {
+/// and not-yet-requested. `key` is required so the avatar
+/// participates in pointer hit-testing — aetna only fires tooltips on
+/// keyed elements.
+fn author_avatar(author: &str, gravatar: Option<Image>, key: String) -> El {
     if let Some(img) = gravatar {
         return image(img)
             .width(Size::Fixed(AVATAR_SIZE))
             .height(Size::Fixed(AVATAR_SIZE))
             .radius(AVATAR_SIZE * 0.5)
             .clip()
+            .key(key)
             .tooltip(author.to_string());
     }
     let initial = author
@@ -125,6 +137,7 @@ fn author_avatar(author: &str, gravatar: Option<Image>) -> El {
         .radius(AVATAR_SIZE * 0.5)
         .align(Align::Center)
         .justify(Justify::Center)
+        .key(key)
         .tooltip(author.to_string())
 }
 
@@ -181,6 +194,11 @@ pub struct RowGeometry {
     pub top_half_verticals: Vec<(usize, Color)>,
     pub bottom_half_verticals: Vec<(usize, Color)>,
     pub curves: Vec<CurveSegment>,
+    /// Where the commit node sits within this row's strip, in pixels
+    /// from the row's top. Defaults to `NODE_Y`. Pushed down by a
+    /// pills band sitting above the main content so the node stays
+    /// visually centered on the SHA / message line.
+    pub node_y: f32,
 }
 
 impl Default for RowGeometry {
@@ -191,6 +209,7 @@ impl Default for RowGeometry {
             top_half_verticals: Vec::new(),
             bottom_half_verticals: Vec::new(),
             curves: Vec::new(),
+            node_y: NODE_Y,
         }
     }
 }
@@ -319,6 +338,46 @@ impl GraphLayout {
 
     pub fn get(&self, id: &Oid) -> Option<&CommitLayout> {
         self.layouts.get(id)
+    }
+
+    /// Recompute per-row geometry with a band of extra height above
+    /// each row that needs one (e.g., for an above-the-message pills
+    /// strip). `band_heights[i]` adds to row i's strip height and
+    /// pushes its node down by the same amount, keeping the node
+    /// vertically centered on the main content line. When all bands
+    /// are zero this matches the geometry produced by `build`.
+    pub fn row_geometry_with_bands(
+        &self,
+        commits: &[CommitInfo],
+        band_heights: &[f32],
+    ) -> Vec<RowGeometry> {
+        let heights = compute_row_heights(commits);
+        let zero = 0.0f32;
+        let mut row_top_y = Vec::with_capacity(commits.len() + 1);
+        let mut acc = 0.0f32;
+        for (i, &h) in heights.iter().enumerate() {
+            let band = band_heights.get(i).copied().unwrap_or(zero);
+            row_top_y.push(acc);
+            acc += h + band;
+        }
+        row_top_y.push(acc);
+
+        let mut geom: Vec<RowGeometry> = heights
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| {
+                let band = band_heights.get(i).copied().unwrap_or(zero);
+                RowGeometry {
+                    height: (h + band).round(),
+                    node_y: (band + NODE_Y).round(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        for edge in &self.edges {
+            decompose_edge_into_rows(edge, &row_top_y, &mut geom);
+        }
+        geom
     }
 
     fn find_or_assign_lane(&mut self, commit: &CommitInfo) -> usize {
@@ -469,9 +528,13 @@ fn decompose_edge_into_rows(edge: &GraphEdge, row_top_y: &[f32], rows: &mut [Row
         return;
     }
 
-    // Cross-lane: full-distance cubic in absolute pixel coords.
-    let child_y = row_top_y[edge.child_row] + NODE_Y;
-    let parent_y = row_top_y[edge.parent_row] + NODE_Y;
+    // Cross-lane: full-distance cubic in absolute pixel coords. Node Y
+    // is per-row so a pills band on either endpoint pushes that
+    // row's anchor down without distorting the rows in between.
+    let child_node_y = rows.get(edge.child_row).map_or(NODE_Y, |g| g.node_y);
+    let parent_node_y = rows.get(edge.parent_row).map_or(NODE_Y, |g| g.node_y);
+    let child_y = row_top_y[edge.child_row] + child_node_y;
+    let parent_y = row_top_y[edge.parent_row] + parent_node_y;
     let dy = parent_y - child_y;
     let curve = Cubic {
         p0: (edge.child_lane as f32, child_y),
@@ -609,8 +672,10 @@ impl Cubic {
 /// the overall state across that provider's checks at this SHA; the
 /// tooltip enumerates each check by name + status. A 9 px square with
 /// `.radius(4.5)` reads as a circle and matches aetna's existing
-/// stroke conventions on small chrome.
-fn ci_dot(rollup: &ProviderCommitRollup) -> El {
+/// stroke conventions on small chrome. `key` is required so the dot
+/// participates in pointer hit-testing (aetna's tooltip pipeline only
+/// fires on keyed nodes).
+fn ci_dot(rollup: &ProviderCommitRollup, key: String) -> El {
     let state = rollup.rollup.counts.overall_state();
     let color = match state {
         CiState::Success => tokens::SUCCESS,
@@ -643,6 +708,7 @@ fn ci_dot(rollup: &ProviderCommitRollup) -> El {
         .height(Size::Fixed(9.0))
         .fill(color)
         .radius(4.5)
+        .key(key)
         .tooltip(tip)
 }
 
@@ -697,17 +763,18 @@ fn graph_cell(
         );
     };
 
+    let node_y = geom.node_y;
     for &(lane, color) in &geom.full_verticals {
         push_vertical(&mut paths, lane, color, 0.0, h);
     }
     for &(lane, color) in &geom.top_half_verticals {
-        push_vertical(&mut paths, lane, color, 0.0, NODE_Y);
+        push_vertical(&mut paths, lane, color, 0.0, node_y);
     }
     for &(lane, color) in &geom.bottom_half_verticals {
         // Stretches from the node down to the row's bottom — when the
         // row is taller than ROW_HEIGHT (time spacing), this is what
         // visually represents the time gap.
-        push_vertical(&mut paths, lane, color, NODE_Y, h);
+        push_vertical(&mut paths, lane, color, node_y, h);
     }
     for seg in &geom.curves {
         // CurveSegment carries x in lane units; render-time scaling
@@ -740,12 +807,12 @@ fn graph_cell(
 
     // Node disk — filled circle approximated with cubics. Cubic-bezier
     // approximation of a unit circle uses control-point distance ≈
-    // 0.5523 × radius from each endpoint (Stanislaw's constant). The
-    // node always sits at NODE_Y (top-anchored) regardless of the
-    // row's actual height — keeps node alignment consistent across
-    // time-spaced rows.
+    // 0.5523 × radius from each endpoint (Stanislaw's constant). Node
+    // sits at the row's `node_y` — by default `NODE_Y`, pushed down
+    // by `band_height` when this row carries a pills band so the
+    // node aligns with the SHA / message line below.
     let cx = lane_center_x(node_lane, graph_width);
-    let cy = NODE_Y;
+    let cy = node_y;
     let r = NODE_RADIUS;
     let k = r * 0.5523;
     paths.push(
@@ -784,25 +851,29 @@ fn graph_cell(
 /// background with a half-alpha border. Used for branch / tag / HEAD /
 /// orphan / clean-worktree rendering inside commit rows.
 ///
-/// `route_key` makes the pill clickable (worktree switch); when None
-/// the pill is purely informational. The `tooltip` hangs verbose
-/// metadata (reflog source for orphans, full branch names) without
-/// crowding the row.
+/// `key` is required so the pill takes part in pointer hit-testing
+/// (aetna only fires tooltips and dispatches clicks on keyed nodes).
+/// Pills with a `worktree:` key prefix opt into the focus chain so
+/// keyboard navigation can land on them; other keys (informational
+/// branch / tag / HEAD / ORPHAN / PINNED chrome) stay out of focus
+/// to keep tab-traversal short.
 fn pill(
     label: impl Into<String>,
     fg: Color,
     bg_alpha: u8,
-    route_key: Option<String>,
+    key: String,
     tooltip: Option<String>,
 ) -> El {
+    let focusable = key.starts_with("worktree:");
     let mut row_el = row([text(label.into()).caption().text_color(fg)])
-        .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
+        .padding(Sides::xy(tokens::SPACE_2, 2.0))
         .gap(tokens::SPACE_1)
         .align(Align::Center)
         .fill(fg.with_alpha(bg_alpha))
-        .stroke(fg.with_alpha(120));
-    if let Some(key) = route_key {
-        row_el = row_el.key(key).focusable();
+        .stroke(fg.with_alpha(120))
+        .key(key);
+    if focusable {
+        row_el = row_el.focusable();
     }
     if let Some(tip) = tooltip {
         row_el = row_el.tooltip(tip);
@@ -874,90 +945,78 @@ fn build_row(
         commit.summary.clone()
     };
 
-    let mut children: Vec<El> = vec![
-        graph_cell(geom, lane, color, selected, graph_width),
-        text(commit.short_id.clone()).mono().muted(),
-    ];
-    if let Some(rollups) = ci_rollups {
-        for r in rollups {
-            children.push(ci_dot(r));
-        }
-    }
-    // PINNED appears immediately after the SHA so it's adjacent to the
-    // commit identity — semantically it's an annotation about *which*
-    // commit the parent expects, not part of the worktree/branch
-    // labelling that follows. Only set when this RepoTab is a drilled-in
-    // submodule view and the row's OID matches the parent's pin.
+    // Pills band — PINNED first so the parent-repo annotation reads
+    // adjacent to the SHA on the line below, then clean worktrees,
+    // branches, tags, detached HEAD, and orphan. "Any pill at all"
+    // promotes the row to the two-row layout regardless of which kind
+    // was responsible.
+    let mut pill_kids: Vec<El> = Vec::new();
     if is_pinned {
-        children.push(pill(
+        pill_kids.push(pill(
             "PINNED",
             tokens::INFO,
             44,
-            None,
+            format!("commit:{idx}.pinned"),
             Some("Parent repo pins this commit".to_string()),
         ));
     }
-
-    // Pill priority order matches the old graph: clean worktrees
-    // first (most likely to be cut by overflow), then branches, then
-    // tags, then a HEAD pill for detached-HEAD rows, then orphan
-    // marker. Aetna handles row overflow itself — there's no manual
-    // "+N" overflow badge for now.
     for wt_name in &pills.clean_worktrees {
-        children.push(pill(
+        pill_kids.push(pill(
             format!("WT: {wt_name}"),
             tokens::WARNING,
             40,
-            Some(format!("worktree:{wt_name}")),
+            format!("worktree:{wt_name}"),
             Some("Switch to this worktree".to_string()),
         ));
     }
     for (name, kind) in &pills.branches {
-        children.push(pill(
+        pill_kids.push(pill(
             name.clone(),
             kind.color(),
             44,
-            None,
+            format!("commit:{idx}.branch:{name}"),
             Some(name.clone()),
         ));
     }
     for tag in &pills.tags {
-        children.push(pill(
+        pill_kids.push(pill(
             format!("\u{25C6} {tag}"),
             tokens::WARNING,
             40,
-            None,
+            format!("commit:{idx}.tag:{tag}"),
             Some(tag.clone()),
         ));
     }
     if is_detached_head_here && pills.branches.is_empty() {
-        children.push(pill(
+        pill_kids.push(pill(
             "HEAD",
             tokens::SUCCESS,
             44,
-            None,
+            format!("commit:{idx}.head"),
             Some("Detached HEAD".to_string()),
         ));
     }
     if commit.is_orphaned {
-        children.push(pill(
+        pill_kids.push(pill(
             "ORPHAN",
             ORPHAN_COLOR,
             44,
-            None,
+            format!("commit:{idx}.orphan"),
             commit.orphan_source.clone(),
         ));
     }
 
-    // Subject + optional body excerpt. The wrapping row is `Fill(1.0)`
-    // so it absorbs whatever space is left after the SHA / branch pills
-    // / right-side metadata claim their intrinsic widths — that's also
-    // what gives the body excerpt's `.ellipsis()` something finite to
-    // truncate against. (Aetna's flex keeps `Size::Hug` items at their
-    // natural width even when the row overflows, so without a `Fill`
-    // claim here the row would push the avatar + author off the right
-    // edge.) `clip()` defends against the worst case where even the
-    // subject is wider than the available space.
+    // Subject + optional body excerpt. `Fill(1.0)` lets the message
+    // absorb whatever space is left after the left-anchored chrome
+    // (SHA + avatar) and the right-aligned metadata cluster (diff
+    // stats, CI dots, time) claim their intrinsic widths. The summary
+    // tooltip carries the unellipsized subject (and full body when
+    // present) so users get the whole message on hover even when the
+    // line is truncated.
+    let summary_tooltip = match commit.body_full.as_deref().filter(|s| !s.is_empty()) {
+        Some(body) => format!("{summary}\n\n{body}"),
+        None => summary.clone(),
+    };
     let mut summary_children: Vec<El> = vec![text(summary).ellipsis()];
     if let Some(body) = commit.body_excerpt.as_deref().filter(|s| !s.is_empty()) {
         summary_children.push(
@@ -967,28 +1026,96 @@ fn build_row(
                 .width(Size::Fill(1.0)),
         );
     }
-    children.push(
-        row(summary_children)
-            .gap(tokens::SPACE_2)
-            .align(Align::Center)
-            .width(Size::Fill(1.0))
-            .clip(),
-    );
-    if let Some(chip) = diff_stats_chip(commit) {
-        children.push(chip);
-    }
-    children.push(author_avatar(&commit.author, avatar));
-    children.push(text(format!("{} · {}", commit.author, when)).muted());
-
-    let row_el = row(children)
-        .key(format!("commit:{idx}"))
-        .focusable()
-        .gap(tokens::SPACE_3)
-        .padding(Sides::xy(tokens::SPACE_2, 0.0))
-        .height(Size::Fixed(geom.height))
-        .width(Size::Fill(1.0))
+    let summary_row = row(summary_children)
+        .gap(tokens::SPACE_2)
         .align(Align::Center)
-        .clip();
+        .width(Size::Fill(1.0))
+        .clip()
+        .key(format!("commit:{idx}.summary"))
+        .tooltip(summary_tooltip);
+
+    // Main content row: SHA, avatar, message-fill, then a fixed
+    // right-side cluster of [+N -M, CI dots, time]. Avatar is
+    // tooltip-only for the author name — dropping the inline
+    // "Author · time" text keeps the right cluster predictable in
+    // width across rows. Tooltips on each leaf carry the long-form
+    // info that doesn't fit in the cell. Each leaf carries a
+    // `commit:{idx}.<part>` key so it's a hit-test target (aetna's
+    // tooltip pipeline only fires on keyed nodes); the click handler
+    // strips the trailing `.<part>` and routes the click to commit
+    // selection on the row's idx.
+    let mut main_children: Vec<El> = vec![
+        text(commit.short_id.clone())
+            .mono()
+            .muted()
+            .key(format!("commit:{idx}.sha"))
+            .tooltip(commit.id.to_string()),
+        author_avatar(&commit.author, avatar, format!("commit:{idx}.avatar")),
+        summary_row,
+    ];
+    if let Some(chip) = diff_stats_chip(commit, format!("commit:{idx}.diff")) {
+        main_children.push(chip);
+    }
+    if let Some(rollups) = ci_rollups {
+        let ci_kids: Vec<El> = rollups
+            .iter()
+            .enumerate()
+            .map(|(i, r)| ci_dot(r, format!("commit:{idx}.ci{i}")))
+            .collect();
+        if !ci_kids.is_empty() {
+            main_children.push(
+                row(ci_kids)
+                    .gap(tokens::SPACE_1)
+                    .align(Align::Center),
+            );
+        }
+    }
+    main_children.push(
+        text(when)
+            .muted()
+            .key(format!("commit:{idx}.time"))
+            .tooltip(commit.absolute_time()),
+    );
+
+    let main_row = row(main_children)
+        .gap(tokens::SPACE_3)
+        .align(Align::Center)
+        .width(Size::Fill(1.0))
+        .height(Size::Fixed(ROW_HEIGHT));
+
+    // Stack the pills band above the main row when one is present;
+    // otherwise the main row sits directly in the outer flex.
+    let content: El = if pill_kids.is_empty() {
+        main_row
+    } else {
+        let band = row(pill_kids)
+            .gap(tokens::SPACE_2)
+            .align(Align::End)
+            .height(Size::Fixed(PILLS_BAND_HEIGHT))
+            .width(Size::Fill(1.0));
+        column([band, main_row])
+            .gap(0.0)
+            .width(Size::Fill(1.0))
+    };
+
+    // Outer row: graph cell (full geom.height) + content column.
+    // `Align::Start` anchors the content at the top of the row strip
+    // so the pills band sits flush above the main row, and any extra
+    // height from time spacing hangs below as breathing room — also
+    // brings the main row's vertical center back in line with the
+    // graph node at `geom.node_y` for both single- and two-row cases.
+    let row_el = row([
+        graph_cell(geom, lane, color, selected, graph_width),
+        content,
+    ])
+    .key(format!("commit:{idx}"))
+    .focusable()
+    .gap(tokens::SPACE_3)
+    .padding(Sides::xy(tokens::SPACE_2, 0.0))
+    .height(Size::Fixed(geom.height))
+    .width(Size::Fill(1.0))
+    .align(Align::Start)
+    .clip();
 
     let row_el = if selected {
         row_el.selected()
@@ -1010,10 +1137,17 @@ fn build_row(
 /// or the commit may genuinely be empty (merge with no conflicts).
 /// The caller skips the column entirely in that case so the row's
 /// gap rhythm doesn't reserve a phantom slot.
-fn diff_stats_chip(commit: &CommitInfo) -> Option<El> {
+fn diff_stats_chip(commit: &CommitInfo, key: String) -> Option<El> {
     if commit.insertions == 0 && commit.deletions == 0 {
         return None;
     }
+    let tip = format!(
+        "{} insertion{}, {} deletion{}",
+        commit.insertions,
+        if commit.insertions == 1 { "" } else { "s" },
+        commit.deletions,
+        if commit.deletions == 1 { "" } else { "s" },
+    );
     Some(
         row([
             text(format!("+{}", commit.insertions))
@@ -1026,7 +1160,9 @@ fn diff_stats_chip(commit: &CommitInfo) -> Option<El> {
                 .text_color(tokens::DESTRUCTIVE),
         ])
         .gap(tokens::SPACE_1)
-        .align(Align::Center),
+        .align(Align::Center)
+        .key(key)
+        .tooltip(tip),
     )
 }
 
@@ -1055,7 +1191,7 @@ fn synthetic_row(
             format!("WT: {name}"),
             amber,
             40,
-            Some(format!("worktree:{name}")),
+            format!("worktree:{name}"),
             Some("Switch to this worktree".to_string()),
         ));
     }
@@ -1161,7 +1297,6 @@ pub fn history_view(
         .iter()
         .map(|c| tab.graph_layout.get(&c.id).cloned())
         .collect();
-    let geom_per_row: Vec<RowGeometry> = tab.graph_layout.row_geometry.clone();
     let graph_width = tab.graph_layout.graph_width;
     let pills_per_row = build_row_pills(tab);
     let active_head_oid = tab.active_view().and_then(|v| v.head_oid);
@@ -1186,6 +1321,33 @@ pub fn history_view(
         .iter()
         .map(|c| tab.pinned_oid == Some(c.id))
         .collect();
+
+    // Derive per-row band heights from the inputs that drive the
+    // pills band: any branch / tag / clean-worktree / detached-HEAD
+    // / orphan / PINNED pill triggers a band above the main content.
+    // Synthetic ("uncommitted changes") rows never carry a band —
+    // their WT pill stays inline.
+    let band_heights: Vec<f32> = tab
+        .commits
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            if c.is_synthetic {
+                return 0.0;
+            }
+            let p = &pills_per_row[i];
+            let any_pill = !p.clean_worktrees.is_empty()
+                || !p.branches.is_empty()
+                || !p.tags.is_empty()
+                || (detached_flags[i] && p.branches.is_empty())
+                || c.is_orphaned
+                || pinned_flags[i];
+            if any_pill { PILLS_BAND_HEIGHT } else { 0.0 }
+        })
+        .collect();
+    let geom_per_row: Vec<RowGeometry> = tab
+        .graph_layout
+        .row_geometry_with_bands(&tab.commits, &band_heights);
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 

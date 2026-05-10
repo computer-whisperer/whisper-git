@@ -985,7 +985,11 @@ impl WhisperApp {
         // the new commit context, and Escape's role is to unwind one
         // step at a time — clearing it here keeps the right-pane
         // upper swap from happening with stale center-pane state.
+        // A trailing `.suffix` (e.g., `commit:3.sha`, `commit:3.time`)
+        // identifies a tooltip-bearing leaf inside the commit row;
+        // the leaf still routes click selection to the commit.
         if let Some(idx_str) = key.strip_prefix("commit:") {
+            let idx_str = idx_str.split_once('.').map(|(a, _)| a).unwrap_or(idx_str);
             if let Ok(idx) = idx_str.parse::<usize>()
                 && let Some(tab) = self.active_focus_mut()
             {
