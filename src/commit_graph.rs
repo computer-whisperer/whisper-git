@@ -96,6 +96,14 @@ const AVATAR_SIZE: f32 = 18.0;
 /// they describe (below) rather than the unrelated commit above.
 const PILLS_BAND_HEIGHT: f32 = 28.0;
 
+/// Right-side gutter reserved on focusable rows inside `virtual_list_dyn`
+/// so the row's bounding rect — and its focus ring — don't overlap the
+/// scrollbar thumb's active track. = `SCROLLBAR_THUMB_WIDTH_ACTIVE`
+/// (10) + `SCROLLBAR_TRACK_INSET` (2). Without it every focused row
+/// trips the `ScrollbarObscuresFocusable` lint on the right edge.
+const SCROLLBAR_GUTTER: f32 =
+    tokens::SCROLLBAR_THUMB_WIDTH_ACTIVE + tokens::SCROLLBAR_TRACK_INSET;
+
 /// Hash an author name to a deterministic color slot.
 fn author_color(author: &str) -> Color {
     let hash: u32 = author
@@ -1104,7 +1112,7 @@ fn build_row(
     // height from time spacing hangs below as breathing room — also
     // brings the main row's vertical center back in line with the
     // graph node at `geom.node_y` for both single- and two-row cases.
-    let row_el = row([
+    let inner = row([
         graph_cell(geom, lane, color, selected, graph_width),
         content,
     ])
@@ -1117,18 +1125,29 @@ fn build_row(
     .align(Align::Start)
     .clip();
 
-    let row_el = if selected {
-        row_el.selected()
-    } else if idx % 2 == 1 {
+    let inner = if selected { inner.selected() } else { inner };
+
+    // Outer wrapper reserves a right gutter for the virtual_list
+    // scrollbar thumb so the focusable inner doesn't overlap it. The
+    // zebra tint lives here (not on the inner) so the stripe still
+    // spans full width, which keeps the rhythm visually consistent
+    // across the scrollbar gutter.
+    let mut outer = column([inner])
+        .width(Size::Fill(1.0))
+        .padding(Sides {
+            left: 0.0,
+            right: SCROLLBAR_GUTTER,
+            top: 0.0,
+            bottom: 0.0,
+        });
+    if !selected && idx % 2 == 1 {
         // Zebra striping on every other row — a faint MUTED tint that
         // helps the eye track across long lines without competing with
         // the selected-row highlight (which paints its own fill via
         // `.selected()`).
-        row_el.fill(tokens::MUTED.with_alpha(40))
-    } else {
-        row_el
-    };
-    row_el
+        outer = outer.fill(tokens::MUTED.with_alpha(40));
+    }
+    outer
 }
 
 /// Compact `+N -M` chip rendered to the right of the commit summary,
@@ -1207,7 +1226,7 @@ fn synthetic_row(
     );
     children.push(text(commit.relative_time()).muted().caption());
 
-    row(children)
+    let inner = row(children)
         .key(format!("commit:{idx}"))
         .focusable()
         .gap(tokens::SPACE_3)
@@ -1215,7 +1234,17 @@ fn synthetic_row(
         .height(Size::Fixed(geom.height))
         .width(Size::Fill(1.0))
         .align(Align::Center)
-        .clip()
+        .clip();
+    // See `build_row` — wrap so the focusable rect doesn't overlap the
+    // virtual_list scrollbar thumb on the right edge.
+    column([inner])
+        .width(Size::Fill(1.0))
+        .padding(Sides {
+            left: 0.0,
+            right: SCROLLBAR_GUTTER,
+            top: 0.0,
+            bottom: 0.0,
+        })
 }
 
 /// Estimated row height for `virtual_list_dyn` — the minimum a row
