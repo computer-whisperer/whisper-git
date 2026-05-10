@@ -13,6 +13,7 @@ pub mod crash_log;
 pub mod dialogs;
 pub mod diff_view;
 pub mod git;
+pub mod git_async;
 pub mod github;
 pub mod gitlab;
 pub mod host;
