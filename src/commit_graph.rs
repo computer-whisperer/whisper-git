@@ -949,23 +949,31 @@ fn build_row(
         ));
     }
 
-    let mut summary_children: Vec<El> = vec![text(summary)];
+    // Subject + optional body excerpt. The wrapping row is `Fill(1.0)`
+    // so it absorbs whatever space is left after the SHA / branch pills
+    // / right-side metadata claim their intrinsic widths — that's also
+    // what gives the body excerpt's `.ellipsis()` something finite to
+    // truncate against. (Aetna's flex keeps `Size::Hug` items at their
+    // natural width even when the row overflows, so without a `Fill`
+    // claim here the row would push the avatar + author off the right
+    // edge.) `clip()` defends against the worst case where even the
+    // subject is wider than the available space.
+    let mut summary_children: Vec<El> = vec![text(summary).ellipsis()];
     if let Some(body) = commit.body_excerpt.as_deref().filter(|s| !s.is_empty()) {
-        // Github / VS Code tail the subject with a muted excerpt of the
-        // body's first line, preceded by an em-dash separator. The text
-        // widget's ellipsis() handles overflow when the row is narrow.
         summary_children.push(
             text(format!("\u{2014} {body}"))
                 .muted()
-                .ellipsis(),
+                .ellipsis()
+                .width(Size::Fill(1.0)),
         );
     }
     children.push(
         row(summary_children)
             .gap(tokens::SPACE_2)
-            .align(Align::Center),
+            .align(Align::Center)
+            .width(Size::Fill(1.0))
+            .clip(),
     );
-    children.push(spacer());
     if let Some(chip) = diff_stats_chip(commit) {
         children.push(chip);
     }
@@ -978,7 +986,9 @@ fn build_row(
         .gap(tokens::SPACE_3)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(geom.height))
-        .align(Align::Center);
+        .width(Size::Fill(1.0))
+        .align(Align::Center)
+        .clip();
 
     let row_el = if selected {
         row_el.selected()
@@ -1055,9 +1065,10 @@ fn synthetic_row(
         } else {
             commit.summary.clone()
         })
-        .text_color(amber),
+        .text_color(amber)
+        .ellipsis()
+        .width(Size::Fill(1.0)),
     );
-    children.push(spacer());
     children.push(text(commit.relative_time()).muted().caption());
 
     row(children)
@@ -1066,7 +1077,9 @@ fn synthetic_row(
         .gap(tokens::SPACE_3)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(geom.height))
+        .width(Size::Fill(1.0))
         .align(Align::Center)
+        .clip()
 }
 
 /// Estimated row height for `virtual_list_dyn` — the minimum a row
