@@ -10,6 +10,7 @@ use aetna_core::{
     App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
     UiEventKind, UiKey,
     prelude::*,
+    scroll::{ScrollAlignment, ScrollRequest},
     toast::ToastSpec,
     widgets::{
         resize_handle::{self, ResizeDrag, Side, resize_handle},
@@ -257,6 +258,16 @@ pub struct WhisperApp {
     pub active_tab: usize,
     pub shortcut_bar_visible: bool,
     pub toasts: Vec<ToastSpec>,
+    /// Pending app-side scroll requests, drained each frame by the host
+    /// and resolved during layout against the matching scroll container.
+    /// Today: jump-to-commit pushes a [`ScrollRequest::ToRow`] keyed
+    /// `"commits"` so the selected row is brought into view.
+    pub scroll_requests: Vec<ScrollRequest>,
+    /// Pending app-side focus requests by element key. Drained each
+    /// frame by the host. No callers today — wired so future
+    /// "focus this input on open" affordances can land without
+    /// touching the host.
+    pub focus_requests: Vec<String>,
     /// Global text selection. Aetna's `text_input` / `text_area`
     /// `apply_event` helpers fold per-input selection state through
     /// this single value (see `aetna_core::Selection::within`).
@@ -363,6 +374,8 @@ impl WhisperApp {
             active_tab: 0,
             shortcut_bar_visible: config.shortcut_bar_visible,
             toasts: Vec::new(),
+            scroll_requests: Vec::new(),
+            focus_requests: Vec::new(),
             selection: Selection::default(),
             config,
             active_modal: None,
@@ -397,6 +410,8 @@ impl WhisperApp {
             active_tab: 0,
             shortcut_bar_visible: true,
             toasts: Vec::new(),
+            scroll_requests: Vec::new(),
+            focus_requests: Vec::new(),
             selection: Selection::default(),
             config,
             active_modal: None,
@@ -869,6 +884,14 @@ impl App for WhisperApp {
         std::mem::take(&mut self.toasts)
     }
 
+    fn drain_scroll_requests(&mut self) -> Vec<ScrollRequest> {
+        std::mem::take(&mut self.scroll_requests)
+    }
+
+    fn drain_focus_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.focus_requests)
+    }
+
     fn theme(&self) -> Theme {
         Theme::radix_slate_blue_dark()
     }
@@ -892,6 +915,18 @@ impl WhisperApp {
             return;
         }
         if let Some(idx_str) = key.strip_prefix("tabs:tab:") {
+            if let Ok(idx) = idx_str.parse::<usize>()
+                && idx < self.tabs.len()
+            {
+                self.active_tab = idx;
+            }
+            return;
+        }
+        // Clicks that land on the per-tab CI pip route here. The pip is
+        // keyed only so its tooltip can fire (hit-test only sees keyed
+        // nodes); collapsing to a tab select keeps it from being a
+        // dead 8x8 patch.
+        if let Some(idx_str) = key.strip_prefix("tab_ci:") {
             if let Ok(idx) = idx_str.parse::<usize>()
                 && idx < self.tabs.len()
             {
@@ -1070,11 +1105,9 @@ impl WhisperApp {
 
         // Sidebar branch/remote/tag click — jump-to-commit. Resolve
         // the ref to its OID against the focused tab's metadata, then
-        // call select_commit so the row highlights and the right pane
-        // opens commit details. Aetna's virtual_list doesn't yet have a
-        // scroll-to-index API, so off-viewport selections still need
-        // the user to scroll — but the right pane shows the commit so
-        // the click is never silent.
+        // call jump_to_commit which selects the row, opens the right
+        // pane on its details, and pushes a scroll-to-row request so
+        // off-viewport rows come into view.
         if let Some(name) = key.strip_prefix("branch:") {
             let oid = self
                 .active_focus()
@@ -3556,10 +3589,10 @@ impl WhisperApp {
     }
 
     /// Select the commit `oid` on the focused tab, opening the
-    /// commit-detail pane in the right column. Surfaces a toast naming
-    /// the ref so the click never feels silent — particularly since
-    /// the row may be off-screen until aetna grows a scroll-to-index
-    /// API. Quietly no-ops on `None` so callers can pass an unresolved
+    /// commit-detail pane and scrolling the row into view. Pushes a
+    /// `ScrollRequest::ToRow{align: Visible}` against the history
+    /// list keyed `"commits"` so an already-on-screen row doesn't jump.
+    /// Quietly no-ops on `None` so callers can pass an unresolved
     /// lookup result without a separate guard.
     fn jump_to_commit(&mut self, oid: Option<git2::Oid>, ref_name: &str) {
         let Some(oid) = oid else {
@@ -3568,13 +3601,22 @@ impl WhisperApp {
             return;
         };
         let short = oid.to_string()[..7].to_string();
+        let mut row_index: Option<usize> = None;
         if let Some(tab) = self.active_focus_mut() {
             tab.select_commit(Some(oid));
+            row_index = tab.commits.iter().position(|c| c.id == oid);
             // Clear any sticky diff selection so the right-pane swap
             // (commit detail) actually shows for this jump.
             if let Some(view) = tab.active_view_mut() {
                 view.selected_diff_file = None;
             }
+        }
+        if let Some(row) = row_index {
+            self.scroll_requests.push(ScrollRequest::ToRow {
+                list_key: "commits".to_string(),
+                row,
+                align: ScrollAlignment::Visible,
+            });
         }
         self.toasts
             .push(ToastSpec::info(format!("{ref_name} \u{2192} {short}")));
@@ -3758,7 +3800,7 @@ fn tab_bar(app: &WhisperApp) -> El {
             editor_tab(
                 "tabs",
                 value,
-                tab_ci_pip(t),
+                tab_ci_pip(t, i),
                 t.repo_name.clone(),
                 selected,
                 config,
@@ -3787,7 +3829,7 @@ fn tab_bar(app: &WhisperApp) -> El {
 /// colored circle for the tab leading slot. Returns `None` when no
 /// provider has reported anything yet — the tab's leading slot stays
 /// empty rather than reserving space for a phantom pip.
-fn tab_ci_pip(tab: &RepoTab) -> Option<El> {
+fn tab_ci_pip(tab: &RepoTab, idx: usize) -> Option<El> {
     use crate::ci::CiState;
     if tab.ci_results.is_empty() {
         return None;
@@ -3802,12 +3844,16 @@ fn tab_ci_pip(tab: &RepoTab) -> Option<El> {
         CiState::None => return None,
     };
     let tip = format!("CI {summary_state}");
+    // The pip needs a key for the tooltip to fire (hit-test only
+    // returns keyed nodes). Routing `tab_ci:{idx}` back to a tab
+    // select keeps the visual area clickable for switching tabs.
     Some(
         El::new(aetna_core::tree::Kind::Group)
             .width(Size::Fixed(8.0))
             .height(Size::Fixed(8.0))
             .fill(color)
             .radius(4.0)
+            .key(format!("tab_ci:{idx}"))
             .tooltip(tip),
     )
 }

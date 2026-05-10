@@ -112,13 +112,13 @@ Done (since this section was last pruned):
 - **Worktree creation** — `+` at the trailing edge of the worktree pill bar opens a Path/Source/Detached/Submodules form; routes through `create_worktree_with_post_steps_async` on the `mutation_op` slot
 - **AI commit message** — `src/ai.rs` restored from history (it was incorrectly deleted in Phase 7a along with legacy UI); a "Generate" ghost button in the staging-well commit-message footer spawns the worker, parks on a per-tab `ai_op` slot, and folds the parsed subject/body back into the active worktree's draft. Backend currently only wraps the local `claude` CLI (`AiProvider::ClaudeCli`); enum is shaped for future API providers.
 
-Deferred / pending (no fixed order):
-- **Push / merge / rebase options dialogs** — basic versions wired; no per-op options UI
-- **AI commit message generation** — old `ai.rs` deleted in Phase 7a, not yet ported
-- **Variable-height virtual list** — needs aetna-core changes; deferred upstream
-- **`virtual_list` scroll-to-index** — blocks jump-to-commit auto-scroll; deferred upstream
-- **Token dialog GitLab multi-host** — re-enable when `gitlab.rs` is ported
-- **`update_submodule_paths` on `RepoWatcher`** — submodules added mid-session aren't excluded
+Recently landed (2026-05-10):
+- **Push picker** — chevron next to header Push button opens a remote/branch picker with `--force-with-lease` / `--set-upstream` / `--tags` toggles; backed by new `push_with_options_async`
+- **Merge / rebase options modals** — "with options…" sibling items in the branch context menu. Merge picker offers default / `--no-ff` / `--ff-only` / `--squash`; rebase picker exposes `--autostash` and `--rebase-merges`. Bare items keep their default-flag fast paths
+- **`update_submodule_paths` on `RepoWatcher`** — closure now reads through an `Arc<Mutex<Vec<PathBuf>>>`, refreshed from the same effects-driven branch as `update_worktree_watches`
+- **Jump-to-commit auto-scroll** — `WhisperApp::jump_to_commit` pushes a `ScrollRequest::ToRow{align: Visible}` keyed `"commits"`; resolves during layout against the row-height cache via aetna's new `App::drain_scroll_requests` (aetna#22). Sibling `drain_focus_requests` is wired through host as a scaffold (no caller yet).
+
+Deferred / pending (aetna-upstream-blocked): none — all previously deferred items have landed upstream.
 
 ## Architectural decisions worth knowing
 

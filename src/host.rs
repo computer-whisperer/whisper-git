@@ -289,6 +289,8 @@ impl<A: App> ApplicationHandler for Host<A> {
                 rcx.runner.set_hotkeys(self.app.hotkeys());
                 rcx.runner.set_selection(self.app.selection());
                 rcx.runner.push_toasts(self.app.drain_toasts());
+                rcx.runner.push_focus_requests(self.app.drain_focus_requests());
+                rcx.runner.push_scroll_requests(self.app.drain_scroll_requests());
                 let scale_factor = rcx.window.scale_factor() as f32;
                 let viewport = Rect::new(
                     0.0,
