@@ -66,6 +66,54 @@ pub const LANE_COLORS: [Color; 6] = [
 /// reflogs. Matches the muted text color so orphans visually recede.
 pub const ORPHAN_COLOR: Color = tokens::MUTED_FOREGROUND;
 
+/// Identicon palette — 8 distinct colors, picked deterministically
+/// per author so the same author always lands on the same color.
+/// Matches the pre-port's identicon palette (Material-ish hues that
+/// stay legible against either dark or light backgrounds).
+const IDENTICON_COLORS: &[Color] = &[
+    Color::rgb(231, 76, 60),  // red
+    Color::rgb(52, 168, 83),  // green
+    Color::rgb(66, 133, 244), // blue
+    Color::rgb(155, 89, 182), // purple
+    Color::rgb(243, 156, 18), // amber
+    Color::rgb(44, 187, 180), // teal
+    Color::rgb(233, 100, 44), // deep orange
+    Color::rgb(118, 128, 229), // indigo
+];
+
+/// Pixel diameter of the author identicon — sized to align with row
+/// caption text height.
+const AVATAR_SIZE: f32 = 18.0;
+
+/// Hash an author name to a deterministic color slot.
+fn author_color(author: &str) -> Color {
+    let hash: u32 = author
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    IDENTICON_COLORS[(hash as usize) % IDENTICON_COLORS.len()]
+}
+
+/// Identicon avatar: deterministic-color disc with the author's
+/// first letter (uppercase) centered. Used as a fallback when no
+/// network avatar is available — and right now it's the only path
+/// since we haven't wired Gravatar / GitHub avatar fetches yet.
+fn author_avatar(author: &str) -> El {
+    let initial = author
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let color = author_color(author);
+    column([text(initial).caption().text_color(tokens::FOREGROUND)])
+        .width(Size::Fixed(AVATAR_SIZE))
+        .height(Size::Fixed(AVATAR_SIZE))
+        .fill(color)
+        .radius(AVATAR_SIZE * 0.5)
+        .align(Align::Center)
+        .justify(Justify::Center)
+        .tooltip(author.to_string())
+}
+
 #[derive(Clone, Debug)]
 pub struct CommitLayout {
     pub lane: usize,
@@ -906,6 +954,7 @@ fn build_row(
     if let Some(chip) = diff_stats_chip(commit) {
         children.push(chip);
     }
+    children.push(author_avatar(&commit.author));
     children.push(text(format!("{} · {}", commit.author, when)).muted());
 
     let row_el = row(children)
