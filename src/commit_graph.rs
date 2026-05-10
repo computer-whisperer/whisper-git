@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 
+use aetna_core::Selection;
 use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
+use aetna_core::widgets::text_input::text_input;
 use aetna_core::{Color, El, prelude::*};
 use git2::Oid;
 
@@ -1060,10 +1062,18 @@ fn synthetic_row(
 /// initial scrollbar-thumb sizing.
 const EST_ROW_HEIGHT: f32 = ROW_HEIGHT;
 
+/// Routed key for the history-pane search input. Events for this
+/// key get folded into `tab.search_query` via `text_input::apply_event`.
+pub const SEARCH_INPUT_KEY: &str = "history:search";
+
 /// History pane composer. Returns the center-pane `El` for the
 /// History view mode. Wraps the virtualized commit list in a column
-/// with a header line summarizing count + selection.
-pub fn history_view(tab: &RepoTab) -> El {
+/// with a search input + count chip, then the rows themselves. Rows
+/// whose subject / author / short-id don't match the active query
+/// dim to ~30% opacity so the matching set stands out without
+/// disrupting the graph's visual integrity (filtering would skip
+/// rows and break the lane verticals between adjacent commits).
+pub fn history_view(tab: &RepoTab, selection: &Selection) -> El {
     if tab.commits.is_empty() {
         return column([
             text("No commits").muted(),
@@ -1075,21 +1085,41 @@ pub fn history_view(tab: &RepoTab) -> El {
         .height(Size::Fill(1.0));
     }
 
-    let header_text = match tab.selected_commit {
-        Some(oid) => match tab.commits.iter().find(|c| c.id == oid) {
-            Some(c) => format!(
-                "{} · {} · {}",
-                &c.short_id,
-                c.author,
-                if c.summary.is_empty() {
-                    "(no summary)"
-                } else {
-                    &c.summary
-                }
-            ),
+    // Pre-compute which rows match the active search query. When the
+    // query is empty, every row matches (no dimming).
+    let search_query = tab.search_query.clone();
+    let match_flags: Vec<bool> = if search_query.is_empty() {
+        vec![true; tab.commits.len()]
+    } else {
+        let q = search_query.to_lowercase();
+        tab.commits
+            .iter()
+            .map(|c| commit_matches_query(c, &q))
+            .collect()
+    };
+    let match_count: usize = match_flags.iter().filter(|m| **m).count();
+
+    let header_text = if !search_query.is_empty() {
+        format!("{match_count} match{} · {} commits",
+            if match_count == 1 { "" } else { "es" },
+            tab.commits.len())
+    } else {
+        match tab.selected_commit {
+            Some(oid) => match tab.commits.iter().find(|c| c.id == oid) {
+                Some(c) => format!(
+                    "{} · {} · {}",
+                    &c.short_id,
+                    c.author,
+                    if c.summary.is_empty() {
+                        "(no summary)"
+                    } else {
+                        &c.summary
+                    }
+                ),
+                None => format!("{} commits", tab.commits.len()),
+            },
             None => format!("{} commits", tab.commits.len()),
-        },
-        None => format!("{} commits", tab.commits.len()),
+        }
     };
 
     // virtual_list takes a Fn(usize) -> El, so we clone the data the
@@ -1129,10 +1159,23 @@ pub fn history_view(tab: &RepoTab) -> El {
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
+    let search_input = text_input(&tab.search_query, selection, SEARCH_INPUT_KEY)
+        .width(Size::Fill(1.0));
+
     card([
-        card_header([row([text(header_text).caption().muted()])])
-            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
-            .fill(tokens::MUTED),
+        card_header([
+            row([text(header_text).caption().muted()])
+                .align(Align::Center),
+            row([
+                icon(IconName::Search).icon_size(tokens::ICON_SM).muted(),
+                search_input,
+            ])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center),
+        ])
+        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
+        .gap(tokens::SPACE_2)
+        .fill(tokens::MUTED),
         card_content([virtual_list_dyn(commits.len(), EST_ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
@@ -1142,7 +1185,8 @@ pub fn history_view(tab: &RepoTab) -> El {
             // synchronously, so this normally never triggers).
             let empty = RowGeometry::default();
             let geom = geom_per_row.get(i).unwrap_or(&empty);
-            build_row(
+            let matches = match_flags.get(i).copied().unwrap_or(true);
+            let row_el = build_row(
                 c,
                 layouts[i].as_ref(),
                 geom,
@@ -1153,7 +1197,8 @@ pub fn history_view(tab: &RepoTab) -> El {
                 pinned_flags[i],
                 i,
                 selected,
-            )
+            );
+            if matches { row_el } else { row_el.opacity(0.3) }
         })
         .key("commits")
         .height(Size::Fill(1.0))])
@@ -1162,6 +1207,25 @@ pub fn history_view(tab: &RepoTab) -> El {
     ])
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
+}
+
+/// Lower-case substring match across the fields the pre-port
+/// searched: subject, author, short SHA. The full SHA's prefix is
+/// also checked so paste-a-SHA navigation still works.
+fn commit_matches_query(c: &CommitInfo, lower_query: &str) -> bool {
+    if c.summary.to_lowercase().contains(lower_query) {
+        return true;
+    }
+    if c.author.to_lowercase().contains(lower_query) {
+        return true;
+    }
+    if c.short_id.to_lowercase().contains(lower_query) {
+        return true;
+    }
+    if c.id.to_string().to_lowercase().starts_with(lower_query) {
+        return true;
+    }
+    false
 }
 
 /// Pre-compute the `RowPills` for each commit: walk branch tips,

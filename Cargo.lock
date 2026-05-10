@@ -26,7 +26,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetna-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aetna-fonts",
  "bytemuck",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "aetna-fonts"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aetna-fonts-emoji",
  "aetna-fonts-inter",
@@ -71,7 +71,7 @@ version = "0.1.0"
 
 [[package]]
 name = "aetna-vulkano"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aetna-core",
  "bytemuck",

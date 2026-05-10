@@ -115,6 +115,17 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 tab.fetch_diff_stats_sync();
             }
         }
+        "history-search" => {
+            if let Some(tab) = app.tabs.first_mut() {
+                let pick = tab.commits.first().map(|c| c.id);
+                tab.select_commit(pick);
+                tab.fetch_diff_stats_sync();
+                // Synthetic query that matches "graph:" prefix commits
+                // — exercises the dim-non-matching-rows path so the
+                // screenshot demonstrates the filter visually.
+                tab.search_query = "graph".to_string();
+            }
+        }
         "commit-menu" => {
             use whisper_git::ui_app::{ContextMenuState, ContextTarget};
             if let Some(tab) = app.tabs.first_mut() {

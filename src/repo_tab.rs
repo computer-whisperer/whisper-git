@@ -296,6 +296,13 @@ pub struct RepoTab {
     /// commit list. Cleared on `refresh()` so a fresh load re-fetches.
     pub diff_stats_fetched: bool,
 
+    // ---- History search ----
+    /// Query string for the history-view filter. Empty means "no
+    /// filter active"; non-empty dims rows whose subject / author /
+    /// short-id don't match. Lower-case substring match — same shape
+    /// the pre-port used.
+    pub search_query: String,
+
     // ---- Submodule drill-down ----
     /// Stack of drilled-in submodule views. Each entry is a fully
     /// constructed `RepoTab` opened against the parent's working
@@ -347,6 +354,7 @@ impl RepoTab {
             ci_per_commit: HashMap::new(),
             diff_stats_rx: None,
             diff_stats_fetched: false,
+            search_query: String::new(),
             nav_stack: Vec::new(),
             pinned_oid: None,
             pinned_path: None,

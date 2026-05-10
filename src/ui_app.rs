@@ -384,7 +384,7 @@ impl App for WhisperApp {
                         };
                         diff_view::diff_view(tab, mode)
                     }
-                    _ => commit_graph::history_view(tab),
+                    _ => commit_graph::history_view(tab, &self.selection),
                 };
 
                 // Right pane: worktree pill bar pinned at the top
@@ -557,6 +557,14 @@ impl App for WhisperApp {
         // commit-message fields. Drafts are per-worktree — switching
         // worktrees swaps which subject/body buffer the inputs touch.
         let active_idx = self.active_tab;
+        if let Some(tab) = self.tabs.get_mut(active_idx) {
+            text_input::apply_event(
+                &mut tab.search_query,
+                &mut self.selection,
+                commit_graph::SEARCH_INPUT_KEY,
+                &event,
+            );
+        }
         if let Some(view) = self
             .tabs
             .get_mut(active_idx)
