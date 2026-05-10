@@ -25,7 +25,12 @@ use crate::git::CommitInfo;
 use crate::repo_tab::RepoTab;
 
 pub const ROW_HEIGHT: f32 = 28.0;
-pub const GRAPH_WIDTH: f32 = 140.0;
+/// Per-lane horizontal slot inside the graph cell. Width per lane,
+/// in pixels — picks the same density as the pre-port.
+pub const LANE_W: f32 = 24.0;
+/// Cap on the visible lane count. Beyond this, deeper lanes stack on
+/// the rightmost slot — keeps very deep graphs from pushing the
+/// commit text off-screen.
 pub const LANE_COUNT_VISUAL: u8 = 6;
 /// Where in a row's local frame the commit node sits, in pixels from
 /// the row's top. Stays fixed even when the row is taller than
@@ -145,6 +150,12 @@ pub struct GraphLayout {
     /// Per-row paint data, indexed by row. `row_geometry[i]` is what
     /// the i-th commit's row should paint in its graph cell.
     pub row_geometry: Vec<RowGeometry>,
+    /// Pixel width of the graph column for this commit list — derived
+    /// from `max_lane` and capped at `LANE_COUNT_VISUAL` lanes. Linear
+    /// histories collapse to a single lane's width; deeper graphs
+    /// expand up to the cap. Read once per render and applied to
+    /// every row's `vector()` cell so widths stay aligned.
+    pub graph_width: f32,
 }
 
 impl GraphLayout {
@@ -234,6 +245,14 @@ impl GraphLayout {
         for edge in &self.edges {
             decompose_edge_into_rows(edge, &row_top_y, &mut self.row_geometry);
         }
+
+        // Adaptive column width — narrows for shallow graphs, expands
+        // for deeper ones up to the visible cap. `max_lane` is 0 for a
+        // linear history (one node-column), so `+1` gives us "lanes
+        // actually in use." Capped so very deep graphs don't push the
+        // commit text off-screen.
+        let visible_lanes = (self.max_lane + 1).min(LANE_COUNT_VISUAL as usize);
+        self.graph_width = (visible_lanes as f32 * LANE_W).max(LANE_W);
     }
 
     pub fn get(&self, id: &Oid) -> Option<&CommitLayout> {
@@ -574,13 +593,13 @@ const NODE_RADIUS: f32 = 5.0;
 const SELECTED_RING_WIDTH: f32 = 2.5;
 
 /// Convert a (possibly out-of-range) lane index into the visible
-/// lane's center x within `GRAPH_WIDTH`. Lanes beyond
-/// `LANE_COUNT_VISUAL` clamp to the rightmost slot — matches the
+/// lane's center x. `graph_width` is the row's allocated width; lanes
+/// beyond what fits clamp to the rightmost slot — matches the
 /// pre-port behavior so deep graphs don't push content off the cell.
-fn lane_center_x(lane: usize) -> f32 {
-    let visual_lane = lane.min(LANE_COUNT_VISUAL as usize - 1);
-    let lane_w = GRAPH_WIDTH / LANE_COUNT_VISUAL as f32;
-    visual_lane as f32 * lane_w + lane_w * 0.5
+fn lane_center_x(lane: usize, graph_width: f32) -> f32 {
+    let visible_lanes = ((graph_width / LANE_W).round() as usize).max(1);
+    let visual_lane = lane.min(visible_lanes - 1);
+    visual_lane as f32 * LANE_W + LANE_W * 0.5
 }
 
 /// Build a row's graph cell as a single `vector()` element.
@@ -594,12 +613,18 @@ fn lane_center_x(lane: usize) -> f32 {
 /// Strokes use `LineCap::Butt` and the geometry extends fully to the
 /// view-box edges — the smoke test (`bin/vector_smoke`) confirmed this
 /// tiles cleanly at row boundaries with no MSDF AA seams.
-fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected: bool) -> El {
+fn graph_cell(
+    geom: &RowGeometry,
+    node_lane: usize,
+    node_color: Color,
+    selected: bool,
+    graph_width: f32,
+) -> El {
     let mut paths: Vec<VectorPath> = Vec::new();
     let h = geom.height;
 
     let push_vertical = |paths: &mut Vec<VectorPath>, lane: usize, color: Color, y0: f32, y1: f32| {
-        let x = lane_center_x(lane);
+        let x = lane_center_x(lane, graph_width);
         paths.push(
             PathBuilder::new()
                 .move_to(x, y0)
@@ -624,12 +649,16 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
     }
     for seg in &geom.curves {
         // CurveSegment carries x in lane units; render-time scaling
-        // converts to pixels via `lane_center_x` of `floor(x)` plus
-        // the fractional offset across one lane width. Same for
-        // controls — they're already in lane-unit coords and snap
-        // cleanly at integer x.
-        let lane_w = GRAPH_WIDTH / LANE_COUNT_VISUAL as f32;
-        let to_x = |lane_units: f32| lane_units.min((LANE_COUNT_VISUAL - 1) as f32) * lane_w + lane_w * 0.5;
+        // converts to pixels by rounding to the nearest lane and
+        // looking up its center via `lane_center_x`. Cubic-bezier
+        // control points snap cleanly at integer lane positions for
+        // the typical S-curve geometry, but for fractional inputs
+        // (after subdivision) we interpolate within the lane width.
+        let visible_lanes = ((graph_width / LANE_W).round() as usize).max(1);
+        let to_x = |lane_units: f32| {
+            let clamped = lane_units.clamp(0.0, (visible_lanes - 1) as f32);
+            clamped * LANE_W + LANE_W * 0.5
+        };
         paths.push(
             PathBuilder::new()
                 .move_to(to_x(seg.p0.0), seg.p0.1)
@@ -653,7 +682,7 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
     // node always sits at NODE_Y (top-anchored) regardless of the
     // row's actual height — keeps node alignment consistent across
     // time-spaced rows.
-    let cx = lane_center_x(node_lane);
+    let cx = lane_center_x(node_lane, graph_width);
     let cy = NODE_Y;
     let r = NODE_RADIUS;
     let k = r * 0.5523;
@@ -683,9 +712,9 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
         );
     }
 
-    let asset = VectorAsset::from_paths([0.0, 0.0, GRAPH_WIDTH, h], paths);
+    let asset = VectorAsset::from_paths([0.0, 0.0, graph_width, h], paths);
     vector(asset)
-        .width(Size::Fixed(GRAPH_WIDTH))
+        .width(Size::Fixed(graph_width))
         .height(Size::Fixed(h))
 }
 
@@ -759,6 +788,7 @@ fn build_row(
     commit: &CommitInfo,
     layout: Option<&CommitLayout>,
     geom: &RowGeometry,
+    graph_width: f32,
     pills: &RowPills,
     ci_rollups: Option<&[ProviderCommitRollup]>,
     is_detached_head_here: bool,
@@ -767,7 +797,7 @@ fn build_row(
     selected: bool,
 ) -> El {
     if commit.is_synthetic {
-        return synthetic_row(commit, layout, geom, idx, selected);
+        return synthetic_row(commit, layout, geom, graph_width, idx, selected);
     }
 
     let (lane, color) = match layout {
@@ -782,7 +812,7 @@ fn build_row(
     };
 
     let mut children: Vec<El> = vec![
-        graph_cell(geom, lane, color, selected),
+        graph_cell(geom, lane, color, selected, graph_width),
         text(commit.short_id.clone()).mono().muted(),
     ];
     if let Some(rollups) = ci_rollups {
@@ -938,13 +968,14 @@ fn synthetic_row(
     commit: &CommitInfo,
     layout: Option<&CommitLayout>,
     geom: &RowGeometry,
+    graph_width: f32,
     idx: usize,
     selected: bool,
 ) -> El {
     let amber = tokens::WARNING;
     let lane = layout.map(|l| l.lane).unwrap_or(0);
 
-    let mut children: Vec<El> = vec![graph_cell(geom, lane, amber, selected)];
+    let mut children: Vec<El> = vec![graph_cell(geom, lane, amber, selected, graph_width)];
     if let Some(name) = commit.synthetic_wt_name.as_deref() {
         children.push(pill(
             format!("WT: {name}"),
@@ -1022,6 +1053,7 @@ pub fn history_view(tab: &RepoTab) -> El {
         .map(|c| tab.graph_layout.get(&c.id).cloned())
         .collect();
     let geom_per_row: Vec<RowGeometry> = tab.graph_layout.row_geometry.clone();
+    let graph_width = tab.graph_layout.graph_width;
     let pills_per_row = build_row_pills(tab);
     let active_head_oid = tab.active_view().and_then(|v| v.head_oid);
     let detached_flags: Vec<bool> = tab
@@ -1065,6 +1097,7 @@ pub fn history_view(tab: &RepoTab) -> El {
                 c,
                 layouts[i].as_ref(),
                 geom,
+                graph_width,
                 &pills_per_row[i],
                 ci_per_row[i].as_deref(),
                 detached_flags[i],
