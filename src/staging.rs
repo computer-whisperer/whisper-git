@@ -123,7 +123,7 @@ fn compute_display_names(names: &[String]) -> Vec<String> {
     }
 }
 
-pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
+pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bool) -> El {
     let staged = &view.status.staged;
     let unstaged_all: Vec<&FileStatus> = view
         .status
@@ -134,7 +134,7 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
     let conflicted = &view.status.conflicted;
 
     let mut sections: Vec<El> = Vec::new();
-    sections.push(commit_message(view, selection));
+    sections.push(commit_message(view, selection, ai_in_flight));
     if !conflicted.is_empty() {
         sections.push(file_section(
             "Conflicted",
@@ -166,12 +166,27 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection) -> El {
         .gap(tokens::SPACE_3)
 }
 
-fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
+fn commit_message(view: &WorktreeView, selection: &Selection, ai_in_flight: bool) -> El {
+    let staged_count = view.status.staged.len();
+    // Generate is gated on having something to summarize and on no
+    // existing in-flight generation. Aetna re-emits the click as
+    // long as the button isn't `.disabled()`, so the gate must be
+    // visible here — handle_action's runtime gate is just a
+    // belt-and-braces backstop for cases where the button slipped
+    // through (e.g. keyboard activation).
+    let generate_enabled = staged_count > 0 && !ai_in_flight;
+    let mut generate_btn = button("Generate")
+        .key("ai_generate")
+        .ghost()
+        .tooltip("Generate commit message via AI");
+    if !generate_enabled {
+        generate_btn = generate_btn.disabled();
+    }
     card([
         card_header([row([
             text("Commit").label(),
             spacer(),
-            text(format!("{} staged", view.status.staged.len()))
+            text(format!("{staged_count} staged"))
                 .caption()
                 .muted(),
         ])
@@ -191,6 +206,7 @@ fn commit_message(view: &WorktreeView, selection: &Selection) -> El {
         .padding(Sides::xy(tokens::SPACE_3, 0.0))
         .gap(tokens::SPACE_2),
         card_footer([
+            generate_btn,
             spacer(),
             button_with_icon(IconName::GitCommit, "Commit")
                 .key("commit")

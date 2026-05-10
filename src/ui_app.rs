@@ -492,7 +492,7 @@ impl App for WhisperApp {
                 let right_upper = if tab.selected_commit.is_some() {
                     commit_details::commit_details_pane(tab)
                 } else if let Some(view) = tab.active_view() {
-                    staging::staging_well(view, &self.selection)
+                    staging::staging_well(view, &self.selection, tab.ai_op.is_some())
                 } else {
                     no_worktree_placeholder()
                 };
@@ -1099,6 +1099,7 @@ impl WhisperApp {
             "new_tag" => self.open_tag_modal(),
             "new_worktree" => self.open_worktree_modal(),
             "pull_options" => self.open_pull_picker(),
+            "ai_generate" => self.generate_commit_message_via_ai(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
                 form.dest = std::env::var("HOME").unwrap_or_default();
@@ -1691,6 +1692,46 @@ impl WhisperApp {
                 init_submodules: false,
             },
         });
+    }
+
+    /// Spawn the AI-commit-message worker for the focused tab's
+    /// active worktree. Bails with a toast if no proxy / no active
+    /// worktree / generation already running. The Generate button
+    /// in the staging well disables on those same conditions, so
+    /// the toasts here cover only edge cases (e.g. losing the proxy).
+    fn generate_commit_message_via_ai(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            self.toasts.push(ToastSpec::error(
+                "AI generate unavailable: event loop proxy missing",
+            ));
+            return;
+        };
+        let provider = crate::ai::AiProvider::from_config(&self.config.ai_provider);
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        if tab.ai_op.is_some() {
+            self.toasts
+                .push(ToastSpec::info("AI generate already in progress"));
+            return;
+        }
+        let Some(view) = tab.active_view() else {
+            self.toasts.push(ToastSpec::warning(
+                "No active worktree to generate a message for",
+            ));
+            return;
+        };
+        let target_path = view.path.clone();
+        let workdir = view.repo.git_command_dir();
+        let branch = tab.current_branch().to_string();
+        let rx = crate::ai::spawn_generate_async(workdir, branch, provider, proxy);
+        tab.ai_op = Some(crate::repo_tab::AiOp {
+            rx,
+            started: std::time::Instant::now(),
+            target_path,
+        });
+        self.toasts
+            .push(ToastSpec::info("Generating commit message…"));
     }
 
     /// Routes for the Open-repo modal opened by the tab-bar `+`. Each
@@ -2817,6 +2858,51 @@ impl WhisperApp {
                         ),
                     });
                 }
+            }
+        }
+        // AI generation lives in its own slot since the result type
+        // (Result<AiResponse, String>) doesn't fit the AsyncKind /
+        // RemoteOpResult pattern. Drain it after the git ops so the
+        // commit-message draft fold-back happens in the same frame.
+        self.poll_ai_op_at(idx, depth);
+    }
+
+    fn poll_ai_op_at(&mut self, idx: usize, depth: Option<usize>) {
+        let (target_path, result) = {
+            let Some(tab) = resolve_tab_mut(&mut self.tabs, idx, depth) else {
+                return;
+            };
+            let Some(op) = tab.ai_op.as_mut() else {
+                return;
+            };
+            match op.rx.try_recv() {
+                Ok(result) => (std::mem::take(&mut op.target_path), result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => (
+                    std::mem::take(&mut op.target_path),
+                    Err("AI worker thread disconnected".to_string()),
+                ),
+            }
+        };
+        let Some(tab) = resolve_tab_mut(&mut self.tabs, idx, depth) else {
+            return;
+        };
+        tab.ai_op = None;
+        match result {
+            Ok(response) => {
+                if let Some(view) = tab.worktree_views.get_mut(&target_path) {
+                    view.commit_subject = response.subject;
+                    view.commit_body = response.body;
+                    self.toasts.push(ToastSpec::success("Generated commit message"));
+                } else {
+                    self.toasts.push(ToastSpec::warning(
+                        "AI result dropped: target worktree no longer present",
+                    ));
+                }
+            }
+            Err(msg) => {
+                self.toasts
+                    .push(ToastSpec::error(format!("AI generate: {msg}")));
             }
         }
     }

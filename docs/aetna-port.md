@@ -110,6 +110,7 @@ Done (since this section was last pruned):
 - **Tag creation** — sidebar `+` icon in the Tags section opens the create-tag modal
 - **Pull picker** — chevron next to header Pull button opens a radio picker of remote-tracking branches + `--rebase` toggle; routes through the existing `pull_op` slot
 - **Worktree creation** — `+` at the trailing edge of the worktree pill bar opens a Path/Source/Detached/Submodules form; routes through `create_worktree_with_post_steps_async` on the `mutation_op` slot
+- **AI commit message** — `src/ai.rs` restored from history (it was incorrectly deleted in Phase 7a along with legacy UI); a "Generate" ghost button in the staging-well commit-message footer spawns the worker, parks on a per-tab `ai_op` slot, and folds the parsed subject/body back into the active worktree's draft. Backend currently only wraps the local `claude` CLI (`AiProvider::ClaudeCli`); enum is shaped for future API providers.
 
 Deferred / pending (no fixed order):
 - **Push / merge / rebase options dialogs** — basic versions wired; no per-op options UI

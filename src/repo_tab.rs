@@ -73,6 +73,22 @@ impl TimedOp {
     }
 }
 
+/// In-flight AI commit-message generation. Lives in its own slot
+/// (rather than reusing `mutation_op`) because the result type
+/// differs — `Result<AiResponse, String>` vs `RemoteOpResult` — and
+/// because AI generation doesn't conflict with cherry-pick / revert.
+pub struct AiOp {
+    pub rx: Receiver<Result<crate::ai::AiResponse, String>>,
+    pub started: Instant,
+    /// The worktree whose `commit_subject`/`commit_body` the result
+    /// should land in. Resolved against `worktree_views` at apply
+    /// time — if the worktree has gone away (e.g. removed via
+    /// `git worktree remove` while the worker was running), the
+    /// result is dropped with a toast rather than silently overwriting
+    /// some other worktree's draft.
+    pub target_path: PathBuf,
+}
+
 /// Cached detail for the currently selected commit. Loaded once per
 /// selection change so the History details pane doesn't hit libgit2 on
 /// every frame.
@@ -312,6 +328,10 @@ pub struct RepoTab {
     /// Working-tree mutation ops (cherry-pick, revert). Single slot
     /// shared across kinds since they all conflict with each other.
     pub mutation_op: Option<TimedOp>,
+    /// In-flight AI commit-message generation. Independent of the
+    /// other slots — generation is read-only against the index, so
+    /// it can run alongside e.g. a fetch.
+    pub ai_op: Option<AiOp>,
 
     // ---- CI status ----
     /// Latest results, one per provider. The header bar reads these for
@@ -480,6 +500,7 @@ impl RepoTab {
             pull_op: None,
             push_op: None,
             mutation_op: None,
+            ai_op: None,
             ci_results: Vec::new(),
             ci_receivers: Vec::new(),
             last_ci_fetch: None,
