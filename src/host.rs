@@ -523,8 +523,15 @@ fn create_swapchain(
             min_image_count: surface_caps.min_image_count.max(2),
             image_format,
             image_extent: window.inner_size().into(),
-            // TRANSFER_SRC for backdrop snapshot; aetna-vulkano needs it.
-            image_usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSFER_SRC,
+            // TRANSFER_SRC: `Runner::render` copies the post-resolve
+            // image into the backdrop snapshot for backdrop-sampling
+            // shaders. TRANSFER_DST: under MSAA the runner declares
+            // the resolve attachment as `TransferDstOptimal` for the
+            // resolve op, so the swapchain image must allow it as a
+            // transfer destination too.
+            image_usage: ImageUsage::COLOR_ATTACHMENT
+                | ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST,
             composite_alpha: surface_caps
                 .supported_composite_alpha
                 .into_iter()
