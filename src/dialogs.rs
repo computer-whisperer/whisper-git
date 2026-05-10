@@ -15,6 +15,7 @@ pub const MODAL_ERROR_KEY: &str = "modal:error";
 pub const MODAL_CLONE_KEY: &str = "modal:clone";
 pub const MODAL_TOKEN_KEY: &str = "modal:token";
 pub const MODAL_BRANCH_KEY: &str = "modal:branch";
+pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
 /// Settings panel: small subset of `Config` is editable for now —
 /// avatars, shortcut bar visibility, row scale. Other options
@@ -117,6 +118,64 @@ where
     E: Into<El>,
 {
     overlay([scrim(format!("{key}:dismiss")), modal_panel(title, body)])
+}
+
+/// Open-repository picker. Shown when the tab-bar `+` is clicked.
+/// Two action buttons (Open Local… / Clone Remote…) plus a recent-repos
+/// list keyed `modal:open_repo:recent:{idx}` so users with tabs open
+/// can reach a recent path without a file dialog round-trip. Mirrors
+/// the welcome view's affordances so the muscle memory is the same.
+pub fn open_repo_modal(recent: &[String]) -> El {
+    let actions = row([
+        button_with_icon(IconName::Folder, "Open Local\u{2026}")
+            .key("modal:open_repo:browse")
+            .primary(),
+        button_with_icon(IconName::Download, "Clone Remote\u{2026}")
+            .key("modal:open_repo:clone"),
+        spacer(),
+        button("Cancel").key("modal:open_repo:cancel").ghost(),
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let mut body_children: Vec<El> = vec![actions];
+    if !recent.is_empty() {
+        let rows = recent
+            .iter()
+            .enumerate()
+            .map(|(idx, path)| recent_repo_row(idx, path));
+        body_children.push(
+            column([
+                row([h3("Recent"), spacer()])
+                    .align(Align::Center)
+                    .width(Size::Fill(1.0)),
+                item_group(rows),
+            ])
+            .gap(tokens::SPACE_2)
+            .width(Size::Fill(1.0)),
+        );
+    }
+
+    let body = column(body_children).gap(tokens::SPACE_4);
+    overlays_panel(MODAL_OPEN_REPO_KEY, "Open repository", [body])
+}
+
+fn recent_repo_row(idx: usize, path_str: &str) -> El {
+    let path = std::path::Path::new(path_str);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path_str.to_string());
+    let parent = path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    item([
+        item_media_icon(IconName::Folder),
+        item_content([item_title(name), item_description(parent)]),
+    ])
+    .key(format!("modal:open_repo:recent:{idx}"))
 }
 
 /// Form state for the Clone modal — controlled inputs plus the bare

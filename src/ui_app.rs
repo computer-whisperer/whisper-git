@@ -175,6 +175,13 @@ const SIDEBAR_CTX_KEY: &str = "sidebar_ctx";
 #[derive(Clone, Debug)]
 pub enum ActiveModal {
     Settings,
+    /// Open-repo picker: shown when the user clicks the tab-bar `+`.
+    /// Surfaces the same "Open Local… / Clone Remote… / Recent" choices
+    /// the welcome view offers, so a user with tabs already open can
+    /// reach for a recent path without going through a file dialog.
+    /// Carries no form state — the recent list comes straight from
+    /// `Config::recent_repos` at render time.
+    OpenRepo,
     Confirm {
         title: String,
         body: String,
@@ -465,6 +472,7 @@ impl App for WhisperApp {
             ActiveModal::Settings => {
                 dialogs::settings_modal(&self.config, self.shortcut_bar_visible)
             }
+            ActiveModal::OpenRepo => dialogs::open_repo_modal(&self.config.recent_repos),
             ActiveModal::Confirm {
                 title,
                 body,
@@ -722,7 +730,7 @@ impl WhisperApp {
             return;
         }
         if key == "tabs:add" {
-            self.open_repo_dialog();
+            self.active_modal = Some(ActiveModal::OpenRepo);
             return;
         }
 
@@ -1131,6 +1139,10 @@ impl WhisperApp {
             return true;
         }
 
+        if key.starts_with("modal:open_repo:") {
+            self.handle_open_repo_route(key);
+            return true;
+        }
         if key.starts_with("clone:") {
             self.handle_clone_route(key);
             return true;
@@ -1268,6 +1280,36 @@ impl WhisperApp {
             },
             target,
         });
+    }
+
+    /// Routes for the Open-repo modal opened by the tab-bar `+`. Each
+    /// path closes the modal first so a new modal (Clone, Error from
+    /// `open_repo_path`) can replace it cleanly without a one-frame gap
+    /// of two dialogs being live.
+    fn handle_open_repo_route(&mut self, key: &str) {
+        match key {
+            "modal:open_repo:cancel" => {
+                self.active_modal = None;
+            }
+            "modal:open_repo:browse" => {
+                self.active_modal = None;
+                self.open_repo_dialog();
+            }
+            "modal:open_repo:clone" => {
+                let mut form = CloneForm::default();
+                form.dest = std::env::var("HOME").unwrap_or_default();
+                self.active_modal = Some(ActiveModal::Clone(form));
+            }
+            other => {
+                if let Some(idx_str) = other.strip_prefix("modal:open_repo:recent:")
+                    && let Ok(idx) = idx_str.parse::<usize>()
+                    && let Some(path) = self.config.recent_repos.get(idx).cloned()
+                {
+                    self.active_modal = None;
+                    self.open_repo_path(std::path::PathBuf::from(path));
+                }
+            }
+        }
     }
 
     fn handle_clone_route(&mut self, key: &str) {

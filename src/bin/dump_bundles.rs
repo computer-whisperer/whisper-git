@@ -222,6 +222,16 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.active_modal = Some(ActiveModal::Clone(form));
             app
         }));
+        scenes.push(("modal_open_repo".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.config.recent_repos = vec![
+                "/home/example/Projects/whisper-git".to_string(),
+                "/home/example/Projects/aetna".to_string(),
+                "/home/example/work/dotfiles".to_string(),
+            ];
+            app.active_modal = Some(ActiveModal::OpenRepo);
+            app
+        }));
         scenes.push(("modal_branch_create".to_string(), {
             use whisper_git::dialogs::BranchForm;
             let mut t = reopen(first);

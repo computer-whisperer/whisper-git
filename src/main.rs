@@ -160,6 +160,16 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "settings" => {
             app.active_modal = Some(ActiveModal::Settings);
         }
+        "open-repo" => {
+            // Match welcome/dump_bundles fixtures so the modal has a
+            // visible recent list rather than the bare action row.
+            app.config.recent_repos = vec![
+                "/home/example/Projects/whisper-git".to_string(),
+                "/home/example/Projects/aetna".to_string(),
+                "/home/example/work/dotfiles".to_string(),
+            ];
+            app.active_modal = Some(ActiveModal::OpenRepo);
+        }
         "confirm" => {
             app.active_modal = Some(ActiveModal::Confirm {
                 title: "Delete branch".to_string(),
