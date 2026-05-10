@@ -125,6 +125,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 // — exercises the dim-non-matching-rows path so the
                 // screenshot demonstrates the filter visually.
                 tab.search_query = "graph".to_string();
+                tab.history_search_open = true;
             }
             prefetch_avatars_for_screenshot(app);
         }

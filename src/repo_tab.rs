@@ -301,6 +301,11 @@ pub struct RepoTab {
     /// short-id don't match. Lower-case substring match — same shape
     /// the pre-port used.
     pub search_query: String,
+    /// Whether the history-pane search bar is visible. Hidden by
+    /// default; Ctrl+F opens it, Escape closes it (and clears the
+    /// query). The query persists across tab switches but the bar
+    /// visibility is per-tab.
+    pub history_search_open: bool,
 
     // ---- Submodule drill-down ----
     /// Stack of drilled-in submodule views. Each entry is a fully
@@ -354,6 +359,7 @@ impl RepoTab {
             diff_stats_rx: None,
             diff_stats_fetched: false,
             search_query: String::new(),
+            history_search_open: false,
             nav_stack: Vec::new(),
             pinned_oid: None,
             pinned_path: None,

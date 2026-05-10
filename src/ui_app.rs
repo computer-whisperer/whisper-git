@@ -511,6 +511,17 @@ impl App for WhisperApp {
                 self.active_modal = None;
                 return;
             }
+            // Search bar (Ctrl+F) closes before any other unwind step —
+            // matches browser/editor convention. Clears the query so a
+            // re-open starts fresh; the dim-non-matching-rows highlight
+            // also goes away as a side effect.
+            if let Some(focus) = self.active_focus_mut()
+                && focus.history_search_open
+            {
+                focus.history_search_open = false;
+                focus.search_query.clear();
+                return;
+            }
             if let Some(focus) = self.active_focus_mut() {
                 let cleared_diff = focus
                     .active_view_mut()
@@ -668,6 +679,7 @@ impl App for WhisperApp {
             (KeyChord::ctrl('o'), "open_repo".to_string()),
             (KeyChord::ctrl('w'), "close_tab".to_string()),
             (KeyChord::ctrl('/'), "toggle_shortcut_bar".to_string()),
+            (KeyChord::ctrl('f'), "history:search_open".to_string()),
             (
                 KeyChord::named(UiKey::Enter).with_modifiers(KM_CTRL),
                 "commit".to_string(),
@@ -989,6 +1001,11 @@ impl WhisperApp {
             "settings" => self.active_modal = Some(ActiveModal::Settings),
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
+            }
+            "history:search_open" => {
+                if let Some(tab) = self.active_focus_mut() {
+                    tab.history_search_open = true;
+                }
             }
             "details:copy_sha" => {
                 if let Some(oid) = self.active_focus().and_then(|t| t.selected_commit) {

@@ -1189,20 +1189,27 @@ pub fn history_view(
     let commits = tab.commits.clone();
     let selected_oid = tab.selected_commit;
 
-    let search_input = text_input(&tab.search_query, selection, SEARCH_INPUT_KEY)
-        .width(Size::Fill(1.0));
-
-    card([
-        card_header([
-            row([text(header_text).caption().muted()])
-                .align(Align::Center),
+    // Search bar is hidden by default; Ctrl+F flips `history_search_open`
+    // to true and the row appears beneath the count chip. Escape closes
+    // it and clears the query (handled in `WhisperApp::on_event`).
+    let mut header_children: Vec<El> = vec![
+        row([text(header_text).caption().muted()]).align(Align::Center),
+    ];
+    if tab.history_search_open {
+        let search_input = text_input(&tab.search_query, selection, SEARCH_INPUT_KEY)
+            .width(Size::Fill(1.0));
+        header_children.push(
             row([
                 icon(IconName::Search).icon_size(tokens::ICON_SM).muted(),
                 search_input,
             ])
             .gap(tokens::SPACE_2)
             .align(Align::Center),
-        ])
+        );
+    }
+
+    card([
+        card_header(header_children)
         .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
         .gap(tokens::SPACE_2)
         .fill(tokens::MUTED),
