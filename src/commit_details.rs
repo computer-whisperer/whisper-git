@@ -73,11 +73,15 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         .gap(tokens::SPACE_1),
     ]);
 
-    let mut cards: Vec<El> = vec![
-        identity_card,
-        titled_card(subject, body_children),
-        files_card(detail),
-    ];
+    // Compose by hand instead of `titled_card` so the subject can
+    // ellipsis when it overflows. `card_title` defaults to `.hug()`
+    // sizing, which lets a long subject blow past the card edge
+    // (`TextOverflow` lint at the heading).
+    let subject_card = card([
+        card_header([card_title(subject).width(Size::Fill(1.0)).ellipsis()]),
+        card_content(body_children),
+    ]);
+    let mut cards: Vec<El> = vec![identity_card, subject_card, files_card(detail)];
     if !detail.submodule_entries.is_empty() {
         cards.push(submodules_card(detail));
     }
