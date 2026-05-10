@@ -7,6 +7,41 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::git::WorktreeInfo;
 
+/// Result of an off-thread watcher init. The recursive watch on the
+/// workdir can stall for hundreds of ms on a large repo (notify walks
+/// the directory tree synchronously), so construction runs on a worker
+/// — exactly the same Wayland-disconnect risk as the state refresh.
+pub type WatcherInitResult = notify::Result<(RepoWatcher, Receiver<FsChangeKind>)>;
+
+/// Spawn a worker that constructs a `RepoWatcher` off-thread. The
+/// receiver yields exactly one result and then closes. Construction
+/// arguments mirror [`RepoWatcher::new`]; see that constructor's
+/// docstring for the role of each path argument.
+pub fn spawn_init(
+    workdir: PathBuf,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    worktrees: Vec<WorktreeInfo>,
+    submodule_paths: Vec<PathBuf>,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<WatcherInitResult> {
+    let (tx, rx) = mpsc::channel();
+    let proxy_for_send = proxy.clone();
+    std::thread::spawn(move || {
+        let result = RepoWatcher::new(
+            &workdir,
+            &git_dir,
+            &common_dir,
+            &worktrees,
+            &submodule_paths,
+            proxy,
+        );
+        let _ = tx.send(result);
+        let _ = proxy_for_send.send_event(());
+    });
+    rx
+}
+
 /// Debounce interval for working-tree file edits (ms).
 const WORKTREE_DEBOUNCE_MS: u64 = 500;
 

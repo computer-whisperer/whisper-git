@@ -36,6 +36,7 @@ use crate::git_async::{
     DirtyCheckResult, RepoStateResult, StatusResult, spawn_repo_state_refresh,
     spawn_status_refresh,
 };
+use crate::watcher::{FsChangeKind, RepoWatcher, WatcherInitResult};
 use crate::{github, gitlab, token_store};
 
 /// Unique id allocator for [`RepoTab`]. Used by per-entity dirty-check
@@ -359,6 +360,24 @@ pub struct RepoTab {
     /// watcher events.
     pub ref_fingerprint: u64,
 
+    // ---- Filesystem watcher ----
+    /// In-flight watcher init (the `notify` recursive watch can stall
+    /// hundreds of ms on a large repo, so construction runs on a
+    /// worker). Drained in `WhisperApp::poll_watcher_inits`; on
+    /// success populates `watcher` + `watcher_rx`, on failure surfaces
+    /// a toast and leaves the slots `None` (the tab runs without
+    /// auto-refresh — the 30 s status safety net + 5 s ref reconcile
+    /// still cover it).
+    pub watcher_init_rx: Option<Receiver<WatcherInitResult>>,
+    /// Live filesystem watcher for the tab's repo. `None` until init
+    /// succeeds, or permanently `None` if init fails (rare — only
+    /// happens on filesystems that don't support inotify-equivalent).
+    pub watcher: Option<RepoWatcher>,
+    /// Output channel from the watcher's debounce thread. Drained
+    /// each frame in `WhisperApp::poll_watcher_events`; max-priority
+    /// coalescing collapses bursts of events to a single dispatch.
+    pub watcher_rx: Option<Receiver<FsChangeKind>>,
+
     // ---- Diff stats per commit ----
     /// In-flight diff-stats fetcher (one-shot, drained on completion).
     /// Populated by `trigger_diff_stats_fetch`; on Ready we apply
@@ -470,6 +489,9 @@ impl RepoTab {
             state_refresh_rx: None,
             status_rx: None,
             ref_fingerprint: 0,
+            watcher_init_rx: None,
+            watcher: None,
+            watcher_rx: None,
             diff_stats_rx: None,
             diff_stats_fetched: false,
             search_query: String::new(),
@@ -482,9 +504,14 @@ impl RepoTab {
         Ok(tab)
     }
 
-    /// Re-query everything from the underlying repo. Synchronous; the
-    /// async equivalent comes back when async polling is re-enabled.
+    /// Re-query everything from the underlying repo synchronously.
+    /// Used by headless callers (dump_bundles, screenshot mode) that
+    /// have no event loop to drive the async path. Sets
+    /// `state_refresh_attempted` so the orchestrator's auto-init
+    /// loop doesn't pile a redundant worker on top of the result we
+    /// just produced inline.
     pub fn refresh(&mut self) {
+        self.state_refresh_attempted = true;
         self.branch_tips = self.repo.branch_tips().unwrap_or_default();
         self.remotes = self.repo.remote_names();
         self.tags = self.repo.tags().unwrap_or_default();
@@ -534,6 +561,12 @@ impl RepoTab {
             self.load_commit_detail(oid);
         }
 
+        // Refresh ref_fingerprint so the 5s reconciliation timer has a
+        // valid baseline; without this, every reconciliation tick
+        // would fire a redundant state refresh because the cached
+        // value is 0.
+        self.ref_fingerprint = crate::git::ref_fingerprint(self.repo.git_dir());
+
         // Rewrite branch_tips' `is_head` to reflect the active worktree's
         // HEAD rather than the reference repo's HEAD. For multi-worktree
         // repos these can differ; the sidebar uses `current_branch()`
@@ -578,6 +611,62 @@ impl RepoTab {
             proxy.clone(),
         ));
         self.state_refresh_attempted = true;
+    }
+
+    /// Spawn the filesystem watcher for this tab's repo on a worker.
+    /// Idempotent — short-circuits when init is in flight or already
+    /// completed. The submodule path list comes from the active view's
+    /// submodules, which is why callers should run this *after* the
+    /// first state refresh has landed (so submodule exclusions are in
+    /// place from the watcher's first frame). Calling it sooner is
+    /// safe; the exclusion list will just be empty initially and
+    /// events inside submodules will surface as `WorkingTree` until
+    /// the next refresh updates the watch set.
+    pub fn trigger_watcher_init(&mut self, proxy: &EventLoopProxy<()>) {
+        if self.watcher.is_some() || self.watcher_init_rx.is_some() {
+            return;
+        }
+        let Some(workdir) = self.repo.workdir().map(|p| p.to_path_buf()) else {
+            // Bare repo with no workdir — nothing to watch.
+            return;
+        };
+        let git_dir = self.repo.git_dir().to_path_buf();
+        let common_dir = self.repo.common_dir().to_path_buf();
+        let worktrees = self.worktrees.clone();
+        // Submodule exclusion list: every submodule's absolute workdir
+        // path. Events under these dirs are silently dropped by the
+        // classifier — submodule dirty state is checked independently.
+        let submodule_paths: Vec<PathBuf> = self
+            .active_view()
+            .map(|v| {
+                v.submodules
+                    .iter()
+                    .map(|sm| v.path.join(&sm.path))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.watcher_init_rx = Some(crate::watcher::spawn_init(
+            workdir,
+            git_dir,
+            common_dir,
+            worktrees,
+            submodule_paths,
+            proxy.clone(),
+        ));
+    }
+
+    /// Reopen the tab's `GitRepo` plus every cached worktree-view
+    /// `GitRepo`. libgit2's refdb caches HEAD/refs at the C level, so
+    /// after an external `git commit` (caught by the watcher's
+    /// `GitMetadata` event) the next refresh would still see the old
+    /// HEAD — calling `Repository::open` on the same path returns a
+    /// fresh handle that bypasses the cache. Best-effort: failures are
+    /// silent (the next state refresh will surface them).
+    pub fn reopen_repo_handles(&mut self) {
+        let _ = self.repo.reopen();
+        for view in self.worktree_views.values_mut() {
+            let _ = view.repo.reopen();
+        }
     }
 
     /// Trigger a state refresh, picking async (worker spawn) when a

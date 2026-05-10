@@ -1776,6 +1776,8 @@ impl WhisperApp {
         self.poll_state_refreshes();
         self.poll_status_refreshes();
         self.poll_dirty_checks();
+        self.poll_watcher_inits();
+        self.poll_watcher_events();
         self.drain_ci_receivers();
         self.poll_ci_refresh();
         self.drain_diff_stats();
@@ -1879,9 +1881,163 @@ impl WhisperApp {
             &proxy,
         );
 
-        // Watcher path updates land in step 4 (watcher consumer wiring).
-        // For now, just record the flag for that step to read.
-        let _ = effects.watcher_paths_changed;
+        // Update the watcher's per-worktree watch set if the resolved
+        // worktree list changed. The watcher's submodule exclusion list
+        // is set at construction only — for now we don't update it
+        // mid-life (legacy gap; new submodules added during a session
+        // surface as WorkingTree events until the watcher is recreated).
+        if effects.watcher_paths_changed
+            && let Some(tab) = self.tab_at_mut(tab_idx, depth)
+        {
+            let common_dir = tab.repo.common_dir().to_path_buf();
+            let worktrees = tab.worktrees.clone();
+            if let Some(w) = tab.watcher.as_mut() {
+                w.update_worktree_watches(&worktrees, &common_dir);
+            }
+        }
+
+        // Trigger watcher init once we have submodule paths from the
+        // first state-refresh result. Subsequent calls short-circuit
+        // (idempotent on `watcher.is_some() || watcher_init_rx.is_some()`).
+        if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+            tab.trigger_watcher_init(&proxy);
+        }
+    }
+
+    /// Drain finished watcher init results for every tab + drilled-in
+    /// level. On success, populate `watcher` + `watcher_rx`; on
+    /// failure, surface a toast and leave the slots `None` (the safety
+    /// nets still cover refresh).
+    fn poll_watcher_inits(&mut self) {
+        for tab_idx in 0..self.tabs.len() {
+            self.poll_watcher_init_at(tab_idx, None);
+            let mut d = 0;
+            while let Some(t) = self.tabs.get(tab_idx)
+                && d < t.nav_stack.len()
+            {
+                self.poll_watcher_init_at(tab_idx, Some(d));
+                d += 1;
+            }
+        }
+    }
+
+    fn poll_watcher_init_at(&mut self, tab_idx: usize, depth: Option<usize>) {
+        let result = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(rx) = tab.watcher_init_rx.take() else { return };
+            match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    tab.watcher_init_rx = Some(rx);
+                    None
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            }
+        };
+        let Some(result) = result else { return };
+        match result {
+            Ok((watcher, watcher_rx)) => {
+                if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+                    tab.watcher = Some(watcher);
+                    tab.watcher_rx = Some(watcher_rx);
+                }
+            }
+            Err(e) => {
+                self.toasts.push(ToastSpec::error(format!(
+                    "Filesystem watcher failed to initialize: {e}"
+                )));
+            }
+        }
+    }
+
+    /// Drain debounced `FsChangeKind` events for every tab + drilled-in
+    /// level. Coalesces a burst of events to its highest-priority kind
+    /// (so a stream of working-tree edits + a single git-commit event
+    /// dispatches to GitMetadata, not WorkingTree). Per-kind dispatch:
+    ///
+    /// - `WorkingTree` → trigger working-dir status refresh + per-
+    ///   worktree dirty check fanout
+    /// - `GitMetadata` → reopen repo handles (libgit2 cache bypass) +
+    ///   trigger full state refresh
+    /// - `WorktreeStructure` → same as `GitMetadata` plus the next
+    ///   state refresh's `watcher_paths_changed` effect updates the
+    ///   watch set
+    fn poll_watcher_events(&mut self) {
+        let Some(proxy) = self.proxy.clone() else { return };
+        let show_orphans = self.config.show_orphaned_commits;
+        for tab_idx in 0..self.tabs.len() {
+            self.dispatch_watcher_events_at(tab_idx, None, &proxy, show_orphans);
+            let mut d = 0;
+            while let Some(t) = self.tabs.get(tab_idx)
+                && d < t.nav_stack.len()
+            {
+                self.dispatch_watcher_events_at(tab_idx, Some(d), &proxy, show_orphans);
+                d += 1;
+            }
+        }
+    }
+
+    fn dispatch_watcher_events_at(
+        &mut self,
+        tab_idx: usize,
+        depth: Option<usize>,
+        proxy: &winit::event_loop::EventLoopProxy<()>,
+        show_orphans: bool,
+    ) {
+        // Drain + coalesce in one borrow scope so the dispatch below
+        // can take its own borrow.
+        let max_kind = {
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(rx) = tab.watcher_rx.as_ref() else { return };
+            let mut max_kind: Option<crate::watcher::FsChangeKind> = None;
+            while let Ok(kind) = rx.try_recv() {
+                max_kind = Some(match max_kind {
+                    Some(prev) if prev.priority() >= kind.priority() => prev,
+                    _ => kind,
+                });
+            }
+            max_kind
+        };
+        let Some(kind) = max_kind else { return };
+
+        use crate::watcher::FsChangeKind;
+        match kind {
+            FsChangeKind::WorkingTree => {
+                let (tab_id, repo_workdir, worktrees) = {
+                    let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+                    tab.trigger_status_refresh(proxy);
+                    (
+                        tab.id,
+                        tab.repo.workdir().map(|p| p.to_path_buf()),
+                        tab.worktrees.clone(),
+                    )
+                };
+                // Re-check worktree dirty state — a working-tree edit
+                // may have flipped a worktree's pill.
+                self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+                    tab_id,
+                    &[],
+                    &worktrees,
+                    repo_workdir,
+                    &self.dirty_check_tx,
+                    proxy,
+                );
+            }
+            FsChangeKind::GitMetadata | FsChangeKind::WorktreeStructure => {
+                if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+                    // Bypass libgit2's refdb cache before triggering
+                    // the refresh — without this the worker would
+                    // still see the pre-event HEAD/refs.
+                    tab.reopen_repo_handles();
+                    tab.trigger_state_refresh(proxy, show_orphans);
+                }
+                // WorktreeStructure additionally needs `watcher_paths_changed`
+                // handling, which falls out automatically: the state
+                // refresh's apply step calls `merge_worktree_views`
+                // which sets the flag, and `poll_state_refresh_at`
+                // calls `update_worktree_watches`.
+            }
+        }
     }
 
     /// Drain finished `StatusResult`s for every tab + drilled-in level.
