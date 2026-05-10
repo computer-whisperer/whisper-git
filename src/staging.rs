@@ -16,7 +16,6 @@ use aetna_core::{El, IconName, Selection, prelude::*};
 use crate::git::{FileStatus, FileStatusKind, SubmoduleInfo};
 use crate::repo_tab::{RepoTab, WorktreeView};
 
-pub const STAGING_WIDTH: f32 = 420.0;
 
 /// Pill bar for picking which worktree the staging well operates on.
 ///
@@ -82,7 +81,12 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
     let plus = icon_button(IconName::Plus)
         .key("new_worktree")
         .tooltip("Create worktree\u{2026}");
-    Some(row([pills, plus]).gap(tokens::SPACE_1).align(Align::Center))
+    Some(
+        row([pills.width(Size::Fill(1.0)), plus])
+            .gap(tokens::SPACE_1)
+            .align(Align::Center)
+            .width(Size::Fill(1.0)),
+    )
 }
 
 /// Strip the longest common prefix (up to the last separator: `-`,
@@ -160,7 +164,7 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
     }
 
     column(sections)
-        .width(Size::Fixed(STAGING_WIDTH))
+        .width(Size::Fill(1.0))
         .height(Size::Fill(1.0))
         .padding(tokens::SPACE_3)
         .gap(tokens::SPACE_3)

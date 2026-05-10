@@ -4274,6 +4274,8 @@ fn no_worktree_placeholder() -> El {
     .align(Align::Center)
     .justify(Justify::Center)
     .padding(tokens::SPACE_4)
+    .width(Size::Fill(1.0))
+    .height(Size::Fill(1.0))
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }
