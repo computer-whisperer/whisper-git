@@ -16,6 +16,7 @@ pub const MODAL_CLONE_KEY: &str = "modal:clone";
 pub const MODAL_TOKEN_KEY: &str = "modal:token";
 pub const MODAL_BRANCH_KEY: &str = "modal:branch";
 pub const MODAL_TAG_KEY: &str = "modal:tag";
+pub const MODAL_PULL_KEY: &str = "modal:pull";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
 /// Settings panel: small subset of `Config` is editable for now —
@@ -323,6 +324,53 @@ pub fn tag_modal(state: &TagForm, selection: &Selection, target_short: &str) -> 
     let body = form([name_field, actions]);
 
     overlays_panel(MODAL_TAG_KEY, "Create tag", [body])
+}
+
+/// Form state for the Pull picker modal — one selected source label
+/// (e.g. "origin/main") plus the `--rebase` toggle. Populated on open
+/// from the active branch's upstream when present, falling back to
+/// `origin/<current_branch>`. Empty `source` keeps the Pull button
+/// disabled — the modal can also surface for repos with no remote-
+/// tracking branches at all (just shows an empty list).
+#[derive(Clone, Debug, Default)]
+pub struct PullForm {
+    pub source: String,
+    pub rebase: bool,
+}
+
+/// Pull-from-remote modal. Lists every remote-tracking branch as a
+/// radio option, plus a `--rebase` switch. The plain Pull header
+/// button keeps the default tracking-branch shortcut; this modal is
+/// reached via the small caret next to it.
+pub fn pull_modal(state: &PullForm, sources: &[String]) -> El {
+    let radio = radio_group(
+        "pull:source",
+        &state.source,
+        sources.iter().map(|s| (s.clone(), s.clone())),
+    );
+    let source_field = form_item([form_label("Source"), radio]);
+
+    let rebase_field = field_row(
+        "Rebase instead of merge",
+        switch(state.rebase).key("pull:rebase"),
+    );
+
+    let mut pull_btn = button("Pull").key("pull:execute").primary();
+    if state.source.is_empty() {
+        pull_btn = pull_btn.disabled();
+    }
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:pull:cancel").ghost(),
+        pull_btn,
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([source_field, rebase_field, actions]);
+
+    overlays_panel(MODAL_PULL_KEY, "Pull from remote", [body])
 }
 
 /// Form state for the Token modal — one section for GitHub, one row

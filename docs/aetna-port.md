@@ -108,10 +108,10 @@ Done (since this section was last pruned):
 - **Avatars** — Gravatar with disk cache + identicon fallback
 - **Stash apply / pop / drop** — sidebar context menu wired via `mutation_op`
 - **Tag creation** — sidebar `+` icon in the Tags section opens the create-tag modal
+- **Pull picker** — chevron next to header Pull button opens a radio picker of remote-tracking branches + `--rebase` toggle; routes through the existing `pull_op` slot
 
 Deferred / pending (no fixed order):
 
-- **Pull picker** — pick a non-tracking source, toggle `--rebase`
 - **Worktree creation** — list + switch already work; needs a "new worktree" dialog
 - **Push / merge / rebase options dialogs** — basic versions wired; no per-op options UI
 - **AI commit message generation** — old `ai.rs` deleted in Phase 7a, not yet ported

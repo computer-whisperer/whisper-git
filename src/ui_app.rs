@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
-use crate::dialogs::{BranchForm, CloneForm, TagForm, TokenForm};
+use crate::dialogs::{BranchForm, CloneForm, PullForm, TagForm, TokenForm};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
@@ -211,6 +211,14 @@ pub enum ActiveModal {
     Tag {
         form: TagForm,
         target: git2::Oid,
+    },
+    /// Pull-with-options picker. Lets the user pick a non-tracking
+    /// source and toggle `--rebase`. Reached via the caret next to
+    /// the header Pull button — the bare Pull button keeps its
+    /// default-tracking-branch behavior.
+    PullPicker {
+        form: PullForm,
+        sources: Vec<String>,
     },
 }
 
@@ -554,6 +562,9 @@ impl App for WhisperApp {
                 let target_short = target.to_string()[..7].to_string();
                 dialogs::tag_modal(form, &self.selection, &target_short)
             }
+            ActiveModal::PullPicker { form, sources } => {
+                dialogs::pull_modal(form, sources)
+            }
         });
         let menu_layer = self
             .context_menu
@@ -721,6 +732,14 @@ impl App for WhisperApp {
                     &mut self.selection,
                     "tag:name",
                     &event,
+                );
+            }
+            Some(ActiveModal::PullPicker { form, .. }) => {
+                aetna_core::widgets::radio::apply_event(
+                    &mut form.source,
+                    &event,
+                    "pull:source",
+                    |raw| Some(raw.to_string()),
                 );
             }
             _ => {}
@@ -1056,6 +1075,7 @@ impl WhisperApp {
             "open_repo" => self.open_repo_dialog(),
             "new_branch" => self.open_branch_modal(),
             "new_tag" => self.open_tag_modal(),
+            "pull_options" => self.open_pull_picker(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
                 form.dest = std::env::var("HOME").unwrap_or_default();
@@ -1231,6 +1251,15 @@ impl WhisperApp {
             self.handle_tag_route(key);
             return true;
         }
+        // `pull:` keys (rebase toggle, execute, source radio fallthrough)
+        // are only meaningful while the picker is open. The bare "pull"
+        // header-button route stays intact since it doesn't carry the colon.
+        if matches!(self.active_modal, Some(ActiveModal::PullPicker { .. }))
+            && key.starts_with("pull:")
+        {
+            self.handle_pull_route(key);
+            return true;
+        }
 
         match key {
             "modal:confirm:cancel" => {
@@ -1260,6 +1289,10 @@ impl WhisperApp {
                 true
             }
             "modal:tag:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:pull:cancel" => {
                 self.active_modal = None;
                 true
             }
@@ -1413,6 +1446,117 @@ impl WhisperApp {
         self.active_modal = Some(ActiveModal::Tag {
             form: TagForm::default(),
             target,
+        });
+    }
+
+    fn handle_pull_route(&mut self, key: &str) {
+        match key {
+            "pull:rebase" => {
+                if let Some(ActiveModal::PullPicker { form, .. }) = &mut self.active_modal {
+                    form.rebase = !form.rebase;
+                }
+            }
+            "pull:execute" => self.pull_from_modal(),
+            // `pull:source:radio:<value>` is folded by `radio::apply_event`
+            // up in `on_event`; nothing to do here for those.
+            _ => {}
+        }
+    }
+
+    /// Apply the pull-picker form: pull from the selected source with
+    /// or without `--rebase`. Picks the right git-cli helper and parks
+    /// the receiver on the same `pull_op` slot as the default Pull
+    /// button so the header progress affordance and post-op refresh
+    /// don't need a separate code path.
+    fn pull_from_modal(&mut self) {
+        let (source, rebase) = match &self.active_modal {
+            Some(ActiveModal::PullPicker { form, .. }) => {
+                (form.source.trim().to_string(), form.rebase)
+            }
+            _ => return,
+        };
+        let Some((remote, branch)) = source.split_once('/') else {
+            self.toasts.push(ToastSpec::warning(
+                "Source must be of the form <remote>/<branch>",
+            ));
+            return;
+        };
+        let (remote, branch) = (remote.to_string(), branch.to_string());
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Pull, true) else {
+            return;
+        };
+        let rx = if rebase {
+            crate::git::pull_rebase_async(wd, remote.clone(), branch.clone(), proxy)
+        } else {
+            crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy)
+        };
+        let Some(tab) = self.active_focus_mut() else { return };
+        let label = if rebase {
+            format!("{remote}/{branch} (rebase)")
+        } else {
+            format!("{remote}/{branch}")
+        };
+        tab.pull_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts
+            .push(ToastSpec::info(format!("Pulling {label}…")));
+        self.active_modal = None;
+    }
+
+    /// Open the pull picker. Sources come from the focused tab's
+    /// remote-tracking branch list. The default selection is the
+    /// current branch's upstream when one is configured, falling
+    /// back to `<default_remote>/<current_branch>` when that label
+    /// happens to be in the list. Empty source list (no remotes /
+    /// no remote-tracking branches) opens an inert modal — handler
+    /// gates the Pull button until a row is selected.
+    fn open_pull_picker(&mut self) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        if !focus.repo.has_remotes() {
+            self.toasts.push(ToastSpec::error(
+                "No remotes configured for this repository",
+            ));
+            return;
+        }
+        let mut sources: Vec<String> = focus
+            .remote_branches()
+            .into_iter()
+            .flat_map(|(remote, branches)| {
+                branches
+                    .into_iter()
+                    .map(move |b| format!("{remote}/{b}"))
+            })
+            .collect();
+        sources.sort();
+        if sources.is_empty() {
+            self.toasts.push(ToastSpec::warning(
+                "No remote-tracking branches yet — fetch first",
+            ));
+            return;
+        }
+        let default = focus
+            .branch_tips
+            .iter()
+            .find(|b| !b.is_remote && b.is_head)
+            .and_then(|b| b.upstream.clone())
+            .or_else(|| {
+                let remote = focus.repo.default_remote().ok()?;
+                let branch = focus.current_branch();
+                if branch.is_empty() {
+                    None
+                } else {
+                    Some(format!("{remote}/{branch}"))
+                }
+            })
+            .filter(|s| sources.contains(s))
+            .unwrap_or_default();
+        self.active_modal = Some(ActiveModal::PullPicker {
+            form: PullForm {
+                source: default,
+                rebase: false,
+            },
+            sources,
         });
     }
 
@@ -3323,6 +3467,15 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     if pull_busy {
         pull_btn = pull_btn.disabled();
     }
+    // Tiny chevron beside Pull opens the Pull picker (non-tracking
+    // source + --rebase toggle). Keeping it as its own icon_button
+    // preserves the bare Pull-button default for the common case.
+    let mut pull_options_btn = icon_button(IconName::ChevronDown)
+        .key("pull_options")
+        .tooltip("Pull from\u{2026}");
+    if pull_busy {
+        pull_options_btn = pull_options_btn.disabled();
+    }
     let mut push_btn = button_with_icon(IconName::Upload, "Push")
         .key("push")
         .tooltip("git push");
@@ -3346,6 +3499,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     bar_items.push(toolbar_group([
         fetch_btn,
         pull_btn,
+        pull_options_btn,
         push_btn,
         button_with_icon(IconName::GitCommit, "Commit")
             .key("commit")
