@@ -856,8 +856,26 @@ fn build_row(
         ));
     }
 
-    children.push(text(summary));
+    let mut summary_children: Vec<El> = vec![text(summary)];
+    if let Some(body) = commit.body_excerpt.as_deref().filter(|s| !s.is_empty()) {
+        // Github / VS Code tail the subject with a muted excerpt of the
+        // body's first line, preceded by an em-dash separator. The text
+        // widget's ellipsis() handles overflow when the row is narrow.
+        summary_children.push(
+            text(format!("\u{2014} {body}"))
+                .muted()
+                .ellipsis(),
+        );
+    }
+    children.push(
+        row(summary_children)
+            .gap(tokens::SPACE_2)
+            .align(Align::Center),
+    );
     children.push(spacer());
+    if let Some(chip) = diff_stats_chip(commit) {
+        children.push(chip);
+    }
     children.push(text(format!("{} · {}", commit.author, when)).muted());
 
     let row_el = row(children)
@@ -868,7 +886,44 @@ fn build_row(
         .height(Size::Fixed(geom.height))
         .align(Align::Center);
 
-    if selected { row_el.selected() } else { row_el }
+    let row_el = if selected {
+        row_el.selected()
+    } else if idx % 2 == 1 {
+        // Zebra striping on every other row — a faint MUTED tint that
+        // helps the eye track across long lines without competing with
+        // the selected-row highlight (which paints its own fill via
+        // `.selected()`).
+        row_el.fill(tokens::MUTED.with_alpha(40))
+    } else {
+        row_el
+    };
+    row_el
+}
+
+/// Compact `+N -M` chip rendered to the right of the commit summary,
+/// before the author/time column. Returns `None` when both counts
+/// are zero — async diff-stats fetching may not have caught up yet,
+/// or the commit may genuinely be empty (merge with no conflicts).
+/// The caller skips the column entirely in that case so the row's
+/// gap rhythm doesn't reserve a phantom slot.
+fn diff_stats_chip(commit: &CommitInfo) -> Option<El> {
+    if commit.insertions == 0 && commit.deletions == 0 {
+        return None;
+    }
+    Some(
+        row([
+            text(format!("+{}", commit.insertions))
+                .caption()
+                .mono()
+                .text_color(tokens::SUCCESS),
+            text(format!("-{}", commit.deletions))
+                .caption()
+                .mono()
+                .text_color(tokens::DESTRUCTIVE),
+        ])
+        .gap(tokens::SPACE_1)
+        .align(Align::Center),
+    )
 }
 
 /// Render a synthetic "uncommitted changes" row.
