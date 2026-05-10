@@ -8,9 +8,11 @@
 //! widget, search bar) stripped — Phase 6 paints lane lines per row
 //! via the `commit_node` shader and lets aetna own scroll + hit-test.
 //!
-//! `history_view` composes the `virtual_list` and per-row `El`. Rows
-//! are fixed-height; variable-height (timeline gaps, inline expand)
-//! is deferred until aetna ships variable-height virtualization.
+//! `history_view` composes a `virtual_list_dyn` and per-row `El`. Row
+//! heights are time-spaced — bigger time deltas between consecutive
+//! commits stretch the row vertically, with the node anchored to a
+//! fixed `NODE_Y` offset so labels line up cleanly. The dyn variant
+//! measures realised heights on first viewport entry and caches them.
 
 use std::collections::HashMap;
 
@@ -25,6 +27,23 @@ use crate::repo_tab::RepoTab;
 pub const ROW_HEIGHT: f32 = 28.0;
 pub const GRAPH_WIDTH: f32 = 140.0;
 pub const LANE_COUNT_VISUAL: u8 = 6;
+/// Where in a row's local frame the commit node sits, in pixels from
+/// the row's top. Stays fixed even when the row is taller than
+/// `ROW_HEIGHT` (time-spaced) so the visual rhythm of "node + label"
+/// stays aligned across rows. Extra height (from time spacing) hangs
+/// below the node as breathing room before the next commit.
+pub const NODE_Y: f32 = ROW_HEIGHT / 2.0;
+/// Maximum extra row height added by time spacing on top of the
+/// minimum (`ROW_HEIGHT`). The pre-port's `compute_row_offsets` used
+/// `max_gap = 2 * row_height`; we mirror that.
+const MAX_EXTRA_HEIGHT: f32 = ROW_HEIGHT;
+/// Time-delta scale for the log-curve mapping. Two-hour reference
+/// keeps small deltas (rapid-fire commits in a sprint) at the minimum
+/// height; deltas longer than this start adding visible spacing.
+const TIME_BASE_SECONDS: f64 = 7200.0;
+/// Time delta past which the log curve saturates at `MAX_EXTRA_HEIGHT`
+/// — 30 days. Longer gaps don't make rows any taller.
+const TIME_MAX_DELTA_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 
 /// Lane palette — picks from aetna tokens that are stable across
 /// theme swaps. The fixed RGB constants in the original whisper-git
@@ -77,18 +96,36 @@ pub struct CurveSegment {
 
 /// Per-row paint data — what verticals to draw in this row's strip,
 /// what curve segments pass through, and whether the row hosts a node.
-/// All coords are row-local (y ∈ [0, ROW_HEIGHT]).
+/// All coords are row-local (y ∈ [0, height]).
 ///
 /// Verticals come in three flavors so the node circle can interrupt
 /// the line cleanly: full-height passes through this row, top-half
-/// only stops at `mid_y` (incoming lane terminating at the node),
-/// bottom-half starts at `mid_y` (outgoing lane spawning at the node).
-#[derive(Clone, Debug, Default)]
+/// stops at `NODE_Y` (incoming lane terminating at the node),
+/// bottom-half starts at `NODE_Y` (outgoing lane spawning at the node
+/// and stretching down to the row's bottom).
+///
+/// `height` is the row's vertical extent in pixels — driven by
+/// time spacing between this commit and the next (older) one.
+/// Always >= `ROW_HEIGHT`, integer-rounded for clean MSDF tiling.
+#[derive(Clone, Debug)]
 pub struct RowGeometry {
+    pub height: f32,
     pub full_verticals: Vec<(usize, Color)>,
     pub top_half_verticals: Vec<(usize, Color)>,
     pub bottom_half_verticals: Vec<(usize, Color)>,
     pub curves: Vec<CurveSegment>,
+}
+
+impl Default for RowGeometry {
+    fn default() -> Self {
+        Self {
+            height: ROW_HEIGHT,
+            full_verticals: Vec::new(),
+            top_half_verticals: Vec::new(),
+            bottom_half_verticals: Vec::new(),
+            curves: Vec::new(),
+        }
+    }
 }
 
 /// Lane-assignment state. Walks commits in topological order, keeping
@@ -172,12 +209,30 @@ impl GraphLayout {
             }
         }
 
-        // Per-row paint data — verticals for same-lane edges, curve
-        // segments for cross-lane edges (one per spanned row), and
-        // node entries from the layout.
-        self.row_geometry = vec![RowGeometry::default(); commits.len()];
+        // Per-row heights — time-spaced, integer-rounded. Computed
+        // BEFORE edge decomposition so the bezier subdivision uses
+        // correct row strips. Each row's height is the time-spaced gap
+        // to the next (older) commit; the last row uses ROW_HEIGHT.
+        let heights = compute_row_heights(commits);
+        // Accumulated absolute Y offsets — `row_top_y[i]` is where
+        // row i starts; `row_top_y[i] + heights[i]` is where it ends.
+        let mut row_top_y = Vec::with_capacity(commits.len() + 1);
+        let mut acc = 0.0f32;
+        for &h in &heights {
+            row_top_y.push(acc);
+            acc += h;
+        }
+        row_top_y.push(acc);
+
+        self.row_geometry = heights
+            .iter()
+            .map(|&h| RowGeometry {
+                height: h,
+                ..Default::default()
+            })
+            .collect();
         for edge in &self.edges {
-            decompose_edge_into_rows(edge, &mut self.row_geometry);
+            decompose_edge_into_rows(edge, &row_top_y, &mut self.row_geometry);
         }
     }
 
@@ -259,21 +314,57 @@ impl GraphLayout {
 }
 
 // ---------------------------------------------------------------------------
-// Edge → per-row geometry decomposition
+// Per-row heights and edge → per-row geometry decomposition
 // ---------------------------------------------------------------------------
+
+/// Compute the vertical extent of each row from time spacing between
+/// adjacent commits. Each row's height is the gap to the *next*
+/// (older) commit; the last row gets the minimum height.
+///
+/// Mapping: log-curve from the time delta to a height in
+/// `[ROW_HEIGHT, ROW_HEIGHT + MAX_EXTRA_HEIGHT]`. Heights are rounded
+/// to integer pixels — the `vector_smoke` test confirmed integer +
+/// pixel-aligned rows are necessary for clean MSDF tiling.
+pub fn compute_row_heights(commits: &[CommitInfo]) -> Vec<f32> {
+    if commits.is_empty() {
+        return Vec::new();
+    }
+    let log_max = (1.0 + TIME_MAX_DELTA_SECONDS / TIME_BASE_SECONDS).ln();
+    let mut heights = Vec::with_capacity(commits.len());
+    for i in 0..commits.len() {
+        let h = if i + 1 < commits.len() {
+            // Commits are stored newest-first, so `commits[i].time >=
+            // commits[i+1].time` is the expected order. `unsigned_abs`
+            // keeps a synthetic out-of-order entry from blowing up.
+            let delta = (commits[i].time - commits[i + 1].time).unsigned_abs() as f64;
+            let clamped = delta.min(TIME_MAX_DELTA_SECONDS);
+            let ratio = (1.0 + clamped / TIME_BASE_SECONDS).ln() / log_max;
+            ROW_HEIGHT + MAX_EXTRA_HEIGHT * ratio as f32
+        } else {
+            ROW_HEIGHT
+        };
+        heights.push(h.round());
+    }
+    heights
+}
 
 /// Decompose one edge into per-row paint entries.
 ///
 /// Same-lane edges become a sequence of verticals (bottom-half on the
 /// child's row, full-height on intermediate rows, top-half on the
 /// parent's row). Cross-lane edges become a single full-distance cubic
-/// bezier from `(child_lane, child_mid_y)` to `(parent_lane, parent_mid_y)`,
-/// subdivided so each spanned row gets its own row-local segment. The
-/// control-point recipe (`start_y + dy*0.4`, `end_y - dy*0.4`) mirrors
-/// the pre-port `render_graph_connections` so the curve shape is the
-/// same — a long S that hugs the child's lane near the top, transitions
-/// in the middle, then settles into the parent's lane near the bottom.
-fn decompose_edge_into_rows(edge: &GraphEdge, rows: &mut [RowGeometry]) {
+/// bezier from `(child_lane, child_node_y)` to `(parent_lane,
+/// parent_node_y)`, subdivided so each spanned row gets its own
+/// row-local segment. The control-point recipe (`start_y + dy*0.4`,
+/// `end_y - dy*0.4`) mirrors the pre-port `render_graph_connections`
+/// so the curve shape is the same — a long S that hugs the child's
+/// lane near the top, transitions in the middle, then settles into
+/// the parent's lane near the bottom.
+///
+/// `row_top_y[i]` is the absolute Y of row `i`'s top edge; the last
+/// entry is the total content height (so `row_top_y[i+1] - row_top_y[i]`
+/// is row i's height).
+fn decompose_edge_into_rows(edge: &GraphEdge, row_top_y: &[f32], rows: &mut [RowGeometry]) {
     if edge.child_row >= edge.parent_row {
         return;
     }
@@ -297,13 +388,9 @@ fn decompose_edge_into_rows(edge: &GraphEdge, rows: &mut [RowGeometry]) {
         return;
     }
 
-    // Cross-lane: full-distance cubic. We work in a normalized coord
-    // system where x is `lane_index` (so `lane_x` translation happens
-    // at render time) and y is `row_index + frac_in_row * 1.0`. This
-    // keeps the math row-agnostic; per-row scaling to pixel coords
-    // happens when we build the VectorAsset.
-    let child_y = edge.child_row as f32 + 0.5;
-    let parent_y = edge.parent_row as f32 + 0.5;
+    // Cross-lane: full-distance cubic in absolute pixel coords.
+    let child_y = row_top_y[edge.child_row] + NODE_Y;
+    let parent_y = row_top_y[edge.parent_row] + NODE_Y;
     let dy = parent_y - child_y;
     let curve = Cubic {
         p0: (edge.child_lane as f32, child_y),
@@ -313,18 +400,10 @@ fn decompose_edge_into_rows(edge: &GraphEdge, rows: &mut [RowGeometry]) {
     };
 
     for row in edge.child_row..=edge.parent_row {
-        let row_top_y = row as f32;
-        let row_bot_y = row as f32 + 1.0;
-        let strip_top = if row == edge.child_row {
-            child_y
-        } else {
-            row_top_y
-        };
-        let strip_bot = if row == edge.parent_row {
-            parent_y
-        } else {
-            row_bot_y
-        };
+        let row_top = row_top_y[row];
+        let row_bot = row_top_y[row + 1];
+        let strip_top = if row == edge.child_row { child_y } else { row_top };
+        let strip_bot = if row == edge.parent_row { parent_y } else { row_bot };
         if strip_bot - strip_top < 1e-4 {
             continue;
         }
@@ -343,12 +422,10 @@ fn decompose_edge_into_rows(edge: &GraphEdge, rows: &mut [RowGeometry]) {
         };
         let sub = curve.subcurve(t_a, t_b);
         if let Some(g) = rows.get_mut(row) {
-            // Translate from absolute (row_index + frac) y to row-local
-            // pixel y (frac * ROW_HEIGHT). x stays in lane units; the
-            // render pass converts via lane_x().
-            let to_local = |p: (f32, f32)| -> (f32, f32) {
-                (p.0, (p.1 - row_top_y) * ROW_HEIGHT)
-            };
+            // Translate from absolute pixel y to row-local y (subtract
+            // this row's top). x stays in lane units; the render pass
+            // converts via `lane_center_x`.
+            let to_local = |p: (f32, f32)| -> (f32, f32) { (p.0, p.1 - row_top) };
             g.curves.push(CurveSegment {
                 p0: to_local(sub.p0),
                 p1: to_local(sub.p1),
@@ -519,6 +596,7 @@ fn lane_center_x(lane: usize) -> f32 {
 /// tiles cleanly at row boundaries with no MSDF AA seams.
 fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected: bool) -> El {
     let mut paths: Vec<VectorPath> = Vec::new();
+    let h = geom.height;
 
     let push_vertical = |paths: &mut Vec<VectorPath>, lane: usize, color: Color, y0: f32, y1: f32| {
         let x = lane_center_x(lane);
@@ -532,15 +610,17 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
         );
     };
 
-    let mid_y = ROW_HEIGHT * 0.5;
     for &(lane, color) in &geom.full_verticals {
-        push_vertical(&mut paths, lane, color, 0.0, ROW_HEIGHT);
+        push_vertical(&mut paths, lane, color, 0.0, h);
     }
     for &(lane, color) in &geom.top_half_verticals {
-        push_vertical(&mut paths, lane, color, 0.0, mid_y);
+        push_vertical(&mut paths, lane, color, 0.0, NODE_Y);
     }
     for &(lane, color) in &geom.bottom_half_verticals {
-        push_vertical(&mut paths, lane, color, mid_y, ROW_HEIGHT);
+        // Stretches from the node down to the row's bottom — when the
+        // row is taller than ROW_HEIGHT (time spacing), this is what
+        // visually represents the time gap.
+        push_vertical(&mut paths, lane, color, NODE_Y, h);
     }
     for seg in &geom.curves {
         // CurveSegment carries x in lane units; render-time scaling
@@ -569,9 +649,12 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
 
     // Node disk — filled circle approximated with cubics. Cubic-bezier
     // approximation of a unit circle uses control-point distance ≈
-    // 0.5523 × radius from each endpoint (Stanislaw's constant).
+    // 0.5523 × radius from each endpoint (Stanislaw's constant). The
+    // node always sits at NODE_Y (top-anchored) regardless of the
+    // row's actual height — keeps node alignment consistent across
+    // time-spaced rows.
     let cx = lane_center_x(node_lane);
-    let cy = mid_y;
+    let cy = NODE_Y;
     let r = NODE_RADIUS;
     let k = r * 0.5523;
     paths.push(
@@ -600,10 +683,10 @@ fn graph_cell(geom: &RowGeometry, node_lane: usize, node_color: Color, selected:
         );
     }
 
-    let asset = VectorAsset::from_paths([0.0, 0.0, GRAPH_WIDTH, ROW_HEIGHT], paths);
+    let asset = VectorAsset::from_paths([0.0, 0.0, GRAPH_WIDTH, h], paths);
     vector(asset)
         .width(Size::Fixed(GRAPH_WIDTH))
-        .height(Size::Fixed(ROW_HEIGHT))
+        .height(Size::Fixed(h))
 }
 
 /// Static, themable pill chrome — small caption pinned to a tinted
@@ -782,7 +865,7 @@ fn build_row(
         .focusable()
         .gap(tokens::SPACE_3)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
-        .height(Size::Fixed(ROW_HEIGHT))
+        .height(Size::Fixed(geom.height))
         .align(Align::Center);
 
     if selected { row_el.selected() } else { row_el }
@@ -832,9 +915,15 @@ fn synthetic_row(
         .focusable()
         .gap(tokens::SPACE_3)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
-        .height(Size::Fixed(ROW_HEIGHT))
+        .height(Size::Fixed(geom.height))
         .align(Align::Center)
 }
+
+/// Estimated row height for `virtual_list_dyn` — the minimum a row
+/// can be. Time-spaced rows grow taller; the runtime measures actuals
+/// on first viewport entry and caches them, so this is just the
+/// initial scrollbar-thumb sizing.
+const EST_ROW_HEIGHT: f32 = ROW_HEIGHT;
 
 /// History pane composer. Returns the center-pane `El` for the
 /// History view mode. Wraps the virtualized commit list in a column
@@ -908,7 +997,7 @@ pub fn history_view(tab: &RepoTab) -> El {
         card_header([row([text(header_text).caption().muted()])])
             .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
             .fill(tokens::MUTED),
-        card_content([virtual_list(commits.len(), ROW_HEIGHT, move |i| {
+        card_content([virtual_list_dyn(commits.len(), EST_ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
             // Empty fallback geom keeps the row paintable when the
@@ -1037,6 +1126,13 @@ mod tests {
         assert!((sub.p3.1 - target_b).abs() < 1e-3);
     }
 
+    /// Build `row_top_y` for `n` uniform-height rows. The decompose
+    /// function takes one entry per row plus a sentinel for the total
+    /// content height.
+    fn uniform_offsets(n: usize) -> Vec<f32> {
+        (0..=n).map(|i| i as f32 * ROW_HEIGHT).collect()
+    }
+
     #[test]
     fn decompose_same_lane_emits_top_full_bottom_verticals() {
         let edge = GraphEdge {
@@ -1047,7 +1143,7 @@ mod tests {
             color: dummy_color(),
         };
         let mut rows = vec![RowGeometry::default(); 4];
-        decompose_edge_into_rows(&edge, &mut rows);
+        decompose_edge_into_rows(&edge, &uniform_offsets(4), &mut rows);
         // child row gets bottom-half (line emerges below the node).
         assert_eq!(rows[0].bottom_half_verticals.len(), 1);
         assert_eq!(rows[0].full_verticals.len(), 0);
@@ -1069,7 +1165,7 @@ mod tests {
             color: dummy_color(),
         };
         let mut rows = vec![RowGeometry::default(); 4];
-        decompose_edge_into_rows(&edge, &mut rows);
+        decompose_edge_into_rows(&edge, &uniform_offsets(4), &mut rows);
         // 4 spanned rows = 4 curve segments; no verticals on cross-lane.
         assert_eq!(rows[0].curves.len(), 1);
         assert_eq!(rows[1].curves.len(), 1);
@@ -1086,7 +1182,7 @@ mod tests {
     fn decompose_cross_lane_segment_y_spans_row_strip() {
         // Each row's curve segment should start at row-local y matching
         // the strip's top and end at the strip's bottom — modulo the
-        // child row (starts at mid_y) and parent row (ends at mid_y).
+        // child row (starts at NODE_Y) and parent row (ends at NODE_Y).
         let edge = GraphEdge {
             child_row: 0,
             child_lane: 0,
@@ -1095,10 +1191,10 @@ mod tests {
             color: dummy_color(),
         };
         let mut rows = vec![RowGeometry::default(); 3];
-        decompose_edge_into_rows(&edge, &mut rows);
+        decompose_edge_into_rows(&edge, &uniform_offsets(3), &mut rows);
 
         let row0_curve = &rows[0].curves[0];
-        assert!((row0_curve.p0.1 - ROW_HEIGHT * 0.5).abs() < 0.5);
+        assert!((row0_curve.p0.1 - NODE_Y).abs() < 0.5);
         assert!((row0_curve.p3.1 - ROW_HEIGHT).abs() < 0.5);
 
         let row1_curve = &rows[1].curves[0];
@@ -1107,7 +1203,67 @@ mod tests {
 
         let row2_curve = &rows[2].curves[0];
         assert!((row2_curve.p0.1 - 0.0).abs() < 0.5);
-        assert!((row2_curve.p3.1 - ROW_HEIGHT * 0.5).abs() < 0.5);
+        assert!((row2_curve.p3.1 - NODE_Y).abs() < 0.5);
+    }
+
+    #[test]
+    fn compute_row_heights_clamps_to_min_for_dense_commits() {
+        // Two commits 60 seconds apart — well below TIME_BASE_SECONDS,
+        // so the height should be the minimum (ROW_HEIGHT).
+        let commits = vec![
+            CommitInfo {
+                time: 1_000_000,
+                ..test_commit()
+            },
+            CommitInfo {
+                time: 1_000_000 - 60,
+                ..test_commit()
+            },
+        ];
+        let h = compute_row_heights(&commits);
+        assert_eq!(h.len(), 2);
+        assert!((h[0] - ROW_HEIGHT).abs() < 1.0);
+        // Last row always uses minimum.
+        assert!((h[1] - ROW_HEIGHT).abs() < 1.0);
+    }
+
+    #[test]
+    fn compute_row_heights_saturates_at_max_for_long_gaps() {
+        // 60-day gap — past TIME_MAX_DELTA_SECONDS, so the row should
+        // saturate at ROW_HEIGHT + MAX_EXTRA_HEIGHT.
+        let commits = vec![
+            CommitInfo {
+                time: 1_000_000_000,
+                ..test_commit()
+            },
+            CommitInfo {
+                time: 1_000_000_000 - 60 * 24 * 3600,
+                ..test_commit()
+            },
+        ];
+        let h = compute_row_heights(&commits);
+        let expected = (ROW_HEIGHT + MAX_EXTRA_HEIGHT).round();
+        assert!((h[0] - expected).abs() < 1.0);
+    }
+
+    fn test_commit() -> CommitInfo {
+        CommitInfo {
+            id: Oid::zero(),
+            short_id: String::new(),
+            summary: String::new(),
+            body_excerpt: None,
+            body_full: None,
+            author: String::new(),
+            author_email: String::new(),
+            time: 0,
+            parent_ids: Vec::new(),
+            insertions: 0,
+            deletions: 0,
+            is_synthetic: false,
+            synthetic_wt_name: None,
+            is_orphaned: false,
+            orphan_source: None,
+        }
     }
 }
 
