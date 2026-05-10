@@ -24,7 +24,17 @@ pub fn sidebar(tab: &RepoTab) -> El {
 
     let body = column(sections).width(Size::Fill(1.0));
 
-    sidebar_panel([scroll([body]).key("sidebar:scroll")]).padding(0.0)
+    // Inset the scroll's clip rect by `RING_WIDTH` on the horizontal
+    // axis so the per-row focus ring (paint_overflow band) doesn't get
+    // clipped at the panel's left/right edge — the row's bbox spans
+    // the full inner width, so without padding the ring band is cut
+    // by 2px on both sides (`FocusRingObscured` lint).
+    sidebar_panel([
+        scroll([body])
+            .key("sidebar:scroll")
+            .padding(Sides::xy(tokens::RING_WIDTH, 0.0)),
+    ])
+    .padding(0.0)
 }
 
 fn section_block(tab: &RepoTab, section: SidebarSection) -> El {
