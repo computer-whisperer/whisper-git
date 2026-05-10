@@ -745,39 +745,55 @@ impl GitRepo {
         let repo_path = self.repo.path().to_path_buf();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let Ok(repo) = Repository::open(&repo_path) else {
-                let _ = tx.send(Vec::new());
-                let _ = proxy.send_event(());
-                return;
+            let results = match Repository::open(&repo_path) {
+                Ok(repo) => compute_diff_stats_for(&repo, &oids),
+                Err(_) => Vec::new(),
             };
-            let mut results = Vec::with_capacity(oids.len());
-            for oid in oids {
-                let Ok(commit) = repo.find_commit(oid) else {
-                    continue;
-                };
-                let (ins, del) = if let Ok(tree) = commit.tree() {
-                    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-                    if let Ok(diff) =
-                        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
-                    {
-                        if let Ok(stats) = diff.stats() {
-                            (stats.insertions(), stats.deletions())
-                        } else {
-                            (0, 0)
-                        }
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
-                };
-                results.push((oid, ins, del));
-            }
             let _ = tx.send(results);
             let _ = proxy.send_event(());
         });
         rx
     }
+
+    /// Synchronous variant of [`Self::compute_diff_stats_async`].
+    /// Used from the screenshot pipeline (one-shot render, no polling
+    /// loop to drain a Receiver), and as the body of the async worker.
+    pub fn compute_diff_stats_sync(&self, oids: &[Oid]) -> Vec<(Oid, usize, usize)> {
+        compute_diff_stats_for(&self.repo, oids)
+    }
+}
+
+/// Worker body shared by [`GitRepo::compute_diff_stats_async`] and
+/// [`GitRepo::compute_diff_stats_sync`]. Walks the OID list, computes
+/// `(insertions, deletions)` against each commit's first parent (or
+/// the empty tree for root commits), skips commits that fail to
+/// resolve.
+fn compute_diff_stats_for(repo: &Repository, oids: &[Oid]) -> Vec<(Oid, usize, usize)> {
+    let mut results = Vec::with_capacity(oids.len());
+    for &oid in oids {
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let (ins, del) = if let Ok(tree) = commit.tree() {
+            let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+            if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                if let Ok(stats) = diff.stats() {
+                    (stats.insertions(), stats.deletions())
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        };
+        results.push((oid, ins, del));
+    }
+    results
+}
+
+impl GitRepo {
 
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {

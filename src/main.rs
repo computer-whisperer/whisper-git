@@ -108,6 +108,11 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
             if let Some(tab) = app.tabs.first_mut() {
                 let pick = tab.commits.first().map(|c| c.id);
                 tab.select_commit(pick);
+                // Screenshot mode runs without a polling loop, so the
+                // async diff-stats fetcher never gets a chance to land
+                // its results. Block on the fetch synchronously here
+                // so the +N/-M chip has data to render in the PNG.
+                tab.fetch_diff_stats_sync();
             }
         }
         "commit-menu" => {

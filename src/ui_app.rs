@@ -1630,6 +1630,34 @@ impl WhisperApp {
         self.poll_clone_op();
         self.drain_ci_receivers();
         self.poll_ci_refresh();
+        self.drain_diff_stats();
+        self.trigger_diff_stats_fetches();
+    }
+
+    /// Drain any completed diff-stats fetches across every tab + level.
+    fn drain_diff_stats(&mut self) {
+        for tab in &mut self.tabs {
+            tab.drain_diff_stats();
+            for sub in &mut tab.nav_stack {
+                sub.drain_diff_stats();
+            }
+        }
+    }
+
+    /// Kick off a diff-stats fetch on any tab that doesn't already
+    /// have one in flight or completed for its current commit list.
+    /// Idempotent — `trigger_diff_stats_fetch` short-circuits when
+    /// state says it's already covered.
+    fn trigger_diff_stats_fetches(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        for tab in &mut self.tabs {
+            tab.trigger_diff_stats_fetch(proxy.clone());
+            for sub in &mut tab.nav_stack {
+                sub.trigger_diff_stats_fetch(proxy.clone());
+            }
+        }
     }
 
     /// Drain CI fetch receivers for every tab + drilled-in level.

@@ -72,6 +72,13 @@ pub struct CommitDetail {
 /// the visible viewport even on big repos. Lifted later if needed.
 const COMMIT_LIMIT: usize = 1000;
 
+/// Cap for the per-tab diff-stats prefetch — `(ins, del)` for the
+/// most recent N commits. Past this, the +/- chip stays empty until
+/// async paging extends coverage. Each commit is one libgit2
+/// diff-tree-to-tree comparison, so the cap keeps the worker thread's
+/// total wall time bounded for tabs that haven't been touched.
+const DIFF_STATS_FETCH_LIMIT: usize = 200;
+
 /// Collapsible top-level sections of the left sidebar. Worktrees and
 /// submodules deliberately don't appear here — both belong to the
 /// active worktree, not the repo, and surface through the worktree
@@ -280,6 +287,15 @@ pub struct RepoTab {
     /// a new provider result lands.
     pub ci_per_commit: HashMap<String, Vec<ProviderCommitRollup>>,
 
+    // ---- Diff stats per commit ----
+    /// In-flight diff-stats fetcher (one-shot, drained on completion).
+    /// Populated by `trigger_diff_stats_fetch`; on Ready we apply
+    /// `(insertions, deletions)` to each `commits[i]` entry by Oid.
+    pub diff_stats_rx: Option<Receiver<Vec<(git2::Oid, usize, usize)>>>,
+    /// Marks whether diff-stats have been fetched for the current
+    /// commit list. Cleared on `refresh()` so a fresh load re-fetches.
+    pub diff_stats_fetched: bool,
+
     // ---- Submodule drill-down ----
     /// Stack of drilled-in submodule views. Each entry is a fully
     /// constructed `RepoTab` opened against the parent's working
@@ -329,6 +345,8 @@ impl RepoTab {
             last_ci_fetch: None,
             last_push_time: None,
             ci_per_commit: HashMap::new(),
+            diff_stats_rx: None,
+            diff_stats_fetched: false,
             nav_stack: Vec::new(),
             pinned_oid: None,
             pinned_path: None,
@@ -346,6 +364,10 @@ impl RepoTab {
         self.tags = self.repo.tags().unwrap_or_default();
         self.worktrees = self.repo.worktrees().unwrap_or_default();
         self.stashes = self.repo.stash_list();
+        // Commit list might change — let the polling loop re-trigger
+        // the diff-stats fetch on the next pass.
+        self.diff_stats_fetched = false;
+        self.diff_stats_rx = None;
         // Pull orphan commits from reflogs alongside the topo walk so
         // unreachable work — finished rebases, dropped branches —
         // doesn't disappear. Falls back to plain commit_graph on error
@@ -808,6 +830,99 @@ impl RepoTab {
             // intentionally don't surface a toast for this background
             // path since it'd be noise on every CI poll.
             let _ = config.save();
+        }
+    }
+
+    /// Synchronous variant of [`Self::trigger_diff_stats_fetch`] —
+    /// computes diff stats inline and applies them to `commits`. Used
+    /// from the screenshot pipeline (which has no polling loop to
+    /// drain the async receiver). Caps at the same fetch limit so
+    /// behavior matches the async path.
+    pub fn fetch_diff_stats_sync(&mut self) {
+        if self.commits.is_empty() {
+            return;
+        }
+        let oids: Vec<git2::Oid> = self
+            .commits
+            .iter()
+            .filter(|c| !c.is_synthetic)
+            .take(DIFF_STATS_FETCH_LIMIT)
+            .map(|c| c.id)
+            .collect();
+        let stats = self.repo.compute_diff_stats_sync(&oids);
+        let by_oid: HashMap<git2::Oid, (usize, usize)> = stats
+            .into_iter()
+            .map(|(oid, ins, del)| (oid, (ins, del)))
+            .collect();
+        for c in &mut self.commits {
+            if let Some(&(ins, del)) = by_oid.get(&c.id) {
+                c.insertions = ins;
+                c.deletions = del;
+            }
+        }
+        self.diff_stats_fetched = true;
+    }
+
+    /// Spawn a background fetch of `(insertions, deletions)` for the
+    /// most-recent `DIFF_STATS_FETCH_LIMIT` commits in `self.commits`.
+    /// One worker per call; the result lands as a single `Vec` on the
+    /// receiver and gets folded into `commits` via `drain_diff_stats`.
+    /// Idempotent: skips if a fetch is already in flight or has
+    /// completed for the current commit list.
+    pub fn trigger_diff_stats_fetch(&mut self, proxy: EventLoopProxy<()>) {
+        if self.diff_stats_rx.is_some() || self.diff_stats_fetched {
+            return;
+        }
+        if self.commits.is_empty() {
+            return;
+        }
+        // Cap the fetch — backfilling stats for thousands of historical
+        // commits is wasteful; users rarely scroll past the first few
+        // hundred. Future work: re-trigger as the viewport scrolls past
+        // the covered range.
+        let oids: Vec<git2::Oid> = self
+            .commits
+            .iter()
+            .filter(|c| !c.is_synthetic)
+            .take(DIFF_STATS_FETCH_LIMIT)
+            .map(|c| c.id)
+            .collect();
+        if oids.is_empty() {
+            return;
+        }
+        self.diff_stats_rx = Some(self.repo.compute_diff_stats_async(oids, proxy));
+    }
+
+    /// Drain a completed diff-stats fetch and apply per-commit
+    /// `(insertions, deletions)` onto matching `commits` entries.
+    /// Returns true if any stats landed (caller can request a redraw).
+    pub fn drain_diff_stats(&mut self) -> bool {
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = self.diff_stats_rx.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(results) => {
+                let by_oid: HashMap<git2::Oid, (usize, usize)> = results
+                    .into_iter()
+                    .map(|(oid, ins, del)| (oid, (ins, del)))
+                    .collect();
+                for c in &mut self.commits {
+                    if let Some(&(ins, del)) = by_oid.get(&c.id) {
+                        c.insertions = ins;
+                        c.deletions = del;
+                    }
+                }
+                self.diff_stats_rx = None;
+                self.diff_stats_fetched = true;
+                true
+            }
+            Err(TryRecvError::Empty) => false,
+            Err(TryRecvError::Disconnected) => {
+                self.diff_stats_rx = None;
+                self.diff_stats_fetched = true;
+                false
+            }
         }
     }
 
