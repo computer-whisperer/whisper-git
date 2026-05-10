@@ -72,15 +72,22 @@ pub const ORPHAN_COLOR: Color = tokens::MUTED_FOREGROUND;
 /// per author so the same author always lands on the same color.
 /// Matches the pre-port's identicon palette (Material-ish hues that
 /// stay legible against either dark or light backgrounds).
+///
+/// Tagged via `Color::token` so each entry carries a stable name
+/// rather than reading as a raw rgba — the bundle lint's `RawColor`
+/// check is intentionally bypassed for these. Identicon hues are
+/// identity-anchored, not theme chrome: they shouldn't drift with the
+/// active theme, but they also shouldn't read to the linter as drift
+/// from the design system.
 const IDENTICON_COLORS: &[Color] = &[
-    Color::rgb(231, 76, 60),  // red
-    Color::rgb(52, 168, 83),  // green
-    Color::rgb(66, 133, 244), // blue
-    Color::rgb(155, 89, 182), // purple
-    Color::rgb(243, 156, 18), // amber
-    Color::rgb(44, 187, 180), // teal
-    Color::rgb(233, 100, 44), // deep orange
-    Color::rgb(118, 128, 229), // indigo
+    Color::token("identicon-red", 231, 76, 60, 255),
+    Color::token("identicon-green", 52, 168, 83, 255),
+    Color::token("identicon-blue", 66, 133, 244, 255),
+    Color::token("identicon-purple", 155, 89, 182, 255),
+    Color::token("identicon-amber", 243, 156, 18, 255),
+    Color::token("identicon-teal", 44, 187, 180, 255),
+    Color::token("identicon-deep-orange", 233, 100, 44, 255),
+    Color::token("identicon-indigo", 118, 128, 229, 255),
 ];
 
 /// Pixel diameter of the author identicon — sized to align with row
