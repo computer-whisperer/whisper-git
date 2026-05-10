@@ -100,13 +100,14 @@ pub fn confirm_modal(title: &str, body: &str, ok_label: &str, destructive: bool)
 }
 
 pub fn error_modal(title: &str, body: &str) -> El {
+    // Icon + paragraph stacked, not paired in a row: aetna's
+    // row-with-wrappable-child sizing computes the row's hug height
+    // from the icon's single-line height first, leaving the
+    // paragraph with one line of allocation and forcing it to
+    // ellipsis when it should be wrapping (`Overflow` lint).
     let body_el = column([
-        row([
-            icon(IconName::AlertCircle).text_color(tokens::DESTRUCTIVE),
-            paragraph(body.to_string()),
-        ])
-        .gap(tokens::SPACE_2)
-        .align(Align::Center),
+        icon(IconName::AlertCircle).text_color(tokens::DESTRUCTIVE),
+        paragraph(body.to_string()),
         row([
             spacer(),
             button("Dismiss").key("modal:error:close").primary(),
