@@ -23,6 +23,13 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use winit::event_loop::EventLoopProxy;
 
+/// Chunk size for streaming diff-stats from the worker thread back
+/// to the UI. Each chunk wakes the event loop once, so smaller =
+/// finer-grained progress, larger = less overhead. 50 lands between
+/// "noticeable progress" and "not too chatty" for typical history
+/// lengths.
+const DIFF_STATS_CHUNK_SIZE: usize = 50;
+
 /// Format a Unix timestamp as a human-readable relative time string.
 pub fn format_relative_time(timestamp: i64) -> String {
     let now = std::time::SystemTime::now()
@@ -735,7 +742,11 @@ impl GitRepo {
     }
 
     /// Spawn a background thread to compute diff stats for a list of commit OIDs.
-    /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
+    /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples
+    /// in chunks of [`DIFF_STATS_CHUNK_SIZE`] — the receiver is drained on
+    /// every UI tick, so chunks land progressively as the worker computes
+    /// them. The channel closes when the worker finishes; the caller can
+    /// detect "done" by the `Disconnected` error from `try_recv`.
     pub fn compute_diff_stats_async(
         &self,
         oids: Vec<Oid>,
@@ -745,12 +756,20 @@ impl GitRepo {
         let repo_path = self.repo.path().to_path_buf();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let results = match Repository::open(&repo_path) {
-                Ok(repo) => compute_diff_stats_for(&repo, &oids),
-                Err(_) => Vec::new(),
+            let Ok(repo) = Repository::open(&repo_path) else {
+                // Even on early failure, ping once so the UI clears any
+                // in-flight indicator.
+                let _ = tx.send(Vec::new());
+                let _ = proxy.send_event(());
+                return;
             };
-            let _ = tx.send(results);
-            let _ = proxy.send_event(());
+            for chunk in oids.chunks(DIFF_STATS_CHUNK_SIZE) {
+                let results = compute_diff_stats_for(&repo, chunk);
+                if tx.send(results).is_err() {
+                    return;
+                }
+                let _ = proxy.send_event(());
+            }
         });
         rx
     }

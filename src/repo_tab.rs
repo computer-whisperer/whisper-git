@@ -72,12 +72,11 @@ pub struct CommitDetail {
 /// the visible viewport even on big repos. Lifted later if needed.
 const COMMIT_LIMIT: usize = 1000;
 
-/// Cap for the per-tab diff-stats prefetch — `(ins, del)` for the
-/// most recent N commits. Past this, the +/- chip stays empty until
-/// async paging extends coverage. Each commit is one libgit2
-/// diff-tree-to-tree comparison, so the cap keeps the worker thread's
-/// total wall time bounded for tabs that haven't been touched.
-const DIFF_STATS_FETCH_LIMIT: usize = 200;
+/// Cap for the per-tab diff-stats prefetch. We cover the entire
+/// commit list (matching `COMMIT_LIMIT`); the worker emits results
+/// in chunks so the UI fills in progressively rather than waiting
+/// for the whole backfill before showing anything.
+const DIFF_STATS_FETCH_LIMIT: usize = COMMIT_LIMIT;
 
 /// Collapsible top-level sections of the left sidebar. Worktrees and
 /// submodules deliberately don't appear here — both belong to the
@@ -901,37 +900,44 @@ impl RepoTab {
         self.diff_stats_rx = Some(self.repo.compute_diff_stats_async(oids, proxy));
     }
 
-    /// Drain a completed diff-stats fetch and apply per-commit
+    /// Drain in-flight diff-stats fetches and apply per-commit
     /// `(insertions, deletions)` onto matching `commits` entries.
+    /// The worker emits in chunks (see `DIFF_STATS_CHUNK_SIZE`); we
+    /// loop until `try_recv` reports `Empty` so all chunks ready this
+    /// tick get folded together. The channel only closes when the
+    /// worker has finished — that's the trigger for `diff_stats_fetched`,
+    /// so re-triggers stay quiet until a `refresh()` clears it.
     /// Returns true if any stats landed (caller can request a redraw).
     pub fn drain_diff_stats(&mut self) -> bool {
         use std::sync::mpsc::TryRecvError;
         let Some(rx) = self.diff_stats_rx.as_ref() else {
             return false;
         };
-        match rx.try_recv() {
-            Ok(results) => {
-                let by_oid: HashMap<git2::Oid, (usize, usize)> = results
-                    .into_iter()
-                    .map(|(oid, ins, del)| (oid, (ins, del)))
-                    .collect();
-                for c in &mut self.commits {
-                    if let Some(&(ins, del)) = by_oid.get(&c.id) {
-                        c.insertions = ins;
-                        c.deletions = del;
+        let mut any = false;
+        loop {
+            match rx.try_recv() {
+                Ok(results) => {
+                    let by_oid: HashMap<git2::Oid, (usize, usize)> = results
+                        .into_iter()
+                        .map(|(oid, ins, del)| (oid, (ins, del)))
+                        .collect();
+                    for c in &mut self.commits {
+                        if let Some(&(ins, del)) = by_oid.get(&c.id) {
+                            c.insertions = ins;
+                            c.deletions = del;
+                        }
                     }
+                    any = true;
                 }
-                self.diff_stats_rx = None;
-                self.diff_stats_fetched = true;
-                true
-            }
-            Err(TryRecvError::Empty) => false,
-            Err(TryRecvError::Disconnected) => {
-                self.diff_stats_rx = None;
-                self.diff_stats_fetched = true;
-                false
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.diff_stats_rx = None;
+                    self.diff_stats_fetched = true;
+                    break;
+                }
             }
         }
+        any
     }
 
     /// Drain in-flight CI receivers. For each Ready result, replace any
