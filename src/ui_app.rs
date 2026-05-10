@@ -463,7 +463,11 @@ impl App for WhisperApp {
             }
         }
         chrome.push(header_bar(self.active_focus(), self.clone_op.as_ref()));
-        if self.shortcut_bar_visible {
+        // Welcome state has no tab-bound shortcuts that would benefit
+        // the user — Open is already a primary button on the welcome
+        // body, Close tab has nothing to act on. Suppress the
+        // shortcut bar entirely until at least one tab is open.
+        if self.shortcut_bar_visible && !self.tabs.is_empty() {
             chrome.push(shortcut_bar());
         }
         let chrome_el = column(chrome);
@@ -4026,6 +4030,31 @@ fn breadcrumb_bar(names: &[String]) -> El {
 const STALL_WARN_SECS: u64 = 60;
 
 fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
+    // Welcome state — no tab open: drop the repo-action toolbar
+    // (Fetch / Pull / Push / Commit) and the branch indicator, both
+    // of which only make sense against a checkout. Keep an in-flight
+    // clone status visible (the clone is what'll *create* the tab)
+    // and keep Settings reachable for token / config setup before
+    // the user picks a repo.
+    if active.is_none() {
+        let mut items: Vec<El> = Vec::new();
+        if let Some(op) = clone_op {
+            items.push(status_row(
+                "Clone",
+                &op.dest_label,
+                op.started.elapsed().as_secs(),
+            ));
+        }
+        items.push(spacer());
+        items.push(
+            icon_button(IconName::Settings)
+                .key("settings")
+                .tooltip("Settings"),
+        );
+        let bar = toolbar(items).padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2));
+        return column([bar, separator()]).width(Size::Fill(1.0));
+    }
+
     let branch = match active {
         Some(t) => {
             let cb = t.current_branch();
