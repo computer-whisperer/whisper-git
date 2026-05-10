@@ -74,6 +74,27 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
         })
         .collect();
 
+    // Match each edge trigger's corners to the parent tabs_list's
+    // outer radius (RADIUS_MD = 8). The catalog default is RADIUS_SM,
+    // which leaves filled `current()` triggers painting flat into the
+    // parent's rounded corners — `CornerStackup` lint. Middle triggers
+    // keep the default since they don't touch the parent's curve.
+    let n = triggers.len();
+    let triggers: Vec<El> = triggers
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if n == 1 {
+                t.radius(tokens::RADIUS_MD)
+            } else if i == 0 {
+                t.radius(Corners::left(tokens::RADIUS_MD))
+            } else if i == n - 1 {
+                t.radius(Corners::right(tokens::RADIUS_MD))
+            } else {
+                t
+            }
+        })
+        .collect();
     let pills = tabs_list_from_triggers(triggers);
     // Trailing + icon opens the create-worktree modal. The icon_button
     // style matches the tabs_list height so the row reads as one
@@ -298,8 +319,7 @@ fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
         text(status_char.to_string())
             .mono()
             .text_color(status_color),
-        text(file.path.clone()),
-        spacer(),
+        text(file.path.clone()).ellipsis().width(Size::Fill(1.0)),
         icon_button(if is_unstaged_section {
             IconName::Plus
         } else {
