@@ -1378,20 +1378,33 @@ impl RepoTab {
     /// Kick off CI fetches for every configured remote that maps to a
     /// known provider. One worker thread per (provider, remote) — each
     /// thread sends its result back via `ci_receivers` and wakes the
-    /// event loop through `proxy`. Sets `last_ci_fetch` regardless of
-    /// how many fetches actually launched, so the poll cadence backs off
-    /// even when no remote is recognised.
+    /// event loop through `proxy`. `last_ci_fetch` is only stamped when
+    /// at least one fetch actually launched: on the first frame after
+    /// `RepoTab::open` the async state refresh hasn't populated
+    /// `self.remotes` yet, so the loop has nothing to iterate. Stamping
+    /// regardless would hide that empty-remotes race behind the 5-min
+    /// dynamic interval (CI badges would show 5 minutes late on every
+    /// open). Leaving the stamp untouched lets the next poll retry
+    /// once the state-refresh worker fills the field.
     ///
     /// Tokens come from the system keychain via `token_store`. GitLab
     /// hosts seen here are also auto-registered into `config.gitlab_hosts`
     /// (and the config persisted) so the token modal has something to
     /// enumerate even before the user has set a token for the host.
     pub fn trigger_ci_fetch(&mut self, config: &mut Config, proxy: EventLoopProxy<()>) {
-        self.last_ci_fetch = Some(Instant::now());
+        if self.remotes.is_empty() {
+            // Early-out so the keychain query below doesn't fire 60×/s
+            // while we wait for the state-refresh worker to populate
+            // `self.remotes`. The `launched`-gated stamp at the bottom
+            // would also leave `last_ci_fetch` correctly unset, but the
+            // keychain hit isn't free.
+            return;
+        }
         let github_token = token_store::get_github_token();
         let mut seen_github = false;
         let mut seen_gitlab: HashSet<String> = HashSet::new();
         let mut config_dirty = false;
+        let mut launched = false;
         for remote in &self.remotes {
             let url = match self.repo.remote_url(remote) {
                 Some(u) => u,
@@ -1403,6 +1416,7 @@ impl RepoTab {
             {
                 self.ci_receivers.push(rx);
                 seen_github = true;
+                launched = true;
                 continue;
             }
             if let Some(parsed) = gitlab::parse_gitlab_remote(&url) {
@@ -1421,6 +1435,7 @@ impl RepoTab {
                     && let Some(rx) = gitlab::fetch_ci_status_async(&token, &url, proxy.clone())
                 {
                     self.ci_receivers.push(rx);
+                    launched = true;
                 }
             }
         }
@@ -1430,6 +1445,9 @@ impl RepoTab {
             // intentionally don't surface a toast for this background
             // path since it'd be noise on every CI poll.
             let _ = config.save();
+        }
+        if launched {
+            self.last_ci_fetch = Some(Instant::now());
         }
     }
 
