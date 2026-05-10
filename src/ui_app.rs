@@ -402,6 +402,7 @@ impl WhisperApp {
 
 impl App for WhisperApp {
     fn before_build(&mut self) {
+        self.trigger_initial_state_refreshes();
         self.poll_async_ops();
     }
 
@@ -1280,8 +1281,10 @@ impl WhisperApp {
                                     "Created {name}, but checkout failed: {e}"
                                 )));
                                 self.active_modal = None;
+                                let proxy = self.proxy.clone();
+                                let show_orphans = self.config.show_orphaned_commits;
                                 if let Some(t) = self.active_focus_mut() {
-                                    t.refresh();
+                                    t.request_state_refresh(proxy.as_ref(), show_orphans);
                                 }
                                 return;
                             }
@@ -1290,8 +1293,10 @@ impl WhisperApp {
                 }
                 self.toasts.push(ToastSpec::success(msg));
                 self.active_modal = None;
+                let proxy = self.proxy.clone();
+                let show_orphans = self.config.show_orphaned_commits;
                 if let Some(t) = self.active_focus_mut() {
-                    t.refresh();
+                    t.request_state_refresh(proxy.as_ref(), show_orphans);
                 }
             }
             Err(e) => {
@@ -1704,8 +1709,10 @@ impl WhisperApp {
                 // Refresh the parent so the staged pointer change shows
                 // up in its staging well. Refresh on the OUTERMOST
                 // (which is now the focused view since we popped).
+                let proxy = self.proxy.clone();
+                let show_orphans = self.config.show_orphaned_commits;
                 if let Some(outer) = self.active_mut() {
-                    outer.refresh();
+                    outer.request_state_refresh(proxy.as_ref(), show_orphans);
                 }
                 self.toasts.push(ToastSpec::success(format!(
                     "Staged {sm_path} \u{2192} {new_short}"
@@ -1775,6 +1782,31 @@ impl WhisperApp {
         self.trigger_diff_stats_fetches();
         self.drain_avatar_completions();
         self.request_visible_avatars();
+    }
+
+    /// Kick off the very first state refresh for any tab that hasn't
+    /// had one attempted yet. Runs every frame from `before_build` —
+    /// the per-tab `state_refresh_attempted` flag short-circuits after
+    /// the first call so this is cheap on subsequent frames.
+    ///
+    /// Tabs constructed before the proxy was set (the startup path
+    /// through `from_paths`) sit in an empty state until the first
+    /// frame where `proxy` is available; that's also the first frame
+    /// this runs. Tabs created later (via `open_repo_path`) trigger
+    /// their refresh inline at construction time and skip this.
+    fn trigger_initial_state_refreshes(&mut self) {
+        let Some(proxy) = self.proxy.clone() else { return };
+        let show_orphans = self.config.show_orphaned_commits;
+        for tab in &mut self.tabs {
+            if !tab.state_refresh_attempted {
+                tab.trigger_state_refresh(&proxy, show_orphans);
+            }
+            for sub in &mut tab.nav_stack {
+                if !sub.state_refresh_attempted {
+                    sub.trigger_state_refresh(&proxy, show_orphans);
+                }
+            }
+        }
     }
 
     /// Drain finished `RepoStateResult`s for every tab + drilled-in
@@ -2128,7 +2160,7 @@ impl WhisperApp {
                 None => None,
             };
             let Some(outcome) = outcome else { continue };
-            // Clear slot before calling refresh so a refresh that
+            // Clear slot before triggering refresh so a refresh that
             // happens to inspect the slot sees it empty.
             match kind {
                 AsyncKind::Fetch => tab.fetch_op = None,
@@ -2136,7 +2168,7 @@ impl WhisperApp {
                 AsyncKind::Push => tab.push_op = None,
                 AsyncKind::Mutation => tab.mutation_op = None,
             }
-            tab.refresh();
+            tab.request_state_refresh(self.proxy.as_ref(), self.config.show_orphaned_commits);
             match outcome {
                 Ok((label, RemoteOpResult { success: true, .. })) => {
                     self.toasts
@@ -2395,12 +2427,14 @@ impl WhisperApp {
         // Operate on the focused tab — when drilled into a submodule,
         // stage / unstage / hunk ops target the submodule's working
         // directory, not the parent's.
+        let proxy = self.proxy.clone();
+        let show_orphans = self.config.show_orphaned_commits;
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
         match op(tab) {
             Ok(()) => {
-                tab.refresh();
+                tab.request_state_refresh(proxy.as_ref(), show_orphans);
                 self.toasts.push(ToastSpec::success(format!("{label} ✓")));
             }
             Err(e) => {
@@ -2477,6 +2511,8 @@ impl WhisperApp {
         // the commit lands in the submodule's working dir, and we
         // detect divergence from the pin afterwards to offer the
         // post-commit coordination dialog.
+        let proxy = self.proxy.clone();
+        let show_orphans = self.config.show_orphaned_commits;
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
@@ -2515,7 +2551,7 @@ impl WhisperApp {
         };
         view.commit_subject.clear();
         view.commit_body.clear();
-        tab.refresh();
+        tab.request_state_refresh(proxy.as_ref(), show_orphans);
         let short = new_oid.to_string()[..7].to_string();
         self.toasts
             .push(ToastSpec::success(format!("Committed {short}")));

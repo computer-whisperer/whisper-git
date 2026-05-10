@@ -72,6 +72,13 @@ fn main() -> Result<()> {
     let mut app = WhisperApp::from_paths(args.repos.iter());
 
     if let Some(out_path) = args.screenshot.as_ref() {
+        // Headless: no event loop, so the async-init path can't drain
+        // results. Populate tabs synchronously before fixtures touch
+        // them — `apply_screenshot_state` expects e.g. `tab.commits.first()`
+        // to have data. The live (non-screenshot) path uses async init.
+        for tab in &mut app.tabs {
+            tab.refresh();
+        }
         apply_screenshot_state(&mut app, args.screenshot_state.as_deref());
         let (w, h) = args
             .screenshot_size

@@ -32,7 +32,10 @@ use crate::git::{
     RemoteOpResult, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
     insert_synthetics_sorted,
 };
-use crate::git_async::{DirtyCheckResult, RepoStateResult, StatusResult};
+use crate::git_async::{
+    DirtyCheckResult, RepoStateResult, StatusResult, spawn_repo_state_refresh,
+    spawn_status_refresh,
+};
 use crate::{github, gitlab, token_store};
 
 /// Unique id allocator for [`RepoTab`]. Used by per-entity dirty-check
@@ -329,6 +332,14 @@ pub struct RepoTab {
     pub ci_per_commit: HashMap<String, Vec<ProviderCommitRollup>>,
 
     // ---- Async refresh slots ----
+    /// `true` once the tab's first state-refresh has been spawned.
+    /// Used by the orchestrator's `trigger_initial_state_refreshes`
+    /// to gate against re-spawning on every frame after a failed
+    /// initial refresh — without this, an empty `commits` plus a
+    /// `None` slot would re-fire the spawn every frame in tight loop.
+    /// Cleared by nothing — once attempted, subsequent refreshes go
+    /// through explicit triggers (post-op, watcher, reconciliation).
+    pub state_refresh_attempted: bool,
     /// In-flight full repo-state refresh (commits, branches, tags,
     /// worktrees, remotes, submodules, stashes, ahead/behind, plus
     /// pre-opened per-worktree GitRepo handles). Drained in
@@ -417,9 +428,20 @@ pub struct StateApplyEffects {
 }
 
 impl RepoTab {
+    /// Open the libgit2 handle and return a minimal empty tab. **Does
+    /// not refresh** — the heavy work (commit walk, branch listing,
+    /// per-worktree GitRepo opens) runs on a worker via
+    /// [`Self::trigger_state_refresh`]. Synchronous refresh on tab open
+    /// stalled the Wayland event handle on large repos in the pre-port;
+    /// the new shape returns immediately with empty data and renders
+    /// loading-state placeholders until the worker's result lands.
+    ///
+    /// Headless callers (dump_bundles, screenshot mode) that have no
+    /// event loop and need populated data immediately should call
+    /// [`Self::refresh`] right after `open` to do the work synchronously.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let repo = GitRepo::open(&path).context("open repository")?;
-        let mut tab = Self {
+        let tab = Self {
             id: next_tab_id(),
             repo_name: repo.repo_name(),
             branch_tips: Vec::new(),
@@ -444,6 +466,7 @@ impl RepoTab {
             last_ci_fetch: None,
             last_push_time: None,
             ci_per_commit: HashMap::new(),
+            state_refresh_attempted: false,
             state_refresh_rx: None,
             status_rx: None,
             ref_fingerprint: 0,
@@ -456,7 +479,6 @@ impl RepoTab {
             pinned_path: None,
             repo,
         };
-        tab.refresh();
         Ok(tab)
     }
 
@@ -521,6 +543,83 @@ impl RepoTab {
         for tip in &mut self.branch_tips {
             tip.is_head = !tip.is_remote && tip.name == current;
         }
+    }
+
+    // ========================================================================
+    // Async-refresh triggers
+    // ========================================================================
+
+    /// Spawn a full repo-state refresh on a worker thread. Idempotent
+    /// while a refresh is already in flight (`state_refresh_rx` is
+    /// `Some`). Sets `state_refresh_attempted` so the orchestrator's
+    /// auto-init loop doesn't re-fire on every frame after a failed
+    /// initial spawn.
+    pub fn trigger_state_refresh(
+        &mut self,
+        proxy: &EventLoopProxy<()>,
+        show_orphaned_commits: bool,
+    ) {
+        if self.state_refresh_rx.is_some() {
+            return;
+        }
+        let repo_context_path = self
+            .repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.repo.git_dir().to_path_buf());
+        let staging_context_path = self
+            .active_view()
+            .and_then(|v| v.repo.workdir().map(|p| p.to_path_buf()))
+            .or_else(|| Some(repo_context_path.clone()));
+        self.state_refresh_rx = Some(spawn_repo_state_refresh(
+            repo_context_path,
+            staging_context_path,
+            show_orphaned_commits,
+            proxy.clone(),
+        ));
+        self.state_refresh_attempted = true;
+    }
+
+    /// Trigger a state refresh, picking async (worker spawn) when a
+    /// proxy is available and falling back to synchronous on-thread
+    /// refresh otherwise. The fallback exists for headless callers
+    /// (dump_bundles, screenshot mode) that have no event loop to wake
+    /// when the worker finishes — interactive callers always have a
+    /// proxy and stay off the main thread.
+    pub fn request_state_refresh(
+        &mut self,
+        proxy: Option<&EventLoopProxy<()>>,
+        show_orphaned_commits: bool,
+    ) {
+        match proxy {
+            Some(p) => self.trigger_state_refresh(p, show_orphaned_commits),
+            None => self.refresh(),
+        }
+    }
+
+    /// Spawn a working-dir status refresh on a worker thread. Cheap
+    /// path used for working-tree-edit watcher events and the 30 s
+    /// safety net. Idempotent while a status refresh is in flight.
+    pub fn trigger_status_refresh(&mut self, proxy: &EventLoopProxy<()>) {
+        if self.status_rx.is_some() {
+            return;
+        }
+        let repo_context_path = self
+            .repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.repo.git_dir().to_path_buf());
+        let staging_context_path = self
+            .active_view()
+            .and_then(|v| v.repo.workdir().map(|p| p.to_path_buf()))
+            .or_else(|| Some(repo_context_path.clone()));
+        let is_bare = self.repo.is_effectively_bare();
+        self.status_rx = Some(spawn_status_refresh(
+            repo_context_path,
+            staging_context_path,
+            is_bare,
+            proxy.clone(),
+        ));
     }
 
     // ========================================================================

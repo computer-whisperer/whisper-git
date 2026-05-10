@@ -28,10 +28,15 @@ fn main() -> Result<()> {
         cli_paths
     };
 
+    // Headless: no event loop, so populate synchronously via
+    // `tab.refresh()`. The async path is only used by the live app.
     let opened: Vec<RepoTab> = paths
         .iter()
         .filter_map(|p| match RepoTab::open(p) {
-            Ok(t) => Some(t),
+            Ok(mut t) => {
+                t.refresh();
+                Some(t)
+            }
             Err(e) => {
                 eprintln!(
                     "skipping {} (not a git repo or open failed: {e})",
@@ -427,7 +432,9 @@ fn reopen(t: &RepoTab) -> RepoTab {
         .workdir()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    RepoTab::open(path).expect("reopen succeeded once already")
+    let mut tab = RepoTab::open(path).expect("reopen succeeded once already");
+    tab.refresh();
+    tab
 }
 
 /// Build a `TimedOp` for header-busy bundle scenes. The receiver is
