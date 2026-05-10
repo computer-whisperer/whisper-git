@@ -1,7 +1,9 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
@@ -89,6 +91,11 @@ pub struct RepoWatcher {
     watched_worktree_dirs: HashSet<PathBuf>,
     /// Worktree working directories we're actively watching.
     watched_worktree_workdirs: HashSet<PathBuf>,
+    /// Submodule workdirs to drop events for. Shared with the watcher's
+    /// classifier closure via Arc; `update_submodule_paths` swaps the
+    /// inner Vec so submodules added mid-session start being excluded
+    /// without rebuilding the watcher.
+    submodule_paths: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl RepoWatcher {
@@ -124,19 +131,27 @@ impl RepoWatcher {
         // are recognised as git metadata changes.
         let git_dir_owned = git_dir.to_path_buf();
         let common_dir_owned = common_dir.to_path_buf();
-        let submodule_paths_owned: Vec<PathBuf> = submodule_paths.to_vec();
+        let submodule_paths_shared: Arc<Mutex<Vec<PathBuf>>> =
+            Arc::new(Mutex::new(submodule_paths.to_vec()));
+        let submodule_paths_for_closure = Arc::clone(&submodule_paths_shared);
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 match res {
                     Ok(event) => {
+                        let guard = submodule_paths_for_closure
+                            .lock()
+                            .expect("submodule_paths mutex poisoned");
                         if let Some(kind) = classify_event(
                             &event,
                             &git_dir_owned,
                             &common_dir_owned,
-                            &submodule_paths_owned,
+                            &guard,
                         ) {
+                            // Drop the lock before sending so a slow
+                            // consumer doesn't extend the critical section.
+                            drop(guard);
                             let _ = watcher_tx.send(kind);
                         }
                     }
@@ -210,9 +225,21 @@ impl RepoWatcher {
                 watcher,
                 watched_worktree_dirs,
                 watched_worktree_workdirs,
+                submodule_paths: submodule_paths_shared,
             },
             debounce_rx,
         ))
+    }
+
+    /// Replace the submodule exclusion list. Called when a state
+    /// refresh notices a submodule was added or removed; the closure
+    /// picks up the new list on its next event without needing a
+    /// fresh watcher (the recursive workdir watch survives, so we
+    /// avoid the multi-hundred-ms inotify reinstall).
+    pub fn update_submodule_paths(&self, paths: Vec<PathBuf>) {
+        if let Ok(mut guard) = self.submodule_paths.lock() {
+            *guard = paths;
+        }
     }
 
     /// Add a path to watch. Ignores errors gracefully (e.g., path doesn't exist).

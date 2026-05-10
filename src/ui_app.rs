@@ -4,7 +4,7 @@
 //! composer lives in `sidebar.rs`. Staging / diff / graph still
 //! placeholders in the main area.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aetna_core::{
     App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
@@ -2516,17 +2516,22 @@ impl WhisperApp {
         );
 
         // Update the watcher's per-worktree watch set if the resolved
-        // worktree list changed. The watcher's submodule exclusion list
-        // is set at construction only — for now we don't update it
-        // mid-life (legacy gap; new submodules added during a session
-        // surface as WorkingTree events until the watcher is recreated).
+        // worktree list changed, and refresh its submodule exclusion
+        // list so submodules added/removed mid-session are reflected
+        // without rebuilding the watcher.
         if effects.watcher_paths_changed
             && let Some(tab) = self.tab_at_mut(tab_idx, depth)
         {
             let common_dir = tab.repo.common_dir().to_path_buf();
             let worktrees = tab.worktrees.clone();
+            let submodule_paths: Vec<PathBuf> = tab
+                .worktree_views
+                .values()
+                .flat_map(|v| v.submodules.iter().map(|sm| v.path.join(&sm.path)))
+                .collect();
             if let Some(w) = tab.watcher.as_mut() {
                 w.update_worktree_watches(&worktrees, &common_dir);
+                w.update_submodule_paths(submodule_paths);
             }
         }
 
