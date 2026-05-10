@@ -109,10 +109,9 @@ Done (since this section was last pruned):
 - **Stash apply / pop / drop** — sidebar context menu wired via `mutation_op`
 - **Tag creation** — sidebar `+` icon in the Tags section opens the create-tag modal
 - **Pull picker** — chevron next to header Pull button opens a radio picker of remote-tracking branches + `--rebase` toggle; routes through the existing `pull_op` slot
+- **Worktree creation** — `+` at the trailing edge of the worktree pill bar opens a Path/Source/Detached/Submodules form; routes through `create_worktree_with_post_steps_async` on the `mutation_op` slot
 
 Deferred / pending (no fixed order):
-
-- **Worktree creation** — list + switch already work; needs a "new worktree" dialog
 - **Push / merge / rebase options dialogs** — basic versions wired; no per-op options UI
 - **AI commit message generation** — old `ai.rs` deleted in Phase 7a, not yet ported
 - **Variable-height virtual list** — needs aetna-core changes; deferred upstream

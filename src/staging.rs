@@ -75,7 +75,14 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
         })
         .collect();
 
-    Some(tabs_list_from_triggers(triggers))
+    let pills = tabs_list_from_triggers(triggers);
+    // Trailing + icon opens the create-worktree modal. The icon_button
+    // style matches the tabs_list height so the row reads as one
+    // affordance strip rather than two stacked elements.
+    let plus = icon_button(IconName::Plus)
+        .key("new_worktree")
+        .tooltip("Create worktree\u{2026}");
+    Some(row([pills, plus]).gap(tokens::SPACE_1).align(Align::Center))
 }
 
 /// Strip the longest common prefix (up to the last separator: `-`,

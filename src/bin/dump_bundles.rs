@@ -285,6 +285,19 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             });
             app
         }));
+        scenes.push(("modal_worktree_create".to_string(), {
+            use whisper_git::dialogs::WorktreeForm;
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.active_modal = Some(whisper_git::ui_app::ActiveModal::Worktree {
+                form: WorktreeForm {
+                    path: "/home/example/work/whisper-git-feature".to_string(),
+                    source: "feature/x".to_string(),
+                    detached: false,
+                    init_submodules: true,
+                },
+            });
+            app
+        }));
         // Pull-picker modal — synthesized sources so the radio group is
         // populated even on a fresh test repo with no remotes.
         scenes.push(("modal_pull_picker".to_string(), {

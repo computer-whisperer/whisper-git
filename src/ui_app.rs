@@ -37,7 +37,7 @@ use crate::config::Config;
 use crate::dialogs;
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
-use crate::dialogs::{BranchForm, CloneForm, PullForm, TagForm, TokenForm};
+use crate::dialogs::{BranchForm, CloneForm, PullForm, TagForm, TokenForm, WorktreeForm};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::token_store;
 use crate::sidebar;
@@ -219,6 +219,11 @@ pub enum ActiveModal {
     PullPicker {
         form: PullForm,
         sources: Vec<String>,
+    },
+    /// Create-worktree dialog. Reached via the `+` icon on the
+    /// trailing edge of the worktree pill bar above the staging well.
+    Worktree {
+        form: WorktreeForm,
     },
 }
 
@@ -565,6 +570,9 @@ impl App for WhisperApp {
             ActiveModal::PullPicker { form, sources } => {
                 dialogs::pull_modal(form, sources)
             }
+            ActiveModal::Worktree { form } => {
+                dialogs::worktree_modal(form, &self.selection)
+            }
         });
         let menu_layer = self
             .context_menu
@@ -740,6 +748,20 @@ impl App for WhisperApp {
                     &event,
                     "pull:source",
                     |raw| Some(raw.to_string()),
+                );
+            }
+            Some(ActiveModal::Worktree { form }) => {
+                text_input::apply_event(
+                    &mut form.path,
+                    &mut self.selection,
+                    "worktree:path",
+                    &event,
+                );
+                text_input::apply_event(
+                    &mut form.source,
+                    &mut self.selection,
+                    "worktree:source",
+                    &event,
                 );
             }
             _ => {}
@@ -1075,6 +1097,7 @@ impl WhisperApp {
             "open_repo" => self.open_repo_dialog(),
             "new_branch" => self.open_branch_modal(),
             "new_tag" => self.open_tag_modal(),
+            "new_worktree" => self.open_worktree_modal(),
             "pull_options" => self.open_pull_picker(),
             "welcome:clone" => {
                 let mut form = CloneForm::default();
@@ -1260,6 +1283,16 @@ impl WhisperApp {
             self.handle_pull_route(key);
             return true;
         }
+        // Same gating for `worktree:` — `wt_select:tab:<path>` is the
+        // worktree pill bar's switch-route and doesn't carry the
+        // `worktree:` prefix, so it stays reachable when the modal is
+        // closed.
+        if matches!(self.active_modal, Some(ActiveModal::Worktree { .. }))
+            && key.starts_with("worktree:")
+        {
+            self.handle_worktree_route(key);
+            return true;
+        }
 
         match key {
             "modal:confirm:cancel" => {
@@ -1293,6 +1326,10 @@ impl WhisperApp {
                 true
             }
             "modal:pull:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:worktree:cancel" => {
                 self.active_modal = None;
                 true
             }
@@ -1557,6 +1594,102 @@ impl WhisperApp {
                 rebase: false,
             },
             sources,
+        });
+    }
+
+    fn handle_worktree_route(&mut self, key: &str) {
+        match key {
+            "worktree:detached" => {
+                if let Some(ActiveModal::Worktree { form }) = &mut self.active_modal {
+                    form.detached = !form.detached;
+                }
+            }
+            "worktree:submodules" => {
+                if let Some(ActiveModal::Worktree { form }) = &mut self.active_modal {
+                    form.init_submodules = !form.init_submodules;
+                }
+            }
+            "worktree:create" => self.create_worktree_from_modal(),
+            _ => {}
+        }
+    }
+
+    /// Apply the worktree-creation form: spawn `git worktree add` (with
+    /// optional `--detach` and submodule init follow-up) on the worktree
+    /// helper that already chains those steps. Routes through the
+    /// mutation_op slot — the post-op refresh picks up the new worktree
+    /// in `RepoTab::merge_worktree_views`.
+    fn create_worktree_from_modal(&mut self) {
+        let (path, source, detached, init_submodules) = match &self.active_modal {
+            Some(ActiveModal::Worktree { form }) => (
+                form.path.trim().to_string(),
+                form.source.trim().to_string(),
+                form.detached,
+                form.init_submodules,
+            ),
+            _ => return,
+        };
+        if path.is_empty() {
+            self.toasts.push(ToastSpec::warning("Path is empty"));
+            return;
+        }
+        if source.is_empty() {
+            self.toasts.push(ToastSpec::warning("Source is empty"));
+            return;
+        }
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::create_worktree_with_post_steps_async(
+            wd,
+            path.clone(),
+            source.clone(),
+            detached,
+            init_submodules,
+            false,
+            proxy,
+        );
+        let Some(tab) = self.active_focus_mut() else { return };
+        let label = if detached {
+            format!("worktree {path} (detached @ {source})")
+        } else {
+            format!("worktree {path} ({source})")
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts
+            .push(ToastSpec::info(format!("Creating {label}…")));
+        self.active_modal = None;
+    }
+
+    /// Open the create-worktree modal. Pre-fills the path with a
+    /// sibling-of-repo default named after the source ref, and the
+    /// source with the current branch when checked out.
+    fn open_worktree_modal(&mut self) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        let parent = focus
+            .repo
+            .git_command_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let source = focus.current_branch().to_string();
+        let path_default = if source.is_empty() {
+            String::new()
+        } else {
+            // Sanitize slashes so a branch like "feature/x" doesn't
+            // accidentally create a nested directory under parent.
+            let dir_name = source.replace('/', "-");
+            parent.join(dir_name).to_string_lossy().to_string()
+        };
+        self.active_modal = Some(ActiveModal::Worktree {
+            form: WorktreeForm {
+                path: path_default,
+                source,
+                detached: false,
+                init_submodules: false,
+            },
         });
     }
 

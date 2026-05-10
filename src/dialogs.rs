@@ -17,6 +17,7 @@ pub const MODAL_TOKEN_KEY: &str = "modal:token";
 pub const MODAL_BRANCH_KEY: &str = "modal:branch";
 pub const MODAL_TAG_KEY: &str = "modal:tag";
 pub const MODAL_PULL_KEY: &str = "modal:pull";
+pub const MODAL_WORKTREE_KEY: &str = "modal:worktree";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
 /// Settings panel: small subset of `Config` is editable for now —
@@ -371,6 +372,84 @@ pub fn pull_modal(state: &PullForm, sources: &[String]) -> El {
     let body = form([source_field, rebase_field, actions]);
 
     overlays_panel(MODAL_PULL_KEY, "Pull from remote", [body])
+}
+
+/// Form state for the Create Worktree modal — path + source ref +
+/// optional toggles for `--detach` and a follow-up
+/// `git submodule update --init --recursive` in the new worktree.
+/// `path` is pre-filled by the opener with a sibling-of-repo default;
+/// `source` defaults to the current branch when one is checked out.
+#[derive(Clone, Debug, Default)]
+pub struct WorktreeForm {
+    pub path: String,
+    pub source: String,
+    pub detached: bool,
+    pub init_submodules: bool,
+}
+
+/// Create-a-worktree modal. Two text inputs (path, source) plus two
+/// toggles (`--detach`, init submodules). Routes through
+/// `git_async::create_worktree_with_post_steps_async`, which already
+/// chains `git worktree add` with the optional submodule init step.
+pub fn worktree_modal(state: &WorktreeForm, selection: &Selection) -> El {
+    let path_field = form_item([
+        form_label("Path"),
+        form_control(
+            text_input(&state.path, selection, "worktree:path")
+                .key("worktree:path")
+                .width(Size::Fill(1.0)),
+        ),
+        form_description(
+            "The directory the worktree will be created at. \
+             Must not exist yet."
+                .to_string(),
+        ),
+    ]);
+    let source_field = form_item([
+        form_label("Source"),
+        form_control(
+            text_input(&state.source, selection, "worktree:source")
+                .key("worktree:source")
+                .width(Size::Fill(1.0)),
+        ),
+        form_description(
+            "Branch name (creates a checkout of that branch) or, with \
+             Detached enabled, any commit-ish."
+                .to_string(),
+        ),
+    ]);
+
+    let detached_field = field_row(
+        "Detached HEAD",
+        switch(state.detached).key("worktree:detached"),
+    );
+    let submodules_field = field_row(
+        "Initialize submodules after",
+        switch(state.init_submodules).key("worktree:submodules"),
+    );
+
+    let mut create_btn = button("Create").key("worktree:create").primary();
+    if state.path.trim().is_empty() || state.source.trim().is_empty() {
+        create_btn = create_btn.disabled();
+    }
+
+    let actions = row([
+        spacer(),
+        button("Cancel").key("modal:worktree:cancel").ghost(),
+        create_btn,
+    ])
+    .gap(tokens::SPACE_2)
+    .align(Align::Center);
+
+    let body = form([
+        path_field,
+        source_field,
+        detached_field,
+        submodules_field,
+        actions,
+    ]);
+
+    overlays_panel(MODAL_WORKTREE_KEY, "Create worktree", [body])
 }
 
 /// Form state for the Token modal — one section for GitHub, one row
