@@ -41,6 +41,10 @@ ureq = { version = "3", features = ["json"] }
 # MD5 — Gravatar's URL is keyed off the MD5 of the lowercased email.
 md5 = "0.8"
 
+# Filesystem watching — drives auto-refresh on external git ops + file edits.
+# Used by `crate::watcher::RepoWatcher`.
+notify = "8"
+
 # Utilities
 anyhow = "1.0"
 

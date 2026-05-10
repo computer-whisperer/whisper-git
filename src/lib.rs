@@ -22,6 +22,7 @@ pub mod sidebar;
 pub mod staging;
 pub mod token_store;
 pub mod ui_app;
+pub mod watcher;
 pub mod welcome;
 pub mod widgets;
 
