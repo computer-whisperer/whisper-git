@@ -11,9 +11,9 @@ keywords = ["git", "vulkan", "gui", "graphics"]
 categories = ["development-tools", "gui"]
 
 [dependencies]
-# UI toolkit (path dep until aetna 0.3.0 ships on crates.io)
-aetna-core = { path = "../../aetna/aetna.main/crates/aetna-core" }
-aetna-vulkano = { path = "../../aetna/aetna.main/crates/aetna-vulkano" }
+# UI toolkit
+aetna-core = "0.3.2"
+aetna-vulkano = "0.3.2"
 
 # Graphics
 vulkano = "0.35"
