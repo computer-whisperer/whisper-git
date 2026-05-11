@@ -138,14 +138,14 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         }
         "commit-menu" => {
             use whisper_git::ui_app::{ContextMenuState, ContextTarget};
-            if let Some(tab) = app.tabs.first_mut() {
-                if let Some(oid) = tab.commits.first().map(|c| c.id) {
-                    tab.select_commit(Some(oid));
-                    app.context_menu = Some(ContextMenuState {
-                        pos: (480.0, 200.0),
-                        target: ContextTarget::Commit(oid),
-                    });
-                }
+            if let Some(tab) = app.tabs.first_mut()
+                && let Some(oid) = tab.commits.first().map(|c| c.id)
+            {
+                tab.select_commit(Some(oid));
+                app.context_menu = Some(ContextMenuState {
+                    pos: (480.0, 200.0),
+                    target: ContextTarget::Commit(oid),
+                });
             }
         }
         "diff" => {
@@ -194,18 +194,22 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
             });
         }
         "clone" => {
-            let mut form = CloneForm::default();
-            form.url = "https://github.com/example/widget.git".to_string();
-            form.dest = "/home/example/Projects/widget".to_string();
+            let form = CloneForm {
+                url: "https://github.com/example/widget.git".to_string(),
+                dest: "/home/example/Projects/widget".to_string(),
+                ..Default::default()
+            };
             app.active_modal = Some(ActiveModal::Clone(form));
         }
         "token" => {
             app.active_modal = Some(ActiveModal::Token(TokenForm::default()));
         }
         "token-edit" => {
-            let mut form = TokenForm::default();
-            form.editing_github = true;
-            form.github_input = "ghp_demo123".to_string();
+            let form = TokenForm {
+                editing_github: true,
+                github_input: "ghp_demo123".to_string(),
+                ..Default::default()
+            };
             app.active_modal = Some(ActiveModal::Token(form));
         }
         "context-menu" => {

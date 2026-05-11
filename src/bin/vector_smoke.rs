@@ -234,10 +234,7 @@ fn full_column_asset() -> VectorAsset {
         let y1 = y0 + ROW_H;
         all.extend(build_row_paths(*kind, y0, y1));
     }
-    VectorAsset::from_paths(
-        [0.0, 0.0, COL_W, NUM_ROWS as f32 * ROW_H],
-        all,
-    )
+    VectorAsset::from_paths([0.0, 0.0, COL_W, NUM_ROWS as f32 * ROW_H], all)
 }
 
 fn per_row_column(overdrawn: bool) -> El {

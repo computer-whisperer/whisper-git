@@ -846,7 +846,6 @@ fn compute_diff_stats_for(repo: &Repository, oids: &[Oid]) -> Vec<(Oid, usize, u
 }
 
 impl GitRepo {
-
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {
         // Derive name from common_dir (the shared git repo identity).

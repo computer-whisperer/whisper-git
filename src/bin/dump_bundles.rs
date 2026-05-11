@@ -158,12 +158,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             t.select_commit(pick);
             WhisperApp::with_tabs(vec![t])
         }));
-        if let Some(commit_oid) = first
-            .commits
-            .iter()
-            .find(|c| !c.is_synthetic)
-            .map(|c| c.id)
-        {
+        if let Some(commit_oid) = first.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id) {
             scenes.push(("history_context_menu".to_string(), {
                 let mut t = reopen(first);
                 t.select_commit(Some(commit_oid));
@@ -221,9 +216,11 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         scenes.push(("modal_clone".to_string(), {
             use whisper_git::dialogs::CloneForm;
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
-            let mut form = CloneForm::default();
-            form.url = "https://github.com/example/widget.git".to_string();
-            form.dest = "/home/example/Projects/widget".to_string();
+            let form = CloneForm {
+                url: "https://github.com/example/widget.git".to_string(),
+                dest: "/home/example/Projects/widget".to_string(),
+                ..Default::default()
+            };
             app.active_modal = Some(ActiveModal::Clone(form));
             app
         }));
@@ -249,8 +246,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 .find(|c| !c.is_synthetic)
                 .map(|c| c.id)
                 .unwrap_or_else(|| {
-                    git2::Oid::from_str("0000000000000000000000000000000000000000")
-                        .unwrap()
+                    git2::Oid::from_str("0000000000000000000000000000000000000000").unwrap()
                 });
             t.select_commit(Some(target));
             let mut app = WhisperApp::with_tabs(vec![t]);
@@ -272,8 +268,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 .find(|c| !c.is_synthetic)
                 .map(|c| c.id)
                 .unwrap_or_else(|| {
-                    git2::Oid::from_str("0000000000000000000000000000000000000000")
-                        .unwrap()
+                    git2::Oid::from_str("0000000000000000000000000000000000000000").unwrap()
                 });
             t.select_commit(Some(target));
             let mut app = WhisperApp::with_tabs(vec![t]);
@@ -377,9 +372,11 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         scenes.push(("modal_token_edit".to_string(), {
             use whisper_git::dialogs::TokenForm;
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
-            let mut form = TokenForm::default();
-            form.editing_github = true;
-            form.github_input = "ghp_demo123".to_string();
+            let form = TokenForm {
+                editing_github: true,
+                github_input: "ghp_demo123".to_string(),
+                ..Default::default()
+            };
             app.active_modal = Some(ActiveModal::Token(form));
             app
         }));
@@ -394,8 +391,10 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 "gitlab.company.example".to_string(),
             ];
             let mut form = TokenForm::default();
-            form.gitlab_inputs
-                .insert("gitlab.company.example".to_string(), "glpat_demo".to_string());
+            form.gitlab_inputs.insert(
+                "gitlab.company.example".to_string(),
+                "glpat_demo".to_string(),
+            );
             app.active_modal = Some(ActiveModal::Token(form));
             app
         }));

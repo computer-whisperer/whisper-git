@@ -137,8 +137,7 @@ pub fn open_repo_modal(recent: &[String]) -> El {
         button_with_icon(IconName::Folder, "Open Local\u{2026}")
             .key("modal:open_repo:browse")
             .primary(),
-        button_with_icon(IconName::Download, "Clone Remote\u{2026}")
-            .key("modal:open_repo:clone"),
+        button_with_icon(IconName::Download, "Clone Remote\u{2026}").key("modal:open_repo:clone"),
         spacer(),
         button("Cancel").key("modal:open_repo:cancel").ghost(),
     ])
@@ -410,9 +409,7 @@ pub fn push_modal(state: &PushForm, selection: &Selection, remotes: &[String]) -
                 .key("push:branch")
                 .width(Size::Fill(1.0)),
         ),
-        form_description(
-            "Local branch to push. Defaults to the current branch.".to_string(),
-        ),
+        form_description("Local branch to push. Defaults to the current branch.".to_string()),
     ]);
 
     let force_field = field_row(
@@ -423,10 +420,7 @@ pub fn push_modal(state: &PushForm, selection: &Selection, remotes: &[String]) -
         "Set upstream",
         switch(state.set_upstream).key("push:set_upstream"),
     );
-    let tags_field = field_row(
-        "Include tags",
-        switch(state.include_tags).key("push:tags"),
-    );
+    let tags_field = field_row("Include tags", switch(state.include_tags).key("push:tags"));
 
     let mut push_btn = button("Push").key("push:execute").primary();
     if state.remote.trim().is_empty() || state.branch.trim().is_empty() {
@@ -504,9 +498,15 @@ pub struct MergeForm {
 /// keeps the default-merge fast path.
 pub fn merge_modal(state: &MergeForm, selection: &Selection, source: &str) -> El {
     let strategies = [
-        ("default".to_string(), "Default (fast-forward when possible)".to_string()),
+        (
+            "default".to_string(),
+            "Default (fast-forward when possible)".to_string(),
+        ),
         ("no_ff".to_string(), "No fast-forward (--no-ff)".to_string()),
-        ("ff_only".to_string(), "Fast-forward only (--ff-only)".to_string()),
+        (
+            "ff_only".to_string(),
+            "Fast-forward only (--ff-only)".to_string(),
+        ),
         ("squash".to_string(), "Squash (--squash)".to_string()),
     ];
     let current = state.strategy.as_radio_value().to_string();
@@ -567,8 +567,8 @@ pub fn rebase_modal(state: &RebaseForm, base: &str) -> El {
         switch(state.rebase_merges).key("rebase:merges"),
     );
 
-    let target_caption = paragraph(format!("Will rebase HEAD onto {base}."))
-        .text_color(tokens::MUTED_FOREGROUND);
+    let target_caption =
+        paragraph(format!("Will rebase HEAD onto {base}.")).text_color(tokens::MUTED_FOREGROUND);
 
     let actions = row([
         spacer(),
@@ -759,8 +759,8 @@ pub fn token_modal(
         ]));
     }
 
-    let actions = row([spacer(), button("Done").key("modal:token:close").primary()])
-        .align(Align::Center);
+    let actions =
+        row([spacer(), button("Done").key("modal:token:close").primary()]).align(Align::Center);
     sections.push(actions);
 
     let body = form(sections);
@@ -771,16 +771,9 @@ pub fn token_modal(
 /// Render one row of the GitLab section. Mirrors the GitHub row's
 /// edit/idle split but scopes routes by host suffix (`token:gitlab:
 /// edit:gitlab.com`, etc.) so the app can dispatch them correctly.
-fn gitlab_host_row(
-    state: &TokenForm,
-    selection: &Selection,
-    host: &str,
-    configured: bool,
-) -> El {
+fn gitlab_host_row(state: &TokenForm, selection: &Selection, host: &str, configured: bool) -> El {
     let editing = state.gitlab_inputs.contains_key(host);
-    let host_label = text(host.to_string())
-        .label()
-        .width(Size::Fixed(180.0));
+    let host_label = text(host.to_string()).label().width(Size::Fixed(180.0));
 
     let controls: El = if editing {
         let buf = state.gitlab_inputs.get(host).cloned().unwrap_or_default();

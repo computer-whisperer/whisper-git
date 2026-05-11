@@ -82,12 +82,9 @@ fn recent_section(recent: &[String]) -> El {
     // column's `Align::Center` then horizontally centers this section
     // under the hero, instead of having short repo names cling to the
     // left edge of a 560-px-wide frame.
-    column([
-        h3("Recent"),
-        item_group(rows).width(Size::Hug),
-    ])
-    .gap(tokens::SPACE_2)
-    .width(Size::Hug)
+    column([h3("Recent"), item_group(rows).width(Size::Hug)])
+        .gap(tokens::SPACE_2)
+        .width(Size::Hug)
 }
 
 fn recent_row(idx: usize, path_str: &str) -> El {

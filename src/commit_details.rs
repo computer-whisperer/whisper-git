@@ -44,34 +44,32 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         vec![paragraph(body).label()]
     };
 
-    let identity_card = card([
-        card_header([
-            row([
-                icon(IconName::GitCommit),
-                // .label() resets font_mono to false (label is the
-                // "field label" role and intentionally proportional).
-                // Chain .mono() after so the SHA renders in JBM.
-                text(info.short_id.clone()).label().mono(),
-                spacer(),
-                button("Copy SHA")
-                    .key("details:copy_sha")
-                    .ghost()
-                    .tooltip("Copy full commit SHA"),
-            ])
-            .gap(tokens::SPACE_2)
-            .align(Align::Center),
-            text(parents_label).muted().caption(),
-            text(format!(
-                "{} <{}> · {}",
-                info.author_name,
-                info.author_email,
-                info.relative_author_time(),
-            ))
-            .muted(),
+    let identity_card = card([card_header([
+        row([
+            icon(IconName::GitCommit),
+            // .label() resets font_mono to false (label is the
+            // "field label" role and intentionally proportional).
+            // Chain .mono() after so the SHA renders in JBM.
+            text(info.short_id.clone()).label().mono(),
+            spacer(),
+            button("Copy SHA")
+                .key("details:copy_sha")
+                .ghost()
+                .tooltip("Copy full commit SHA"),
         ])
-        .padding(tokens::SPACE_3)
-        .gap(tokens::SPACE_1),
-    ]);
+        .gap(tokens::SPACE_2)
+        .align(Align::Center),
+        text(parents_label).muted().caption(),
+        text(format!(
+            "{} <{}> · {}",
+            info.author_name,
+            info.author_email,
+            info.relative_author_time(),
+        ))
+        .muted(),
+    ])
+    .padding(tokens::SPACE_3)
+    .gap(tokens::SPACE_1)]);
 
     // Compose by hand instead of `titled_card` so the subject can
     // ellipsis when it overflows. `card_title` defaults to `.hug()`

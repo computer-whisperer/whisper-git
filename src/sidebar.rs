@@ -39,10 +39,8 @@ fn section_block(tab: &RepoTab, section: SidebarSection) -> El {
     let collapsed = tab.sidebar.is_collapsed(section);
     let header = section_header(tab, section, collapsed);
     let mut children = vec![header];
-    if !collapsed {
-        if let Some(body) = section_body(tab, section) {
-            children.push(body);
-        }
+    if !collapsed && let Some(body) = section_body(tab, section) {
+        children.push(body);
     }
     column(children)
 }

@@ -90,7 +90,7 @@ pub fn spawn_generate_async(
         };
         if diff_text.trim().is_empty() {
             let _ = tx.send(Err(
-                "Nothing staged to summarize. Stage some changes first.".to_string()
+                "Nothing staged to summarize. Stage some changes first.".to_string(),
             ));
             let _ = proxy.send_event(());
             return;

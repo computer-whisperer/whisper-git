@@ -621,10 +621,7 @@ impl App for WhisperApp {
             ActiveModal::RebaseOptions { form, base } => dialogs::rebase_modal(form, base),
             ActiveModal::Worktree { form } => dialogs::worktree_modal(form, &self.selection),
         });
-        let menu_layer = self
-            .context_menu
-            .as_ref()
-            .map(|cm| sidebar_context_menu(cm));
+        let menu_layer = self.context_menu.as_ref().map(sidebar_context_menu);
         // Worktree picker dropdown lives at the root so its popover
         // panel paints over the main layout. Anchored to the trigger
         // by key (`wt_select`) which lives in the active focus's
@@ -1223,8 +1220,10 @@ impl WhisperApp {
             "push_options" => self.open_push_picker(),
             "ai_generate" => self.generate_commit_message_via_ai(),
             "welcome:clone" => {
-                let mut form = CloneForm::default();
-                form.dest = std::env::var("HOME").unwrap_or_default();
+                let form = CloneForm {
+                    dest: std::env::var("HOME").unwrap_or_default(),
+                    ..Default::default()
+                };
                 self.active_modal = Some(ActiveModal::Clone(form));
             }
             "close_tab" => self.close_tab(self.active_tab),
@@ -1523,24 +1522,22 @@ impl WhisperApp {
         match tab.repo.create_branch_at(&name, target) {
             Ok(()) => {
                 let mut msg = format!("Created branch {name}");
-                if checkout {
-                    if let Some(view) = tab.active_view_mut() {
-                        match view.repo.checkout_branch(&name) {
-                            Ok(()) => {
-                                msg.push_str(" + checked out");
+                if checkout && let Some(view) = tab.active_view_mut() {
+                    match view.repo.checkout_branch(&name) {
+                        Ok(()) => {
+                            msg.push_str(" + checked out");
+                        }
+                        Err(e) => {
+                            self.toasts.push(ToastSpec::error(format!(
+                                "Created {name}, but checkout failed: {e}"
+                            )));
+                            self.active_modal = None;
+                            let proxy = self.proxy.clone();
+                            let show_orphans = self.config.show_orphaned_commits;
+                            if let Some(t) = self.active_focus_mut() {
+                                t.request_state_refresh(proxy.as_ref(), show_orphans);
                             }
-                            Err(e) => {
-                                self.toasts.push(ToastSpec::error(format!(
-                                    "Created {name}, but checkout failed: {e}"
-                                )));
-                                self.active_modal = None;
-                                let proxy = self.proxy.clone();
-                                let show_orphans = self.config.show_orphaned_commits;
-                                if let Some(t) = self.active_focus_mut() {
-                                    t.request_state_refresh(proxy.as_ref(), show_orphans);
-                                }
-                                return;
-                            }
+                            return;
                         }
                     }
                 }
@@ -2026,8 +2023,10 @@ impl WhisperApp {
                 self.open_repo_dialog();
             }
             "modal:open_repo:clone" => {
-                let mut form = CloneForm::default();
-                form.dest = std::env::var("HOME").unwrap_or_default();
+                let form = CloneForm {
+                    dest: std::env::var("HOME").unwrap_or_default(),
+                    ..Default::default()
+                };
                 self.active_modal = Some(ActiveModal::Clone(form));
             }
             other => {
@@ -2318,8 +2317,10 @@ impl WhisperApp {
             "clone" => {
                 // Clone-from-Settings: pre-fill destination with $HOME so
                 // first-time users land in a sensible default location.
-                let mut form = CloneForm::default();
-                form.dest = std::env::var("HOME").unwrap_or_default();
+                let form = CloneForm {
+                    dest: std::env::var("HOME").unwrap_or_default(),
+                    ..Default::default()
+                };
                 self.active_modal = Some(ActiveModal::Clone(form));
             }
             "tokens" => {
@@ -3426,10 +3427,10 @@ impl WhisperApp {
     }
 
     fn handle_merge_route(&mut self, key: &str) {
-        match key {
-            "merge:execute" => self.merge_from_modal(),
-            // strategy radio + message text edits are folded up in on_event.
-            _ => {}
+        // strategy radio + message text edits are folded up in on_event;
+        // execute is the only key we act on here.
+        if key == "merge:execute" {
+            self.merge_from_modal();
         }
     }
 
@@ -3607,7 +3608,7 @@ impl WhisperApp {
     }
 
     /// Run a sync git op on the active tab. On success, refresh status
-    /// + emit a success toast tagged with `label`. On failure, emit an
+    /// and emit a success toast tagged with `label`. On failure, emit an
     /// error toast carrying the underlying message.
     fn run_op<F>(&mut self, label: &str, op: F)
     where
@@ -3792,21 +3793,21 @@ fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
     if let Some(name) = route.strip_prefix("branch:") {
         return Some(ContextTarget::LocalBranch(name.to_string()));
     }
-    if let Some(rest) = route.strip_prefix("remote:") {
-        if let Some((remote, branch)) = rest.split_once('/') {
-            return Some(ContextTarget::RemoteBranch {
-                remote: remote.to_string(),
-                branch: branch.to_string(),
-            });
-        }
+    if let Some(rest) = route.strip_prefix("remote:")
+        && let Some((remote, branch)) = rest.split_once('/')
+    {
+        return Some(ContextTarget::RemoteBranch {
+            remote: remote.to_string(),
+            branch: branch.to_string(),
+        });
     }
     if let Some(name) = route.strip_prefix("tag:") {
         return Some(ContextTarget::Tag(name.to_string()));
     }
-    if let Some(idx_str) = route.strip_prefix("stash:") {
-        if let Ok(idx) = idx_str.parse::<usize>() {
-            return Some(ContextTarget::Stash(idx));
-        }
+    if let Some(idx_str) = route.strip_prefix("stash:")
+        && let Ok(idx) = idx_str.parse::<usize>()
+    {
+        return Some(ContextTarget::Stash(idx));
     }
     None
 }

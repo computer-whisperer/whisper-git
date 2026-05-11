@@ -34,7 +34,10 @@ pub fn diff_view(tab: &RepoTab, mode: DiffMode) -> El {
 
 fn working_diff(view: &WorktreeView, path: &str) -> DiffData {
     let staged = file_is_staged(view, path);
-    let hunks = view.repo.diff_working_file(path, staged).unwrap_or_default();
+    let hunks = view
+        .repo
+        .diff_working_file(path, staged)
+        .unwrap_or_default();
     let badge = if staged { "staged" } else { "unstaged" }.to_string();
     let widget_hunks: Vec<DiffHunk> = hunks
         .into_iter()
@@ -94,9 +97,17 @@ fn convert_hunk(hunk: git::DiffHunk, action: Option<DiffHunkAction>) -> DiffHunk
 
 fn working_action(idx: usize, path: &str, staged: bool) -> Option<DiffHunkAction> {
     let (label, key, tip) = if staged {
-        ("Unstage", format!("unstage_hunk:{idx}:{path}"), "Unstage this hunk")
+        (
+            "Unstage",
+            format!("unstage_hunk:{idx}:{path}"),
+            "Unstage this hunk",
+        )
     } else {
-        ("Stage", format!("stage_hunk:{idx}:{path}"), "Stage this hunk")
+        (
+            "Stage",
+            format!("stage_hunk:{idx}:{path}"),
+            "Stage this hunk",
+        )
     };
     Some(DiffHunkAction {
         label: label.to_string(),

@@ -16,9 +16,9 @@
 
 use std::collections::HashMap;
 
+use aetna_core::image::Image;
 use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
 use aetna_core::widgets::text_input::text_input;
-use aetna_core::image::Image;
 use aetna_core::{Color, El, Selection, prelude::*};
 use git2::Oid;
 
@@ -108,8 +108,7 @@ const PILLS_BAND_HEIGHT: f32 = 28.0;
 /// scrollbar thumb's active track. = `SCROLLBAR_THUMB_WIDTH_ACTIVE`
 /// (10) + `SCROLLBAR_TRACK_INSET` (2). Without it every focused row
 /// trips the `ScrollbarObscuresFocusable` lint on the right edge.
-const SCROLLBAR_GUTTER: f32 =
-    tokens::SCROLLBAR_THUMB_WIDTH_ACTIVE + tokens::SCROLLBAR_TRACK_INSET;
+const SCROLLBAR_GUTTER: f32 = tokens::SCROLLBAR_THUMB_WIDTH_ACTIVE + tokens::SCROLLBAR_TRACK_INSET;
 
 /// Hash an author name to a deterministic color slot.
 fn author_color(author: &str) -> Color {
@@ -125,7 +124,7 @@ fn author_color(author: &str) -> Color {
 /// authors that haven't been hashed yet show as a `?`.
 ///
 /// `gravatar` is `Some` when the avatar cache has finished fetching
-/// + decoding for this email; `None` covers in-flight, failed (404),
+/// and decoding for this email; `None` covers in-flight, failed (404),
 /// and not-yet-requested. `key` is required so the avatar
 /// participates in pointer hit-testing — aetna only fires tooltips on
 /// keyed elements.
@@ -561,8 +560,16 @@ fn decompose_edge_into_rows(edge: &GraphEdge, row_top_y: &[f32], rows: &mut [Row
     for row in edge.child_row..=edge.parent_row {
         let row_top = row_top_y[row];
         let row_bot = row_top_y[row + 1];
-        let strip_top = if row == edge.child_row { child_y } else { row_top };
-        let strip_bot = if row == edge.parent_row { parent_y } else { row_bot };
+        let strip_top = if row == edge.child_row {
+            child_y
+        } else {
+            row_top
+        };
+        let strip_bot = if row == edge.parent_row {
+            parent_y
+        } else {
+            row_bot
+        };
         if strip_bot - strip_top < 1e-4 {
             continue;
         }
@@ -708,10 +715,10 @@ fn ci_dot(rollup: &ProviderCommitRollup, key: String) -> El {
             .iter()
             .map(|c| {
                 let mark = match c.state {
-                    CiState::Success => "\u{2713}",  // ✓
-                    CiState::Failure => "\u{2717}",  // ✗
-                    CiState::Pending => "\u{22ef}",  // ⋯
-                    CiState::None => "\u{2014}",     // —
+                    CiState::Success => "\u{2713}", // ✓
+                    CiState::Failure => "\u{2717}", // ✗
+                    CiState::Pending => "\u{22ef}", // ⋯
+                    CiState::None => "\u{2014}",    // —
                 };
                 format!("{mark} {}", c.label)
             })
@@ -766,17 +773,18 @@ fn graph_cell(
     let mut paths: Vec<VectorPath> = Vec::new();
     let h = geom.height;
 
-    let push_vertical = |paths: &mut Vec<VectorPath>, lane: usize, color: Color, y0: f32, y1: f32| {
-        let x = lane_center_x(lane, graph_width);
-        paths.push(
-            PathBuilder::new()
-                .move_to(x, y0)
-                .line_to(x, y1)
-                .stroke_solid(color, LINE_WIDTH)
-                .stroke_line_cap(VectorLineCap::Butt)
-                .build(),
-        );
-    };
+    let push_vertical =
+        |paths: &mut Vec<VectorPath>, lane: usize, color: Color, y0: f32, y1: f32| {
+            let x = lane_center_x(lane, graph_width);
+            paths.push(
+                PathBuilder::new()
+                    .move_to(x, y0)
+                    .line_to(x, y1)
+                    .stroke_solid(color, LINE_WIDTH)
+                    .stroke_line_cap(VectorLineCap::Butt)
+                    .build(),
+            );
+        };
 
     let node_y = geom.node_y;
     for &(lane, color) in &geom.full_verticals {
@@ -1078,11 +1086,7 @@ fn build_row(
             .map(|(i, r)| ci_dot(r, format!("commit:{idx}.ci{i}")))
             .collect();
         if !ci_kids.is_empty() {
-            main_children.push(
-                row(ci_kids)
-                    .gap(tokens::SPACE_1)
-                    .align(Align::Center),
-            );
+            main_children.push(row(ci_kids).gap(tokens::SPACE_1).align(Align::Center));
         }
     }
     main_children.push(
@@ -1108,9 +1112,7 @@ fn build_row(
             .align(Align::End)
             .height(Size::Fixed(PILLS_BAND_HEIGHT))
             .width(Size::Fill(1.0));
-        column([band, main_row])
-            .gap(0.0)
-            .width(Size::Fill(1.0))
+        column([band, main_row]).gap(0.0).width(Size::Fill(1.0))
     };
 
     // Outer row: graph cell (full geom.height) + content column.
@@ -1139,14 +1141,12 @@ fn build_row(
     // zebra tint lives here (not on the inner) so the stripe still
     // spans full width, which keeps the rhythm visually consistent
     // across the scrollbar gutter.
-    let mut outer = column([inner])
-        .width(Size::Fill(1.0))
-        .padding(Sides {
-            left: 0.0,
-            right: SCROLLBAR_GUTTER,
-            top: 0.0,
-            bottom: 0.0,
-        });
+    let mut outer = column([inner]).width(Size::Fill(1.0)).padding(Sides {
+        left: 0.0,
+        right: SCROLLBAR_GUTTER,
+        top: 0.0,
+        bottom: 0.0,
+    });
     if !selected && idx % 2 == 1 {
         // Zebra striping on every other row — a faint MUTED tint that
         // helps the eye track across long lines without competing with
@@ -1244,14 +1244,12 @@ fn synthetic_row(
         .clip();
     // See `build_row` — wrap so the focusable rect doesn't overlap the
     // virtual_list scrollbar thumb on the right edge.
-    column([inner])
-        .width(Size::Fill(1.0))
-        .padding(Sides {
-            left: 0.0,
-            right: SCROLLBAR_GUTTER,
-            top: 0.0,
-            bottom: 0.0,
-        })
+    column([inner]).width(Size::Fill(1.0)).padding(Sides {
+        left: 0.0,
+        right: SCROLLBAR_GUTTER,
+        top: 0.0,
+        bottom: 0.0,
+    })
 }
 
 /// Estimated row height for `virtual_list_dyn` — the minimum a row
@@ -1271,11 +1269,7 @@ pub const SEARCH_INPUT_KEY: &str = "history:search";
 /// dim to ~30% opacity so the matching set stands out without
 /// disrupting the graph's visual integrity (filtering would skip
 /// rows and break the lane verticals between adjacent commits).
-pub fn history_view(
-    tab: &RepoTab,
-    selection: &Selection,
-    avatars: HashMap<String, Image>,
-) -> El {
+pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<String, Image>) -> El {
     if tab.commits.is_empty() {
         return column([
             text("No commits").muted(),
@@ -1302,9 +1296,11 @@ pub fn history_view(
     let match_count: usize = match_flags.iter().filter(|m| **m).count();
 
     let header_text = if !search_query.is_empty() {
-        format!("{match_count} match{} · {} commits",
+        format!(
+            "{match_count} match{} · {} commits",
             if match_count == 1 { "" } else { "es" },
-            tab.commits.len())
+            tab.commits.len()
+        )
     } else {
         match tab.selected_commit {
             Some(oid) => match tab.commits.iter().find(|c| c.id == oid) {
@@ -1344,7 +1340,10 @@ pub fn history_view(
             // points here — otherwise the branch pill already conveys
             // "this is HEAD" via its green tint.
             active_head_oid == Some(c.id)
-                && !tab.branch_tips.iter().any(|t| t.oid == c.id && !t.is_remote)
+                && !tab
+                    .branch_tips
+                    .iter()
+                    .any(|t| t.oid == c.id && !t.is_remote)
         })
         .collect();
     let ci_per_row: Vec<Option<Vec<ProviderCommitRollup>>> = tab
@@ -1390,12 +1389,11 @@ pub fn history_view(
     // Search bar is hidden by default; Ctrl+F flips `history_search_open`
     // to true and the row appears beneath the count chip. Escape closes
     // it and clears the query (handled in `WhisperApp::on_event`).
-    let mut header_children: Vec<El> = vec![
-        row([text(header_text).caption().muted()]).align(Align::Center),
-    ];
+    let mut header_children: Vec<El> =
+        vec![row([text(header_text).caption().muted()]).align(Align::Center)];
     if tab.history_search_open {
-        let search_input = text_input(&tab.search_query, selection, SEARCH_INPUT_KEY)
-            .width(Size::Fill(1.0));
+        let search_input =
+            text_input(&tab.search_query, selection, SEARCH_INPUT_KEY).width(Size::Fill(1.0));
         header_children.push(
             row([
                 icon(IconName::Search).icon_size(tokens::ICON_SM).muted(),
@@ -1408,9 +1406,9 @@ pub fn history_view(
 
     card([
         card_header(header_children)
-        .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
-        .gap(tokens::SPACE_2)
-        .fill(tokens::MUTED),
+            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
+            .gap(tokens::SPACE_2)
+            .fill(tokens::MUTED),
         card_content([virtual_list_dyn(commits.len(), EST_ROW_HEIGHT, move |i| {
             let c = &commits[i];
             let selected = selected_oid == Some(c.id);
@@ -1704,4 +1702,3 @@ mod tests {
         }
     }
 }
-

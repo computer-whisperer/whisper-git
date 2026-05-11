@@ -164,9 +164,7 @@ pub fn diff(data: &DiffData) -> El {
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .fill(tokens::MUTED),
-        card_content([body])
-            .padding(0.0)
-            .height(Size::Fill(1.0)),
+        card_content([body]).padding(0.0).height(Size::Fill(1.0)),
     ])
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
@@ -210,9 +208,7 @@ fn flatten_rows(hunks: &[DiffHunk], mode: DiffMode) -> Vec<DiffRow> {
 fn build_diff_row(row: &DiffRow, idx: usize) -> El {
     let key = format!("diff:row:{idx}");
     match row {
-        DiffRow::HunkHeader { header, action } => {
-            hunk_header_row(header, action.as_ref()).key(key)
-        }
+        DiffRow::HunkHeader { header, action } => hunk_header_row(header, action.as_ref()).key(key),
         DiffRow::UnifiedLine(line) => unified_line_row(line).key(key),
         DiffRow::SplitPair(pair) => split_pair_row(pair).key(key),
     }
@@ -284,14 +280,8 @@ fn split_hunk_header(header: &str) -> (String, Option<String>) {
 fn unified_line_row(line: &DiffLine) -> El {
     let (row_bg, gutter_overlay) = backgrounds_for(line.kind);
 
-    let old_no = line
-        .old_lineno
-        .map(|n| n.to_string())
-        .unwrap_or_default();
-    let new_no = line
-        .new_lineno
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let old_no = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
+    let new_no = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
 
     let gutter = row([lineno_col(old_no), lineno_col(new_no)])
         .fill(gutter_overlay)

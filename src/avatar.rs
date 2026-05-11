@@ -201,9 +201,7 @@ fn download_avatar(email_key: &str) -> Option<Vec<u8>> {
     // `d=404` makes Gravatar 404 when the email has no avatar — we
     // fall back to our local identicon in that case rather than
     // accepting Gravatar's stock identicon.
-    let url = format!(
-        "https://www.gravatar.com/avatar/{hash}?s={AVATAR_PIXELS}&d=404"
-    );
+    let url = format!("https://www.gravatar.com/avatar/{hash}?s={AVATAR_PIXELS}&d=404");
     let mut response = ureq::get(&url).call().ok()?;
     if response.status().as_u16() != 200 {
         return None;

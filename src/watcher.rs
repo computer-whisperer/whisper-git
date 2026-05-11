@@ -1,9 +1,9 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
@@ -143,12 +143,9 @@ impl RepoWatcher {
                         let guard = submodule_paths_for_closure
                             .lock()
                             .expect("submodule_paths mutex poisoned");
-                        if let Some(kind) = classify_event(
-                            &event,
-                            &git_dir_owned,
-                            &common_dir_owned,
-                            &guard,
-                        ) {
+                        if let Some(kind) =
+                            classify_event(&event, &git_dir_owned, &common_dir_owned, &guard)
+                        {
                             // Drop the lock before sending so a slow
                             // consumer doesn't extend the critical section.
                             drop(guard);

@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
-
 const SERVICE: &str = "whisper-git";
 const GITHUB_USER: &str = "github-token";
 
@@ -128,4 +127,3 @@ pub fn is_available() -> bool {
         })
     })
 }
-
