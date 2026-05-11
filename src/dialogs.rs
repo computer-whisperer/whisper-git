@@ -8,6 +8,7 @@
 use aetna_core::{El, IconName, Selection, prelude::*};
 
 use crate::config::Config;
+use crate::git::WorktreeInfo;
 
 pub const MODAL_SETTINGS_KEY: &str = "modal:settings";
 pub const MODAL_CONFIRM_KEY: &str = "modal:confirm";
@@ -21,6 +22,7 @@ pub const MODAL_PUSH_KEY: &str = "modal:push";
 pub const MODAL_MERGE_KEY: &str = "modal:merge";
 pub const MODAL_REBASE_KEY: &str = "modal:rebase";
 pub const MODAL_WORKTREE_KEY: &str = "modal:worktree";
+pub const MODAL_WORKTREES_KEY: &str = "modal:worktrees";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
 /// Settings panel for application preferences. Stale pre-aetna knobs
@@ -691,6 +693,72 @@ pub fn worktree_modal(state: &WorktreeForm, selection: &Selection) -> El {
     ]);
 
     overlays_panel(MODAL_WORKTREE_KEY, "Create worktree", [body])
+}
+
+pub fn worktrees_modal(worktrees: &[WorktreeInfo], active_path: Option<&std::path::Path>) -> El {
+    let body = if worktrees.is_empty() {
+        column([
+            paragraph("No linked worktrees.".to_string()).muted(),
+            row([
+                spacer(),
+                button("Done").key("modal:worktrees:close").primary(),
+            ])
+            .align(Align::Center),
+        ])
+        .gap(tokens::SPACE_3)
+    } else {
+        let rows = worktrees
+            .iter()
+            .enumerate()
+            .map(|(idx, wt)| worktree_manage_row(idx, wt, active_path));
+        column([
+            item_group(rows).width(Size::Fill(1.0)),
+            row([
+                spacer(),
+                button("Done").key("modal:worktrees:close").primary(),
+            ])
+            .align(Align::Center),
+        ])
+        .gap(tokens::SPACE_3)
+    };
+
+    overlays_panel(MODAL_WORKTREES_KEY, "Worktrees", [body])
+}
+
+fn worktree_manage_row(idx: usize, wt: &WorktreeInfo, active_path: Option<&std::path::Path>) -> El {
+    let is_active = active_path == Some(std::path::Path::new(&wt.path));
+    let dirty = wt.dirty_file_count.unwrap_or(0);
+    let mut meta: Vec<El> = vec![
+        text(wt.branch.clone()).caption().muted(),
+        text(wt.path.clone())
+            .caption()
+            .muted()
+            .ellipsis()
+            .width(Size::Fill(1.0))
+            .tooltip(wt.path.clone()),
+    ];
+    if dirty > 0 {
+        meta.push(badge(format!("{dirty} dirty")).warning());
+    } else if wt.is_dirty == Some(false) {
+        meta.push(badge("clean").muted());
+    }
+    if is_active {
+        meta.push(badge("active").muted());
+    }
+
+    item([
+        item_media_icon(IconName::LayoutDashboard),
+        item_content([
+            item_title(wt.name.clone()),
+            row(meta)
+                .gap(tokens::SPACE_2)
+                .align(Align::Center)
+                .width(Size::Fill(1.0)),
+        ]),
+        button("Remove")
+            .key(format!("worktrees:remove:{idx}"))
+            .destructive(),
+    ])
 }
 
 /// Form state for the Token modal — one section for GitHub, one row

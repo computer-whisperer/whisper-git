@@ -4,7 +4,10 @@
 //! composer lives in `sidebar.rs`. Staging / diff / graph still
 //! placeholders in the main area.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use aetna_core::{
     App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent, UiEventKind,
@@ -42,6 +45,7 @@ use crate::dialogs::{
 };
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
+use crate::host::HostApp;
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::sidebar;
 use crate::staging;
@@ -67,11 +71,22 @@ fn poll_ci_refresh_for(
     tab: &mut RepoTab,
     config: &mut Config,
     proxy: &winit::event_loop::EventLoopProxy<()>,
-    now: std::time::Instant,
+    now: Instant,
 ) {
     if !tab.ci_receivers.is_empty() {
         return;
     }
+    let interval = ci_poll_interval(tab, now);
+    let due = match tab.last_ci_fetch {
+        None => true,
+        Some(last) => now.duration_since(last) >= interval,
+    };
+    if due {
+        tab.trigger_ci_fetch(config, proxy.clone());
+    }
+}
+
+fn ci_poll_interval(tab: &RepoTab, now: Instant) -> Duration {
     let any_pending = tab
         .ci_results
         .iter()
@@ -79,18 +94,19 @@ fn poll_ci_refresh_for(
     let recently_pushed = tab
         .last_push_time
         .is_some_and(|t| now.duration_since(t).as_secs() < 300);
-    let interval_secs = if any_pending || recently_pushed {
+    Duration::from_secs(if any_pending || recently_pushed {
         15
     } else {
         300
-    };
-    let due = match tab.last_ci_fetch {
-        None => true,
-        Some(last) => now.duration_since(last).as_secs() >= interval_secs,
-    };
-    if due {
-        tab.trigger_ci_fetch(config, proxy.clone());
+    })
+}
+
+fn next_ci_wake_for(tab: &RepoTab, now: Instant) -> Option<Instant> {
+    if !tab.ci_receivers.is_empty() || tab.ci_results.is_empty() {
+        return None;
     }
+    tab.last_ci_fetch
+        .map(|last| last + ci_poll_interval(tab, now))
 }
 
 /// Discriminator for the four per-tab async slots. Carries the
@@ -131,6 +147,11 @@ pub enum ConfirmAction {
     DeleteBranch(String),
     DeleteTag(String),
     DropStash(usize),
+    RemoveWorktree {
+        name: String,
+        path: String,
+        force: bool,
+    },
     /// `git reset --hard <oid>` from a commit-row context menu.
     ResetHard(git2::Oid),
     /// `git push --force-with-lease` after a regular push was rejected
@@ -246,6 +267,9 @@ pub enum ActiveModal {
     Worktree {
         form: WorktreeForm,
     },
+    /// Worktree management dialog. Reached via the more button beside
+    /// the worktree selector and owns destructive removal affordances.
+    Worktrees,
 }
 
 pub struct WhisperApp {
@@ -453,6 +477,30 @@ impl WhisperApp {
     }
 }
 
+impl HostApp for WhisperApp {
+    fn next_wake(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let mut next: Option<Instant> = None;
+        for outer in &self.tabs {
+            merge_next_wake(&mut next, next_ci_wake_for(outer, now));
+            for sub in &outer.nav_stack {
+                merge_next_wake(&mut next, next_ci_wake_for(sub, now));
+            }
+        }
+        next
+    }
+}
+
+fn merge_next_wake(next: &mut Option<Instant>, candidate: Option<Instant>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    match *next {
+        Some(current) if current <= candidate => {}
+        _ => *next = Some(candidate),
+    }
+}
+
 impl App for WhisperApp {
     fn before_build(&mut self) {
         self.trigger_initial_state_refreshes();
@@ -614,6 +662,12 @@ impl App for WhisperApp {
             }
             ActiveModal::RebaseOptions { form, base } => dialogs::rebase_modal(form, base),
             ActiveModal::Worktree { form } => dialogs::worktree_modal(form, &self.selection),
+            ActiveModal::Worktrees => match self.active_focus() {
+                Some(tab) => {
+                    dialogs::worktrees_modal(&tab.worktrees, tab.active_worktree.as_deref())
+                }
+                None => dialogs::worktrees_modal(&[], None),
+            },
         });
         let menu_layer = self.context_menu.as_ref().map(sidebar_context_menu);
         // Worktree picker dropdown lives at the root so its popover
@@ -1210,6 +1264,7 @@ impl WhisperApp {
             "new_branch" => self.open_branch_modal(),
             "new_tag" => self.open_tag_modal(),
             "new_worktree" => self.open_worktree_modal(),
+            "manage_worktrees" => self.open_worktrees_modal(),
             "pull_options" => self.open_pull_picker(),
             "push_options" => self.open_push_picker(),
             "ai_generate" => self.generate_commit_message_via_ai(),
@@ -1427,6 +1482,12 @@ impl WhisperApp {
             self.handle_worktree_route(key);
             return true;
         }
+        if matches!(self.active_modal, Some(ActiveModal::Worktrees))
+            && key.starts_with("worktrees:")
+        {
+            self.handle_worktrees_route(key);
+            return true;
+        }
 
         match key {
             "modal:confirm:cancel" => {
@@ -1476,6 +1537,10 @@ impl WhisperApp {
                 true
             }
             "modal:worktree:cancel" => {
+                self.active_modal = None;
+                true
+            }
+            "modal:worktrees:close" => {
                 self.active_modal = None;
                 true
             }
@@ -1882,6 +1947,52 @@ impl WhisperApp {
         }
     }
 
+    fn handle_worktrees_route(&mut self, key: &str) {
+        if let Some(idx_str) = key.strip_prefix("worktrees:remove:")
+            && let Ok(idx) = idx_str.parse::<usize>()
+        {
+            self.confirm_remove_worktree(idx);
+        }
+    }
+
+    fn confirm_remove_worktree(&mut self, idx: usize) {
+        let Some(tab) = self.active_focus() else {
+            return;
+        };
+        let Some(info) = tab.worktrees.get(idx).cloned() else {
+            self.toasts
+                .push(ToastSpec::warning("Worktree is no longer present"));
+            return;
+        };
+        let path = PathBuf::from(&info.path);
+        let dirty_files = tab
+            .worktree_views
+            .get(&path)
+            .map(|view| view.status.total_files())
+            .or(info.dirty_file_count)
+            .unwrap_or(0);
+        let force = dirty_files > 0 || info.is_dirty == Some(true);
+        let dirty_note = if force {
+            format!("\n\nThis worktree has {dirty_files} dirty file(s) and will be force-removed.")
+        } else {
+            String::new()
+        };
+        self.active_modal = Some(ActiveModal::Confirm {
+            title: "Remove worktree".to_string(),
+            body: format!(
+                "Remove worktree '{}' at {}?{}",
+                info.name, info.path, dirty_note
+            ),
+            ok_label: "Remove".to_string(),
+            destructive: true,
+            action: ConfirmAction::RemoveWorktree {
+                name: info.name,
+                path: info.path,
+                force,
+            },
+        });
+    }
+
     /// Apply the worktree-creation form: spawn `git worktree add` (with
     /// optional `--detach` and submodule init follow-up) on the worktree
     /// helper that already chains those steps. Routes through the
@@ -1931,6 +2042,49 @@ impl WhisperApp {
         self.active_modal = None;
     }
 
+    fn remove_worktree(&mut self, name: String, path: String, force: bool) {
+        let Some(proxy) = self.proxy.clone() else {
+            self.toasts.push(ToastSpec::error(
+                "Remove worktree unavailable: event loop proxy missing",
+            ));
+            return;
+        };
+        let target_path = PathBuf::from(&path);
+        let label = format!("remove worktree {name}");
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        if tab.mutation_op.is_some() {
+            self.toasts
+                .push(ToastSpec::info("Mutation already in progress"));
+            return;
+        }
+
+        let command_dir = tab
+            .worktree_order
+            .iter()
+            .find(|p| **p != target_path && p.is_dir())
+            .cloned()
+            .unwrap_or_else(|| {
+                let wd = tab.repo.git_command_dir();
+                if wd == target_path {
+                    tab.repo.common_dir().to_path_buf()
+                } else {
+                    wd
+                }
+            });
+        let rx = if force {
+            crate::git::remove_worktree_force_async(command_dir, path, proxy)
+        } else {
+            crate::git::remove_worktree_async(command_dir, path, proxy)
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label.clone()));
+        self.toasts.push(ToastSpec::info(format!(
+            "Removing worktree {name}{}…",
+            if force { " with --force" } else { "" }
+        )));
+    }
+
     /// Open the create-worktree modal. Pre-fills the path with a
     /// sibling-of-repo default named after the source ref, and the
     /// source with the current branch when checked out.
@@ -1961,6 +2115,19 @@ impl WhisperApp {
                 init_submodules: false,
             },
         });
+    }
+
+    fn open_worktrees_modal(&mut self) {
+        match self.active_focus() {
+            Some(tab) if !tab.worktrees.is_empty() => {
+                self.active_modal = Some(ActiveModal::Worktrees);
+            }
+            Some(_) => {
+                self.toasts
+                    .push(ToastSpec::info("No linked worktrees to manage"));
+            }
+            None => {}
+        }
     }
 
     /// Spawn the AI-commit-message worker for the focused tab's
@@ -2369,6 +2536,9 @@ impl WhisperApp {
             }
             ConfirmAction::DropStash(idx) => {
                 self.stash_drop(idx);
+            }
+            ConfirmAction::RemoveWorktree { name, path, force } => {
+                self.remove_worktree(name, path, force);
             }
             ConfirmAction::ResetHard(oid) => {
                 self.run_op("Reset hard", move |t| {

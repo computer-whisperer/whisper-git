@@ -94,7 +94,7 @@ fn section_header(tab: &RepoTab, section: SidebarSection, collapsed: bool) -> El
 fn section_count(tab: &RepoTab, section: SidebarSection) -> usize {
     match section {
         SidebarSection::Local => tab.local_branches().len(),
-        SidebarSection::Remote => tab.remote_branches().iter().map(|(_, b)| b.len()).sum(),
+        SidebarSection::Remote => remote_names(tab).len(),
         SidebarSection::Tags => tab.tags.len(),
         SidebarSection::Stashes => tab.stashes.len(),
     }
@@ -142,12 +142,15 @@ fn local_body(tab: &RepoTab) -> El {
 }
 
 fn remote_body(tab: &RepoTab) -> Option<El> {
-    let groups = tab.remote_branches();
-    if groups.is_empty() {
+    let groups: std::collections::BTreeMap<String, Vec<String>> =
+        tab.remote_branches().into_iter().collect();
+    let remotes = remote_names(tab);
+    if remotes.is_empty() {
         return None;
     }
     let mut rows: Vec<El> = Vec::new();
-    for (remote, branches) in groups {
+    for remote in remotes {
+        let branches = groups.get(&remote).cloned().unwrap_or_default();
         let collapsed = tab.sidebar.is_remote_collapsed(&remote);
         let caret = if collapsed {
             IconName::ChevronRight
@@ -178,6 +181,10 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
         if collapsed {
             continue;
         }
+        if branches.is_empty() {
+            rows.push(empty_remote_row());
+            continue;
+        }
         for branch in branches {
             let key = format!("remote:{}/{}", remote, branch);
             rows.push(
@@ -191,6 +198,28 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
         }
     }
     Some(column(rows))
+}
+
+fn remote_names(tab: &RepoTab) -> Vec<String> {
+    let mut remotes: std::collections::BTreeSet<String> = tab.remotes.iter().cloned().collect();
+    remotes.extend(tab.remote_branches().into_iter().map(|(remote, _)| remote));
+    remotes.into_iter().collect()
+}
+
+fn empty_remote_row() -> El {
+    row([
+        icon(IconName::GitBranch).muted(),
+        text("No fetched branches").caption().muted(),
+    ])
+    .padding(Sides {
+        left: tokens::SPACE_4,
+        right: tokens::SPACE_2,
+        top: tokens::SPACE_1,
+        bottom: tokens::SPACE_1,
+    })
+    .gap(tokens::SPACE_1)
+    .align(Align::Center)
+    .height(Size::Fixed(28.0))
 }
 
 fn tags_body(tab: &RepoTab) -> Option<El> {

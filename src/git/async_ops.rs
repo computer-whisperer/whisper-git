@@ -119,9 +119,13 @@ define_async_git_op! {
     create_worktree_detached_async(path: String, commitish: String) =>
         ["worktree", "add", "--detach", path, commitish], "worktree add";
 
-    /// Spawn a background thread to remove a worktree
-    remove_worktree_async(name: String) =>
-        ["worktree", "remove", "--force", name], "worktree remove";
+    /// Spawn a background thread to remove a clean worktree
+    remove_worktree_async(target: String) =>
+        ["worktree", "remove", target], "worktree remove";
+
+    /// Spawn a background thread to force-remove a dirty worktree
+    remove_worktree_force_async(target: String) =>
+        ["worktree", "remove", "--force", target], "worktree remove --force";
 
     /// Spawn a background thread to delete a branch on the remote
     delete_remote_branch_async(remote: String, branch: String) =>

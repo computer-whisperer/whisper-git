@@ -6,6 +6,7 @@
 //! mode can reuse this path with a hidden window.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use aetna_core::{App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiKey};
 use aetna_vulkano::Runner;
@@ -33,19 +34,25 @@ use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
     window::{CursorIcon, Window, WindowId},
 };
 
-pub fn run<A: App + 'static>(
+pub trait HostApp: App {
+    fn next_wake(&self) -> Option<Instant> {
+        None
+    }
+}
+
+pub fn run<A: HostApp + 'static>(
     title: &'static str,
     viewport: Rect,
     mut app: A,
     on_proxy: impl FnOnce(&mut A, winit::event_loop::EventLoopProxy<()>),
 ) -> Result<()> {
     let event_loop = EventLoop::new().context("failed to create event loop")?;
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+    event_loop.set_control_flow(ControlFlow::Wait);
     on_proxy(&mut app, event_loop.create_proxy());
 
     let library = VulkanLibrary::new().context("no Vulkan library")?;
@@ -74,7 +81,7 @@ pub fn run<A: App + 'static>(
     Ok(())
 }
 
-struct Host<A: App> {
+struct Host<A: HostApp> {
     title: &'static str,
     viewport: Rect,
     app: A,
@@ -108,7 +115,7 @@ struct RenderContext {
     recreate_swapchain: bool,
 }
 
-impl<A: App> ApplicationHandler for Host<A> {
+impl<A: HostApp> ApplicationHandler for Host<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.rcx.is_some() {
             return;
@@ -181,6 +188,21 @@ impl<A: App> ApplicationHandler for Host<A> {
         // toast / modal state.
         if let Some(rcx) = self.rcx.as_ref() {
             rcx.window.request_redraw();
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(next) = self.app.next_wake() else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+        if next <= Instant::now() {
+            if let Some(rcx) = self.rcx.as_ref() {
+                rcx.window.request_redraw();
+            }
+            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(next));
         }
     }
 

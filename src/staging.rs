@@ -56,10 +56,20 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
     let plus = icon_button(IconName::Plus)
         .key("new_worktree")
         .tooltip("Create worktree\u{2026}");
+    let manage = (!tab.worktrees.is_empty()).then(|| {
+        icon_button(IconName::MoreHorizontal)
+            .key("manage_worktrees")
+            .tooltip("Manage worktrees")
+    });
     // The pane edge inset is intentionally separate from card/list
     // internals: this controls only the distance from the splitter.
+    let mut children = vec![inner.width(Size::Fill(1.0))];
+    if let Some(manage) = manage {
+        children.push(manage);
+    }
+    children.push(plus);
     Some(
-        row([inner.width(Size::Fill(1.0)), plus])
+        row(children)
             .gap(tokens::SPACE_1)
             .align(Align::Center)
             .width(Size::Fill(1.0))
