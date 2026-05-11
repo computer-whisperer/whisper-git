@@ -4222,19 +4222,27 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         push_options_btn = push_options_btn.disabled();
     }
 
-    let mut bar_items: Vec<El> = vec![branch];
+    let mut left_items: Vec<El> = vec![branch];
     if let Some(tab) = active {
-        bar_items.extend(ci_badges(tab));
+        left_items.extend(ci_badges(tab));
     }
     let status_lines = op_status_lines(active, clone_op);
     if !status_lines.is_empty() {
-        bar_items.push(
+        left_items.push(
             column(status_lines)
                 .gap(tokens::SPACE_1)
                 .align(Align::Center),
         );
     }
-    bar_items.push(spacer());
+    let mut bar_items: Vec<El> = vec![
+        row(left_items)
+            .gap(tokens::SPACE_4)
+            .align(Align::Center)
+            .width(Size::Hug),
+    ];
+    if let Some(tab) = active {
+        bar_items.push(git_dir_header_label(tab));
+    }
     bar_items.push(toolbar_group([
         fetch_btn,
         pull_btn,
@@ -4247,6 +4255,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     ]));
 
     let bar = toolbar(bar_items)
+        .gap(tokens::SPACE_4)
         .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
         .opacity(if actions_enabled { 1.0 } else { 0.85 });
 
@@ -4255,6 +4264,23 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
     // headers explicitly. A trailing `separator()` carries the visual
     // break between header and body without the false card silhouette.
     column([bar, separator()]).width(Size::Fill(1.0))
+}
+
+fn git_dir_header_label(tab: &RepoTab) -> El {
+    let path = tab.active_repo().git_dir().display().to_string();
+    row([
+        icon(IconName::Folder).muted(),
+        text(path.clone())
+            .caption()
+            .muted()
+            .ellipsis()
+            .width(Size::Fill(1.0)),
+    ])
+    .gap(tokens::SPACE_1)
+    .align(Align::Center)
+    .width(Size::Fill(1.0))
+    .key("header:git_dir")
+    .tooltip(path)
 }
 
 /// Build one inline status row per in-flight op for the active tab plus
