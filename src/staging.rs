@@ -16,28 +16,117 @@ use aetna_core::{El, IconName, Selection, prelude::*};
 use crate::git::{FileStatus, FileStatusKind, SubmoduleInfo};
 use crate::repo_tab::{RepoTab, WorktreeView};
 
+/// Worktree count above which the pill bar gives way to a dropdown
+/// picker. The catalog `tabs_list` row stretches all triggers to fill
+/// its width, so beyond a handful of pills the labels collapse onto
+/// each other and become unreadable.
+const WORKTREE_PILL_LIMIT: usize = 4;
 
-/// Pill bar for picking which worktree the staging well operates on.
+/// Selector at the top of the staging well for picking which worktree
+/// the well operates on.
 ///
-/// Hidden when there's only one worktree (the bar would have nothing to
-/// switch between, just clutter). The bar is the catalog
-/// `tabs_list_from_triggers` — each option is a [`tab_trigger_content`]
-/// carrying the worktree's display name (shortened against the common
-/// prefix of all worktree names — e.g. `feat/x` and `feat/y` show as
-/// `x` and `y` rather than burning width on the shared prefix) plus a
-/// dirty-count badge when libgit2 reports one.
+/// Two layouts depending on count:
+/// - **≤ [`WORKTREE_PILL_LIMIT`] worktrees**: a pill bar built from
+///   `tabs_list_from_triggers`. Pills are routed under
+///   `wt_select:tab:{path}` — the standard `{list_key}:tab:{value}`
+///   shape that aetna's tabs use. `ui_app.rs` strips that prefix and
+///   calls `RepoTab::select_worktree` with the resolved path.
+/// - **> [`WORKTREE_PILL_LIMIT`] worktrees**: a single dropdown trigger
+///   keyed `wt_select` (toggle) plus an overlay menu emitted by
+///   [`worktree_picker_overlay`] that routes `wt_select:option:{path}`
+///   on selection and `wt_select:dismiss` on outside-click.
 ///
-/// Pills are routed under `wt_select:tab:{path}` — the standard
-/// `{list_key}:tab:{value}` shape that aetna's tabs use. `ui_app.rs`
-/// strips that prefix and calls `RepoTab::select_worktree` with the
-/// resolved path. Paths are the trigger value (rather than names)
-/// since names aren't unique across nested linked worktrees.
+/// Hidden when the repo has no worktree at all (effectively bare).
+/// Paths are the trigger value (rather than names) since names aren't
+/// always unique across nested linked worktrees.
 pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
-    use aetna_core::widgets::tabs::{tab_trigger_content, tabs_list_from_triggers};
-
     if !tab.has_worktree_selector() {
         return None;
     }
+    let inner = if tab.worktree_order.len() <= WORKTREE_PILL_LIMIT {
+        worktree_pill_bar(tab)
+    } else {
+        worktree_dropdown_trigger(tab)
+    };
+    // Trailing + icon opens the create-worktree modal. The icon_button
+    // style matches the tabs_list / trigger height so the row reads as
+    // one affordance strip rather than two stacked elements.
+    let plus = icon_button(IconName::Plus)
+        .key("new_worktree")
+        .tooltip("Create worktree\u{2026}");
+    // Pad horizontally + on top so the bar lines up with the cards
+    // inside the staging well (which inset themselves by SPACE_3). The
+    // staging well's own top padding handles the bottom gap, so leave
+    // the bottom flush.
+    Some(
+        row([inner.width(Size::Fill(1.0)), plus])
+            .gap(tokens::SPACE_1)
+            .align(Align::Center)
+            .width(Size::Fill(1.0))
+            .padding(Sides {
+                top: tokens::SPACE_3,
+                right: tokens::SPACE_3,
+                bottom: 0.0,
+                left: tokens::SPACE_3,
+            }),
+    )
+}
+
+/// Dropdown overlay companion to [`worktree_selector`]. Returns the
+/// popover panel of worktree options when the picker is open *and* the
+/// selector is in dropdown mode; `None` otherwise. Render this at the
+/// root of the El tree (alongside other popover layers) so it paints
+/// above the main layout.
+pub fn worktree_picker_overlay(tab: &RepoTab) -> Option<El> {
+    use aetna_core::widgets::popover::{dropdown, menu_item};
+
+    if !tab.worktree_picker_open
+        || !tab.has_worktree_selector()
+        || tab.worktree_order.len() <= WORKTREE_PILL_LIMIT
+    {
+        return None;
+    }
+    let names: Vec<String> = tab
+        .worktree_order
+        .iter()
+        .filter_map(|p| tab.worktree_views.get(p).map(|v| v.name.clone()))
+        .collect();
+    let display = compute_display_names(&names);
+    let active = tab.active_worktree.clone();
+    let items: Vec<El> = tab
+        .worktree_order
+        .iter()
+        .enumerate()
+        .filter_map(|(i, path)| {
+            let view = tab.worktree_views.get(path)?;
+            let label = display.get(i).cloned().unwrap_or_else(|| view.name.clone());
+            let dirty = dirty_count(view);
+            // Inline dirty count into the menu_item label since the
+            // catalog menu_item is a single-child text row. Active
+            // worktree gets a check mark so the open menu shows the
+            // current selection at a glance.
+            let prefix = if active.as_ref() == Some(path) {
+                "\u{2713} "
+            } else {
+                "  "
+            };
+            let label = if dirty > 0 {
+                format!("{prefix}{label}  ·  {dirty} dirty")
+            } else {
+                format!("{prefix}{label}")
+            };
+            Some(menu_item(label).key(format!("wt_select:option:{}", path.to_string_lossy())))
+        })
+        .collect();
+    Some(dropdown("wt_select", "wt_select", items))
+}
+
+/// Pill bar variant used when worktree count is small enough that every
+/// pill stays readable. Each option is a [`tab_trigger_content`] keyed
+/// `wt_select:tab:{path}`.
+fn worktree_pill_bar(tab: &RepoTab) -> El {
+    use aetna_core::widgets::tabs::{tab_trigger_content, tabs_list_from_triggers};
+
     let names: Vec<String> = tab
         .worktree_order
         .iter()
@@ -53,10 +142,7 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
         .filter_map(|(i, path)| {
             let view = tab.worktree_views.get(path)?;
             let label = display.get(i).cloned().unwrap_or_else(|| view.name.clone());
-            let dirty = view.status.unstaged.len()
-                + view.status.untracked.len()
-                + view.status.staged.len()
-                + view.status.conflicted.len();
+            let dirty = dirty_count(view);
             let is_active = active.as_ref() == Some(path);
             let mut children: Vec<El> = vec![
                 icon(IconName::LayoutDashboard).muted(),
@@ -95,19 +181,40 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
             }
         })
         .collect();
-    let pills = tabs_list_from_triggers(triggers);
-    // Trailing + icon opens the create-worktree modal. The icon_button
-    // style matches the tabs_list height so the row reads as one
-    // affordance strip rather than two stacked elements.
-    let plus = icon_button(IconName::Plus)
-        .key("new_worktree")
-        .tooltip("Create worktree\u{2026}");
-    Some(
-        row([pills.width(Size::Fill(1.0)), plus])
-            .gap(tokens::SPACE_1)
-            .align(Align::Center)
-            .width(Size::Fill(1.0)),
-    )
+    tabs_list_from_triggers(triggers)
+}
+
+/// Dropdown trigger variant used when worktree count exceeds
+/// [`WORKTREE_PILL_LIMIT`]. A single `select_trigger`-shaped surface
+/// keyed `wt_select` (bare). Toggling it flips the picker open; the
+/// matching [`worktree_picker_overlay`] paints the option menu.
+fn worktree_dropdown_trigger(tab: &RepoTab) -> El {
+    use aetna_core::widgets::select::select_trigger;
+
+    let active_view = tab
+        .active_worktree
+        .as_ref()
+        .and_then(|p| tab.worktree_views.get(p));
+    let (label, dirty) = match active_view {
+        Some(v) => (v.name.clone(), dirty_count(v)),
+        None => (String::new(), 0),
+    };
+    let total = tab.worktree_order.len();
+    // Label tucks (a) the active worktree's dirty count and (b) the
+    // total worktree count after the active name so the closed trigger
+    // still conveys both the current state and the discoverable count.
+    let trigger_label = match (dirty > 0, total) {
+        (true, _) => format!("{label}  ·  {dirty} dirty  ·  {total} worktrees"),
+        (false, _) => format!("{label}  ·  {total} worktrees"),
+    };
+    select_trigger("wt_select", trigger_label)
+}
+
+fn dirty_count(view: &WorktreeView) -> usize {
+    view.status.unstaged.len()
+        + view.status.untracked.len()
+        + view.status.staged.len()
+        + view.status.conflicted.len()
 }
 
 /// Strip the longest common prefix (up to the last separator: `-`,
@@ -133,10 +240,7 @@ fn compute_display_names(names: &[String]) -> Vec<String> {
             .unwrap_or(0),
     );
     let common = &first[..prefix_len];
-    let strip_len = common
-        .rfind(['-', '_', '/'])
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let strip_len = common.rfind(['-', '_', '/']).map(|i| i + 1).unwrap_or(0);
     if strip_len == 0 {
         return names.to_vec();
     }
@@ -211,9 +315,7 @@ fn commit_message(view: &WorktreeView, selection: &Selection, ai_in_flight: bool
         card_header([row([
             text("Commit").label(),
             spacer(),
-            text(format!("{staged_count} staged"))
-                .caption()
-                .muted(),
+            text(format!("{staged_count} staged")).caption().muted(),
         ])
         .align(Align::Center)
         .gap(tokens::SPACE_2)])
@@ -353,10 +455,7 @@ fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
 /// total submodules and how many show staged-pointer / dirty state so
 /// users see at a glance whether there's submodule work pending.
 fn submodules_section(submodules: &[SubmoduleInfo]) -> El {
-    let pointer_changed = submodules
-        .iter()
-        .filter(|s| pin_changed(s))
-        .count();
+    let pointer_changed = submodules.iter().filter(|s| pin_changed(s)).count();
     let dirty = submodules
         .iter()
         .filter(|s| s.is_dirty == Some(true))

@@ -28,13 +28,11 @@ use crate::ci::{CiFetchResult, ProviderCiResult, ProviderCommitRollup};
 use crate::commit_graph::GraphLayout;
 use crate::config::Config;
 use crate::git::{
-    BranchTip, CommitInfo, CommitSubmoduleEntry, DiffFile, FullCommitInfo, GitRepo,
-    RemoteOpResult, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo,
-    insert_synthetics_sorted,
+    BranchTip, CommitInfo, CommitSubmoduleEntry, DiffFile, FullCommitInfo, GitRepo, RemoteOpResult,
+    StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
 use crate::git_async::{
-    DirtyCheckResult, RepoStateResult, StatusResult, spawn_repo_state_refresh,
-    spawn_status_refresh,
+    DirtyCheckResult, RepoStateResult, StatusResult, spawn_repo_state_refresh, spawn_status_refresh,
 };
 use crate::watcher::{FsChangeKind, RepoWatcher, WatcherInitResult};
 use crate::{github, gitlab, token_store};
@@ -144,8 +142,7 @@ impl SidebarSection {
         }
     }
 
-    pub const ALL: [SidebarSection; 4] =
-        [Self::Local, Self::Remote, Self::Tags, Self::Stashes];
+    pub const ALL: [SidebarSection; 4] = [Self::Local, Self::Remote, Self::Tags, Self::Stashes];
 }
 
 /// A logical entry in the sidebar — the keyboard cursor lands on these.
@@ -255,7 +252,7 @@ impl WorktreeView {
     /// async path expects the worker's `RepoStateResult` to populate
     /// `current_branch` / `head_oid` / `submodules` separately, and the
     /// next `StatusResult` to populate `status`.
-    pub(crate) fn with_repo(path: PathBuf, name: String, is_main: bool, repo: GitRepo) -> Self {
+    pub fn with_repo(path: PathBuf, name: String, is_main: bool, repo: GitRepo) -> Self {
         Self {
             path,
             name,
@@ -334,6 +331,10 @@ pub struct RepoTab {
     /// Display order for the worktree selector UI — sorted by name,
     /// stable across refreshes so the pill bar doesn't jitter.
     pub worktree_order: Vec<PathBuf>,
+    /// `true` while the worktree picker dropdown is open. Only consulted
+    /// when the staging-well selector renders in dropdown mode (i.e.
+    /// more worktrees than fit the pill bar); ignored otherwise.
+    pub worktree_picker_open: bool,
 
     // ---- Async ops ----
     pub fetch_op: Option<TimedOp>,
@@ -510,6 +511,7 @@ impl RepoTab {
             worktree_views: HashMap::new(),
             active_worktree: None,
             worktree_order: Vec::new(),
+            worktree_picker_open: false,
             fetch_op: None,
             pull_op: None,
             push_op: None,
@@ -960,10 +962,7 @@ impl RepoTab {
     /// entries keep their drafts and selected-diff but swap to the fresh
     /// repo handle. Returns `true` if the resolved set differs from the
     /// previous one (the watcher needs `update_worktree_watches`).
-    fn merge_worktree_views(
-        &mut self,
-        mut pre_opened: HashMap<PathBuf, GitRepo>,
-    ) -> bool {
+    fn merge_worktree_views(&mut self, mut pre_opened: HashMap<PathBuf, GitRepo>) -> bool {
         let mut new_views: HashMap<PathBuf, WorktreeView> = HashMap::new();
         let mut order: Vec<(String, PathBuf)> = Vec::new();
 
@@ -979,7 +978,12 @@ impl RepoTab {
                 }
                 Some(existing)
             } else if let Some(repo) = pre_opened.remove(&main_wd) {
-                Some(WorktreeView::with_repo(main_wd.clone(), name.clone(), true, repo))
+                Some(WorktreeView::with_repo(
+                    main_wd.clone(),
+                    name.clone(),
+                    true,
+                    repo,
+                ))
             } else {
                 // Worker didn't pre-open the main worktree's path (e.g.
                 // bare repo with no workdir). Fall back to a sync open;
@@ -1004,7 +1008,12 @@ impl RepoTab {
                 }
                 Some(existing)
             } else if let Some(repo) = pre_opened.remove(&path) {
-                Some(WorktreeView::with_repo(path.clone(), wt.name.clone(), false, repo))
+                Some(WorktreeView::with_repo(
+                    path.clone(),
+                    wt.name.clone(),
+                    false,
+                    repo,
+                ))
             } else {
                 WorktreeView::open(path.clone(), wt.name.clone(), false)
             };
@@ -1157,15 +1166,9 @@ impl RepoTab {
                 .iter()
                 .find(|w| w.path == path_str)
                 .map(|w| w.name.clone())
-                .or_else(|| {
-                    path.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                })
+                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
                 .unwrap_or_default();
-            let is_main = self
-                .repo
-                .workdir()
-                .is_some_and(|wd| wd == path.as_path());
+            let is_main = self.repo.workdir().is_some_and(|wd| wd == path.as_path());
             match WorktreeView::open(path.clone(), name, is_main) {
                 Some(v) => {
                     self.worktree_views.insert(path.clone(), v);
@@ -1574,8 +1577,7 @@ impl RepoTab {
         let mut changed = false;
         self.ci_receivers.retain(|rx| match rx.try_recv() {
             Ok(result) => {
-                self.ci_results
-                    .retain(|r| r.provider != result.provider);
+                self.ci_results.retain(|r| r.provider != result.provider);
                 self.ci_results.push(result);
                 self.ci_results.sort_by_key(|r| r.provider.sort_key());
                 changed = true;

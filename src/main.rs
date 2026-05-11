@@ -223,7 +223,62 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 }
             }
         }
+        "many-worktrees" => synthesize_many_worktrees(app),
+        "many-worktrees-open" => {
+            synthesize_many_worktrees(app);
+            if let Some(tab) = app.tabs.first_mut() {
+                tab.worktree_picker_open = true;
+            }
+        }
         other => eprintln!("warning: unknown --screenshot-state '{other}'"),
+    }
+}
+
+/// Stress fixture for the worktree pill bar at the top of the staging
+/// well. Real environments rarely check out a dozen linked worktrees,
+/// but the pill bar's overflow behaviour is worth exercising — so we
+/// synthesise a fan of `WorktreeView`s that share the same on-disk path
+/// (the only one we have to work with in a screenshot run) but render
+/// as distinct pills.
+fn synthesize_many_worktrees(app: &mut WhisperApp) {
+    use std::path::PathBuf;
+    use whisper_git::git::{FileStatus, FileStatusKind, GitRepo};
+    use whisper_git::repo_tab::WorktreeView;
+
+    let Some(tab) = app.tabs.first_mut() else {
+        return;
+    };
+    let Some(template_path) = tab
+        .active_worktree
+        .clone()
+        .or_else(|| tab.worktree_order.first().cloned())
+    else {
+        return;
+    };
+    let synthetic: &[(&str, usize)] = &[
+        ("feat/dashboard-redesign", 3),
+        ("fix/segfault-on-rebase", 0),
+        ("chore/dep-bump-q2", 1),
+        ("review/aetna-port-stage-4c", 12),
+        ("experiment/msdf-perf", 0),
+        ("hotfix/auth-token-rotation", 2),
+        ("docs/refresh-readme", 0),
+        ("spike/wasm-rendering", 5),
+    ];
+    for (name, dirty) in synthetic {
+        let path: PathBuf = template_path.join(".synthetic-wt").join(name);
+        let Ok(repo) = GitRepo::open(&template_path) else {
+            continue;
+        };
+        let mut view = WorktreeView::with_repo(path.clone(), (*name).to_string(), false, repo);
+        for i in 0..*dirty {
+            view.status.unstaged.push(FileStatus {
+                path: format!("synth/{i}.rs"),
+                status: FileStatusKind::Modified,
+            });
+        }
+        tab.worktree_views.insert(path.clone(), view);
+        tab.worktree_order.push(path);
     }
 }
 

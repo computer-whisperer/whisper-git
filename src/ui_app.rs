@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use aetna_core::{
-    App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
-    UiEventKind, UiKey,
+    App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent, UiEventKind,
+    UiKey,
     prelude::*,
     scroll::{ScrollAlignment, ScrollRequest},
     toast::ToastSpec,
@@ -36,26 +36,22 @@ use crate::commit_details;
 use crate::commit_graph;
 use crate::config::Config;
 use crate::dialogs;
-use crate::diff_view;
-use crate::git::{RemoteOpResult, classify_git_error};
 use crate::dialogs::{
     BranchForm, CloneForm, MergeForm, MergeStrategy, PullForm, PushForm, RebaseForm, TagForm,
     TokenForm, WorktreeForm,
 };
+use crate::diff_view;
+use crate::git::{RemoteOpResult, classify_git_error};
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
-use crate::token_store;
 use crate::sidebar;
 use crate::staging;
+use crate::token_store;
 use crate::welcome;
 
 /// Resolve `(outer_idx, depth)` to a `&mut RepoTab`. `depth = None`
 /// returns the outermost; `depth = Some(d)` indexes into the nav_stack
 /// of that outermost. Returns `None` if either index is out of range.
-fn resolve_tab_mut(
-    tabs: &mut [RepoTab],
-    idx: usize,
-    depth: Option<usize>,
-) -> Option<&mut RepoTab> {
+fn resolve_tab_mut(tabs: &mut [RepoTab], idx: usize, depth: Option<usize>) -> Option<&mut RepoTab> {
     let outer = tabs.get_mut(idx)?;
     match depth {
         None => Some(outer),
@@ -251,7 +247,6 @@ pub enum ActiveModal {
         form: WorktreeForm,
     },
 }
-
 
 pub struct WhisperApp {
     pub tabs: Vec<RepoTab>,
@@ -616,27 +611,28 @@ impl App for WhisperApp {
                 let target_short = target.to_string()[..7].to_string();
                 dialogs::tag_modal(form, &self.selection, &target_short)
             }
-            ActiveModal::PullPicker { form, sources } => {
-                dialogs::pull_modal(form, sources)
-            }
+            ActiveModal::PullPicker { form, sources } => dialogs::pull_modal(form, sources),
             ActiveModal::PushPicker { form, remotes } => {
                 dialogs::push_modal(form, &self.selection, remotes)
             }
             ActiveModal::MergeOptions { form, source } => {
                 dialogs::merge_modal(form, &self.selection, source)
             }
-            ActiveModal::RebaseOptions { form, base } => {
-                dialogs::rebase_modal(form, base)
-            }
-            ActiveModal::Worktree { form } => {
-                dialogs::worktree_modal(form, &self.selection)
-            }
+            ActiveModal::RebaseOptions { form, base } => dialogs::rebase_modal(form, base),
+            ActiveModal::Worktree { form } => dialogs::worktree_modal(form, &self.selection),
         });
         let menu_layer = self
             .context_menu
             .as_ref()
             .map(|cm| sidebar_context_menu(cm));
-        overlays(main, [menu_layer, modal_layer])
+        // Worktree picker dropdown lives at the root so its popover
+        // panel paints over the main layout. Anchored to the trigger
+        // by key (`wt_select`) which lives in the active focus's
+        // staging well.
+        let wt_picker_layer = self
+            .active_focus()
+            .and_then(staging::worktree_picker_overlay);
+        overlays(main, [wt_picker_layer, menu_layer, modal_layer])
     }
 
     fn on_event(&mut self, event: UiEvent) {
@@ -650,6 +646,14 @@ impl App for WhisperApp {
         if matches!(event.kind, UiEventKind::Escape) {
             if self.active_modal.is_some() {
                 self.active_modal = None;
+                return;
+            }
+            // Open dropdown picker closes ahead of other unwind steps —
+            // matches the modal/menu-first ordering above.
+            if let Some(focus) = self.active_focus_mut()
+                && focus.worktree_picker_open
+            {
+                focus.worktree_picker_open = false;
                 return;
             }
             // Search bar (Ctrl+F) closes before any other unwind step —
@@ -722,8 +726,7 @@ impl App for WhisperApp {
             self.config.right_pane_w = self.right_pane_w;
         }
         if matches!(event.kind, UiEventKind::PointerUp)
-            && (event.route() == Some("sidebar:resize")
-                || event.route() == Some("right:resize"))
+            && (event.route() == Some("sidebar:resize") || event.route() == Some("right:resize"))
         {
             // Save once on release rather than on every Drag tick — both
             // to avoid spamming the disk and so a settings.json read
@@ -785,20 +788,10 @@ impl App for WhisperApp {
                 }
             }
             Some(ActiveModal::Branch { form, .. }) => {
-                text_input::apply_event(
-                    &mut form.name,
-                    &mut self.selection,
-                    "branch:name",
-                    &event,
-                );
+                text_input::apply_event(&mut form.name, &mut self.selection, "branch:name", &event);
             }
             Some(ActiveModal::Tag { form, .. }) => {
-                text_input::apply_event(
-                    &mut form.name,
-                    &mut self.selection,
-                    "tag:name",
-                    &event,
-                );
+                text_input::apply_event(&mut form.name, &mut self.selection, "tag:name", &event);
             }
             Some(ActiveModal::PullPicker { form, .. }) => {
                 aetna_core::widgets::radio::apply_event(
@@ -981,16 +974,12 @@ impl WhisperApp {
         // Stage / unstage / diff-preview routes.
         if let Some(path) = key.strip_prefix("stage_file:") {
             let path = path.to_string();
-            self.run_op("Stage", move |t| {
-                t.active_repo().stage_file(&path)
-            });
+            self.run_op("Stage", move |t| t.active_repo().stage_file(&path));
             return;
         }
         if let Some(path) = key.strip_prefix("unstage_file:") {
             let path = path.to_string();
-            self.run_op("Unstage", move |t| {
-                t.active_repo().unstage_file(&path)
-            });
+            self.run_op("Unstage", move |t| t.active_repo().unstage_file(&path));
             return;
         }
         // diff:mode_toggle — flip between unified and split. Persist
@@ -1001,10 +990,7 @@ impl WhisperApp {
             return;
         }
         if let Some(path) = key.strip_prefix("diff:") {
-            if let Some(view) = self
-                .active_focus_mut()
-                .and_then(|t| t.active_view_mut())
-            {
+            if let Some(view) = self.active_focus_mut().and_then(|t| t.active_view_mut()) {
                 view.selected_diff_file = Some(path.to_string());
             }
             return;
@@ -1022,6 +1008,35 @@ impl WhisperApp {
                 if let Some(view) = tab.active_view_mut() {
                     view.selected_diff_file = None;
                 }
+            }
+            return;
+        }
+        // wt_select:option:{path} — dropdown-mode selection. Same effect
+        // as the pill bar's `wt_select:tab:{path}` plus closing the
+        // picker. The two routes coexist because only one of pill bar /
+        // dropdown is rendered per frame.
+        if let Some(path) = key.strip_prefix("wt_select:option:") {
+            if let Some(tab) = self.active_focus_mut() {
+                tab.select_worktree(std::path::PathBuf::from(path));
+                tab.select_commit(None);
+                tab.worktree_picker_open = false;
+                if let Some(view) = tab.active_view_mut() {
+                    view.selected_diff_file = None;
+                }
+            }
+            return;
+        }
+        // wt_select:dismiss — outside-click on the dropdown scrim.
+        if key == "wt_select:dismiss" {
+            if let Some(tab) = self.active_focus_mut() {
+                tab.worktree_picker_open = false;
+            }
+            return;
+        }
+        // wt_select — bare trigger click toggles the dropdown.
+        if key == "wt_select" {
+            if let Some(tab) = self.active_focus_mut() {
+                tab.worktree_picker_open = !tab.worktree_picker_open;
             }
             return;
         }
@@ -1050,10 +1065,7 @@ impl WhisperApp {
         // detail's files list. Pushes the diff into the center pane;
         // diff_view picks `tab.selected_commit` as the source.
         if let Some(path) = key.strip_prefix("commit_file:") {
-            if let Some(view) = self
-                .active_focus_mut()
-                .and_then(|t| t.active_view_mut())
-            {
+            if let Some(view) = self.active_focus_mut().and_then(|t| t.active_view_mut()) {
                 view.selected_diff_file = Some(path.to_string());
             }
             return;
@@ -1115,26 +1127,22 @@ impl WhisperApp {
         // pane on its details, and pushes a scroll-to-row request so
         // off-viewport rows come into view.
         if let Some(name) = key.strip_prefix("branch:") {
-            let oid = self
-                .active_focus()
-                .and_then(|t| {
-                    t.branch_tips
-                        .iter()
-                        .find(|b| !b.is_remote && b.name == name)
-                        .map(|b| b.oid)
-                });
+            let oid = self.active_focus().and_then(|t| {
+                t.branch_tips
+                    .iter()
+                    .find(|b| !b.is_remote && b.name == name)
+                    .map(|b| b.oid)
+            });
             self.jump_to_commit(oid, name);
             return;
         }
         if let Some(name) = key.strip_prefix("remote:") {
-            let oid = self
-                .active_focus()
-                .and_then(|t| {
-                    t.branch_tips
-                        .iter()
-                        .find(|b| b.is_remote && b.name == name)
-                        .map(|b| b.oid)
-                });
+            let oid = self.active_focus().and_then(|t| {
+                t.branch_tips
+                    .iter()
+                    .find(|b| b.is_remote && b.name == name)
+                    .map(|b| b.oid)
+            });
             self.jump_to_commit(oid, name);
             return;
         }
@@ -1176,9 +1184,8 @@ impl WhisperApp {
                             .push(ToastSpec::success(format!("Switched to {path}")));
                     }
                     Err(e) => {
-                        self.toasts.push(ToastSpec::error(format!(
-                            "Couldn't switch to {path}: {e}"
-                        )));
+                        self.toasts
+                            .push(ToastSpec::error(format!("Couldn't switch to {path}: {e}")));
                     }
                 }
             }
@@ -1194,9 +1201,8 @@ impl WhisperApp {
             if let Some(tab) = self.active_mut() {
                 match tab.enter_submodule(&path) {
                     Ok(()) => {
-                        self.toasts.push(ToastSpec::success(format!(
-                            "Entered {path}"
-                        )));
+                        self.toasts
+                            .push(ToastSpec::success(format!("Entered {path}")));
                     }
                     Err(e) => {
                         self.toasts.push(ToastSpec::error(format!(
@@ -1385,9 +1391,7 @@ impl WhisperApp {
         // Same gating for `tag:` — sidebar `tag:<name>` jump-to-commit
         // clicks must still reach the handle_action path when the modal
         // is closed.
-        if matches!(self.active_modal, Some(ActiveModal::Tag { .. }))
-            && key.starts_with("tag:")
-        {
+        if matches!(self.active_modal, Some(ActiveModal::Tag { .. })) && key.starts_with("tag:") {
             self.handle_tag_route(key);
             return true;
         }
@@ -1510,11 +1514,12 @@ impl WhisperApp {
             _ => return,
         };
         if name.is_empty() {
-            self.toasts
-                .push(ToastSpec::warning("Branch name is empty"));
+            self.toasts.push(ToastSpec::warning("Branch name is empty"));
             return;
         }
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         match tab.repo.create_branch_at(&name, target) {
             Ok(()) => {
                 let mut msg = format!("Created branch {name}");
@@ -1588,16 +1593,16 @@ impl WhisperApp {
 
     fn create_tag_from_modal(&mut self) {
         let (name, target) = match &self.active_modal {
-            Some(ActiveModal::Tag { form, target }) => {
-                (form.name.trim().to_string(), *target)
-            }
+            Some(ActiveModal::Tag { form, target }) => (form.name.trim().to_string(), *target),
             _ => return,
         };
         if name.is_empty() {
             self.toasts.push(ToastSpec::warning("Tag name is empty"));
             return;
         }
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         match tab.repo.create_tag(&name, target) {
             Ok(()) => {
                 self.toasts
@@ -1676,7 +1681,9 @@ impl WhisperApp {
         } else {
             crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy)
         };
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let label = if rebase {
             format!("{remote}/{branch} (rebase)")
         } else {
@@ -1709,9 +1716,7 @@ impl WhisperApp {
             .remote_branches()
             .into_iter()
             .flat_map(|(remote, branches)| {
-                branches
-                    .into_iter()
-                    .map(move |b| format!("{remote}/{b}"))
+                branches.into_iter().map(move |b| format!("{remote}/{b}"))
             })
             .collect();
         sources.sort();
@@ -1804,7 +1809,9 @@ impl WhisperApp {
             tags,
             proxy,
         );
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let mut suffix = Vec::new();
         if force {
             suffix.push("force");
@@ -1919,7 +1926,9 @@ impl WhisperApp {
             false,
             proxy,
         );
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let label = if detached {
             format!("worktree {path} (detached @ {source})")
         } else {
@@ -2118,9 +2127,8 @@ impl WhisperApp {
                         return;
                     };
                     if value.is_empty() {
-                        self.toasts.push(ToastSpec::warning(
-                            "Token is empty — leaving unchanged",
-                        ));
+                        self.toasts
+                            .push(ToastSpec::warning("Token is empty — leaving unchanged"));
                         return;
                     }
                     if token_store::set_gitlab_token(host, &value) {
@@ -2152,8 +2160,9 @@ impl WhisperApp {
     /// receiver on `clone_op` for `poll_async_ops` to drain.
     fn start_clone(&mut self) {
         let Some(proxy) = self.proxy.clone() else {
-            self.toasts
-                .push(ToastSpec::error("Clone unavailable: event loop proxy missing"));
+            self.toasts.push(ToastSpec::error(
+                "Clone unavailable: event loop proxy missing",
+            ));
             return;
         };
         if self.clone_op.is_some() {
@@ -2168,7 +2177,8 @@ impl WhisperApp {
         let dest = form.dest.trim().to_string();
         let bare = form.bare;
         if url.is_empty() {
-            self.toasts.push(ToastSpec::warning("Repository URL is required"));
+            self.toasts
+                .push(ToastSpec::warning("Repository URL is required"));
             return;
         }
         if dest.is_empty() {
@@ -2184,8 +2194,9 @@ impl WhisperApp {
             started: std::time::Instant::now(),
             dest_label: dest_label.clone(),
         });
-        self.toasts
-            .push(ToastSpec::info(format!("Cloning into {dest_label}\u{2026}")));
+        self.toasts.push(ToastSpec::info(format!(
+            "Cloning into {dest_label}\u{2026}"
+        )));
     }
 
     fn handle_context_action(&mut self, action: &str) {
@@ -2405,9 +2416,8 @@ impl WhisperApp {
                 )));
             }
             Err(e) => {
-                self.toasts.push(ToastSpec::error(format!(
-                    "Couldn't stage {sm_path}: {e}"
-                )));
+                self.toasts
+                    .push(ToastSpec::error(format!("Couldn't stage {sm_path}: {e}")));
             }
         }
     }
@@ -2422,10 +2432,16 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::push_force_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
-        tab.push_op = Some(TimedOp::new(rx, format!("{branch} \u{2192} {remote} (force)")));
-        self.toasts
-            .push(ToastSpec::info(format!("Force-pushing {branch} to {remote}…")));
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        tab.push_op = Some(TimedOp::new(
+            rx,
+            format!("{branch} \u{2192} {remote} (force)"),
+        ));
+        self.toasts.push(ToastSpec::info(format!(
+            "Force-pushing {branch} to {remote}…"
+        )));
     }
 
     // -------------------------------------------------------------
@@ -2485,7 +2501,9 @@ impl WhisperApp {
     /// this runs. Tabs created later (via `open_repo_path`) trigger
     /// their refresh inline at construction time and skip this.
     fn trigger_initial_state_refreshes(&mut self) {
-        let Some(proxy) = self.proxy.clone() else { return };
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         let show_orphans = self.config.show_orphaned_commits;
         for tab in &mut self.tabs {
             if !tab.state_refresh_attempted {
@@ -2520,8 +2538,12 @@ impl WhisperApp {
 
     fn poll_state_refresh_at(&mut self, tab_idx: usize, depth: Option<usize>) {
         let result = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
-            let Some(rx) = tab.state_refresh_rx.take() else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
+            let Some(rx) = tab.state_refresh_rx.take() else {
+                return;
+            };
             match rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -2536,7 +2558,9 @@ impl WhisperApp {
 
         // Apply + collect effects in a scoped borrow.
         let effects = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
             tab.apply_state_result(result)
         };
 
@@ -2548,7 +2572,9 @@ impl WhisperApp {
         // `trigger_diff_stats_fetches` runs every poll anyway, so this
         // is informational — but kicking it now starts the fetch in
         // the same frame instead of waiting for the next.
-        let Some(proxy) = self.proxy.clone() else { return };
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
             tab.trigger_diff_stats_fetch(proxy.clone());
         }
@@ -2557,7 +2583,9 @@ impl WhisperApp {
         // per worktree. `tab_id` on each result lets the global drain
         // route back here even after a tab close / reopen.
         let (tab_id, repo_workdir) = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
             (tab.id, tab.repo.workdir().map(|p| p.to_path_buf()))
         };
         self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
@@ -2616,8 +2644,12 @@ impl WhisperApp {
 
     fn poll_watcher_init_at(&mut self, tab_idx: usize, depth: Option<usize>) {
         let result = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
-            let Some(rx) = tab.watcher_init_rx.take() else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
+            let Some(rx) = tab.watcher_init_rx.take() else {
+                return;
+            };
             match rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -2656,7 +2688,9 @@ impl WhisperApp {
     ///   state refresh's `watcher_paths_changed` effect updates the
     ///   watch set
     fn poll_watcher_events(&mut self) {
-        let Some(proxy) = self.proxy.clone() else { return };
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         let show_orphans = self.config.show_orphaned_commits;
         for tab_idx in 0..self.tabs.len() {
             self.dispatch_watcher_events_at(tab_idx, None, &proxy, show_orphans);
@@ -2690,7 +2724,9 @@ impl WhisperApp {
         if !self.status_dirty {
             return;
         }
-        let Some(proxy) = self.proxy.clone() else { return };
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         if let Some(tab) = self.active_focus_mut() {
             tab.trigger_status_refresh(&proxy);
         }
@@ -2716,9 +2752,13 @@ impl WhisperApp {
         }
         self.last_ref_check = now;
 
-        let Some(proxy) = self.proxy.clone() else { return };
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
         let show_orphans = self.config.show_orphaned_commits;
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         if tab.ref_fingerprint == 0 || tab.state_refresh_rx.is_some() {
             return;
         }
@@ -2739,8 +2779,12 @@ impl WhisperApp {
         // Drain + coalesce in one borrow scope so the dispatch below
         // can take its own borrow.
         let max_kind = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
-            let Some(rx) = tab.watcher_rx.as_ref() else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
+            let Some(rx) = tab.watcher_rx.as_ref() else {
+                return;
+            };
             let mut max_kind: Option<crate::watcher::FsChangeKind> = None;
             while let Ok(kind) = rx.try_recv() {
                 max_kind = Some(match max_kind {
@@ -2756,7 +2800,9 @@ impl WhisperApp {
         match kind {
             FsChangeKind::WorkingTree => {
                 let (tab_id, repo_workdir, worktrees) = {
-                    let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
+                    let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                        return;
+                    };
                     tab.trigger_status_refresh(proxy);
                     (
                         tab.id,
@@ -2808,8 +2854,12 @@ impl WhisperApp {
 
     fn poll_status_refresh_at(&mut self, tab_idx: usize, depth: Option<usize>) {
         let result = {
-            let Some(tab) = self.tab_at_mut(tab_idx, depth) else { return };
-            let Some(rx) = tab.status_rx.take() else { return };
+            let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
+                return;
+            };
+            let Some(rx) = tab.status_rx.take() else {
+                return;
+            };
             match rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -2993,9 +3043,9 @@ impl WhisperApp {
             Some(op) => match op.rx.try_recv() {
                 Ok(result) => Some(result),
                 Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(
-                    "Clone worker disconnected unexpectedly".to_string(),
-                )),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Clone worker disconnected unexpectedly".to_string()))
+                }
             },
             None => None,
         };
@@ -3013,10 +3063,8 @@ impl WhisperApp {
                     Ok(tab) => {
                         self.tabs.push(tab);
                         self.active_tab = self.tabs.len() - 1;
-                        self.toasts.push(ToastSpec::success(format!(
-                            "Cloned {}",
-                            path.display()
-                        )));
+                        self.toasts
+                            .push(ToastSpec::success(format!("Cloned {}", path.display())));
                     }
                     Err(e) => {
                         self.active_modal = Some(ActiveModal::Error {
@@ -3179,7 +3227,8 @@ impl WhisperApp {
                 if let Some(view) = tab.worktree_views.get_mut(&target_path) {
                     view.commit_subject = response.subject;
                     view.commit_body = response.body;
-                    self.toasts.push(ToastSpec::success("Generated commit message"));
+                    self.toasts
+                        .push(ToastSpec::success("Generated commit message"));
                 } else {
                     self.toasts.push(ToastSpec::warning(
                         "AI result dropped: target worktree no longer present",
@@ -3246,7 +3295,9 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Fetch, true) else {
             return;
         };
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let remote = tab
             .repo
             .default_remote()
@@ -3267,7 +3318,9 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
             return;
         };
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let remote = tab
             .repo
             .default_remote()
@@ -3279,7 +3332,9 @@ impl WhisperApp {
             return;
         }
         let rx = crate::git::push_remote_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.push_op = Some(TimedOp::new(rx, format!("{branch} → {remote}")));
         self.toasts
             .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
@@ -3294,7 +3349,9 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Pull, true) else {
             return;
         };
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let remote = tab
             .repo
             .default_remote()
@@ -3306,7 +3363,9 @@ impl WhisperApp {
             return;
         }
         let rx = crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.pull_op = Some(TimedOp::new(rx, format!("{remote}/{branch}")));
         self.toasts
             .push(ToastSpec::info(format!("Pulling {remote}/{branch}…")));
@@ -3318,7 +3377,9 @@ impl WhisperApp {
         };
         let sha = oid.to_string();
         let rx = crate::git::cherry_pick_async(wd, sha.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let short = &sha[..7];
         tab.mutation_op = Some(TimedOp::new(rx, format!("cherry-pick {short}")));
         self.toasts
@@ -3331,7 +3392,9 @@ impl WhisperApp {
         };
         let sha = oid.to_string();
         let rx = crate::git::revert_commit_async(wd, sha.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let short = &sha[..7];
         tab.mutation_op = Some(TimedOp::new(rx, format!("revert {short}")));
         self.toasts
@@ -3347,7 +3410,9 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::merge_branch_async(wd, source.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, format!("merge {source}")));
         self.toasts
             .push(ToastSpec::info(format!("Merging {source}…")));
@@ -3373,11 +3438,9 @@ impl WhisperApp {
     /// `mutation_op`, mirroring the bare merge fast path.
     fn merge_from_modal(&mut self) {
         let (source, strategy, message) = match &self.active_modal {
-            Some(ActiveModal::MergeOptions { form, source }) => (
-                source.clone(),
-                form.strategy,
-                form.no_ff_message.clone(),
-            ),
+            Some(ActiveModal::MergeOptions { form, source }) => {
+                (source.clone(), form.strategy, form.no_ff_message.clone())
+            }
             _ => return,
         };
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
@@ -3408,9 +3471,12 @@ impl WhisperApp {
                 format!("merge --squash {source}"),
             ),
         };
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, label.clone()));
-        self.toasts.push(ToastSpec::info(format!("Merging {source}…")));
+        self.toasts
+            .push(ToastSpec::info(format!("Merging {source}…")));
         self.active_modal = None;
     }
 
@@ -3419,7 +3485,9 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::stash_apply_async(wd, idx, proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, format!("stash apply @{{{idx}}}")));
         self.toasts
             .push(ToastSpec::info(format!("Applying stash @{{{idx}}}…")));
@@ -3430,7 +3498,9 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::stash_pop_index_async(wd, idx, proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, format!("stash pop @{{{idx}}}")));
         self.toasts
             .push(ToastSpec::info(format!("Popping stash @{{{idx}}}…")));
@@ -3441,7 +3511,9 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::stash_drop_async(wd, idx, proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, format!("stash drop @{{{idx}}}")));
         self.toasts
             .push(ToastSpec::info(format!("Dropping stash @{{{idx}}}…")));
@@ -3458,7 +3530,9 @@ impl WhisperApp {
             return;
         };
         let rx = crate::git::rebase_with_options_async(wd, base.clone(), true, false, proxy);
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         tab.mutation_op = Some(TimedOp::new(rx, format!("rebase onto {base}")));
         self.toasts
             .push(ToastSpec::info(format!("Rebasing onto {base}…")));
@@ -3511,7 +3585,9 @@ impl WhisperApp {
             rebase_merges,
             proxy,
         );
-        let Some(tab) = self.active_focus_mut() else { return };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
         let mut suffix = Vec::new();
         if autostash {
             suffix.push("autostash");
@@ -3567,7 +3643,9 @@ impl WhisperApp {
             // calls. Both reads and writes go through the active
             // worktree's repo so the staging applies to the right
             // working tree.
-            let Some(view) = t.active_view() else { return Ok(()) };
+            let Some(view) = t.active_view() else {
+                return Ok(());
+            };
             let paths: Vec<String> = view
                 .status
                 .unstaged
@@ -3584,9 +3662,10 @@ impl WhisperApp {
 
     fn unstage_all(&mut self) {
         self.run_op("Unstage all", |t| {
-            let Some(view) = t.active_view() else { return Ok(()) };
-            let paths: Vec<String> =
-                view.status.staged.iter().map(|f| f.path.clone()).collect();
+            let Some(view) = t.active_view() else {
+                return Ok(());
+            };
+            let paths: Vec<String> = view.status.staged.iter().map(|f| f.path.clone()).collect();
             for p in paths {
                 view.repo.unstage_file(&p)?;
             }
@@ -3641,8 +3720,7 @@ impl WhisperApp {
         let pinned_oid = tab.pinned_oid;
         let pinned_path = tab.pinned_path.clone();
         let Some(view) = tab.active_view_mut() else {
-            self.toasts
-                .push(ToastSpec::warning("No worktree selected"));
+            self.toasts.push(ToastSpec::warning("No worktree selected"));
             return;
         };
         if view.commit_subject.trim().is_empty() {
@@ -3789,9 +3867,7 @@ fn tab_bar(app: &WhisperApp) -> El {
     // (b) `+` opens the rfd file picker asynchronously rather than
     // minting a fresh value synchronously.
     use aetna_core::widgets::button::icon_button;
-    use aetna_core::widgets::editor_tabs::{
-        EditorTabsConfig, editor_tab, editor_tab_add_key,
-    };
+    use aetna_core::widgets::editor_tabs::{EditorTabsConfig, editor_tab, editor_tab_add_key};
 
     let active = app.active_tab.to_string();
     let config = EditorTabsConfig::default();
@@ -3840,9 +3916,10 @@ fn tab_ci_pip(tab: &RepoTab, idx: usize) -> Option<El> {
     if tab.ci_results.is_empty() {
         return None;
     }
-    let overall = tab.ci_results.iter().fold(CiState::None, |worst, r| {
-        worst_state(worst, r.status.state)
-    });
+    let overall = tab
+        .ci_results
+        .iter()
+        .fold(CiState::None, |worst, r| worst_state(worst, r.status.state));
     let (color, summary_state) = match overall {
         CiState::Failure => (tokens::DESTRUCTIVE, "failing"),
         CiState::Pending => (tokens::WARNING, "running"),
@@ -3924,9 +4001,7 @@ fn parent_context_strip(outer: &RepoTab) -> Option<El> {
     };
     let parent_head_chip = row([
         text("parent HEAD").caption().muted(),
-        text(parent_head_short)
-            .mono()
-            .text_color(parent_head_color),
+        text(parent_head_short).mono().text_color(parent_head_color),
     ])
     .gap(tokens::SPACE_1)
     .align(Align::Center);
@@ -3938,16 +4013,10 @@ fn parent_context_strip(outer: &RepoTab) -> Option<El> {
         parent_head_chip,
     ];
     if drift {
-        bar_items.push(
-            badge("drift").muted().text_color(tokens::WARNING),
-        );
+        bar_items.push(badge("drift").muted().text_color(tokens::WARNING));
     }
     bar_items.push(spacer());
-    bar_items.push(
-        text("Return to parent (Esc)")
-            .caption()
-            .muted(),
-    );
+    bar_items.push(text("Return to parent (Esc)").caption().muted());
 
     let depth_to_parent = outer.nav_depth().saturating_sub(1);
     let bar = row(bar_items)
@@ -3996,11 +4065,7 @@ fn sibling_submodule_strip(outer: &RepoTab, focus: &RepoTab) -> Option<El> {
             continue;
         }
         let dirty = sib.is_dirty == Some(true);
-        let color = if dirty {
-            tokens::WARNING
-        } else {
-            tokens::INFO
-        };
+        let color = if dirty { tokens::WARNING } else { tokens::INFO };
         let label = sib
             .path
             .rsplit('/')
@@ -4060,11 +4125,7 @@ fn breadcrumb_bar(names: &[String]) -> El {
         };
         children.push(segment);
         if !is_last {
-            children.push(
-                text("\u{203A}".to_string())
-                    .caption()
-                    .muted(),
-            );
+            children.push(text("\u{203A}".to_string()).caption().muted());
         }
     }
 
@@ -4212,13 +4273,25 @@ fn op_status_lines(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> Vec<
     let mut lines: Vec<El> = Vec::new();
     if let Some(tab) = active {
         if let Some(op) = &tab.fetch_op {
-            lines.push(status_row("Fetch", &op.label, op.started.elapsed().as_secs()));
+            lines.push(status_row(
+                "Fetch",
+                &op.label,
+                op.started.elapsed().as_secs(),
+            ));
         }
         if let Some(op) = &tab.pull_op {
-            lines.push(status_row("Pull", &op.label, op.started.elapsed().as_secs()));
+            lines.push(status_row(
+                "Pull",
+                &op.label,
+                op.started.elapsed().as_secs(),
+            ));
         }
         if let Some(op) = &tab.push_op {
-            lines.push(status_row("Push", &op.label, op.started.elapsed().as_secs()));
+            lines.push(status_row(
+                "Push",
+                &op.label,
+                op.started.elapsed().as_secs(),
+            ));
         }
         if let Some(op) = &tab.mutation_op {
             // mutation labels already carry their own verb ("cherry-pick abc1234"),
@@ -4309,9 +4382,7 @@ fn ci_badges(tab: &RepoTab) -> Vec<El> {
                 .fill(color.with_alpha(28))
                 .stroke(color.with_alpha(96));
             if result.status.url.is_some() {
-                badge = badge
-                    .key(format!("ci:open:{idx}"))
-                    .focusable();
+                badge = badge.key(format!("ci:open:{idx}")).focusable();
             }
             badge.tooltip(format!(
                 "{} \u{00b7} {}",
@@ -4364,4 +4435,3 @@ fn no_worktree_placeholder() -> El {
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
 }
-
