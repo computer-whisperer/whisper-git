@@ -42,7 +42,7 @@ fn working_diff(view: &WorktreeView, path: &str) -> DiffData {
     let widget_hunks: Vec<DiffHunk> = hunks
         .into_iter()
         .enumerate()
-        .map(|(idx, h)| convert_hunk(h, working_action(idx, path, staged)))
+        .map(|(idx, h)| convert_hunk(h, working_actions(idx, path, staged)))
         .collect();
     DiffData {
         title: path.to_string(),
@@ -60,7 +60,7 @@ fn commit_diff(view: &WorktreeView, oid: git2::Oid, path: &str) -> DiffData {
         .flat_map(|f| f.hunks)
         // No per-hunk Stage / Unstage in commit context — the commit is
         // already history.
-        .map(|h| convert_hunk(h, None))
+        .map(|h| convert_hunk(h, Vec::new()))
         .collect();
     let short = oid.to_string()[..7].to_string();
     DiffData {
@@ -72,7 +72,7 @@ fn commit_diff(view: &WorktreeView, oid: git2::Oid, path: &str) -> DiffData {
     }
 }
 
-fn convert_hunk(hunk: git::DiffHunk, action: Option<DiffHunkAction>) -> DiffHunk {
+fn convert_hunk(hunk: git::DiffHunk, actions: Vec<DiffHunkAction>) -> DiffHunk {
     let lines: Vec<DiffLine> = hunk
         .lines
         .into_iter()
@@ -91,29 +91,33 @@ fn convert_hunk(hunk: git::DiffHunk, action: Option<DiffHunkAction>) -> DiffHunk
     DiffHunk {
         header: hunk.header,
         lines,
-        action,
+        actions,
     }
 }
 
-fn working_action(idx: usize, path: &str, staged: bool) -> Option<DiffHunkAction> {
-    let (label, key, tip) = if staged {
-        (
-            "Unstage",
-            format!("unstage_hunk:{idx}:{path}"),
-            "Unstage this hunk",
-        )
-    } else {
-        (
-            "Stage",
-            format!("stage_hunk:{idx}:{path}"),
-            "Stage this hunk",
-        )
-    };
-    Some(DiffHunkAction {
-        label: label.to_string(),
-        key,
-        tooltip: Some(tip.to_string()),
-    })
+fn working_actions(idx: usize, path: &str, staged: bool) -> Vec<DiffHunkAction> {
+    if staged {
+        return vec![DiffHunkAction {
+            label: "Unstage".to_string(),
+            key: format!("unstage_hunk:{idx}:{path}"),
+            tooltip: Some("Unstage this hunk".to_string()),
+            destructive: false,
+        }];
+    }
+    vec![
+        DiffHunkAction {
+            label: "Stage".to_string(),
+            key: format!("stage_hunk:{idx}:{path}"),
+            tooltip: Some("Stage this hunk".to_string()),
+            destructive: false,
+        },
+        DiffHunkAction {
+            label: "Discard".to_string(),
+            key: format!("discard_hunk:{idx}:{path}"),
+            tooltip: Some("Discard this hunk".to_string()),
+            destructive: true,
+        },
+    ]
 }
 
 fn file_is_staged(view: &WorktreeView, path: &str) -> bool {

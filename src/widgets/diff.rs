@@ -39,15 +39,15 @@ pub enum DiffLineKind {
 }
 
 /// One hunk: the `@@ -a,b +c,d @@` header and the run of lines that
-/// follow. `action` is an optional Stage / Unstage button rendered in
-/// the hunk header; the app pre-routes the click key.
+/// follow. `actions` are optional buttons rendered in the hunk header;
+/// the app pre-routes the click keys.
 #[derive(Clone, Debug)]
 pub struct DiffHunk {
     /// The full `@@` header line as emitted by libgit2 (e.g.
     /// `@@ -10,5 +10,7 @@ fn main()`).
     pub header: String,
     pub lines: Vec<DiffLine>,
-    pub action: Option<DiffHunkAction>,
+    pub actions: Vec<DiffHunkAction>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +55,7 @@ pub struct DiffHunkAction {
     pub label: String,
     pub key: String,
     pub tooltip: Option<String>,
+    pub destructive: bool,
 }
 
 /// Top-level diff payload. `title` is the path; `badge` is the
@@ -176,7 +177,7 @@ pub fn diff(data: &DiffData) -> El {
 enum DiffRow {
     HunkHeader {
         header: String,
-        action: Option<DiffHunkAction>,
+        actions: Vec<DiffHunkAction>,
     },
     UnifiedLine(DiffLine),
     SplitPair(PairedRow),
@@ -187,7 +188,7 @@ fn flatten_rows(hunks: &[DiffHunk], mode: DiffMode) -> Vec<DiffRow> {
     for hunk in hunks {
         rows.push(DiffRow::HunkHeader {
             header: hunk.header.clone(),
-            action: hunk.action.clone(),
+            actions: hunk.actions.clone(),
         });
         match mode {
             DiffMode::Unified => {
@@ -208,7 +209,7 @@ fn flatten_rows(hunks: &[DiffHunk], mode: DiffMode) -> Vec<DiffRow> {
 fn build_diff_row(row: &DiffRow, idx: usize) -> El {
     let key = format!("diff:row:{idx}");
     match row {
-        DiffRow::HunkHeader { header, action } => hunk_header_row(header, action.as_ref()).key(key),
+        DiffRow::HunkHeader { header, actions } => hunk_header_row(header, actions).key(key),
         DiffRow::UnifiedLine(line) => unified_line_row(line).key(key),
         DiffRow::SplitPair(pair) => split_pair_row(pair).key(key),
     }
@@ -230,7 +231,7 @@ fn mode_toggle_button(mode: DiffMode, key: &str) -> El {
 /// virtual list. Carries a MUTED fill that visually separates one
 /// hunk's lines from the next — replaces what the old per-hunk card
 /// boundary used to do.
-fn hunk_header_row(header: &str, action: Option<&DiffHunkAction>) -> El {
+fn hunk_header_row(header: &str, actions: &[DiffHunkAction]) -> El {
     let mut children: Vec<El> = Vec::with_capacity(3);
     let (range, context) = split_hunk_header(header);
     children.push(text(range).code().text_color(tokens::INFO));
@@ -238,8 +239,11 @@ fn hunk_header_row(header: &str, action: Option<&DiffHunkAction>) -> El {
         children.push(text(ctx).code().muted());
     }
     children.push(spacer());
-    if let Some(act) = action {
+    for act in actions {
         let mut btn = button(act.label.clone()).key(act.key.clone()).ghost();
+        if act.destructive {
+            btn = btn.destructive();
+        }
         if let Some(tip) = act.tooltip.as_ref() {
             btn = btn.tooltip(tip.clone());
         }
@@ -555,7 +559,7 @@ mod tests {
             hunks: vec![
                 DiffHunk {
                     header: "@@ -1,2 +1,3 @@".into(),
-                    action: None,
+                    actions: Vec::new(),
                     lines: vec![
                         line(DiffLineKind::Context),
                         line(DiffLineKind::Addition),
@@ -564,7 +568,7 @@ mod tests {
                 },
                 DiffHunk {
                     header: "@@ -10 +11 @@".into(),
-                    action: None,
+                    actions: Vec::new(),
                     lines: vec![line(DiffLineKind::Deletion), line(DiffLineKind::Addition)],
                 },
             ],

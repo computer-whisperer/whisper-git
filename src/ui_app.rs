@@ -147,6 +147,11 @@ pub enum ConfirmAction {
     DeleteBranch(String),
     DeleteTag(String),
     DropStash(usize),
+    DiscardFile(String),
+    DiscardHunk {
+        path: String,
+        idx: usize,
+    },
     RemoveWorktree {
         name: String,
         path: String,
@@ -183,6 +188,12 @@ pub enum ContextTarget {
     Stash(usize),
     /// A row in the commit history view.
     Commit(git2::Oid),
+    /// A row in the staging well.
+    StagingFile {
+        path: String,
+        staged: bool,
+        untracked: bool,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1027,6 +1038,10 @@ impl WhisperApp {
             self.run_op("Unstage", move |t| t.active_repo().unstage_file(&path));
             return;
         }
+        if let Some(path) = key.strip_prefix("discard_file:") {
+            self.confirm_discard_file(path.to_string());
+            return;
+        }
         // diff:mode_toggle — flip between unified and split. Persist
         // the new preference so the user's choice survives a relaunch.
         if key == diff_view::DIFF_MODE_TOGGLE_KEY {
@@ -1134,6 +1149,14 @@ impl WhisperApp {
                 self.run_op("Unstage hunk", move |t| {
                     t.active_repo().unstage_hunk(&path, idx)
                 });
+            }
+            return;
+        }
+        if let Some(rest) = key.strip_prefix("discard_hunk:") {
+            if let Some((idx_str, path)) = rest.split_once(':')
+                && let Ok(idx) = idx_str.parse::<usize>()
+            {
+                self.confirm_discard_hunk(path.to_string(), idx);
             }
             return;
         }
@@ -1281,6 +1304,7 @@ impl WhisperApp {
             "push" => self.push(),
             "commit" => self.commit(),
             "stage_all" => self.stage_all(),
+            "stage_untracked_all" => self.stage_untracked_all(),
             "unstage_all" => self.unstage_all(),
             "settings" => self.active_modal = Some(ActiveModal::Settings),
             "toggle_shortcut_bar" => {
@@ -1365,6 +1389,7 @@ impl WhisperApp {
             return false;
         };
         let target = if let Some(idx_str) = route.strip_prefix("commit:") {
+            let idx_str = idx_str.split_once('.').map(|(a, _)| a).unwrap_or(idx_str);
             let Ok(idx) = idx_str.parse::<usize>() else {
                 return false;
             };
@@ -1375,6 +1400,8 @@ impl WhisperApp {
                 return false;
             };
             ContextTarget::Commit(oid)
+        } else if let Some(target) = self.parse_staging_context_target(route) {
+            target
         } else {
             let Some(t) = parse_sidebar_target(route) else {
                 return false;
@@ -1386,6 +1413,48 @@ impl WhisperApp {
         };
         self.context_menu = Some(ContextMenuState { pos, target });
         true
+    }
+
+    fn parse_staging_context_target(&self, route: &str) -> Option<ContextTarget> {
+        if route == diff_view::DIFF_MODE_TOGGLE_KEY {
+            return None;
+        }
+        let (path, hinted_staged) = if let Some(path) = route.strip_prefix("diff:") {
+            (path, None)
+        } else if let Some(path) = route.strip_prefix("stage_file:") {
+            (path, Some(false))
+        } else if let Some(path) = route.strip_prefix("unstage_file:") {
+            (path, Some(true))
+        } else if let Some(path) = route.strip_prefix("discard_file:") {
+            (path, Some(false))
+        } else {
+            return None;
+        };
+        if path.is_empty() || path.starts_with("row:") {
+            return None;
+        }
+        let view = self.active_focus().and_then(|t| t.active_view())?;
+        let in_staged = view.status.staged.iter().any(|f| f.path == path);
+        let in_unstaged = view.status.unstaged.iter().any(|f| f.path == path);
+        let in_untracked = view.status.untracked.iter().any(|f| f.path == path);
+        let in_conflicted = view.status.conflicted.iter().any(|f| f.path == path);
+        if !in_staged
+            && !in_unstaged
+            && !in_untracked
+            && !in_conflicted
+            && view.selected_diff_file.as_deref() != Some(path)
+        {
+            return None;
+        }
+        if in_conflicted {
+            return None;
+        }
+        let staged = hinted_staged.unwrap_or(in_staged && !in_unstaged && !in_untracked);
+        Some(ContextTarget::StagingFile {
+            path: path.to_string(),
+            staged,
+            untracked: in_untracked,
+        })
     }
 
     /// Handle modal-only routes. Returns true if the key was a modal
@@ -1955,6 +2024,47 @@ impl WhisperApp {
         }
     }
 
+    fn confirm_discard_file(&mut self, path: String) {
+        let untracked = self
+            .active_focus()
+            .and_then(|t| t.active_view())
+            .is_some_and(|view| view.status.untracked.iter().any(|f| f.path == path));
+        let (title, body, ok_label) = if untracked {
+            (
+                "Delete untracked file".to_string(),
+                format!("Delete untracked file '{path}'? This cannot be undone."),
+                "Delete".to_string(),
+            )
+        } else {
+            (
+                "Discard changes".to_string(),
+                format!("Discard changes to '{path}'? This cannot be undone."),
+                "Discard".to_string(),
+            )
+        };
+        self.active_modal = Some(ActiveModal::Confirm {
+            title,
+            body,
+            ok_label,
+            destructive: true,
+            action: ConfirmAction::DiscardFile(path),
+        });
+    }
+
+    fn confirm_discard_hunk(&mut self, path: String, idx: usize) {
+        self.active_modal = Some(ActiveModal::Confirm {
+            title: "Discard hunk".to_string(),
+            body: format!(
+                "Discard hunk {} from '{}'? This cannot be undone.",
+                idx + 1,
+                path
+            ),
+            ok_label: "Discard".to_string(),
+            destructive: true,
+            action: ConfirmAction::DiscardHunk { path, idx },
+        });
+    }
+
     fn confirm_remove_worktree(&mut self, idx: usize) {
         let Some(tab) = self.active_focus() else {
             return;
@@ -2429,6 +2539,20 @@ impl WhisperApp {
                     action: ConfirmAction::DropStash(idx),
                 });
             }
+            ("stage", ContextTarget::StagingFile { path, .. }) => {
+                self.run_op("Stage", move |t| t.active_repo().stage_file(&path));
+            }
+            ("unstage", ContextTarget::StagingFile { path, .. }) => {
+                self.run_op("Unstage", move |t| t.active_repo().unstage_file(&path));
+            }
+            ("view_diff", ContextTarget::StagingFile { path, .. }) => {
+                if let Some(view) = self.active_focus_mut().and_then(|t| t.active_view_mut()) {
+                    view.selected_diff_file = Some(path);
+                }
+            }
+            ("discard", ContextTarget::StagingFile { path, .. }) => {
+                self.confirm_discard_file(path);
+            }
             ("copy_sha", ContextTarget::Commit(oid)) => {
                 let sha = oid.to_string();
                 match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(sha.clone())) {
@@ -2536,6 +2660,14 @@ impl WhisperApp {
             }
             ConfirmAction::DropStash(idx) => {
                 self.stash_drop(idx);
+            }
+            ConfirmAction::DiscardFile(path) => {
+                self.run_op("Discard", move |t| t.active_repo().discard_file(&path));
+            }
+            ConfirmAction::DiscardHunk { path, idx } => {
+                self.run_op("Discard hunk", move |t| {
+                    t.active_repo().discard_hunk(&path, idx)
+                });
             }
             ConfirmAction::RemoveWorktree { name, path, force } => {
                 self.remove_worktree(name, path, force);
@@ -3820,7 +3952,7 @@ impl WhisperApp {
 
     fn stage_all(&mut self) {
         self.run_op("Stage all", |t| {
-            // Stage each unstaged + untracked file. We could use
+            // Stage each tracked unstaged file. We could use
             // `git add -A` via CLI for a single batch, but stage_file
             // already handles per-path errors gracefully and keeps us
             // out of process-spawn territory. Collect paths first so
@@ -3835,7 +3967,24 @@ impl WhisperApp {
                 .status
                 .unstaged
                 .iter()
-                .chain(view.status.untracked.iter())
+                .map(|f| f.path.clone())
+                .collect();
+            for p in paths {
+                view.repo.stage_file(&p)?;
+            }
+            Ok(())
+        });
+    }
+
+    fn stage_untracked_all(&mut self) {
+        self.run_op("Track all", |t| {
+            let Some(view) = t.active_view() else {
+                return Ok(());
+            };
+            let paths: Vec<String> = view
+                .status
+                .untracked
+                .iter()
                 .map(|f| f.path.clone())
                 .collect();
             for p in paths {
@@ -4027,6 +4176,24 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
             menu_item("Reset hard to here").key("ctx:reset_hard"),
             menu_item("Cherry-pick").key("ctx:cherry_pick"),
             menu_item("Revert").key("ctx:revert"),
+        ],
+        ContextTarget::StagingFile { staged: true, .. } => vec![
+            menu_item("Unstage File").key("ctx:unstage"),
+            menu_item("View Diff").key("ctx:view_diff"),
+        ],
+        ContextTarget::StagingFile {
+            staged: false,
+            untracked,
+            ..
+        } => vec![
+            menu_item("Stage File").key("ctx:stage"),
+            menu_item("View Diff").key("ctx:view_diff"),
+            menu_item(if *untracked {
+                "Discard File"
+            } else {
+                "Discard Changes"
+            })
+            .key("ctx:discard"),
         ],
     };
 

@@ -386,11 +386,14 @@ impl GitRepo {
             }
             Ok(())
         } else {
-            // Modified, deleted, typechange: restore from index/HEAD
+            // Modified, deleted, typechange: restore from the index. If
+            // this path also has staged changes, those staged changes are
+            // preserved while only the working-tree delta is discarded.
             let mut checkout_builder = git2::build::CheckoutBuilder::new();
             checkout_builder.path(path).force();
+            let mut index = self.repo.index().context("Failed to get index")?;
             self.repo
-                .checkout_head(Some(&mut checkout_builder))
+                .checkout_index(Some(&mut index), Some(&mut checkout_builder))
                 .with_context(|| format!("Failed to discard changes in {}", path))?;
             Ok(())
         }

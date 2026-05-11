@@ -9,6 +9,7 @@
 //! - `commit` — primary commit button
 //! - `stage_all` / `unstage_all` — bulk-op buttons
 //! - `stage_file:{path}` / `unstage_file:{path}` — per-file toggle
+//! - `discard_file:{path}` — destructive working-tree discard
 //! - `diff:{path}` — preview file's diff
 
 use aetna_core::{El, IconName, Selection, prelude::*};
@@ -262,12 +263,8 @@ fn compute_display_names(names: &[String]) -> Vec<String> {
 
 pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bool) -> El {
     let staged = &view.status.staged;
-    let unstaged_all: Vec<&FileStatus> = view
-        .status
-        .unstaged
-        .iter()
-        .chain(view.status.untracked.iter())
-        .collect();
+    let unstaged = &view.status.unstaged;
+    let untracked = &view.status.untracked;
     let conflicted = &view.status.conflicted;
 
     let mut sections: Vec<El> = Vec::new();
@@ -277,6 +274,7 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
             "Conflicted",
             conflicted.iter().collect::<Vec<_>>().as_slice(),
             None,
+            FileRowMode::Conflicted,
             SurfaceRole::Danger,
         ));
     }
@@ -284,14 +282,25 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
         "Staged",
         staged.iter().collect::<Vec<_>>().as_slice(),
         Some(("Unstage all", "unstage_all", false)),
+        FileRowMode::Staged,
         SurfaceRole::Sunken,
     ));
     sections.push(file_section(
         "Unstaged",
-        unstaged_all.as_slice(),
+        unstaged.iter().collect::<Vec<_>>().as_slice(),
         Some(("Stage all", "stage_all", true)),
+        FileRowMode::Unstaged,
         SurfaceRole::Sunken,
     ));
+    if !untracked.is_empty() {
+        sections.push(file_section(
+            "Untracked",
+            untracked.iter().collect::<Vec<_>>().as_slice(),
+            Some(("Track all", "stage_untracked_all", true)),
+            FileRowMode::Untracked,
+            SurfaceRole::Sunken,
+        ));
+    }
     if !view.submodules.is_empty() {
         sections.push(submodules_section(&view.submodules));
     }
@@ -357,6 +366,7 @@ fn file_section(
     title: &str,
     files: &[&FileStatus],
     bulk_action: Option<(&str, &str, bool)>,
+    row_mode: FileRowMode,
     role: SurfaceRole,
 ) -> El {
     let is_danger = role == SurfaceRole::Danger;
@@ -383,13 +393,10 @@ fn file_section(
             text("(none)")
                 .caption()
                 .muted()
-                .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1)),
+                .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_3)),
         ]
     } else {
-        files
-            .iter()
-            .map(|f| file_row(f, bulk_action.is_some_and(|(_, _, is_stage)| is_stage)))
-            .collect()
+        files.iter().map(|f| file_row(f, row_mode)).collect()
     };
 
     let header_fill = if is_danger {
@@ -400,7 +407,7 @@ fn file_section(
 
     let mut card_el = card([
         card_header([header_row])
-            .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
+            .padding(tokens::SPACE_3)
             .fill(header_fill),
         card_content(body).padding(0.0),
     ]);
@@ -410,7 +417,15 @@ fn file_section(
     card_el
 }
 
-fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
+#[derive(Clone, Copy)]
+enum FileRowMode {
+    Staged,
+    Unstaged,
+    Untracked,
+    Conflicted,
+}
+
+fn file_row(file: &FileStatus, mode: FileRowMode) -> El {
     let (status_char, status_color) = match file.status {
         FileStatusKind::New => ('A', tokens::SUCCESS),
         FileStatusKind::Modified => ('M', tokens::WARNING),
@@ -419,41 +434,65 @@ fn file_row(file: &FileStatus, is_unstaged_section: bool) -> El {
         FileStatusKind::TypeChange => ('T', tokens::INFO),
         FileStatusKind::Conflicted => ('!', tokens::DESTRUCTIVE),
     };
-    let toggle_key = if is_unstaged_section {
-        format!("stage_file:{}", file.path)
-    } else {
-        format!("unstage_file:{}", file.path)
-    };
-
-    row([
+    let mut children = vec![
         text(status_char.to_string())
             .mono()
             .text_color(status_color),
         text(file.path.clone()).ellipsis().width(Size::Fill(1.0)),
-        icon_button(if is_unstaged_section {
-            IconName::Plus
-        } else {
-            IconName::X
-        })
-        .key(toggle_key)
-        .tooltip(if is_unstaged_section {
-            "Stage file"
-        } else {
-            "Unstage file"
-        }),
-    ])
-    .key(format!("diff:{}", file.path))
-    .focusable()
-    .style_profile(StyleProfile::Surface)
-    .metrics_role(MetricsRole::ListItem)
-    .cursor(Cursor::Pointer)
-    .paint_overflow(Sides::all(tokens::RING_WIDTH))
-    .radius(tokens::RADIUS_SM)
-    .animate(Timing::SPRING_QUICK)
-    .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
-    .gap(tokens::SPACE_2)
-    .align(Align::Center)
-    .height(Size::Fixed(40.0))
+    ];
+    match mode {
+        FileRowMode::Staged => {
+            children.push(
+                staging_row_button(IconName::X)
+                    .key(format!("unstage_file:{}", file.path))
+                    .tooltip("Unstage file"),
+            );
+        }
+        FileRowMode::Unstaged | FileRowMode::Untracked => {
+            children.push(
+                staging_row_button(IconName::Plus)
+                    .key(format!("stage_file:{}", file.path))
+                    .tooltip("Stage file"),
+            );
+            let discard_tip =
+                if matches!(mode, FileRowMode::Untracked) || file.status == FileStatusKind::New {
+                    "Delete untracked file"
+                } else {
+                    "Discard changes"
+                };
+            children.push(
+                staging_row_button(IconName::RefreshCw)
+                    .key(format!("discard_file:{}", file.path))
+                    .tooltip(discard_tip)
+                    .destructive(),
+            );
+        }
+        FileRowMode::Conflicted => {
+            children.push(
+                icon(IconName::AlertCircle)
+                    .text_color(tokens::DESTRUCTIVE)
+                    .tooltip("Resolve conflicts before staging"),
+            );
+        }
+    }
+
+    row(children)
+        .key(format!("diff:{}", file.path))
+        .focusable()
+        .style_profile(StyleProfile::Surface)
+        .metrics_role(MetricsRole::ListItem)
+        .cursor(Cursor::Pointer)
+        .paint_overflow(Sides::all(tokens::RING_WIDTH))
+        .radius(tokens::RADIUS_SM)
+        .animate(Timing::SPRING_QUICK)
+        .padding(tokens::SPACE_3)
+        .gap(tokens::SPACE_2)
+        .align(Align::Center)
+        .height(Size::Fixed(48.0))
+}
+
+fn staging_row_button(icon_name: IconName) -> El {
+    icon_button(icon_name).xsmall()
 }
 
 /// Submodules registered in the active worktree. Each row shows the
