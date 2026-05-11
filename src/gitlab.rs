@@ -1,8 +1,7 @@
-//! GitLab REST API client.
+//! GitLab pipelines REST client.
 //!
-//! Provides authenticated access to GitLab's API for fetching pipeline status.
-//! Supports both gitlab.com and self-hosted GitLab instances by deriving the
-//! API base URL from the remote URL.
+//! Supports both gitlab.com and self-hosted instances; the API base is
+//! derived from the remote URL so any hostname containing "gitlab" works.
 
 use crate::ci::{
     CiCheckStatus, CiCommitRollup, CiCounts, CiProvider, CiState, CiStatus, ProviderCiResult,
@@ -22,10 +21,8 @@ pub struct GitLabRemote {
     pub project_path: String,
 }
 
-/// Extract GitLab remote info from a remote URL.
-/// Supports both HTTPS and SSH formats for gitlab.com and self-hosted instances.
-///
-/// Detection heuristic: hostname contains "gitlab".
+/// Extract GitLab remote info from a remote URL. Detection heuristic:
+/// hostname contains "gitlab".
 pub fn parse_gitlab_remote(url: &str) -> Option<GitLabRemote> {
     let url = url.trim();
 
@@ -54,7 +51,6 @@ pub fn parse_gitlab_remote(url: &str) -> Option<GitLabRemote> {
         return None;
     }
     let path = path.strip_suffix(".git").unwrap_or(path);
-    // Strip trailing slashes / extra segments like .git/info
     let path = path.split(".git/").next().unwrap_or(path);
     if path.is_empty() || !path.contains('/') {
         return None;
@@ -64,8 +60,6 @@ pub fn parse_gitlab_remote(url: &str) -> Option<GitLabRemote> {
         project_path: path.to_string(),
     })
 }
-
-// --- Pipeline types ---
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -110,7 +104,6 @@ impl GitLabClient {
         Ok(resp)
     }
 
-    /// Fetch recent pipelines for a project, optionally filtered by ref (branch).
     pub fn pipelines(
         &self,
         project_path: &str,
@@ -133,14 +126,10 @@ impl GitLabClient {
     }
 }
 
-/// URL-encode a GitLab project path (e.g. "group/repo" → "group%2Frepo").
 fn url_encode_path(path: &str) -> String {
     path.replace('/', "%2F")
 }
 
-// --- CI status computation ---
-
-/// Map a GitLab pipeline status string to CiState.
 fn pipeline_state(status: &str) -> CiState {
     match status {
         "success" => CiState::Success,
@@ -172,7 +161,6 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
         };
     }
 
-    // Only consider pipelines for the most recent commit (first pipeline's SHA).
     let head_sha = &pipelines[0].sha;
     let head_pipelines: Vec<&Pipeline> = pipelines.iter().filter(|p| p.sha == *head_sha).collect();
 
@@ -227,7 +215,6 @@ fn ci_status_from_pipelines(pipelines: &[Pipeline]) -> CiStatus {
     }
 }
 
-/// Build per-commit CI states from pipelines.
 fn per_commit_rollups(pipelines: &[Pipeline]) -> HashMap<String, CiCommitRollup> {
     let mut by_sha: HashMap<&str, Vec<&Pipeline>> = HashMap::new();
     for p in pipelines {
@@ -236,7 +223,6 @@ fn per_commit_rollups(pipelines: &[Pipeline]) -> HashMap<String, CiCommitRollup>
 
     let mut result: HashMap<String, CiCommitRollup> = HashMap::new();
     for (sha, sha_pipelines) in &by_sha {
-        // Take the latest pipeline per SHA (highest id)
         if let Some(latest) = sha_pipelines.iter().max_by_key(|p| p.id) {
             let check_state = pipeline_state(&latest.status);
             let checks = vec![CiCheckStatus {
@@ -251,8 +237,6 @@ fn per_commit_rollups(pipelines: &[Pipeline]) -> HashMap<String, CiCommitRollup>
     result
 }
 
-/// Fetch CI status for a GitLab project.
-/// Called from a background thread — returns the result directly.
 fn fetch_ci_result(token: &str, remote: &GitLabRemote) -> ProviderCiResult {
     let client = GitLabClient::new(token.to_string(), remote.api_base.clone());
     match client.pipelines(&remote.project_path, None, 50) {
@@ -356,12 +340,10 @@ mod tests {
 
     #[test]
     fn ci_status_head_commit_passed() {
-        // Pipelines sorted by ID descending (most recent first), as the API returns them.
-        // Only the head commit (highest ID's SHA) should be counted.
         let pipelines = vec![
             make_pipeline(3, "def", "success"),
             make_pipeline(2, "def", "success"),
-            make_pipeline(1, "abc", "failed"), // older commit — ignored
+            make_pipeline(1, "abc", "failed"),
         ];
         let status = ci_status_from_pipelines(&pipelines);
         assert_eq!(status.state, CiState::Success);
@@ -370,11 +352,10 @@ mod tests {
 
     #[test]
     fn ci_status_head_commit_failed() {
-        // Head commit has a failure; older commit's success is ignored.
         let pipelines = vec![
             make_pipeline(3, "def", "failed"),
-            make_pipeline(2, "abc", "success"), // older commit — ignored
-            make_pipeline(1, "abc", "success"), // older commit — ignored
+            make_pipeline(2, "abc", "success"),
+            make_pipeline(1, "abc", "success"),
         ];
         let status = ci_status_from_pipelines(&pipelines);
         assert_eq!(status.state, CiState::Failure);
@@ -391,7 +372,7 @@ mod tests {
     fn per_commit_latest_wins() {
         let pipelines = vec![
             make_pipeline(1, "abc", "failed"),
-            make_pipeline(2, "abc", "success"), // newer
+            make_pipeline(2, "abc", "success"),
         ];
         let rollups = per_commit_rollups(&pipelines);
         assert_eq!(rollups["abc"].counts.overall_state(), CiState::Success);

@@ -11,23 +11,19 @@ keywords = ["git", "vulkan", "gui", "graphics"]
 categories = ["development-tools", "gui"]
 
 [dependencies]
+# UI toolkit (path dep until aetna 0.3.0 ships on crates.io)
+aetna-core = { path = "../../aetna/aetna.main/crates/aetna-core" }
+aetna-vulkano = { path = "../../aetna/aetna.main/crates/aetna-vulkano" }
+
 # Graphics
 vulkano = "0.35"
-vulkano-shaders = "0.35"
 winit = "0.30"
 
 # Git
 git2 = "0.20"
 
-# Text rendering (SDF via EDT from fontdue coverage)
-fontdue = "0.9"
-
 # Screenshot/image output
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
-
-# HTTP & hashing for gravatar
-ureq = { version = "3", features = ["json"] }
-md5 = "0.8"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -39,13 +35,18 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 # Native file dialogs
 rfd = "0.17"
 
-# Filesystem watching
+# HTTP (CI status fetchers — GitHub Actions, GitLab pipelines, Gravatar fetches)
+ureq = { version = "3", features = ["json"] }
+
+# MD5 — Gravatar's URL is keyed off the MD5 of the lowercased email.
+md5 = "0.8"
+
+# Filesystem watching — drives auto-refresh on external git ops + file edits.
+# Used by `crate::watcher::RepoWatcher`.
 notify = "8"
 
 # Utilities
-bytemuck = { version = "1.21", features = ["derive"] }
 anyhow = "1.0"
-half = "2.4"
 
 # Secure credential storage (platform-specific backends)
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -1,8 +1,7 @@
 //! Secure credential storage for API tokens.
 //!
 //! Uses the system keychain (Secret Service on Linux, Keychain on macOS,
-//! Credential Manager on Windows) via the `keyring` crate. Falls back to
-//! plaintext config storage if the keychain is unavailable.
+//! Credential Manager on Windows) via the `keyring` crate.
 //!
 //! Reads are cached in-process: the first lookup hits the keychain, subsequent
 //! lookups return the cached value. The cache is updated by our own
@@ -11,6 +10,7 @@
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
+
 
 const SERVICE: &str = "whisper-git";
 const GITHUB_USER: &str = "github-token";
@@ -129,35 +129,3 @@ pub fn is_available() -> bool {
     })
 }
 
-/// Migrate plaintext tokens from Config into the keychain.
-/// Returns (migrated_count, Vec<error_messages>).
-/// On success, the plaintext fields should be cleared by the caller.
-pub fn migrate_from_config(
-    github_token: Option<&str>,
-    gitlab_tokens: &HashMap<String, String>,
-) -> (u32, Vec<String>) {
-    let mut migrated = 0u32;
-    let mut errors = Vec::new();
-
-    if let Some(token) = github_token.filter(|t| !t.is_empty()) {
-        if set_github_token(token) {
-            migrated += 1;
-        } else {
-            errors.push("Failed to migrate GitHub token to keychain".into());
-        }
-    }
-
-    for (host, token) in gitlab_tokens {
-        if !token.is_empty() {
-            if set_gitlab_token(host, token) {
-                migrated += 1;
-            } else {
-                errors.push(format!(
-                    "Failed to migrate GitLab token for {host} to keychain"
-                ));
-            }
-        }
-    }
-
-    (migrated, errors)
-}

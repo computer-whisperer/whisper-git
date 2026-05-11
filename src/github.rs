@@ -1,7 +1,5 @@
-//! GitHub REST API client.
-//!
-//! Provides authenticated access to GitHub's API for fetching Actions build status,
-//! creating repositories, and other GitHub-specific operations.
+//! GitHub Actions REST client — feeds CI status into the header bar
+//! and per-commit dots in the graph.
 
 use crate::ci::{
     CiCheckStatus, CiCommitRollup, CiCounts, CiProvider, CiState, CiStatus, ProviderCiResult,
@@ -25,7 +23,6 @@ pub struct GitHubClient {
 pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
     let url = url.trim();
 
-    // SSH: git@github.com:owner/repo.git
     if let Some(path) = url.strip_prefix("git@github.com:") {
         let path = path.strip_suffix(".git").unwrap_or(path);
         let (owner, repo) = path.split_once('/')?;
@@ -34,13 +31,11 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
         }
     }
 
-    // HTTPS: https://github.com/owner/repo.git
     let path = url
         .strip_prefix("https://github.com/")
         .or_else(|| url.strip_prefix("http://github.com/"))?;
     let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, repo) = path.split_once('/')?;
-    // Strip any trailing path segments (e.g. .git/info/...)
     let repo = repo.split('/').next()?;
     if !owner.is_empty() && !repo.is_empty() {
         Some((owner.to_string(), repo.to_string()))
@@ -48,20 +43,6 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
         None
     }
 }
-
-/// Return the icon name for a remote URL, if it matches a known hosting provider.
-pub fn icon_for_remote_url(url: &str) -> Option<&'static str> {
-    let url = url.trim();
-    if url.contains("github.com") {
-        Some(crate::ui::icon::ICON_GITHUB)
-    } else if url.contains("gitlab.com") || url.contains("gitlab.") {
-        Some(crate::ui::icon::ICON_GITLAB)
-    } else {
-        None
-    }
-}
-
-// --- Actions workflow run status ---
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -84,16 +65,6 @@ struct WorkflowRunsResponse {
 struct GitHubApiErrorBody {
     message: Option<String>,
     documentation_url: Option<String>,
-}
-
-// --- Repository creation ---
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct CreatedRepo {
-    pub full_name: String,
-    pub clone_url: String,
-    pub ssh_url: String,
 }
 
 impl GitHubClient {
@@ -184,27 +155,6 @@ impl GitHubClient {
         Ok(resp)
     }
 
-    #[allow(dead_code)]
-    fn post(
-        &self,
-        path: &str,
-        body: &serde_json::Value,
-    ) -> Result<ureq::http::Response<ureq::Body>> {
-        let mut resp = ureq::post(&format!("{API_BASE}{path}"))
-            .header("Authorization", &format!("Bearer {}", self.token))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "whisper-git")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .send_json(body)
-            .map_err(Self::map_ureq_error)?;
-        Self::ensure_success(&mut resp)?;
-        Ok(resp)
-    }
-
-    /// Fetch the most recent workflow runs for a repo, optionally filtered by branch.
     pub fn workflow_runs(
         &self,
         owner: &str,
@@ -225,83 +175,7 @@ impl GitHubClient {
             .context("Failed to parse runs")?;
         Ok(body.workflow_runs)
     }
-
-    /// Create a new repository under the authenticated user's account.
-    #[allow(dead_code)]
-    pub fn create_repo(&self, name: &str, private: bool) -> Result<CreatedRepo> {
-        let body = serde_json::json!({
-            "name": name,
-            "private": private,
-        });
-        let mut resp = self.post("/user/repos", &body)?;
-        let repo: CreatedRepo = resp
-            .body_mut()
-            .read_json()
-            .context("Failed to parse created repo")?;
-        Ok(repo)
-    }
 }
-
-// --- Repository listing ---
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct RepoInfo {
-    pub full_name: String,
-    pub clone_url: String,
-    pub ssh_url: String,
-    pub private: bool,
-    pub description: Option<String>,
-    #[serde(default)]
-    pub fork: bool,
-    pub updated_at: Option<String>,
-}
-
-impl GitHubClient {
-    /// List repositories accessible to the authenticated user, sorted by most recently pushed.
-    /// Fetches up to `max_pages` pages of 100 repos each.
-    pub fn list_repos(&self, max_pages: u32) -> Result<Vec<RepoInfo>> {
-        let mut all = Vec::new();
-        for page in 1..=max_pages {
-            let path = format!("/user/repos?sort=pushed&direction=desc&per_page=100&page={page}");
-            let mut resp = self.get(&path)?;
-            let repos: Vec<RepoInfo> = resp
-                .body_mut()
-                .read_json()
-                .context("Failed to parse repo list")?;
-            let done = repos.len() < 100;
-            all.extend(repos);
-            if done {
-                break;
-            }
-        }
-        Ok(all)
-    }
-}
-
-/// Fetch the authenticated user's repo list asynchronously.
-/// Returns None if no token is provided.
-pub fn fetch_repo_list_async(
-    token: &str,
-    proxy: EventLoopProxy<()>,
-) -> Option<Receiver<Result<Vec<RepoInfo>>>> {
-    if token.is_empty() {
-        return None;
-    }
-    let token = token.to_string();
-    let (tx, rx) = mpsc::channel();
-
-    std::thread::spawn(move || {
-        let client = GitHubClient::new(token);
-        let result = client.list_repos(3); // up to 300 repos
-        let _ = tx.send(result);
-        let _ = proxy.send_event(());
-    });
-
-    Some(rx)
-}
-
-// --- CI status computation ---
 
 fn run_state(run: &WorkflowRun) -> CiState {
     match run.conclusion.as_deref() {
@@ -327,11 +201,9 @@ fn ci_status_from_runs(runs: &[WorkflowRun]) -> CiStatus {
         };
     }
 
-    // Only consider runs for the most recent commit (first run's SHA).
     let head_sha = &runs[0].head_sha;
     let head_runs: Vec<&WorkflowRun> = runs.iter().filter(|r| r.head_sha == *head_sha).collect();
 
-    // Deduplicate: keep only the latest run per workflow name
     let mut latest: HashMap<&str, &WorkflowRun> = HashMap::new();
     for run in &head_runs {
         latest
@@ -388,10 +260,7 @@ fn ci_status_from_runs(runs: &[WorkflowRun]) -> CiStatus {
 }
 
 /// Build per-commit CI states from workflow runs.
-/// Groups runs by commit SHA, then for each SHA deduplicates by workflow name
-/// and computes an aggregate state (all pass = Success, any fail = Failure, etc.)
 fn per_commit_rollups(runs: &[WorkflowRun]) -> HashMap<String, CiCommitRollup> {
-    // Group runs by commit SHA
     let mut by_sha: HashMap<&str, Vec<&WorkflowRun>> = HashMap::new();
     for run in runs {
         by_sha.entry(run.head_sha.as_str()).or_default().push(run);
@@ -399,7 +268,6 @@ fn per_commit_rollups(runs: &[WorkflowRun]) -> HashMap<String, CiCommitRollup> {
 
     let mut result: HashMap<String, CiCommitRollup> = HashMap::new();
     for (sha, sha_runs) in &by_sha {
-        // Deduplicate by workflow name (keep latest run per name)
         let mut latest: HashMap<&str, &WorkflowRun> = HashMap::new();
         for run in sha_runs {
             latest
@@ -420,7 +288,7 @@ fn per_commit_rollups(runs: &[WorkflowRun]) -> HashMap<String, CiCommitRollup> {
                 url: Some(run.html_url.clone()),
             })
             .collect();
-        // Show the most important states first in compact dot strips.
+        // Most important states first in compact dot strips.
         checks.sort_by_key(|c| match c.state {
             CiState::Failure => 0,
             CiState::Pending => 1,
@@ -435,9 +303,8 @@ fn per_commit_rollups(runs: &[WorkflowRun]) -> HashMap<String, CiCommitRollup> {
     result
 }
 
-/// Fetch CI status for a GitHub repo asynchronously.
-/// Returns a receiver that will produce a ProviderCiResult.
-/// Returns None if the origin remote isn't a GitHub URL.
+/// Fetch CI status for a GitHub repo asynchronously. Returns `None` when
+/// `origin_url` doesn't parse as a GitHub URL.
 pub fn fetch_ci_status_async(
     token: &str,
     origin_url: &str,
@@ -556,7 +423,7 @@ mod tests {
     fn ci_status_deduplicates_by_name() {
         let runs = vec![
             make_run(1, "CI", "completed", Some("failure")),
-            make_run(2, "CI", "completed", Some("success")), // newer run replaces old
+            make_run(2, "CI", "completed", Some("success")),
         ];
         let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);
@@ -564,14 +431,12 @@ mod tests {
 
     #[test]
     fn ci_status_ignores_older_commit_runs() {
-        // Runs from an older commit (lower ID) should not affect the summary.
-        // The first run in the list (highest ID) determines the head SHA.
         let mut old_fail = make_run(1, "CI", "completed", Some("failure"));
         old_fail.head_sha = "old_sha".to_string();
         let runs = vec![
-            make_run(3, "CI", "completed", Some("success")), // head commit
-            make_run(2, "Lint", "completed", Some("success")), // head commit
-            old_fail,                                        // different commit — ignored
+            make_run(3, "CI", "completed", Some("success")),
+            make_run(2, "Lint", "completed", Some("success")),
+            old_fail,
         ];
         let status = ci_status_from_runs(&runs);
         assert_eq!(status.state, CiState::Success);

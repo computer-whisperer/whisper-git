@@ -5,7 +5,6 @@
 
 use std::collections::HashMap;
 
-/// Which CI provider produced this result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CiProvider {
     GitHub,
@@ -13,14 +12,6 @@ pub enum CiProvider {
 }
 
 impl CiProvider {
-    /// Icon key for rendering in the UI.
-    pub fn icon(&self) -> &'static str {
-        match self {
-            CiProvider::GitHub => crate::ui::icon::ICON_GITHUB,
-            CiProvider::GitLab => crate::ui::icon::ICON_GITLAB,
-        }
-    }
-
     /// Short provider label used in compact UI badges.
     pub fn short_label(&self) -> &'static str {
         match self {
@@ -38,7 +29,6 @@ impl CiProvider {
     }
 }
 
-/// Aggregate CI state for a branch or single commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CiState {
     Success,
@@ -48,7 +38,6 @@ pub enum CiState {
     None,
 }
 
-/// Simple CI state counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CiCounts {
     pub success: usize,
@@ -87,7 +76,6 @@ impl CiCounts {
     }
 }
 
-/// One concrete pipeline/workflow check state.
 #[derive(Debug, Clone)]
 pub struct CiCheckStatus {
     pub label: String,
@@ -95,44 +83,37 @@ pub struct CiCheckStatus {
     pub url: Option<String>,
 }
 
-/// Per-commit rollup for one provider.
 #[derive(Debug, Clone, Default)]
 pub struct CiCommitRollup {
     pub counts: CiCounts,
     pub checks: Vec<CiCheckStatus>,
 }
 
-/// Summarized CI status for display in the UI.
 #[derive(Debug, Clone)]
 pub struct CiStatus {
-    /// Overall status: success, failure, pending, or no runs
     pub state: CiState,
     /// Human-readable summary (e.g. "CI passed" or "2/3 checks passed")
     pub summary: String,
     /// URL to open in browser for details
     pub url: Option<String>,
-    /// Structured counts for richer UI summaries
     pub counts: Option<CiCounts>,
 }
 
-/// CI result from a single provider.
 #[derive(Debug, Clone)]
 pub struct ProviderCiResult {
     pub provider: CiProvider,
-    /// Branch-level summary (for the header bar indicator)
+    /// Branch-level summary (header bar indicator).
     pub status: CiStatus,
     /// Per-commit provider rollups for compact commit-row rendering.
     pub per_commit_rollups: HashMap<String, CiCommitRollup>,
 }
 
-/// Provider-scoped CI rollup for one commit (used in graph rows).
 #[derive(Debug, Clone)]
 pub struct ProviderCommitRollup {
     pub provider: CiProvider,
     pub rollup: CiCommitRollup,
 }
 
-/// Combined result of CI fetches across all detected providers.
 #[derive(Debug, Clone)]
 pub struct CiFetchResult {
     pub providers: Vec<ProviderCiResult>,

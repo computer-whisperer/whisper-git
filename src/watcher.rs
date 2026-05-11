@@ -1,11 +1,48 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
 use crate::git::WorktreeInfo;
+
+/// Result of an off-thread watcher init. The recursive watch on the
+/// workdir can stall for hundreds of ms on a large repo (notify walks
+/// the directory tree synchronously), so construction runs on a worker
+/// — exactly the same Wayland-disconnect risk as the state refresh.
+pub type WatcherInitResult = notify::Result<(RepoWatcher, Receiver<FsChangeKind>)>;
+
+/// Spawn a worker that constructs a `RepoWatcher` off-thread. The
+/// receiver yields exactly one result and then closes. Construction
+/// arguments mirror [`RepoWatcher::new`]; see that constructor's
+/// docstring for the role of each path argument.
+pub fn spawn_init(
+    workdir: PathBuf,
+    git_dir: PathBuf,
+    common_dir: PathBuf,
+    worktrees: Vec<WorktreeInfo>,
+    submodule_paths: Vec<PathBuf>,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<WatcherInitResult> {
+    let (tx, rx) = mpsc::channel();
+    let proxy_for_send = proxy.clone();
+    std::thread::spawn(move || {
+        let result = RepoWatcher::new(
+            &workdir,
+            &git_dir,
+            &common_dir,
+            &worktrees,
+            &submodule_paths,
+            proxy,
+        );
+        let _ = tx.send(result);
+        let _ = proxy_for_send.send_event(());
+    });
+    rx
+}
 
 /// Debounce interval for working-tree file edits (ms).
 const WORKTREE_DEBOUNCE_MS: u64 = 500;
@@ -54,6 +91,11 @@ pub struct RepoWatcher {
     watched_worktree_dirs: HashSet<PathBuf>,
     /// Worktree working directories we're actively watching.
     watched_worktree_workdirs: HashSet<PathBuf>,
+    /// Submodule workdirs to drop events for. Shared with the watcher's
+    /// classifier closure via Arc; `update_submodule_paths` swaps the
+    /// inner Vec so submodules added mid-session start being excluded
+    /// without rebuilding the watcher.
+    submodule_paths: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl RepoWatcher {
@@ -89,19 +131,27 @@ impl RepoWatcher {
         // are recognised as git metadata changes.
         let git_dir_owned = git_dir.to_path_buf();
         let common_dir_owned = common_dir.to_path_buf();
-        let submodule_paths_owned: Vec<PathBuf> = submodule_paths.to_vec();
+        let submodule_paths_shared: Arc<Mutex<Vec<PathBuf>>> =
+            Arc::new(Mutex::new(submodule_paths.to_vec()));
+        let submodule_paths_for_closure = Arc::clone(&submodule_paths_shared);
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
             move |res: notify::Result<Event>| {
                 match res {
                     Ok(event) => {
+                        let guard = submodule_paths_for_closure
+                            .lock()
+                            .expect("submodule_paths mutex poisoned");
                         if let Some(kind) = classify_event(
                             &event,
                             &git_dir_owned,
                             &common_dir_owned,
-                            &submodule_paths_owned,
+                            &guard,
                         ) {
+                            // Drop the lock before sending so a slow
+                            // consumer doesn't extend the critical section.
+                            drop(guard);
                             let _ = watcher_tx.send(kind);
                         }
                     }
@@ -175,9 +225,21 @@ impl RepoWatcher {
                 watcher,
                 watched_worktree_dirs,
                 watched_worktree_workdirs,
+                submodule_paths: submodule_paths_shared,
             },
             debounce_rx,
         ))
+    }
+
+    /// Replace the submodule exclusion list. Called when a state
+    /// refresh notices a submodule was added or removed; the closure
+    /// picks up the new list on its next event without needing a
+    /// fresh watcher (the recursive workdir watch survives, so we
+    /// avoid the multi-hundred-ms inotify reinstall).
+    pub fn update_submodule_paths(&self, paths: Vec<PathBuf>) {
+        if let Ok(mut guard) = self.submodule_paths.lock() {
+            *guard = paths;
+        }
     }
 
     /// Add a path to watch. Ignores errors gracefully (e.g., path doesn't exist).

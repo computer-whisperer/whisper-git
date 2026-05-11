@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title desc">
+  <title id="title">Git Client Icon</title>
+  <desc id="desc">A translucent terminal window connected to a glowing Git commit graph with three branch cards.</desc>
+  <defs>
+    <linearGradient id="terminalFill" x1="125" y1="390" x2="415" y2="655" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#aeb8c4" stop-opacity="0.68"/>
+      <stop offset="1" stop-color="#6f7c89" stop-opacity="0.55"/>
+    </linearGradient>
+
+    <linearGradient id="whiteStroke" x1="140" y1="355" x2="810" y2="745" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#eef7ff"/>
+    </linearGradient>
+
+    <linearGradient id="cyanStroke" x1="735" y1="170" x2="902" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6beaff"/>
+      <stop offset="0.55" stop-color="#23d7ff"/>
+      <stop offset="1" stop-color="#0fbdf8"/>
+    </linearGradient>
+
+    <radialGradient id="nodeCore" cx="44%" cy="38%" r="70%">
+      <stop offset="0" stop-color="#c4ced8"/>
+      <stop offset="0.52" stop-color="#8b98a6"/>
+      <stop offset="1" stop-color="#687482"/>
+    </radialGradient>
+
+    <filter id="whiteGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#dcecff" flood-opacity="0.75"/>
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#45515f" flood-opacity="0.25"/>
+    </filter>
+
+    <filter id="cyanGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#5deaff" flood-opacity="0.75"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="11" flood-color="#1fcfff" flood-opacity="0.28"/>
+    </filter>
+
+    <filter id="softTileShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#3e4a56" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" fill="none"/>
+
+  <!-- terminal tile -->
+  <g filter="url(#softTileShadow)">
+    <rect x="115" y="375" width="300" height="258" rx="35" ry="35"
+          fill="url(#terminalFill)"
+          stroke="url(#whiteStroke)"
+          stroke-width="17"/>
+  </g>
+
+  <!-- terminal prompt glyph -->
+  <g fill="none" stroke="#ffffff" stroke-width="21" stroke-linecap="round" stroke-linejoin="round" filter="url(#whiteGlow)">
+    <path d="M 183 444 L 244 505 L 183 566"/>
+    <line x1="273" y1="571" x2="343" y2="571"/>
+  </g>
+
+  <!-- graph links, drawn behind nodes/cards -->
+  <g fill="none" stroke="url(#whiteStroke)" stroke-width="17" stroke-linecap="round" filter="url(#whiteGlow)">
+    <line x1="415" y1="505" x2="600" y2="505"/>
+    <line x1="600" y1="255" x2="600" y2="755"/>
+    <line x1="600" y1="255" x2="735" y2="255"/>
+    <line x1="600" y1="505" x2="735" y2="505"/>
+    <line x1="600" y1="755" x2="735" y2="755"/>
+  </g>
+
+  <!-- branch cards -->
+  <g fill="none" stroke="url(#cyanStroke)" stroke-width="13" filter="url(#cyanGlow)">
+    <rect x="735" y="175" width="165" height="170" rx="29" ry="29"/>
+    <rect x="735" y="425" width="165" height="170" rx="29" ry="29"/>
+    <rect x="735" y="675" width="165" height="170" rx="29" ry="29"/>
+  </g>
+
+  <!-- commit nodes -->
+  <g filter="url(#whiteGlow)">
+    <circle cx="600" cy="255" r="37" fill="#ffffff"/>
+    <circle cx="600" cy="255" r="24" fill="url(#nodeCore)"/>
+    <circle cx="600" cy="505" r="37" fill="#ffffff"/>
+    <circle cx="600" cy="505" r="24" fill="url(#nodeCore)"/>
+    <circle cx="600" cy="755" r="37" fill="#ffffff"/>
+    <circle cx="600" cy="755" r="24" fill="url(#nodeCore)"/>
+  </g>
+</svg>

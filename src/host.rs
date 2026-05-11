@@ -1,0 +1,696 @@
+//! Windowed host: winit ApplicationHandler that drives `aetna_vulkano::Runner`.
+//!
+//! Modeled on `aetna-vulkano-demo/src/lib.rs`. Whisper-git-specific bits:
+//! `WHISPER_GPU` device-preference hook (preserved from the legacy
+//! `VulkanContext`) and a `with_visible(false)` toggle so screenshot
+//! mode can reuse this path with a hidden window.
+
+use std::sync::Arc;
+
+use aetna_core::{App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiKey};
+use aetna_vulkano::Runner;
+use anyhow::{Context, Result};
+use vulkano::{
+    VulkanLibrary,
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage, allocator::StandardCommandBufferAllocator,
+    },
+    device::{
+        Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
+        physical::PhysicalDeviceType,
+    },
+    format::{Format, NumericFormat},
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, SampleCount, view::ImageView},
+    instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
+    memory::allocator::{AllocationCreateInfo, StandardMemoryAllocator},
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass},
+    swapchain::{
+        Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo, acquire_next_image,
+    },
+    sync::{self, GpuFuture},
+};
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key, NamedKey},
+    window::{CursorIcon, Window, WindowId},
+};
+
+pub fn run<A: App + 'static>(
+    title: &'static str,
+    viewport: Rect,
+    mut app: A,
+    on_proxy: impl FnOnce(&mut A, winit::event_loop::EventLoopProxy<()>),
+) -> Result<()> {
+    let event_loop = EventLoop::new().context("failed to create event loop")?;
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+    on_proxy(&mut app, event_loop.create_proxy());
+
+    let library = VulkanLibrary::new().context("no Vulkan library")?;
+    let required_extensions =
+        Surface::required_extensions(&event_loop).context("surface required extensions")?;
+    let instance = Instance::new(
+        library,
+        InstanceCreateInfo {
+            flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+            enabled_extensions: required_extensions,
+            ..Default::default()
+        },
+    )
+    .context("create instance")?;
+
+    let mut host = Host {
+        title,
+        viewport,
+        app,
+        instance,
+        modifiers: KeyModifiers::default(),
+        last_pointer: None,
+        rcx: None,
+    };
+    event_loop.run_app(&mut host).context("event loop")?;
+    Ok(())
+}
+
+struct Host<A: App> {
+    title: &'static str,
+    viewport: Rect,
+    app: A,
+    instance: Arc<Instance>,
+    modifiers: KeyModifiers,
+    last_pointer: Option<(f32, f32)>,
+    rcx: Option<RenderContext>,
+}
+
+/// MSAA samples per pixel for the host's color attachment. Matches
+/// the `aetna-vulkano-demo` default. Set to `1` to disable MSAA — the
+/// host then skips the multisampled image and binds only the swapchain
+/// image per framebuffer.
+const DEFAULT_SAMPLE_COUNT: u32 = 4;
+
+struct RenderContext {
+    window: Arc<Window>,
+    device: Arc<Device>,
+    queue: Arc<Queue>,
+    swapchain: Arc<Swapchain>,
+    framebuffers: Vec<Arc<Framebuffer>>,
+    cmd_alloc: Arc<StandardCommandBufferAllocator>,
+    memory_alloc: Arc<StandardMemoryAllocator>,
+    /// Multisampled color attachment shared by every framebuffer when
+    /// `runner.sample_count() > 1`. Reused across frames — submissions
+    /// serialize on `previous_frame_end`, so the GPU only touches it
+    /// from one frame at a time. `None` when MSAA is disabled.
+    msaa_image: Option<Arc<ImageView>>,
+    runner: Runner,
+    previous_frame_end: Option<Box<dyn GpuFuture>>,
+    recreate_swapchain: bool,
+}
+
+impl<A: App> ApplicationHandler for Host<A> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.rcx.is_some() {
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title(self.title)
+            .with_inner_size(PhysicalSize::new(
+                self.viewport.w as u32,
+                self.viewport.h as u32,
+            ));
+        let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
+        window.set_ime_allowed(true);
+
+        let surface =
+            Surface::from_window(self.instance.clone(), window.clone()).expect("create surface");
+
+        let (device, queue) =
+            select_device_and_queue(&self.instance, &surface).expect("device select");
+
+        let (swapchain, images, image_format) = create_swapchain(&device, surface, &window);
+
+        let mut runner = Runner::with_sample_count(
+            device.clone(),
+            queue.clone(),
+            image_format,
+            DEFAULT_SAMPLE_COUNT,
+        );
+        runner.set_theme(self.app.theme());
+        let extent: [u32; 2] = window.inner_size().into();
+        runner.set_surface_size(extent[0], extent[1]);
+        for s in self.app.shaders() {
+            runner.register_shader_with(s.name, s.wgsl, s.samples_backdrop, s.samples_time);
+        }
+
+        let memory_alloc = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
+        let msaa_image = build_msaa_image(
+            &memory_alloc,
+            image_format,
+            swapchain_extent(&swapchain),
+            runner.sample_count(),
+        );
+        let framebuffers =
+            build_framebuffers(&images, runner.render_pass(), msaa_image.as_ref());
+        let cmd_alloc = Arc::new(StandardCommandBufferAllocator::new(
+            device.clone(),
+            Default::default(),
+        ));
+        let previous_frame_end = Some(sync::now(device.clone()).boxed());
+
+        self.rcx = Some(RenderContext {
+            window,
+            device,
+            queue,
+            swapchain,
+            framebuffers,
+            cmd_alloc,
+            memory_alloc,
+            msaa_image,
+            runner,
+            previous_frame_end,
+            recreate_swapchain: false,
+        });
+        self.rcx.as_ref().unwrap().window.request_redraw();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // Background-thread async git ops wake the loop via
+        // `EventLoopProxy<()>::send_event(())`. The result drain
+        // happens in `App::before_build`, so all we need to do here
+        // is request a redraw — the prepare path picks up the new
+        // toast / modal state.
+        if let Some(rcx) = self.rcx.as_ref() {
+            rcx.window.request_redraw();
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let Some(rcx) = self.rcx.as_mut() else {
+            return;
+        };
+        let scale = rcx.window.scale_factor() as f32;
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+
+            WindowEvent::Resized(_) => {
+                rcx.recreate_swapchain = true;
+                rcx.window.request_redraw();
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                let lx = position.x as f32 / scale;
+                let ly = position.y as f32 / scale;
+                self.last_pointer = Some((lx, ly));
+                let moved = rcx.runner.pointer_moved(lx, ly);
+                for ev in moved.events {
+                    self.app.on_event(ev);
+                }
+                if moved.needs_redraw {
+                    rcx.window.request_redraw();
+                }
+            }
+
+            WindowEvent::CursorLeft { .. } => {
+                self.last_pointer = None;
+                rcx.runner.pointer_left();
+                rcx.window.request_redraw();
+            }
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(button) = pointer_button(button) else {
+                    return;
+                };
+                let Some((lx, ly)) = self.last_pointer else {
+                    return;
+                };
+                match state {
+                    ElementState::Pressed => {
+                        for ev in rcx.runner.pointer_down(lx, ly, button) {
+                            self.app.on_event(ev);
+                        }
+                        rcx.window.request_redraw();
+                    }
+                    ElementState::Released => {
+                        for ev in rcx.runner.pointer_up(lx, ly, button) {
+                            self.app.on_event(ev);
+                        }
+                        rcx.window.request_redraw();
+                    }
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let Some((lx, ly)) = self.last_pointer else {
+                    return;
+                };
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -y * 50.0,
+                    MouseScrollDelta::PixelDelta(p) => -(p.y as f32) / scale,
+                };
+                if rcx.runner.pointer_wheel(lx, ly, dy) {
+                    rcx.window.request_redraw();
+                }
+            }
+
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = key_modifiers(modifiers.state());
+                rcx.runner.set_modifiers(self.modifiers);
+            }
+
+            WindowEvent::KeyboardInput {
+                event:
+                    key_event @ winit::event::KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                is_synthetic: false,
+                ..
+            } => {
+                if let Some(key) = map_key(&key_event.logical_key) {
+                    for ev in rcx.runner.key_down(key, self.modifiers, key_event.repeat) {
+                        self.app.on_event(ev);
+                    }
+                }
+                if let Some(text) = &key_event.text
+                    && let Some(ev) = rcx.runner.text_input(text.to_string())
+                {
+                    self.app.on_event(ev);
+                }
+                rcx.window.request_redraw();
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                if let Some(ev) = rcx.runner.text_input(text) {
+                    self.app.on_event(ev);
+                }
+                rcx.window.request_redraw();
+            }
+
+            WindowEvent::RedrawRequested => {
+                let extent: [u32; 2] = rcx.window.inner_size().into();
+                if extent[0] == 0 || extent[1] == 0 {
+                    return;
+                }
+
+                rcx.previous_frame_end.as_mut().unwrap().cleanup_finished();
+
+                if rcx.recreate_swapchain {
+                    let (new_swapchain, new_images) = rcx
+                        .swapchain
+                        .recreate(SwapchainCreateInfo {
+                            image_extent: extent,
+                            ..rcx.swapchain.create_info()
+                        })
+                        .expect("recreate swapchain");
+                    rcx.swapchain = new_swapchain;
+                    rcx.msaa_image = build_msaa_image(
+                        &rcx.memory_alloc,
+                        rcx.swapchain.image_format(),
+                        swapchain_extent(&rcx.swapchain),
+                        rcx.runner.sample_count(),
+                    );
+                    rcx.framebuffers = build_framebuffers(
+                        &new_images,
+                        rcx.runner.render_pass(),
+                        rcx.msaa_image.as_ref(),
+                    );
+                    rcx.runner.set_surface_size(extent[0], extent[1]);
+                    rcx.recreate_swapchain = false;
+                }
+
+                self.app.before_build();
+                let theme = self.app.theme();
+                let cx = BuildCx::new(&theme);
+                let mut tree = self.app.build(&cx);
+                rcx.runner.set_theme(theme);
+                rcx.runner.set_hotkeys(self.app.hotkeys());
+                rcx.runner.set_selection(self.app.selection());
+                rcx.runner.push_toasts(self.app.drain_toasts());
+                rcx.runner.push_focus_requests(self.app.drain_focus_requests());
+                rcx.runner.push_scroll_requests(self.app.drain_scroll_requests());
+                let scale_factor = rcx.window.scale_factor() as f32;
+                let viewport = Rect::new(
+                    0.0,
+                    0.0,
+                    extent[0] as f32 / scale_factor,
+                    extent[1] as f32 / scale_factor,
+                );
+                let prepare = rcx.runner.prepare(&mut tree, viewport, scale_factor);
+
+                // Reflect the resolved aetna cursor onto the OS window
+                // each frame. winit dedupes set_cursor under the hood
+                // when the icon hasn't changed, so this is a cheap call
+                // even when nothing's hovered.
+                let cursor = rcx.runner.ui_state().cursor(&tree);
+                rcx.window.set_cursor(winit_cursor(cursor));
+
+                let (image_index, suboptimal, acquire_future) =
+                    match acquire_next_image(rcx.swapchain.clone(), None) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            eprintln!("acquire_next_image: {e}");
+                            rcx.recreate_swapchain = true;
+                            return;
+                        }
+                    };
+                if suboptimal {
+                    rcx.recreate_swapchain = true;
+                }
+
+                let mut builder = AutoCommandBufferBuilder::primary(
+                    rcx.cmd_alloc.clone(),
+                    rcx.queue.queue_family_index(),
+                    CommandBufferUsage::OneTimeSubmit,
+                )
+                .expect("command builder");
+
+                let framebuffer = rcx.framebuffers[image_index as usize].clone();
+                // With MSAA the framebuffer's last attachment is the
+                // single-sample resolve target (the swapchain image);
+                // without MSAA there's only one. Either way the *last*
+                // is what `Runner::render` should treat as the
+                // post-resolve target it can copy into a snapshot.
+                let attachments = framebuffer.attachments();
+                let target_image = attachments[attachments.len() - 1].image().clone();
+                rcx.runner.render(
+                    &mut builder,
+                    framebuffer,
+                    target_image,
+                    clear_color(&self.app.theme()),
+                );
+                let command_buffer = builder.build().expect("build cmd");
+
+                let future = rcx
+                    .previous_frame_end
+                    .take()
+                    .unwrap()
+                    .join(acquire_future)
+                    .then_execute(rcx.queue.clone(), command_buffer)
+                    .expect("submit")
+                    .then_swapchain_present(
+                        rcx.queue.clone(),
+                        SwapchainPresentInfo::swapchain_image_index(
+                            rcx.swapchain.clone(),
+                            image_index,
+                        ),
+                    )
+                    .then_signal_fence_and_flush();
+
+                match future.map_err(|e| e.unwrap()) {
+                    Ok(fence) => {
+                        // Serial wait — see aetna-vulkano-demo for the
+                        // reasoning. Move to a SubbufferAllocator when
+                        // perf matters.
+                        fence.wait(None).expect("frame fence wait");
+                        rcx.previous_frame_end = Some(sync::now(rcx.device.clone()).boxed());
+                    }
+                    Err(e) => {
+                        eprintln!("flush: {e}");
+                        rcx.recreate_swapchain = true;
+                        rcx.previous_frame_end = Some(sync::now(rcx.device.clone()).boxed());
+                    }
+                }
+
+                if prepare.needs_redraw {
+                    rcx.window.request_redraw();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// GPU selection honoring `WHISPER_GPU` (preserved from the legacy
+/// `VulkanContext` so users with multi-GPU machines keep their override).
+pub fn select_device_and_queue(
+    instance: &Arc<Instance>,
+    surface: &Surface,
+) -> Result<(Arc<Device>, Arc<Queue>)> {
+    let device_extensions = DeviceExtensions {
+        khr_swapchain: true,
+        ..DeviceExtensions::empty()
+    };
+
+    let gpu_pref = std::env::var("WHISPER_GPU").ok();
+
+    let (physical_device, queue_family_index) = instance
+        .enumerate_physical_devices()
+        .context("enumerate physical devices")?
+        .filter(|p| p.supported_extensions().contains(&device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| {
+                    q.queue_flags.contains(QueueFlags::GRAPHICS)
+                        && p.surface_support(i as u32, surface).unwrap_or(false)
+                })
+                .map(|i| (p, i as u32))
+        })
+        .min_by_key(|(p, _)| {
+            let dev_type = p.properties().device_type;
+            let dev_name = p.properties().device_name.to_lowercase();
+            match gpu_pref.as_deref() {
+                Some("integrated") => match dev_type {
+                    PhysicalDeviceType::IntegratedGpu => 0,
+                    PhysicalDeviceType::DiscreteGpu => 1,
+                    _ => 2,
+                },
+                Some("discrete") | None => match dev_type {
+                    PhysicalDeviceType::DiscreteGpu => 0,
+                    PhysicalDeviceType::IntegratedGpu => 1,
+                    _ => 2,
+                },
+                Some(name) => {
+                    if dev_name.contains(&name.to_lowercase()) {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            }
+        })
+        .context("no suitable GPU found")?;
+
+    println!(
+        "Using device: {} ({:?})",
+        physical_device.properties().device_name,
+        physical_device.properties().device_type
+    );
+
+    let (device, mut queues) = Device::new(
+        physical_device,
+        DeviceCreateInfo {
+            enabled_extensions: device_extensions,
+            enabled_features: aetna_vulkano::required_device_features(),
+            queue_create_infos: vec![QueueCreateInfo {
+                queue_family_index,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    )
+    .context("create device")?;
+
+    let queue = queues.next().context("no queue")?;
+    Ok((device, queue))
+}
+
+fn create_swapchain(
+    device: &Arc<Device>,
+    surface: Arc<Surface>,
+    window: &Window,
+) -> (Arc<Swapchain>, Vec<Arc<Image>>, Format) {
+    let surface_caps = device
+        .physical_device()
+        .surface_capabilities(&surface, Default::default())
+        .expect("surface caps");
+    let formats = device
+        .physical_device()
+        .surface_formats(&surface, Default::default())
+        .expect("surface formats");
+    let image_format = formats
+        .iter()
+        .copied()
+        .find(|(f, _)| f.numeric_format_color() == Some(NumericFormat::SRGB))
+        .unwrap_or(formats[0])
+        .0;
+    let (swapchain, images) = Swapchain::new(
+        device.clone(),
+        surface,
+        SwapchainCreateInfo {
+            min_image_count: surface_caps.min_image_count.max(2),
+            image_format,
+            image_extent: window.inner_size().into(),
+            // TRANSFER_SRC: `Runner::render` copies the post-resolve
+            // image into the backdrop snapshot for backdrop-sampling
+            // shaders. TRANSFER_DST: under MSAA the runner declares
+            // the resolve attachment as `TransferDstOptimal` for the
+            // resolve op, so the swapchain image must allow it as a
+            // transfer destination too.
+            image_usage: ImageUsage::COLOR_ATTACHMENT
+                | ImageUsage::TRANSFER_SRC
+                | ImageUsage::TRANSFER_DST,
+            composite_alpha: surface_caps
+                .supported_composite_alpha
+                .into_iter()
+                .next()
+                .unwrap(),
+            ..Default::default()
+        },
+    )
+    .expect("create swapchain");
+    (swapchain, images, image_format)
+}
+
+fn build_framebuffers(
+    images: &[Arc<Image>],
+    render_pass: &Arc<RenderPass>,
+    msaa_image: Option<&Arc<ImageView>>,
+) -> Vec<Arc<Framebuffer>> {
+    images
+        .iter()
+        .map(|image| {
+            let view = ImageView::new_default(image.clone()).expect("image view");
+            // Render-pass attachment order from `Runner::render_pass()`:
+            // - single-sample: `[color]` — just the swapchain view.
+            // - MSAA: `[color_msaa, color_resolve]` — multisampled
+            //   view first, swapchain view second (the resolve target).
+            let attachments: Vec<Arc<ImageView>> = match msaa_image {
+                Some(msaa) => vec![msaa.clone(), view],
+                None => vec![view],
+            };
+            Framebuffer::new(
+                render_pass.clone(),
+                FramebufferCreateInfo {
+                    attachments,
+                    ..Default::default()
+                },
+            )
+            .expect("framebuffer")
+        })
+        .collect()
+}
+
+/// Allocate a multisampled color image sized to the swapchain and wrap
+/// it in a default view. Returns `None` when `sample_count == 1` —
+/// callers then build single-attachment framebuffers without MSAA.
+fn build_msaa_image(
+    memory_alloc: &Arc<StandardMemoryAllocator>,
+    format: Format,
+    extent: [u32; 3],
+    sample_count: u32,
+) -> Option<Arc<ImageView>> {
+    if sample_count <= 1 {
+        return None;
+    }
+    let samples = SampleCount::try_from(sample_count).expect("supported MSAA sample count");
+    let image = Image::new(
+        memory_alloc.clone(),
+        ImageCreateInfo {
+            image_type: ImageType::Dim2d,
+            format,
+            extent,
+            samples,
+            // Not `TRANSIENT_ATTACHMENT`: with a backdrop-snapshot
+            // boundary the runner needs the MSAA contents to persist
+            // between Pass A's end (`store_op: Store`) and Pass B's
+            // start (`load_op: Load`), which lazily-allocated transient
+            // attachments cannot guarantee.
+            usage: ImageUsage::COLOR_ATTACHMENT,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )
+    .expect("MSAA color image");
+    Some(ImageView::new_default(image).expect("MSAA image view"))
+}
+
+fn swapchain_extent(swapchain: &Arc<Swapchain>) -> [u32; 3] {
+    let [w, h] = swapchain.image_extent();
+    [w, h, 1]
+}
+
+fn map_key(key: &Key) -> Option<UiKey> {
+    match key {
+        Key::Named(NamedKey::Enter) => Some(UiKey::Enter),
+        Key::Named(NamedKey::Escape) => Some(UiKey::Escape),
+        Key::Named(NamedKey::Tab) => Some(UiKey::Tab),
+        Key::Named(NamedKey::Space) => Some(UiKey::Space),
+        Key::Named(NamedKey::ArrowUp) => Some(UiKey::ArrowUp),
+        Key::Named(NamedKey::ArrowDown) => Some(UiKey::ArrowDown),
+        Key::Named(NamedKey::ArrowLeft) => Some(UiKey::ArrowLeft),
+        Key::Named(NamedKey::ArrowRight) => Some(UiKey::ArrowRight),
+        Key::Named(NamedKey::Backspace) => Some(UiKey::Backspace),
+        Key::Named(NamedKey::Delete) => Some(UiKey::Delete),
+        Key::Named(NamedKey::Home) => Some(UiKey::Home),
+        Key::Named(NamedKey::End) => Some(UiKey::End),
+        Key::Character(s) => Some(UiKey::Character(s.to_string())),
+        Key::Named(named) => Some(UiKey::Other(format!("{named:?}"))),
+        _ => None,
+    }
+}
+
+fn pointer_button(b: MouseButton) -> Option<PointerButton> {
+    match b {
+        MouseButton::Left => Some(PointerButton::Primary),
+        MouseButton::Right => Some(PointerButton::Secondary),
+        MouseButton::Middle => Some(PointerButton::Middle),
+        _ => None,
+    }
+}
+
+fn key_modifiers(mods: winit::keyboard::ModifiersState) -> KeyModifiers {
+    KeyModifiers {
+        shift: mods.shift_key(),
+        ctrl: mods.control_key(),
+        alt: mods.alt_key(),
+        logo: mods.super_key(),
+    }
+}
+
+fn clear_color(theme: &aetna_core::Theme) -> [f32; 4] {
+    let c = theme.resolve(aetna_core::tokens::BACKGROUND);
+    [
+        srgb_to_linear(c.r as f32 / 255.0),
+        srgb_to_linear(c.g as f32 / 255.0),
+        srgb_to_linear(c.b as f32 / 255.0),
+        c.a as f32 / 255.0,
+    ]
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.040_45 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Aetna `Cursor` → winit `CursorIcon` 1:1 map. Aetna's enum mirrors
+/// CSS / winit's vocabulary so this is a straight translation; the
+/// wildcard arm is a forward-compat safety net since `Cursor` is
+/// `non_exhaustive`. Mirrors the helper in
+/// `aetna-winit-wgpu/src/lib.rs::winit_cursor` (we'd re-export it but
+/// that crate ties in wgpu, which we don't want as a transitive dep
+/// just for this one function).
+fn winit_cursor(c: Cursor) -> CursorIcon {
+    match c {
+        Cursor::Default => CursorIcon::Default,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        _ => CursorIcon::Default,
+    }
+}

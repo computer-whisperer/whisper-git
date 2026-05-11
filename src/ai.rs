@@ -4,6 +4,11 @@
 //! Currently supports `claude -p` CLI; adding new backends requires only a new enum variant
 //! and a single `generate()` function.
 
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
+
+use winit::event_loop::EventLoopProxy;
+
 /// Which AI backend to use for commit message generation.
 #[derive(Clone, Debug)]
 pub enum AiProvider {
@@ -45,6 +50,57 @@ impl AiProvider {
             _ => AiProvider::ClaudeCli, // default fallback
         }
     }
+}
+
+/// Spawn a worker thread that captures the staged diff via
+/// `git diff --cached` then asks `provider` to summarize it. Sends
+/// the result over the returned receiver and pings the event loop
+/// proxy so the next frame drains it.
+///
+/// Empty staged diff returns `Err("Nothing staged…")` rather than
+/// asking the LLM to summarize nothing — saves a round-trip and
+/// gives the user a clearer error.
+pub fn spawn_generate_async(
+    workdir: PathBuf,
+    branch: String,
+    provider: AiProvider,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<Result<AiResponse, String>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let diff_text = match std::process::Command::new("git")
+            .args(["diff", "--cached"])
+            .current_dir(&workdir)
+            .output()
+        {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            Ok(o) => {
+                let _ = tx.send(Err(format!(
+                    "git diff --cached failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )));
+                let _ = proxy.send_event(());
+                return;
+            }
+            Err(e) => {
+                let _ = tx.send(Err(format!("Failed to run git diff: {e}")));
+                let _ = proxy.send_event(());
+                return;
+            }
+        };
+        if diff_text.trim().is_empty() {
+            let _ = tx.send(Err(
+                "Nothing staged to summarize. Stage some changes first.".to_string()
+            ));
+            let _ = proxy.send_event(());
+            return;
+        }
+        let request = AiRequest { diff_text, branch };
+        let result = provider.generate_commit_message(&request);
+        let _ = tx.send(result);
+        let _ = proxy.send_event(());
+    });
+    rx
 }
 
 mod claude_cli {

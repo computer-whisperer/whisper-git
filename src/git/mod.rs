@@ -10,7 +10,7 @@ mod refs;
 mod status;
 
 pub use async_ops::*;
-pub use diff::DiffFile;
+pub use diff::{DiffFile, DiffHunk, DiffLine};
 pub use status::{FileStatus, FileStatusKind, WorkingDirStatus, working_dir_status_from_statuses};
 
 use anyhow::{Context, Result};
@@ -22,6 +22,13 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver};
 use winit::event_loop::EventLoopProxy;
+
+/// Chunk size for streaming diff-stats from the worker thread back
+/// to the UI. Each chunk wakes the event loop once, so smaller =
+/// finer-grained progress, larger = less overhead. 50 lands between
+/// "noticeable progress" and "not too chatty" for typical history
+/// lengths.
+const DIFF_STATS_CHUNK_SIZE: usize = 50;
 
 /// Format a Unix timestamp as a human-readable relative time string.
 pub fn format_relative_time(timestamp: i64) -> String {
@@ -39,6 +46,35 @@ pub fn format_relative_time(timestamp: i64) -> String {
         d if d < 31536000 => format!("{}mo", d / 2592000),
         d => format!("{}y", d / 31536000),
     }
+}
+
+/// Format a Unix timestamp as an absolute UTC time string suitable
+/// for tooltips: `YYYY-MM-DD HH:MM:SS UTC`. No chrono dependency —
+/// uses Hinnant's civil-calendar algorithm (same one `crash_log` uses
+/// for log filenames). Negative timestamps clamp to the epoch.
+pub fn format_absolute_time(timestamp: i64) -> String {
+    let secs = timestamp.max(0) as u64;
+    let days = (secs / 86400) as i64;
+    let day_secs = secs % 86400;
+    let hh = day_secs / 3600;
+    let mm = (day_secs % 3600) / 60;
+    let ss = day_secs % 60;
+
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+        y, m, d, hh, mm, ss
+    )
 }
 
 /// Convert a `RepositoryState` to a human-readable description.
@@ -280,6 +316,10 @@ impl CommitInfo {
 
     pub fn relative_time(&self) -> String {
         format_relative_time(self.time)
+    }
+
+    pub fn absolute_time(&self) -> String {
+        format_absolute_time(self.time)
     }
 
     /// Create a synthetic "uncommitted changes" entry for a dirty worktree.
@@ -735,7 +775,11 @@ impl GitRepo {
     }
 
     /// Spawn a background thread to compute diff stats for a list of commit OIDs.
-    /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples.
+    /// Returns a receiver that yields `(Oid, insertions, deletions)` tuples
+    /// in chunks of [`DIFF_STATS_CHUNK_SIZE`] — the receiver is drained on
+    /// every UI tick, so chunks land progressively as the worker computes
+    /// them. The channel closes when the worker finishes; the caller can
+    /// detect "done" by the `Disconnected` error from `try_recv`.
     pub fn compute_diff_stats_async(
         &self,
         oids: Vec<Oid>,
@@ -746,38 +790,62 @@ impl GitRepo {
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let Ok(repo) = Repository::open(&repo_path) else {
+                // Even on early failure, ping once so the UI clears any
+                // in-flight indicator.
                 let _ = tx.send(Vec::new());
                 let _ = proxy.send_event(());
                 return;
             };
-            let mut results = Vec::with_capacity(oids.len());
-            for oid in oids {
-                let Ok(commit) = repo.find_commit(oid) else {
-                    continue;
-                };
-                let (ins, del) = if let Ok(tree) = commit.tree() {
-                    let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
-                    if let Ok(diff) =
-                        repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
-                    {
-                        if let Ok(stats) = diff.stats() {
-                            (stats.insertions(), stats.deletions())
-                        } else {
-                            (0, 0)
-                        }
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
-                };
-                results.push((oid, ins, del));
+            for chunk in oids.chunks(DIFF_STATS_CHUNK_SIZE) {
+                let results = compute_diff_stats_for(&repo, chunk);
+                if tx.send(results).is_err() {
+                    return;
+                }
+                let _ = proxy.send_event(());
             }
-            let _ = tx.send(results);
-            let _ = proxy.send_event(());
         });
         rx
     }
+
+    /// Synchronous variant of [`Self::compute_diff_stats_async`].
+    /// Used from the screenshot pipeline (one-shot render, no polling
+    /// loop to drain a Receiver), and as the body of the async worker.
+    pub fn compute_diff_stats_sync(&self, oids: &[Oid]) -> Vec<(Oid, usize, usize)> {
+        compute_diff_stats_for(&self.repo, oids)
+    }
+}
+
+/// Worker body shared by [`GitRepo::compute_diff_stats_async`] and
+/// [`GitRepo::compute_diff_stats_sync`]. Walks the OID list, computes
+/// `(insertions, deletions)` against each commit's first parent (or
+/// the empty tree for root commits), skips commits that fail to
+/// resolve.
+fn compute_diff_stats_for(repo: &Repository, oids: &[Oid]) -> Vec<(Oid, usize, usize)> {
+    let mut results = Vec::with_capacity(oids.len());
+    for &oid in oids {
+        let Ok(commit) = repo.find_commit(oid) else {
+            continue;
+        };
+        let (ins, del) = if let Ok(tree) = commit.tree() {
+            let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+            if let Ok(diff) = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+                if let Ok(stats) = diff.stats() {
+                    (stats.insertions(), stats.deletions())
+                } else {
+                    (0, 0)
+                }
+            } else {
+                (0, 0)
+            }
+        } else {
+            (0, 0)
+        };
+        results.push((oid, ins, del));
+    }
+    results
+}
+
+impl GitRepo {
 
     /// Get the repository name (basename of workdir or bare repo path)
     pub fn repo_name(&self) -> String {

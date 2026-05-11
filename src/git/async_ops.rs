@@ -91,6 +91,10 @@ define_async_git_op! {
     push_force_refspec_async(remote: String, refspec: String) =>
         ["push", "--force-with-lease", remote, refspec], "push";
 
+    /// Spawn a background thread to run `git push --tags <remote>`
+    push_tags_only_async(remote: String) =>
+        ["push", "--tags", remote], "push --tags";
+
     /// Spawn a background thread to run `git pull`
     pull_remote_async(remote: String, branch: String) =>
         ["pull", remote, branch], "pull";
@@ -139,6 +143,67 @@ define_async_git_op! {
     merge_squash_async(branch_name: String) =>
         ["merge", "--squash", branch_name], "merge --squash";
 
+}
+
+/// Spawn a background thread to run `git push` with arbitrary flag combinations.
+///
+/// Backs the push-options modal: any combination of `--force-with-lease`,
+/// `--set-upstream`, and `--tags` may be set. The macro-generated helpers
+/// can't express conditional args, so this is hand-rolled.
+pub fn push_with_options_async(
+    workdir: PathBuf,
+    remote: String,
+    branch: String,
+    force_with_lease: bool,
+    set_upstream: bool,
+    include_tags: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    let mut args: Vec<String> = vec!["push".to_string()];
+    if force_with_lease {
+        args.push("--force-with-lease".to_string());
+    }
+    if set_upstream {
+        args.push("--set-upstream".to_string());
+    }
+    if include_tags {
+        args.push("--tags".to_string());
+    }
+    args.push(remote);
+    args.push(branch);
+    run_git_async(args, workdir, "push", proxy)
+}
+
+/// Spawn a background thread to run `git clone [--bare] <url> <dest>`.
+/// Unlike the other async ops in this module, clone has no `workdir` —
+/// it *creates* one — so it returns its own result type carrying either
+/// the destination path on success or the captured stderr on failure.
+pub fn clone_async(
+    url: String,
+    dest: PathBuf,
+    bare: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<Result<PathBuf, String>> {
+    crate::crash_log::breadcrumb(format!("clone_async: url={url} dest={dest:?} bare={bare}"));
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut cmd = std::process::Command::new("git");
+        cmd.arg("clone");
+        if bare {
+            cmd.arg("--bare");
+        }
+        cmd.arg(&url).arg(&dest);
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+        let result = match cmd.output() {
+            Ok(out) if out.status.success() => Ok(dest),
+            Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(e) => Err(format!("Failed to run git clone: {e}")),
+        };
+        crate::crash_log::breadcrumb(format!("clone_async done: ok={}", result.is_ok()));
+        let _ = tx.send(result);
+        let _ = proxy.send_event(());
+    });
+    rx
 }
 
 /// Spawn a background thread to rebase with options (--autostash, --rebase-merges)
