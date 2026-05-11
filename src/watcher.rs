@@ -91,6 +91,13 @@ pub struct RepoWatcher {
     watched_worktree_dirs: HashSet<PathBuf>,
     /// Worktree working directories we're actively watching.
     watched_worktree_workdirs: HashSet<PathBuf>,
+    /// Parent directories of linked worktrees. Watching these catches
+    /// removal/rename of an external worktree root; a watch on the root
+    /// itself may only surface child deletes as ordinary file edits.
+    watched_worktree_parent_dirs: HashSet<PathBuf>,
+    /// Linked worktree root paths shared with the classifier closure so
+    /// delete-self / parent delete events become structural refreshes.
+    worktree_roots: Arc<Mutex<Vec<PathBuf>>>,
     /// Submodule workdirs to drop events for. Shared with the watcher's
     /// classifier closure via Arc; `update_submodule_paths` swaps the
     /// inner Vec so submodules added mid-session start being excluded
@@ -129,11 +136,16 @@ impl RepoWatcher {
         // Build the event classifier with cloned paths for the closure.
         // Classify against both git_dir and common_dir so events from either
         // are recognised as git metadata changes.
+        let workdir_owned = workdir.to_path_buf();
         let git_dir_owned = git_dir.to_path_buf();
         let common_dir_owned = common_dir.to_path_buf();
         let submodule_paths_shared: Arc<Mutex<Vec<PathBuf>>> =
             Arc::new(Mutex::new(submodule_paths.to_vec()));
         let submodule_paths_for_closure = Arc::clone(&submodule_paths_shared);
+        let worktree_roots_shared: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(
+            worktrees.iter().map(|wt| PathBuf::from(&wt.path)).collect(),
+        ));
+        let worktree_roots_for_closure = Arc::clone(&worktree_roots_shared);
 
         let watcher_tx = raw_tx;
         let mut watcher = RecommendedWatcher::new(
@@ -143,12 +155,21 @@ impl RepoWatcher {
                         let guard = submodule_paths_for_closure
                             .lock()
                             .expect("submodule_paths mutex poisoned");
-                        if let Some(kind) =
-                            classify_event(&event, &git_dir_owned, &common_dir_owned, &guard)
-                        {
+                        let roots = worktree_roots_for_closure
+                            .lock()
+                            .expect("worktree_roots mutex poisoned");
+                        if let Some(kind) = classify_event(
+                            &event,
+                            &workdir_owned,
+                            &git_dir_owned,
+                            &common_dir_owned,
+                            &guard,
+                            &roots,
+                        ) {
                             // Drop the lock before sending so a slow
                             // consumer doesn't extend the critical section.
                             drop(guard);
+                            drop(roots);
                             let _ = watcher_tx.send(kind);
                         }
                     }
@@ -199,6 +220,7 @@ impl RepoWatcher {
         // Watch each existing worktree's git metadata dir + working directory
         let mut watched_worktree_dirs = HashSet::new();
         let mut watched_worktree_workdirs = HashSet::new();
+        let mut watched_worktree_parent_dirs = HashSet::new();
         for wt in worktrees {
             let wt_meta_dir = common_dir.join("worktrees").join(&wt.name);
             if wt_meta_dir.is_dir() {
@@ -213,7 +235,16 @@ impl RepoWatcher {
             let wt_work_dir = PathBuf::from(&wt.path);
             if wt_work_dir != workdir && wt_work_dir.is_dir() {
                 let _ = watcher.watch(&wt_work_dir, RecursiveMode::NonRecursive);
-                watched_worktree_workdirs.insert(wt_work_dir);
+                watched_worktree_workdirs.insert(wt_work_dir.clone());
+            }
+            if let Some(parent) = wt_work_dir.parent()
+                && parent != workdir
+                && parent.is_dir()
+            {
+                let parent = parent.to_path_buf();
+                if watched_worktree_parent_dirs.insert(parent.clone()) {
+                    let _ = watcher.watch(&parent, RecursiveMode::NonRecursive);
+                }
             }
         }
 
@@ -222,6 +253,8 @@ impl RepoWatcher {
                 watcher,
                 watched_worktree_dirs,
                 watched_worktree_workdirs,
+                watched_worktree_parent_dirs,
+                worktree_roots: worktree_roots_shared,
                 submodule_paths: submodule_paths_shared,
             },
             debounce_rx,
@@ -257,6 +290,11 @@ impl RepoWatcher {
     /// Diff current watch set against worktree list, adding/removing watches as needed.
     /// `common_dir` is the shared git dir (where worktrees/ metadata lives).
     pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], common_dir: &Path) {
+        let roots: Vec<PathBuf> = worktrees.iter().map(|wt| PathBuf::from(&wt.path)).collect();
+        if let Ok(mut guard) = self.worktree_roots.lock() {
+            *guard = roots.clone();
+        }
+
         // --- Git metadata dirs ---
         let desired: HashSet<PathBuf> = worktrees
             .iter()
@@ -306,6 +344,31 @@ impl RepoWatcher {
             self.watch_path(&path, false); // non-recursive to avoid blocking event loop
             self.watched_worktree_workdirs.insert(path);
         }
+
+        // --- Parent directories of linked worktrees ---
+        let desired_parents: HashSet<PathBuf> = roots
+            .iter()
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .filter(|p| p.is_dir())
+            .collect();
+
+        for path in self
+            .watched_worktree_parent_dirs
+            .difference(&desired_parents)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.unwatch_path(&path);
+            self.watched_worktree_parent_dirs.remove(&path);
+        }
+        for path in desired_parents
+            .difference(&self.watched_worktree_parent_dirs)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.watch_path(&path, false);
+            self.watched_worktree_parent_dirs.insert(path);
+        }
     }
 }
 
@@ -314,9 +377,11 @@ impl RepoWatcher {
 /// Events inside submodule workdirs are silently dropped (return None).
 fn classify_event(
     event: &Event,
+    workdir: &Path,
     git_dir: &Path,
     common_dir: &Path,
     submodule_paths: &[PathBuf],
+    worktree_roots: &[PathBuf],
 ) -> Option<FsChangeKind> {
     // Only care about data-changing events
     match event.kind {
@@ -330,6 +395,13 @@ fn classify_event(
         // Skip events inside submodule workdirs — these don't affect parent
         // repo status and submodule dirty state is checked independently.
         if submodule_paths.iter().any(|sm| path.starts_with(sm)) {
+            continue;
+        }
+        if is_worktree_root_structure_event(event.kind, path, worktree_roots) {
+            result = Some(match result {
+                Some(k) => k.max(FsChangeKind::WorktreeStructure),
+                None => FsChangeKind::WorktreeStructure,
+            });
             continue;
         }
         // Try to classify against common_dir first (has refs, packed-refs, worktrees),
@@ -351,14 +423,34 @@ fn classify_event(
             });
             continue;
         }
-        // Paths outside both git dirs are working tree changes
-        result = Some(match result {
-            Some(k) => k.max(FsChangeKind::WorkingTree),
-            None => FsChangeKind::WorkingTree,
-        });
+        // Paths outside both git dirs are working tree changes only
+        // when they are inside the main workdir or a known linked
+        // worktree root. Parent-directory watches for external
+        // worktrees should not turn unrelated siblings into refreshes.
+        if path.starts_with(workdir) || worktree_roots.iter().any(|root| path.starts_with(root)) {
+            result = Some(match result {
+                Some(k) => k.max(FsChangeKind::WorkingTree),
+                None => FsChangeKind::WorkingTree,
+            });
+        }
     }
 
     result
+}
+
+fn is_worktree_root_structure_event(
+    kind: EventKind,
+    path: &Path,
+    worktree_roots: &[PathBuf],
+) -> bool {
+    if !matches!(kind, EventKind::Create(_) | EventKind::Remove(_)) {
+        return false;
+    }
+    worktree_roots.iter().any(|root| {
+        path == root
+            || (path.parent() == root.parent() && path.file_name() == root.file_name())
+            || (matches!(kind, EventKind::Remove(_)) && path.starts_with(root) && !root.exists())
+    })
 }
 
 /// Classify a single path relative to a git directory.
@@ -523,4 +615,44 @@ fn lane_timeout(
         Duration::from_millis(max_delay_ms).saturating_sub(now.duration_since(first));
 
     Some(debounce_remaining.min(cap_remaining))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{CreateKind, ModifyKind, RemoveKind};
+
+    #[test]
+    fn worktree_root_delete_is_structural_even_outside_git_dir() {
+        let root = PathBuf::from("/__whisper_git_missing_worktree_root__");
+        let roots = vec![root.clone()];
+
+        assert!(is_worktree_root_structure_event(
+            EventKind::Remove(RemoveKind::Folder),
+            &root,
+            &roots
+        ));
+        assert!(is_worktree_root_structure_event(
+            EventKind::Remove(RemoveKind::File),
+            &root.join("src/main.rs"),
+            &roots
+        ));
+    }
+
+    #[test]
+    fn worktree_root_create_is_structural_but_child_edit_is_not() {
+        let root = PathBuf::from("/__whisper_git_missing_worktree_root__");
+        let roots = vec![root.clone()];
+
+        assert!(is_worktree_root_structure_event(
+            EventKind::Create(CreateKind::Folder),
+            &root,
+            &roots
+        ));
+        assert!(!is_worktree_root_structure_event(
+            EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
+            &root.join("src/main.rs"),
+            &roots
+        ));
+    }
 }

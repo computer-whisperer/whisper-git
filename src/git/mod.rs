@@ -1037,6 +1037,9 @@ impl GitRepo {
                 && let Ok(wt) = self.repo.find_worktree(name)
             {
                 let wt_path = wt.path();
+                if !wt_path.is_dir() {
+                    continue;
+                }
                 let path = wt_path.to_string_lossy().to_string();
 
                 // Read branch and HEAD OID — cheap (no status scan).

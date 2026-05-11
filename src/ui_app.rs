@@ -4624,7 +4624,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
 }
 
 fn git_dir_header_label(tab: &RepoTab) -> El {
-    let path = tab.active_repo().git_dir().display().to_string();
+    let path = tab.repo.common_dir().display().to_string();
     row([
         icon(IconName::Folder).muted(),
         text(path.clone())
