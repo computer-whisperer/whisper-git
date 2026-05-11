@@ -553,13 +553,7 @@ impl App for WhisperApp {
                     resize_handle(Axis::Row).key("right:resize"),
                     right.width(Size::Fixed(self.right_pane_w)),
                 ];
-                // Gap of `RING_WIDTH` so each resize handle's focus
-                // ring band has somewhere to paint without being
-                // occluded by its panel neighbours
-                // (`FocusRingObscured` lint).
-                let main_row = row(children)
-                    .height(Size::Fill(1.0))
-                    .gap(tokens::RING_WIDTH);
+                let main_row = row(children).height(Size::Fill(1.0));
                 // Sibling-submodule strip below the main split, only
                 // when drilled in *and* the immediate parent has more
                 // than one submodule (a strip with one entry is just
@@ -4247,10 +4241,6 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         pull_options_btn,
         push_btn,
         push_options_btn,
-        button_with_icon(IconName::GitCommit, "Commit")
-            .key("commit")
-            .primary()
-            .tooltip("Stage and commit (Ctrl+Enter)"),
         icon_button(IconName::Settings)
             .key("settings")
             .tooltip("Settings"),

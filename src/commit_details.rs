@@ -12,6 +12,8 @@ use aetna_core::{El, IconName, prelude::*};
 
 use crate::repo_tab::RepoTab;
 
+const RIGHT_PANE_EDGE_INSET: f32 = tokens::SPACE_1;
+
 pub fn commit_details_pane(tab: &RepoTab) -> El {
     let pane = match (tab.selected_commit, &tab.commit_detail) {
         (Some(_), Some(detail)) => details_pane(detail),
@@ -84,9 +86,11 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         cards.push(submodules_card(detail));
     }
 
-    scroll([column(cards).gap(tokens::SPACE_3).padding(tokens::SPACE_3)])
-        .key("commit_details:scroll")
-        .height(Size::Fill(1.0))
+    scroll([column(cards)
+        .gap(tokens::SPACE_3)
+        .padding(RIGHT_PANE_EDGE_INSET)])
+    .key("commit_details:scroll")
+    .height(Size::Fill(1.0))
 }
 
 fn files_card(detail: &crate::repo_tab::CommitDetail) -> El {

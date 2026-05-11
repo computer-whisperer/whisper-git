@@ -21,6 +21,8 @@ use crate::repo_tab::{RepoTab, WorktreeView};
 /// its width, so beyond a handful of pills the labels collapse onto
 /// each other and become unreadable.
 const WORKTREE_PILL_LIMIT: usize = 4;
+const RIGHT_PANE_EDGE_INSET: f32 = tokens::SPACE_1;
+const WORKTREE_PILL_TRIGGER_HEIGHT: f32 = tokens::CONTROL_HEIGHT - 2.0 * tokens::SPACE_1;
 
 /// Selector at the top of the staging well for picking which worktree
 /// the well operates on.
@@ -54,20 +56,18 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
     let plus = icon_button(IconName::Plus)
         .key("new_worktree")
         .tooltip("Create worktree\u{2026}");
-    // Pad horizontally + on top so the bar lines up with the cards
-    // inside the staging well (which inset themselves by SPACE_3). The
-    // staging well's own top padding handles the bottom gap, so leave
-    // the bottom flush.
+    // The pane edge inset is intentionally separate from card/list
+    // internals: this controls only the distance from the splitter.
     Some(
         row([inner.width(Size::Fill(1.0)), plus])
             .gap(tokens::SPACE_1)
             .align(Align::Center)
             .width(Size::Fill(1.0))
             .padding(Sides {
-                top: tokens::SPACE_3,
-                right: tokens::SPACE_3,
+                top: RIGHT_PANE_EDGE_INSET,
+                right: RIGHT_PANE_EDGE_INSET,
                 bottom: 0.0,
-                left: tokens::SPACE_3,
+                left: RIGHT_PANE_EDGE_INSET,
             }),
     )
 }
@@ -151,12 +151,10 @@ fn worktree_pill_bar(tab: &RepoTab) -> El {
             if dirty > 0 {
                 children.push(badge(format!("{dirty}")).muted());
             }
-            Some(tab_trigger_content(
-                "wt_select",
-                path.to_string_lossy(),
-                children,
-                is_active,
-            ))
+            Some(
+                tab_trigger_content("wt_select", path.to_string_lossy(), children, is_active)
+                    .height(Size::Fixed(WORKTREE_PILL_TRIGGER_HEIGHT)),
+            )
         })
         .collect();
 
@@ -291,7 +289,7 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
     column(sections)
         .width(Size::Fill(1.0))
         .height(Size::Fill(1.0))
-        .padding(tokens::SPACE_3)
+        .padding(RIGHT_PANE_EDGE_INSET)
         .gap(tokens::SPACE_3)
 }
 
