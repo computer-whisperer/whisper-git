@@ -25,6 +25,7 @@ use git2::Oid;
 use crate::ci::{CiState, ProviderCommitRollup};
 use crate::git::CommitInfo;
 use crate::repo_tab::RepoTab;
+use crate::widgets::brand_icons;
 
 pub const ROW_HEIGHT: f32 = 28.0;
 /// Per-lane horizontal slot inside the graph cell. Width per lane,
@@ -93,15 +94,18 @@ const IDENTICON_COLORS: &[Color] = &[
 /// Pixel diameter of the author identicon — sized to align with row
 /// caption text height.
 const AVATAR_SIZE: f32 = 18.0;
+const CI_ICON_SIZE: f32 = 12.0;
+const CI_DOT_SIZE: f32 = 5.0;
+const CI_MAX_DOTS_PER_PROVIDER: usize = 5;
 
 /// Height of the pills band that sits above the main content row when
 /// a commit carries any branch / tag / worktree / HEAD / ORPHAN /
-/// PINNED chrome. Pills themselves are ~20 px tall (caption line
-/// height 16 + 2 × 2 px vertical padding); the extra 8 px in the
-/// band is intentional slack, bottom-aligned, so the breathing room
-/// sits *above* the pills — visually anchoring them to the commit
-/// they describe (below) rather than the unrelated commit above.
-const PILLS_BAND_HEIGHT: f32 = 28.0;
+/// PINNED chrome. The band is deliberately taller than the pills and
+/// bottom-aligns them, so the whitespace sits above the pills and they
+/// read as attached to the commit line below.
+const PILLS_BAND_HEIGHT: f32 = 30.0;
+const PILL_PAD_Y: f32 = 1.0;
+const PILL_DOWN_NUDGE: f32 = 1.0;
 
 /// Right-side gutter reserved on focusable rows inside `virtual_list_dyn`
 /// so the row's bounding rect — and its focus ring — don't overlap the
@@ -690,21 +694,32 @@ impl Cubic {
     }
 }
 
-/// Compact CI dot for one provider's per-commit rollup. Color reflects
-/// the overall state across that provider's checks at this SHA; the
-/// tooltip enumerates each check by name + status. A 9 px square with
-/// `.radius(4.5)` reads as a circle and matches aetna's existing
-/// stroke conventions on small chrome. `key` is required so the dot
-/// participates in pointer hit-testing (aetna's tooltip pipeline only
-/// fires on keyed nodes).
-fn ci_dot(rollup: &ProviderCommitRollup, key: String) -> El {
-    let state = rollup.rollup.counts.overall_state();
-    let color = match state {
+fn ci_state_color(state: CiState) -> Color {
+    match state {
         CiState::Success => tokens::SUCCESS,
         CiState::Failure => tokens::DESTRUCTIVE,
         CiState::Pending => tokens::WARNING,
         CiState::None => tokens::MUTED_FOREGROUND,
-    };
+    }
+}
+
+fn ci_check_dot(state: CiState) -> El {
+    let color = ci_state_color(state);
+    El::new(Kind::Group)
+        .width(Size::Fixed(CI_DOT_SIZE))
+        .height(Size::Fixed(CI_DOT_SIZE))
+        .fill(color)
+        .radius(CI_DOT_SIZE * 0.5)
+}
+
+/// Compact CI strip for one provider's per-commit rollup. Mirrors the
+/// pre-Aetna graph treatment: provider mark first, then one small pip
+/// per workflow/pipeline check with a `+N` overflow marker. The icon
+/// gives the red/green pips a distinct CI context so they do not read
+/// as part of the adjacent `+N -M` diff-stat text.
+fn ci_provider_token(rollup: &ProviderCommitRollup, key: String) -> El {
+    let state = rollup.rollup.counts.overall_state();
+    let color = ci_state_color(state);
     let mut tip = format!("{}: ", rollup.provider.short_label());
     if rollup.rollup.checks.is_empty() {
         tip.push_str("no checks");
@@ -725,11 +740,33 @@ fn ci_dot(rollup: &ProviderCommitRollup, key: String) -> El {
             .collect();
         tip.push_str(&parts.join(", "));
     }
-    El::new(Kind::Group)
-        .width(Size::Fixed(9.0))
-        .height(Size::Fixed(9.0))
-        .fill(color)
-        .radius(4.5)
+
+    let mut children: Vec<El> = vec![
+        icon(brand_icons::for_provider(rollup.provider))
+            .icon_size(CI_ICON_SIZE)
+            .text_color(tokens::MUTED_FOREGROUND),
+    ];
+    children.extend(
+        rollup
+            .rollup
+            .checks
+            .iter()
+            .take(CI_MAX_DOTS_PER_PROVIDER)
+            .map(|check| ci_check_dot(check.state)),
+    );
+    let overflow = rollup
+        .rollup
+        .checks
+        .len()
+        .saturating_sub(CI_MAX_DOTS_PER_PROVIDER);
+    if overflow > 0 {
+        children.push(text(format!("+{overflow}")).caption().muted());
+    }
+
+    row(children)
+        .gap(tokens::SPACE_1)
+        .align(Align::Center)
+        .text_color(color)
         .key(key)
         .tooltip(tip)
 }
@@ -889,11 +926,12 @@ fn pill(
 ) -> El {
     let focusable = key.starts_with("worktree:");
     let mut row_el = row([text(label.into()).caption().text_color(fg)])
-        .padding(Sides::xy(tokens::SPACE_2, 2.0))
+        .padding(Sides::xy(tokens::SPACE_2, PILL_PAD_Y))
         .gap(tokens::SPACE_1)
         .align(Align::Center)
         .fill(fg.with_alpha(bg_alpha))
         .stroke(fg.with_alpha(120))
+        .translate(0.0, PILL_DOWN_NUDGE)
         .key(key);
     if focusable {
         row_el = row_el.focusable();
@@ -1076,18 +1114,18 @@ fn build_row(
         author_avatar(&commit.author, avatar, format!("commit:{idx}.avatar")),
         summary_row,
     ];
-    if let Some(chip) = diff_stats_chip(commit, format!("commit:{idx}.diff")) {
-        main_children.push(chip);
-    }
     if let Some(rollups) = ci_rollups {
         let ci_kids: Vec<El> = rollups
             .iter()
             .enumerate()
-            .map(|(i, r)| ci_dot(r, format!("commit:{idx}.ci{i}")))
+            .map(|(i, r)| ci_provider_token(r, format!("commit:{idx}.ci{i}")))
             .collect();
         if !ci_kids.is_empty() {
-            main_children.push(row(ci_kids).gap(tokens::SPACE_1).align(Align::Center));
+            main_children.push(row(ci_kids).gap(tokens::SPACE_2).align(Align::Center));
         }
+    }
+    if let Some(chip) = diff_stats_chip(commit, format!("commit:{idx}.diff")) {
+        main_children.push(chip);
     }
     main_children.push(
         text(when)

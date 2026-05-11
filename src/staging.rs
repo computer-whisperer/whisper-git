@@ -146,10 +146,10 @@ fn worktree_pill_bar(tab: &RepoTab) -> El {
             let is_active = active.as_ref() == Some(path);
             let mut children: Vec<El> = vec![
                 icon(IconName::LayoutDashboard).muted(),
-                text(label).label().ellipsis(),
+                text(label).label().ellipsis().width(Size::Fill(1.0)),
             ];
             if dirty > 0 {
-                children.push(badge(format!("{dirty}")).muted());
+                children.push(badge(format!("{dirty}")).warning());
             }
             Some(
                 tab_trigger_content("wt_select", path.to_string_lossy(), children, is_active)
