@@ -29,3 +29,17 @@ pub fn for_provider(provider: crate::ci::CiProvider) -> SvgIcon {
         crate::ci::CiProvider::GitLab => GITLAB.clone(),
     }
 }
+
+/// Provider mark inferred from a remote URL. Returns `None` for remotes
+/// whose host isn't recognised. Reuses the same URL parsers as the CI
+/// dispatch so the icon stays in sync with which providers we know how
+/// to talk to.
+pub fn for_remote_url(url: &str) -> Option<SvgIcon> {
+    if crate::github::parse_github_remote(url).is_some() {
+        return Some(GITHUB.clone());
+    }
+    if crate::gitlab::parse_gitlab_remote(url).is_some() {
+        return Some(GITLAB.clone());
+    }
+    None
+}

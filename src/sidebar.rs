@@ -29,11 +29,9 @@ pub fn sidebar(tab: &RepoTab) -> El {
     // clipped at the panel's left/right edge — the row's bbox spans
     // the full inner width, so without padding the ring band is cut
     // by 2px on both sides (`FocusRingObscured` lint).
-    sidebar_panel([
-        scroll([body])
-            .key("sidebar:scroll")
-            .padding(Sides::xy(tokens::RING_WIDTH, 0.0)),
-    ])
+    sidebar_panel([scroll([body])
+        .key("sidebar:scroll")
+        .padding(Sides::xy(tokens::RING_WIDTH, 0.0))])
     .padding(0.0)
 }
 
@@ -158,18 +156,27 @@ fn remote_body(tab: &RepoTab) -> Option<El> {
         } else {
             IconName::ChevronDown
         };
+        // Brand mark inferred from the remote URL — github invertocat
+        // for github.com, gitlab tanuki for gitlab.* — so the user can
+        // tell at a glance where each remote points. Unknown hosts get
+        // no decorator and just show the bare name.
+        let provider_icon = tab
+            .repo
+            .remote_url(&remote)
+            .and_then(|url| crate::widgets::brand_icons::for_remote_url(&url));
         // Sub-group header within Remote section. `tree_row` makes
         // the whole row a focusable click target so the caret toggles
         // collapse like the section_header above.
-        rows.push(tree_row(
-            [
-                icon(caret).muted(),
-                text(remote.clone()).caption(),
-                spacer(),
-                badge(branches.len().to_string()).muted(),
-            ],
-            format!("remote_group:{}", remote),
-        ));
+        let mut header: Vec<El> = vec![icon(caret).muted()];
+        if let Some(brand) = provider_icon {
+            header.push(icon(brand));
+        }
+        header.extend([
+            text(remote.clone()).caption(),
+            spacer(),
+            badge(branches.len().to_string()).muted(),
+        ]);
+        rows.push(tree_row(header, format!("remote_group:{}", remote)));
         if collapsed {
             continue;
         }
