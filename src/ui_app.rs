@@ -2308,6 +2308,15 @@ impl WhisperApp {
                 self.config.shortcut_bar_visible = self.shortcut_bar_visible;
                 self.persist_config();
             }
+            "orphans" => {
+                self.config.show_orphaned_commits = !self.config.show_orphaned_commits;
+                self.refresh_all_repo_state();
+                self.persist_config();
+            }
+            "diff_split" => {
+                self.config.diff_split = !self.config.diff_split;
+                self.persist_config();
+            }
             "clone" => {
                 // Clone-from-Settings: pre-fill destination with $HOME so
                 // first-time users land in a sensible default location.
@@ -2327,6 +2336,17 @@ impl WhisperApp {
                     self.config.row_scale = scale;
                     self.persist_config();
                 }
+            }
+        }
+    }
+
+    fn refresh_all_repo_state(&mut self) {
+        let show_orphans = self.config.show_orphaned_commits;
+        let proxy = self.proxy.clone();
+        for outer in &mut self.tabs {
+            outer.request_state_refresh(proxy.as_ref(), show_orphans);
+            for sub in &mut outer.nav_stack {
+                sub.request_state_refresh(proxy.as_ref(), show_orphans);
             }
         }
     }

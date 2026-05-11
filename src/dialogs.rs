@@ -23,37 +23,67 @@ pub const MODAL_REBASE_KEY: &str = "modal:rebase";
 pub const MODAL_WORKTREE_KEY: &str = "modal:worktree";
 pub const MODAL_OPEN_REPO_KEY: &str = "modal:open_repo";
 
-/// Settings panel: small subset of `Config` is editable for now —
-/// avatars, shortcut bar visibility, row scale. Other options
-/// (orphans, ratchet scroll, time spacing) get added as their callers
-/// come online.
+/// Settings panel for application preferences. Stale pre-aetna knobs
+/// stay out of the modal until their callers exist again.
 pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
     let body = column([
-        field_row(
-            "Show avatars",
-            switch(config.avatars_enabled).key("settings:avatars"),
+        settings_section(
+            "History",
+            [
+                field_row(
+                    "Orphaned commits",
+                    switch(config.show_orphaned_commits).key("settings:orphans"),
+                ),
+                field_row("Row size", row_size_selector(config.row_scale)),
+            ],
         ),
-        field_row(
-            "Show shortcut bar",
-            switch(shortcut_bar_visible).key("settings:shortcut_bar"),
+        settings_section(
+            "Interface",
+            [
+                field_row(
+                    "Avatars",
+                    switch(config.avatars_enabled).key("settings:avatars"),
+                ),
+                field_row(
+                    "Shortcut bar",
+                    switch(shortcut_bar_visible).key("settings:shortcut_bar"),
+                ),
+                field_row(
+                    "Split diff",
+                    switch(config.diff_split).key("settings:diff_split"),
+                ),
+            ],
         ),
-        field_row("Row size", row_size_selector(config.row_scale)),
-        row([
-            button("Clone repository\u{2026}")
-                .key("settings:clone")
-                .ghost(),
-            button("Manage tokens\u{2026}")
-                .key("settings:tokens")
-                .ghost(),
-            spacer(),
-            button("Done").key("settings:close").primary(),
-        ])
-        .gap(tokens::SPACE_2)
-        .align(Align::Center),
+        settings_section(
+            "Repositories",
+            [row([
+                button("Clone repository\u{2026}")
+                    .key("settings:clone")
+                    .ghost(),
+                button("Manage tokens\u{2026}")
+                    .key("settings:tokens")
+                    .ghost(),
+            ])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center)],
+        ),
+        row([spacer(), button("Done").key("settings:close").primary()])
+            .gap(tokens::SPACE_2)
+            .align(Align::Center),
     ])
     .gap(tokens::SPACE_3);
 
     overlays_panel(MODAL_SETTINGS_KEY, "Settings", [body])
+}
+
+fn settings_section<I, E>(title: &str, items: I) -> El
+where
+    I: IntoIterator<Item = E>,
+    E: Into<El>,
+{
+    column([h3(title), form(items)])
+        .gap(tokens::SPACE_2)
+        .width(Size::Fill(1.0))
 }
 
 fn row_size_selector(current: f32) -> El {
@@ -124,7 +154,10 @@ where
     I: IntoIterator<Item = E>,
     E: Into<El>,
 {
-    overlay([scrim(format!("{key}:dismiss")), modal_panel(title, body)])
+    overlay([
+        scrim(format!("{key}:dismiss")),
+        modal_panel(title, body).block_pointer(),
+    ])
 }
 
 /// Open-repository picker. Shown when the tab-bar `+` is clicked.

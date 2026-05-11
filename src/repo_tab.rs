@@ -548,6 +548,10 @@ impl RepoTab {
     /// loop doesn't pile a redundant worker on top of the result we
     /// just produced inline.
     pub fn refresh(&mut self) {
+        self.refresh_with_orphans(true);
+    }
+
+    pub fn refresh_with_orphans(&mut self, show_orphaned_commits: bool) {
         self.state_refresh_attempted = true;
         self.branch_tips = self.repo.branch_tips().unwrap_or_default();
         self.remotes = self.repo.remote_names();
@@ -562,11 +566,14 @@ impl RepoTab {
         // unreachable work — finished rebases, dropped branches —
         // doesn't disappear. Falls back to plain commit_graph on error
         // so a flaky reflog doesn't blank the History view.
-        self.commits = self
-            .repo
-            .commit_graph_with_orphans(COMMIT_LIMIT)
-            .or_else(|_| self.repo.commit_graph(COMMIT_LIMIT))
-            .unwrap_or_default();
+        self.commits = if show_orphaned_commits {
+            self.repo
+                .commit_graph_with_orphans(COMMIT_LIMIT)
+                .or_else(|_| self.repo.commit_graph(COMMIT_LIMIT))
+                .unwrap_or_default()
+        } else {
+            self.repo.commit_graph(COMMIT_LIMIT).unwrap_or_default()
+        };
 
         self.rebuild_worktree_views();
 
@@ -719,7 +726,7 @@ impl RepoTab {
     ) {
         match proxy {
             Some(p) => self.trigger_state_refresh(p, show_orphaned_commits),
-            None => self.refresh(),
+            None => self.refresh_with_orphans(show_orphaned_commits),
         }
     }
 
