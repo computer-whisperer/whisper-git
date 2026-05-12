@@ -4449,7 +4449,11 @@ fn parent_context_strip(outer: &RepoTab) -> Option<El> {
         .focusable()
         .cursor(Cursor::Pointer)
         .tooltip("Return to parent view");
-    Some(column([bar, separator()]).width(Size::Fill(1.0)))
+    Some(
+        column([bar, separator()])
+            .gap(tokens::RING_WIDTH)
+            .width(Size::Fill(1.0)),
+    )
 }
 
 /// Sibling-submodule strip shown at the bottom of the body when

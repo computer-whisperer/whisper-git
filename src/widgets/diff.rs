@@ -114,6 +114,7 @@ const ROW_BG_ALPHA: u8 = 48;
 /// darker overlay — Github-style "this column is the gutter, not
 /// content."
 const GUTTER_TINT_ALPHA: u8 = 40;
+const SCROLLBAR_GUTTER: f32 = tokens::SCROLLBAR_THUMB_WIDTH_ACTIVE + tokens::SCROLLBAR_TRACK_INSET;
 /// Brighter wash painted under the changed bytes within a line, on
 /// top of the row wash. Mirrors `<mark>` over the line's colored bg.
 const HIGHLIGHT_BG_ALPHA: u8 = 130;
@@ -155,7 +156,14 @@ pub fn diff(data: &DiffData) -> El {
     } else {
         let rows = flatten_rows(&data.hunks, data.mode);
         virtual_list_dyn(rows.len(), EST_ROW_HEIGHT, move |i| {
-            build_diff_row(&rows[i], i)
+            column([build_diff_row(&rows[i], i)])
+                .width(Size::Fill(1.0))
+                .padding(Sides {
+                    left: 0.0,
+                    right: SCROLLBAR_GUTTER,
+                    top: 0.0,
+                    bottom: 0.0,
+                })
         })
         .key("diff:scroll")
         .height(Size::Fill(1.0))
@@ -165,7 +173,14 @@ pub fn diff(data: &DiffData) -> El {
         card_header([header_row])
             .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_2))
             .fill(tokens::MUTED),
-        card_content([body]).padding(0.0).height(Size::Fill(1.0)),
+        card_content([body])
+            .padding(Sides {
+                left: 0.0,
+                right: 0.0,
+                top: 0.0,
+                bottom: tokens::RING_WIDTH,
+            })
+            .height(Size::Fill(1.0)),
     ])
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
@@ -236,9 +251,10 @@ fn hunk_header_row(header: &str, actions: &[DiffHunkAction]) -> El {
     let (range, context) = split_hunk_header(header);
     children.push(text(range).code().text_color(tokens::INFO));
     if let Some(ctx) = context {
-        children.push(text(ctx).code().muted());
+        children.push(text(ctx).code().muted().ellipsis().width(Size::Fill(1.0)));
+    } else {
+        children.push(spacer());
     }
-    children.push(spacer());
     for act in actions {
         let mut btn = button(act.label.clone()).key(act.key.clone()).ghost();
         if act.destructive {
@@ -250,6 +266,7 @@ fn hunk_header_row(header: &str, actions: &[DiffHunkAction]) -> El {
         children.push(btn);
     }
     row(children)
+        .width(Size::Fill(1.0))
         .gap(tokens::SPACE_2)
         .align(Align::Center)
         .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
@@ -291,7 +308,9 @@ fn unified_line_row(line: &DiffLine) -> El {
         .fill(gutter_overlay)
         .align(Align::Center);
 
-    let row_el = row([gutter, line_content(line)]).align(Align::Center);
+    let row_el = row([gutter, line_content(line)])
+        .align(Align::Center)
+        .width(Size::Fill(1.0));
 
     if let Some(bg) = row_bg {
         row_el.fill(bg)
@@ -335,7 +354,9 @@ fn backgrounds_for(kind: DiffLineKind) -> (Option<Color>, Color) {
 fn split_pair_row(pair: &PairedRow) -> El {
     let left = side_half(pair.left.as_ref(), Side::Left);
     let right = side_half(pair.right.as_ref(), Side::Right);
-    row([left, right]).align(Align::Stretch)
+    row([left, right])
+        .align(Align::Stretch)
+        .width(Size::Fill(1.0))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

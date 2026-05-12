@@ -305,11 +305,18 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
         sections.push(submodules_section(&view.submodules));
     }
 
-    column(sections)
+    scroll([column(sections)
         .width(Size::Fill(1.0))
-        .height(Size::Fill(1.0))
-        .padding(RIGHT_PANE_EDGE_INSET)
-        .gap(tokens::SPACE_3)
+        .padding(Sides {
+            top: RIGHT_PANE_EDGE_INSET,
+            right: RIGHT_PANE_EDGE_INSET + tokens::SCROLLBAR_HITBOX_WIDTH,
+            bottom: RIGHT_PANE_EDGE_INSET,
+            left: RIGHT_PANE_EDGE_INSET,
+        })
+        .gap(tokens::SPACE_3)])
+    .key("staging:scroll")
+    .width(Size::Fill(1.0))
+    .height(Size::Fill(1.0))
 }
 
 fn commit_message(view: &WorktreeView, selection: &Selection, ai_in_flight: bool) -> El {
@@ -409,7 +416,12 @@ fn file_section(
         card_header([header_row])
             .padding(tokens::SPACE_3)
             .fill(header_fill),
-        card_content(body).padding(0.0),
+        card_content(body).padding(Sides {
+            top: 0.0,
+            right: 0.0,
+            bottom: tokens::SPACE_1,
+            left: 0.0,
+        }),
     ]);
     if is_danger {
         card_el = card_el.surface_role(SurfaceRole::Danger);
@@ -528,7 +540,12 @@ fn submodules_section(submodules: &[SubmoduleInfo]) -> El {
             .gap(tokens::SPACE_2)])
         .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_1))
         .fill(tokens::MUTED),
-        card_content(body).padding(0.0),
+        card_content(body).padding(Sides {
+            top: 0.0,
+            right: 0.0,
+            bottom: tokens::SPACE_1,
+            left: 0.0,
+        }),
     ])
 }
 
