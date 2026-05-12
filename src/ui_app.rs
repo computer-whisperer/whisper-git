@@ -35,6 +35,30 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
 const RIGHT_PANE_MIN: f32 = 280.0;
 const RIGHT_PANE_MAX: f32 = 720.0;
 
+fn apply_routed_text_input(
+    value: &mut String,
+    selection: &mut Selection,
+    key: &str,
+    event: &UiEvent,
+) -> bool {
+    if event.target_key() != Some(key) {
+        return false;
+    }
+    text_input::apply_event(value, selection, key, event)
+}
+
+fn apply_routed_text_area(
+    value: &mut String,
+    selection: &mut Selection,
+    key: &str,
+    event: &UiEvent,
+) -> bool {
+    if event.target_key() != Some(key) {
+        return false;
+    }
+    text_area::apply_event(value, selection, key, event)
+}
+
 use crate::commit_details;
 use crate::commit_graph;
 use crate::config::Config;
@@ -46,6 +70,7 @@ use crate::dialogs::{
 use crate::diff_view;
 use crate::git::{RemoteOpResult, classify_git_error};
 use crate::host::HostApp;
+use crate::recent;
 use crate::repo_tab::{RepoTab, SidebarSection, TimedOp};
 use crate::sidebar;
 use crate::staging;
@@ -145,6 +170,10 @@ impl AsyncKind {
 pub enum ConfirmAction {
     CloseTab(usize),
     DeleteBranch(String),
+    DeleteRemoteBranch {
+        remote: String,
+        branch: String,
+    },
     DeleteTag(String),
     DropStash(usize),
     DiscardFile(String),
@@ -545,6 +574,7 @@ impl App for WhisperApp {
         // drilled-in submodule when the user has navigated in,
         // otherwise the outermost tab. Widget code below this point
         // doesn't need to know about drill-down.
+        let recent_repos = recent::recent_repo_entries(&self.config.recent_repos);
         let body = match self.active_focus() {
             Some(tab) => {
                 // Center pane: graph by default; the diff temporarily
@@ -612,7 +642,9 @@ impl App for WhisperApp {
                     resize_handle(Axis::Row).key("right:resize"),
                     right.width(Size::Fixed(self.right_pane_w)),
                 ];
-                let main_row = row(children).height(Size::Fill(1.0));
+                let main_row = row(children)
+                    .gap(tokens::RING_WIDTH)
+                    .height(Size::Fill(1.0));
                 // Sibling-submodule strip below the main split, only
                 // when drilled in *and* the immediate parent has more
                 // than one submodule (a strip with one entry is just
@@ -626,7 +658,7 @@ impl App for WhisperApp {
                     main_row
                 }
             }
-            None => welcome::welcome_view(&self.config.recent_repos),
+            None => welcome::welcome_view(&recent_repos),
         };
 
         let main = column([chrome_el, body]);
@@ -634,7 +666,7 @@ impl App for WhisperApp {
             ActiveModal::Settings => {
                 dialogs::settings_modal(&self.config, self.shortcut_bar_visible)
             }
-            ActiveModal::OpenRepo => dialogs::open_repo_modal(&self.config.recent_repos),
+            ActiveModal::OpenRepo => dialogs::open_repo_modal(&recent_repos),
             ActiveModal::Confirm {
                 title,
                 body,
@@ -795,7 +827,7 @@ impl App for WhisperApp {
         // worktrees swaps which subject/body buffer the inputs touch.
         let active_idx = self.active_tab;
         if let Some(tab) = self.tabs.get_mut(active_idx) {
-            text_input::apply_event(
+            apply_routed_text_input(
                 &mut tab.search_query,
                 &mut self.selection,
                 commit_graph::SEARCH_INPUT_KEY,
@@ -807,13 +839,13 @@ impl App for WhisperApp {
             .get_mut(active_idx)
             .and_then(|t| t.active_view_mut())
         {
-            text_input::apply_event(
+            apply_routed_text_input(
                 &mut view.commit_subject,
                 &mut self.selection,
                 "subject",
                 &event,
             );
-            text_area::apply_event(&mut view.commit_body, &mut self.selection, "body", &event);
+            apply_routed_text_area(&mut view.commit_body, &mut self.selection, "body", &event);
         }
 
         // Modal text fields. Routed by key — only the active modal's
@@ -821,11 +853,11 @@ impl App for WhisperApp {
         // ignored harmlessly.
         match &mut self.active_modal {
             Some(ActiveModal::Clone(form)) => {
-                text_input::apply_event(&mut form.url, &mut self.selection, "clone:url", &event);
-                text_input::apply_event(&mut form.dest, &mut self.selection, "clone:dest", &event);
+                apply_routed_text_input(&mut form.url, &mut self.selection, "clone:url", &event);
+                apply_routed_text_input(&mut form.dest, &mut self.selection, "clone:dest", &event);
             }
             Some(ActiveModal::Token(form)) => {
-                text_input::apply_event(
+                apply_routed_text_input(
                     &mut form.github_input,
                     &mut self.selection,
                     "token:github",
@@ -839,15 +871,15 @@ impl App for WhisperApp {
                 for host in host_keys {
                     let route = format!("token:gitlab:input:{host}");
                     if let Some(buf) = form.gitlab_inputs.get_mut(&host) {
-                        text_input::apply_event(buf, &mut self.selection, &route, &event);
+                        apply_routed_text_input(buf, &mut self.selection, &route, &event);
                     }
                 }
             }
             Some(ActiveModal::Branch { form, .. }) => {
-                text_input::apply_event(&mut form.name, &mut self.selection, "branch:name", &event);
+                apply_routed_text_input(&mut form.name, &mut self.selection, "branch:name", &event);
             }
             Some(ActiveModal::Tag { form, .. }) => {
-                text_input::apply_event(&mut form.name, &mut self.selection, "tag:name", &event);
+                apply_routed_text_input(&mut form.name, &mut self.selection, "tag:name", &event);
             }
             Some(ActiveModal::PullPicker { form, .. }) => {
                 aetna_core::widgets::radio::apply_event(
@@ -864,7 +896,7 @@ impl App for WhisperApp {
                     "push:remote",
                     |raw| Some(raw.to_string()),
                 );
-                text_input::apply_event(
+                apply_routed_text_input(
                     &mut form.branch,
                     &mut self.selection,
                     "push:branch",
@@ -878,7 +910,7 @@ impl App for WhisperApp {
                     "merge:strategy",
                     MergeStrategy::from_radio_value,
                 );
-                text_input::apply_event(
+                apply_routed_text_input(
                     &mut form.no_ff_message,
                     &mut self.selection,
                     "merge:message",
@@ -886,13 +918,13 @@ impl App for WhisperApp {
                 );
             }
             Some(ActiveModal::Worktree { form }) => {
-                text_input::apply_event(
+                apply_routed_text_input(
                     &mut form.path,
                     &mut self.selection,
                     "worktree:path",
                     &event,
                 );
-                text_input::apply_event(
+                apply_routed_text_input(
                     &mut form.source,
                     &mut self.selection,
                     "worktree:source",
@@ -1179,12 +1211,12 @@ impl WhisperApp {
             }
             return;
         }
-        // welcome:recent:{idx} — open the persisted recent path at idx.
+        // welcome:recent:{idx} — open the normalized recent path at idx.
         if let Some(idx_str) = key.strip_prefix("welcome:recent:") {
             if let Ok(idx) = idx_str.parse::<usize>()
-                && let Some(path) = self.config.recent_repos.get(idx).cloned()
+                && let Some(path) = self.recent_repo_path(idx)
             {
-                self.open_repo_path(std::path::PathBuf::from(path));
+                self.open_repo_path(path);
             }
             return;
         }
@@ -1355,6 +1387,12 @@ impl WhisperApp {
         self.open_repo_path(path);
     }
 
+    fn recent_repo_path(&self, idx: usize) -> Option<PathBuf> {
+        recent::recent_repo_entries(&self.config.recent_repos)
+            .get(idx)
+            .map(|entry| entry.path.clone())
+    }
+
     /// Open a known path as a new repo tab. Shared between the file
     /// picker (`open_repo_dialog`) and the welcome view's recent-repos
     /// list. On success the path is promoted in `recent_repos` and the
@@ -1365,7 +1403,10 @@ impl WhisperApp {
             Ok(tab) => {
                 self.tabs.push(tab);
                 self.active_tab = self.tabs.len() - 1;
-                let path_str = path.to_string_lossy().into_owned();
+                let recent_path = recent::recent_repo_entry(&path)
+                    .map(|entry| entry.path)
+                    .unwrap_or_else(|| path.clone());
+                let path_str = recent_path.to_string_lossy().into_owned();
                 if let Err(e) = self.config.add_recent_repo(&path_str) {
                     self.toasts
                         .push(ToastSpec::error(format!("Save recent failed: {e}")));
@@ -2303,10 +2344,10 @@ impl WhisperApp {
             other => {
                 if let Some(idx_str) = other.strip_prefix("modal:open_repo:recent:")
                     && let Ok(idx) = idx_str.parse::<usize>()
-                    && let Some(path) = self.config.recent_repos.get(idx).cloned()
+                    && let Some(path) = self.recent_repo_path(idx)
                 {
                     self.active_modal = None;
-                    self.open_repo_path(std::path::PathBuf::from(path));
+                    self.open_repo_path(path);
                 }
             }
         }
@@ -2515,6 +2556,17 @@ impl WhisperApp {
                     action: ConfirmAction::DeleteBranch(name),
                 });
             }
+            ("delete", ContextTarget::RemoteBranch { remote, branch }) => {
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Delete remote branch".to_string(),
+                    body: format!(
+                        "Delete branch '{branch}' from remote '{remote}'? This cannot be undone."
+                    ),
+                    ok_label: "Delete".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteRemoteBranch { remote, branch },
+                });
+            }
             ("delete", ContextTarget::Tag(name)) => {
                 self.active_modal = Some(ActiveModal::Confirm {
                     title: "Delete tag".to_string(),
@@ -2654,6 +2706,9 @@ impl WhisperApp {
             ConfirmAction::CloseTab(idx) => self.close_tab(idx),
             ConfirmAction::DeleteBranch(name) => {
                 self.run_op("Delete branch", |t| t.repo.delete_branch(&name));
+            }
+            ConfirmAction::DeleteRemoteBranch { remote, branch } => {
+                self.delete_remote_branch(remote, branch);
             }
             ConfirmAction::DeleteTag(name) => {
                 self.run_op("Delete tag", |t| t.repo.delete_tag(&name));
@@ -3718,6 +3773,20 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Reverting {short}…")));
     }
 
+    fn delete_remote_branch(&mut self, remote: String, branch: String) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, true) else {
+            return;
+        };
+        let rx = crate::git::delete_remote_branch_async(wd, remote.clone(), branch.clone(), proxy);
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, format!("delete {remote}/{branch}")));
+        self.toasts.push(ToastSpec::info(format!(
+            "Deleting remote branch {remote}/{branch}…"
+        )));
+    }
+
     /// `git merge <source>` into the current branch. Reached from the
     /// branch context menu in the sidebar — `source` is the picked
     /// branch's name (`"feature/x"` for local, `"origin/main"` for
@@ -4163,6 +4232,7 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
             menu_item("Merge with options\u{2026}").key("ctx:merge_options"),
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
             menu_item("Rebase with options\u{2026}").key("ctx:rebase_options"),
+            menu_item("Delete").key("ctx:delete"),
         ],
         ContextTarget::Tag(_) => vec![menu_item("Delete").key("ctx:delete")],
         ContextTarget::Stash(_) => vec![

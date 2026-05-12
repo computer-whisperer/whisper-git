@@ -18,6 +18,7 @@ pub mod git_async;
 pub mod github;
 pub mod gitlab;
 pub mod host;
+pub mod recent;
 pub mod repo_tab;
 pub mod screenshot_mode;
 pub mod sidebar;

@@ -1169,8 +1169,7 @@ fn build_row(
     .padding(Sides::xy(tokens::SPACE_2, 0.0))
     .height(Size::Fixed(geom.height))
     .width(Size::Fill(1.0))
-    .align(Align::Start)
-    .clip();
+    .align(Align::Start);
 
     let inner = if selected { inner.selected() } else { inner };
 
@@ -1278,8 +1277,7 @@ fn synthetic_row(
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(geom.height))
         .width(Size::Fill(1.0))
-        .align(Align::Center)
-        .clip();
+        .align(Align::Center);
     // See `build_row` — wrap so the focusable rect doesn't overlap the
     // virtual_list scrollbar thumb on the right edge.
     column([inner]).width(Size::Fill(1.0)).padding(Sides {
@@ -1474,8 +1472,19 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
             if matches { row_el } else { row_el.opacity(0.3) }
         })
         .key("commits")
+        .padding(Sides {
+            left: tokens::RING_WIDTH,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+        })
         .height(Size::Fill(1.0))])
-        .padding(0.0)
+        .padding(Sides {
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: tokens::RING_WIDTH,
+        })
         .height(Size::Fill(1.0)),
     ])
     .width(Size::Fill(1.0))

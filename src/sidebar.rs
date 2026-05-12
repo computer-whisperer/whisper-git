@@ -32,7 +32,7 @@ pub fn sidebar(tab: &RepoTab) -> El {
     sidebar_panel([scroll([body])
         .key("sidebar:scroll")
         .padding(Sides::xy(tokens::RING_WIDTH, 0.0))])
-    .padding(0.0)
+    .padding(Sides::xy(0.0, tokens::RING_WIDTH))
 }
 
 fn section_block(tab: &RepoTab, section: SidebarSection) -> El {

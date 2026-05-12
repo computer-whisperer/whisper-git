@@ -62,7 +62,7 @@ fn default_ai_provider() -> String {
 }
 
 /// Maximum number of recent repos to remember
-const MAX_RECENT_REPOS: usize = 10;
+pub(crate) const MAX_RECENT_REPOS: usize = 10;
 
 impl Default for Config {
     fn default() -> Self {
@@ -103,7 +103,11 @@ impl Config {
         let Ok(data) = fs::read_to_string(&path) else {
             return Self::default();
         };
-        serde_json::from_str(&data).unwrap_or_default()
+        let mut config: Self = serde_json::from_str(&data).unwrap_or_default();
+        if let Err(e) = config.refresh_recent_repos() {
+            eprintln!("Warning: failed to refresh recent repositories: {e}");
+        }
+        config
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -134,7 +138,20 @@ impl Config {
     pub fn add_recent_repo(&mut self, path: &str) -> Result<(), String> {
         self.recent_repos.retain(|p| p != path);
         self.recent_repos.insert(0, path.to_string());
+        self.recent_repos = crate::recent::compact_recent_paths(&self.recent_repos);
         self.recent_repos.truncate(MAX_RECENT_REPOS);
+        self.save()
+    }
+
+    /// Drop stale recent entries, canonicalize worktree paths to repo
+    /// paths, and dedupe multiple references to the same shared repo.
+    pub fn refresh_recent_repos(&mut self) -> Result<(), String> {
+        let mut compacted = crate::recent::compact_recent_paths(&self.recent_repos);
+        compacted.truncate(MAX_RECENT_REPOS);
+        if compacted == self.recent_repos {
+            return Ok(());
+        }
+        self.recent_repos = compacted;
         self.save()
     }
 }

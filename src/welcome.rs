@@ -1,17 +1,18 @@
 //! Welcome view — shown when no repo tab is open.
 //!
 //! Centered hero (logo + title + tagline), then a Open / Clone action
-//! row, and a recent-repos column when `Config::recent_repos` is
+//! row, and a recent-repos column when normalized recent entries are
 //! non-empty. Click targets emit:
 //!
 //! - `open_repo` — reuses the existing open-folder picker
 //! - `welcome:clone` — opens the clone modal
-//! - `welcome:recent:{idx}` — opens the persisted recent path at that index
+//! - `welcome:recent:{idx}` — opens the normalized recent path at that index
 
-use std::path::Path;
 use std::sync::LazyLock;
 
 use aetna_core::{El, IconName, SvgIcon, prelude::*};
+
+use crate::recent::RecentRepoEntry;
 
 const HERO_ICON_PX: f32 = 96.0;
 const CONTENT_COLUMN_WIDTH: f32 = 560.0;
@@ -24,7 +25,7 @@ static LOGO: LazyLock<SvgIcon> = LazyLock::new(|| {
         .expect("git-client-icon.svg failed to parse")
 });
 
-pub fn welcome_view(recent: &[String]) -> El {
+pub fn welcome_view(recent: &[RecentRepoEntry]) -> El {
     // Hero spans the full content column so its `align(Center)` actually
     // centers the icon/title/tagline within the 560 px frame instead of
     // hugging them tight together.
@@ -71,7 +72,7 @@ pub fn welcome_view(recent: &[String]) -> El {
         .padding(tokens::SPACE_4)
 }
 
-fn recent_section(recent: &[String]) -> El {
+fn recent_section(recent: &[RecentRepoEntry]) -> El {
     let rows = recent
         .iter()
         .enumerate()
@@ -87,17 +88,7 @@ fn recent_section(recent: &[String]) -> El {
         .width(Size::Hug)
 }
 
-fn recent_row(idx: usize, path_str: &str) -> El {
-    let path = Path::new(path_str);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path_str.to_string());
-    let parent = path
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
+fn recent_row(idx: usize, entry: &RecentRepoEntry) -> El {
     // Two-line content keeps the path tightly associated with its
     // name (no idle row background to bind them otherwise). Hug
     // widths on title + description let the row's intrinsic width
@@ -107,8 +98,8 @@ fn recent_row(idx: usize, path_str: &str) -> El {
     item([
         item_media_icon(IconName::Folder),
         item_content([
-            item_title(name).width(Size::Hug),
-            item_description(parent).width(Size::Hug),
+            item_title(entry.name.clone()).width(Size::Hug),
+            item_description(entry.description.clone()).width(Size::Hug),
         ])
         .width(Size::Hug),
     ])

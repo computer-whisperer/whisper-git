@@ -83,15 +83,11 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         "welcome_empty".to_string(),
         WhisperApp::with_tabs(Vec::new()),
     ));
-    // Welcome view with a populated recent-repos list. Synthetic paths
-    // exercise the recent-row layout without depending on real repos.
+    // Welcome view with a populated recent-repos list. Use real opened
+    // repos because recent normalization drops stale/deleted paths.
     scenes.push(("welcome_recents".to_string(), {
         let mut app = WhisperApp::with_tabs(Vec::new());
-        app.config.recent_repos = vec![
-            "/home/example/Projects/whisper-git".to_string(),
-            "/home/example/Projects/aetna".to_string(),
-            "/home/example/work/dotfiles".to_string(),
-        ];
+        app.config.recent_repos = recent_fixture_paths(opened);
         app
     }));
 
@@ -226,11 +222,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
         }));
         scenes.push(("modal_open_repo".to_string(), {
             let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
-            app.config.recent_repos = vec![
-                "/home/example/Projects/whisper-git".to_string(),
-                "/home/example/Projects/aetna".to_string(),
-                "/home/example/work/dotfiles".to_string(),
-            ];
+            app.config.recent_repos = recent_fixture_paths(opened);
             app.active_modal = Some(ActiveModal::OpenRepo);
             app
         }));
@@ -534,6 +526,19 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
     }
 
     scenes
+}
+
+fn recent_fixture_paths(opened: &[RepoTab]) -> Vec<String> {
+    opened
+        .iter()
+        .map(|tab| {
+            tab.repo
+                .workdir()
+                .unwrap_or_else(|| tab.repo.common_dir())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect()
 }
 
 /// `RepoTab` doesn't impl Clone (GitRepo wraps libgit2 handles), so we

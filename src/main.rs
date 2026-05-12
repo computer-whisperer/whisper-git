@@ -104,12 +104,8 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
     let Some(state) = state else { return };
     match state {
         "welcome" => {
+            app.config.recent_repos = screenshot_recent_paths(app);
             app.tabs.clear();
-            app.config.recent_repos = vec![
-                "/home/example/Projects/whisper-git".to_string(),
-                "/home/example/Projects/aetna".to_string(),
-                "/home/example/work/dotfiles".to_string(),
-            ];
         }
         "history" => {
             if let Some(tab) = app.tabs.first_mut() {
@@ -170,11 +166,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "open-repo" => {
             // Match welcome/dump_bundles fixtures so the modal has a
             // visible recent list rather than the bare action row.
-            app.config.recent_repos = vec![
-                "/home/example/Projects/whisper-git".to_string(),
-                "/home/example/Projects/aetna".to_string(),
-                "/home/example/work/dotfiles".to_string(),
-            ];
+            app.config.recent_repos = screenshot_recent_paths(app);
             app.active_modal = Some(ActiveModal::OpenRepo);
         }
         "confirm" => {
@@ -236,6 +228,26 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         }
         other => eprintln!("warning: unknown --screenshot-state '{other}'"),
     }
+}
+
+fn screenshot_recent_paths(app: &WhisperApp) -> Vec<String> {
+    let mut paths: Vec<String> = app
+        .tabs
+        .iter()
+        .map(|tab| {
+            tab.repo
+                .workdir()
+                .unwrap_or_else(|| tab.repo.common_dir())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    if paths.is_empty()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        paths.push(cwd.to_string_lossy().into_owned());
+    }
+    paths
 }
 
 /// Stress fixture for the worktree pill bar at the top of the staging

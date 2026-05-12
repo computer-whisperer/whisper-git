@@ -9,6 +9,7 @@ use aetna_core::{El, IconName, Selection, prelude::*};
 
 use crate::config::Config;
 use crate::git::WorktreeInfo;
+use crate::recent::RecentRepoEntry;
 
 pub const MODAL_SETTINGS_KEY: &str = "modal:settings";
 pub const MODAL_CONFIRM_KEY: &str = "modal:confirm";
@@ -167,7 +168,7 @@ where
 /// list keyed `modal:open_repo:recent:{idx}` so users with tabs open
 /// can reach a recent path without a file dialog round-trip. Mirrors
 /// the welcome view's affordances so the muscle memory is the same.
-pub fn open_repo_modal(recent: &[String]) -> El {
+pub fn open_repo_modal(recent: &[RecentRepoEntry]) -> El {
     let actions = row([
         button_with_icon(IconName::Folder, "Open Local\u{2026}")
             .key("modal:open_repo:browse")
@@ -201,20 +202,13 @@ pub fn open_repo_modal(recent: &[String]) -> El {
     overlays_panel(MODAL_OPEN_REPO_KEY, "Open repository", [body])
 }
 
-fn recent_repo_row(idx: usize, path_str: &str) -> El {
-    let path = std::path::Path::new(path_str);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path_str.to_string());
-    let parent = path
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-
+fn recent_repo_row(idx: usize, entry: &RecentRepoEntry) -> El {
     item([
         item_media_icon(IconName::Folder),
-        item_content([item_title(name), item_description(parent)]),
+        item_content([
+            item_title(entry.name.clone()),
+            item_description(entry.description.clone()),
+        ]),
     ])
     .key(format!("modal:open_repo:recent:{idx}"))
 }

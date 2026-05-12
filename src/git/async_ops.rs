@@ -127,10 +127,6 @@ define_async_git_op! {
     remove_worktree_force_async(target: String) =>
         ["worktree", "remove", "--force", target], "worktree remove --force";
 
-    /// Spawn a background thread to delete a branch on the remote
-    delete_remote_branch_async(remote: String, branch: String) =>
-        ["push", remote, "--delete", branch], "delete remote branch";
-
     /// Spawn a background thread to merge a branch into the current branch
     merge_branch_async(branch_name: String) =>
         ["merge", branch_name], "merge";
@@ -147,6 +143,56 @@ define_async_git_op! {
     merge_squash_async(branch_name: String) =>
         ["merge", "--squash", branch_name], "merge --squash";
 
+}
+
+/// Spawn a background thread to delete a branch on the remote, then
+/// best-effort delete the local remote-tracking ref so the sidebar
+/// reflects the deletion without waiting for a later fetch/prune.
+pub fn delete_remote_branch_async(
+    workdir: PathBuf,
+    remote: String,
+    branch: String,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    crate::crash_log::breadcrumb(format!(
+        "git_async: delete remote branch remote={remote:?} branch={branch:?}"
+    ));
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new("git")
+            .args(["push", &remote, "--delete", &branch])
+            .current_dir(&workdir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+        let op_result = match result {
+            Ok(output) => {
+                let success = output.status.success();
+                if success {
+                    let remote_ref = format!("{remote}/{branch}");
+                    let _ = std::process::Command::new("git")
+                        .args(["branch", "-dr", &remote_ref])
+                        .current_dir(&workdir)
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .output();
+                }
+                RemoteOpResult {
+                    success,
+                    error: String::from_utf8_lossy(&output.stderr).to_string(),
+                }
+            }
+            Err(e) => RemoteOpResult {
+                success: false,
+                error: format!("Failed to run git delete remote branch: {e}"),
+            },
+        };
+        crate::crash_log::breadcrumb(format!(
+            "git_async done: delete remote branch success={}",
+            op_result.success
+        ));
+        let _ = tx.send(op_result);
+        let _ = proxy.send_event(());
+    });
+    rx
 }
 
 /// Spawn a background thread to run `git push` with arbitrary flag combinations.

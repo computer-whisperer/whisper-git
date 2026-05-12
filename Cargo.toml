@@ -12,8 +12,8 @@ categories = ["development-tools", "gui"]
 
 [dependencies]
 # UI toolkit
-aetna-core = "0.3.2"
-aetna-vulkano = "0.3.2"
+aetna-core = { path = "../../aetna/aetna.main/crates/aetna-core" }
+aetna-vulkano = { path = "../../aetna/aetna.main/crates/aetna-vulkano" }
 
 # Graphics
 vulkano = "0.35"
