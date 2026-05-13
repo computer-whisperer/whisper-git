@@ -1420,6 +1420,7 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
         .graph_layout
         .row_geometry_with_bands(&tab.commits, &band_heights);
     let commits = tab.commits.clone();
+    let commit_row_keys: Vec<String> = commits.iter().map(|c| format!("commit:{}", c.id)).collect();
     let selected_oid = tab.selected_commit;
 
     // Search bar is hidden by default; Ctrl+F flips `history_search_open`
@@ -1445,32 +1446,42 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
             .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2))
             .gap(tokens::SPACE_2)
             .fill(tokens::MUTED),
-        card_content([virtual_list_dyn(commits.len(), EST_ROW_HEIGHT, move |i| {
-            let c = &commits[i];
-            let selected = selected_oid == Some(c.id);
-            // Empty fallback geom keeps the row paintable when the
-            // layout pass hasn't caught up to the commit list yet
-            // (e.g., right after a refresh — graph_layout.build runs
-            // synchronously, so this normally never triggers).
-            let empty = RowGeometry::default();
-            let geom = geom_per_row.get(i).unwrap_or(&empty);
-            let matches = match_flags.get(i).copied().unwrap_or(true);
-            let avatar = avatars.get(&c.author_email).cloned();
-            let row_el = build_row(
-                c,
-                layouts[i].as_ref(),
-                geom,
-                graph_width,
-                &pills_per_row[i],
-                ci_per_row[i].as_deref(),
-                detached_flags[i],
-                pinned_flags[i],
-                i,
-                selected,
-                avatar,
-            );
-            if matches { row_el } else { row_el.opacity(0.3) }
-        })
+        card_content([virtual_list_dyn(
+            commits.len(),
+            EST_ROW_HEIGHT,
+            move |i| {
+                commit_row_keys
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("commit:missing:{i}"))
+            },
+            move |i| {
+                let c = &commits[i];
+                let selected = selected_oid == Some(c.id);
+                // Empty fallback geom keeps the row paintable when the
+                // layout pass hasn't caught up to the commit list yet
+                // (e.g., right after a refresh — graph_layout.build runs
+                // synchronously, so this normally never triggers).
+                let empty = RowGeometry::default();
+                let geom = geom_per_row.get(i).unwrap_or(&empty);
+                let matches = match_flags.get(i).copied().unwrap_or(true);
+                let avatar = avatars.get(&c.author_email).cloned();
+                let row_el = build_row(
+                    c,
+                    layouts[i].as_ref(),
+                    geom,
+                    graph_width,
+                    &pills_per_row[i],
+                    ci_per_row[i].as_deref(),
+                    detached_flags[i],
+                    pinned_flags[i],
+                    i,
+                    selected,
+                    avatar,
+                );
+                if matches { row_el } else { row_el.opacity(0.3) }
+            },
+        )
         .key("commits")
         .padding(Sides {
             left: tokens::RING_WIDTH,

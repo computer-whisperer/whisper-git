@@ -155,16 +155,31 @@ pub fn diff(data: &DiffData) -> El {
         column([text("(no changes)").caption().muted()]).padding(tokens::SPACE_4)
     } else {
         let rows = flatten_rows(&data.hunks, data.mode);
-        virtual_list_dyn(rows.len(), EST_ROW_HEIGHT, move |i| {
-            column([build_diff_row(&rows[i], i)])
-                .width(Size::Fill(1.0))
-                .padding(Sides {
-                    left: 0.0,
-                    right: SCROLLBAR_GUTTER,
-                    top: 0.0,
-                    bottom: 0.0,
-                })
-        })
+        let row_keys: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| diff_row_key(row, i))
+            .collect();
+        virtual_list_dyn(
+            rows.len(),
+            EST_ROW_HEIGHT,
+            move |i| {
+                row_keys
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("diff:row:missing:{i}"))
+            },
+            move |i| {
+                column([build_diff_row(&rows[i], i)])
+                    .width(Size::Fill(1.0))
+                    .padding(Sides {
+                        left: 0.0,
+                        right: SCROLLBAR_GUTTER,
+                        top: 0.0,
+                        bottom: 0.0,
+                    })
+            },
+        )
         .key("diff:scroll")
         .height(Size::Fill(1.0))
     };
@@ -228,6 +243,40 @@ fn build_diff_row(row: &DiffRow, idx: usize) -> El {
         DiffRow::UnifiedLine(line) => unified_line_row(line).key(key),
         DiffRow::SplitPair(pair) => split_pair_row(pair).key(key),
     }
+}
+
+fn diff_row_key(row: &DiffRow, idx: usize) -> String {
+    match row {
+        DiffRow::HunkHeader { header, .. } => format!("diff:hunk:{idx}:{header}"),
+        DiffRow::UnifiedLine(line) => format!("diff:line:{idx}:{}", diff_line_key(line)),
+        DiffRow::SplitPair(pair) => {
+            let left = pair
+                .left
+                .as_ref()
+                .map(diff_line_key)
+                .unwrap_or_else(|| "none".to_string());
+            let right = pair
+                .right
+                .as_ref()
+                .map(diff_line_key)
+                .unwrap_or_else(|| "none".to_string());
+            format!("diff:pair:{idx}:{left}:{right}")
+        }
+    }
+}
+
+fn diff_line_key(line: &DiffLine) -> String {
+    format!(
+        "{:?}:{}:{}:{}",
+        line.kind,
+        line.old_lineno
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        line.new_lineno
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string()),
+        line.content
+    )
 }
 
 fn mode_toggle_button(mode: DiffMode, key: &str) -> El {

@@ -26,9 +26,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetna-core"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7d545cb3e7fcc0837f610fcc8bd36bf84ec14ea5f87fd72eedb7c8e63321ff9"
+checksum = "4cab69400bfbbe293c37d0bbf1eb885a42a9821b240b9ecb6c79c62535ceb91d"
 dependencies = [
  "aetna-fonts",
  "bytemuck",
@@ -50,9 +50,9 @@ dependencies = [
 
 [[package]]
 name = "aetna-fonts"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ad5d06d160265a45e2c9eaefc837f662e1379a66b5f2e6d2eef81ef73dc883f"
+checksum = "e4101d23bd4023f713695a50c10a193c6fc33a0ff639ae9252414329a8f14fd0"
 dependencies = [
  "aetna-fonts-emoji",
  "aetna-fonts-inter",
@@ -86,9 +86,9 @@ checksum = "1af44d458ac64fdf6374444de07b5d13a79bb478da01258d965142f0a86e9cc9"
 
 [[package]]
 name = "aetna-vulkano"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "632d6ce1b7cfae3f145444d3f540e949955fe0b6612f82b11987d512dbc2b739"
+checksum = "44b05f07060c34c55a975da71a9e274173d64186389db0702d2f7a8d8d21e65f"
 dependencies = [
  "aetna-core",
  "bytemuck",
