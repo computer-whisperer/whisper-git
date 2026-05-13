@@ -7,7 +7,7 @@ use std::path::Path;
 use super::GitRepo;
 
 /// Working directory status
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkingDirStatus {
     pub staged: Vec<FileStatus>,
     pub unstaged: Vec<FileStatus>,
@@ -23,7 +23,7 @@ impl WorkingDirStatus {
 }
 
 /// Status of a single file
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileStatus {
     pub path: String,
     pub status: FileStatusKind,

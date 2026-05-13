@@ -2963,7 +2963,7 @@ impl WhisperApp {
         self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
             tab_id,
             &effects.dirty_checks_submodules,
-            &effects.dirty_checks_worktrees,
+            &effects.dirty_checks_worktree_paths,
             repo_workdir,
             &self.dirty_check_tx,
             &proxy,
@@ -3171,7 +3171,7 @@ impl WhisperApp {
         use crate::watcher::FsChangeKind;
         match kind {
             FsChangeKind::WorkingTree => {
-                let (tab_id, repo_workdir, worktrees) = {
+                let (tab_id, repo_workdir, worktree_paths) = {
                     let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
                         return;
                     };
@@ -3179,7 +3179,7 @@ impl WhisperApp {
                     (
                         tab.id,
                         tab.repo.workdir().map(|p| p.to_path_buf()),
-                        tab.worktrees.clone(),
+                        tab.worktree_order.clone(),
                     )
                 };
                 // Re-check worktree dirty state — a working-tree edit
@@ -3187,7 +3187,7 @@ impl WhisperApp {
                 self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
                     tab_id,
                     &[],
-                    &worktrees,
+                    &worktree_paths,
                     repo_workdir,
                     &self.dirty_check_tx,
                     proxy,

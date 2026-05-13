@@ -470,7 +470,7 @@ pub struct StateApplyEffects {
     /// Submodules to dirty-check, fanned out one worker per entry.
     pub dirty_checks_submodules: Vec<SubmoduleInfo>,
     /// Worktrees to dirty-check, fanned out one worker per entry.
-    pub dirty_checks_worktrees: Vec<WorktreeInfo>,
+    pub dirty_checks_worktree_paths: Vec<PathBuf>,
     /// `true` if the resolved worktree set differs from the previous
     /// one; the watcher needs `update_worktree_watches` to add/drop
     /// per-worktree watch paths.
@@ -840,7 +840,7 @@ impl RepoTab {
             tip.is_head = !tip.is_remote && tip.name == current;
         }
 
-        self.graph_layout.build(&self.commits);
+        self.rebuild_synthetic_entries();
 
         // Refresh selected commit detail if the selection's still valid.
         if let Some(oid) = self.selected_commit
@@ -865,48 +865,42 @@ impl RepoTab {
         StateApplyEffects {
             diff_stats_for: result.real_oids,
             dirty_checks_submodules: submodules,
-            dirty_checks_worktrees: self.worktrees.clone(),
+            dirty_checks_worktree_paths: self.worktree_order.clone(),
             watcher_paths_changed,
             errors: result.errors,
         }
     }
 
-    /// Fold a finished [`StatusResult`] into the active view's status +
-    /// the synthetic uncommitted-changes entry for the active worktree.
+    /// Fold a finished [`StatusResult`] into the worktree view each
+    /// status was captured from, then rebuild synthetic rows from the
+    /// same per-worktree cache.
     /// Cheap; called from working-tree-edit paths and from the 30 s
     /// status safety net timer.
     pub fn apply_status_result(&mut self, result: StatusResult) {
-        if let Some(status) = result.staging_status
-            && let Some(view) = self.active_view_mut()
-        {
-            view.status = status;
+        let StatusResult {
+            main_path,
+            main_status,
+            staging_path,
+            staging_status,
+            staging_repo_state: _,
+        } = result;
+
+        let mut changed = false;
+        if let (Some(path), Some(status)) = (main_path.as_deref(), main_status) {
+            changed |= self.set_worktree_status(path, status);
+        }
+        if let (Some(path), Some(status)) = (staging_path.as_deref(), staging_status) {
+            changed |= self.set_worktree_status(path, status);
         }
 
-        // Single-worktree main-repo fast path — refresh the synthetic
-        // entry's (ins, del) so the +N/-M chip on the uncommitted-changes
-        // row tracks the current diff. Multi-worktree synthetic refresh
-        // goes through `apply_dirty_check_result` (per-entity).
-        if self.worktree_views.len() == 1 {
-            self.commits.retain(|c| !c.is_synthetic);
-            let synthetics = self.build_synthetic_entries();
-            if !synthetics.is_empty() {
-                let mut synths = synthetics;
-                if let Some(synth) = synths.first_mut()
-                    && let Some((ins, del)) = result.main_diff_stats
-                {
-                    synth.insertions = ins;
-                    synth.deletions = del;
-                }
-                insert_synthetics_sorted(&mut self.commits, synths);
-                self.graph_layout.build(&self.commits);
-            }
+        if changed {
+            self.rebuild_synthetic_entries();
         }
     }
 
     /// Fold one finished [`DirtyCheckResult`] into the tab. Returns
-    /// `true` when a worktree's dirty state changed and the synthetic
-    /// uncommitted-changes rows need rebuilding (caller invokes
-    /// `rebuild_synthetics_after_dirty_change`).
+    /// `true` when a worktree's cached status changed and synthetic
+    /// uncommitted-changes rows were rebuilt.
     pub fn apply_dirty_check_result(&mut self, result: DirtyCheckResult) -> bool {
         match result {
             DirtyCheckResult::Submodule {
@@ -924,40 +918,43 @@ impl RepoTab {
             DirtyCheckResult::Worktree {
                 tab_id: _,
                 path,
-                is_dirty,
-                dirty_file_count,
-                diff_stats,
+                status,
             } => {
-                let wt = self.worktrees.iter_mut().find(|w| w.path == path);
-                let Some(wt) = wt else { return false };
-                let changed =
-                    wt.is_dirty != Some(is_dirty) || wt.dirty_file_count != Some(dirty_file_count);
-                wt.is_dirty = Some(is_dirty);
-                wt.dirty_file_count = Some(dirty_file_count);
+                let dirty_file_count = status.total_files();
+                let is_dirty = dirty_file_count > 0;
+                if let Some(wt) = self
+                    .worktrees
+                    .iter_mut()
+                    .find(|w| Path::new(&w.path) == path.as_path())
+                {
+                    wt.is_dirty = Some(is_dirty);
+                    wt.dirty_file_count = Some(dirty_file_count);
+                }
+                let changed = self.set_worktree_status(&path, status);
                 if changed {
-                    self.rebuild_synthetics_after_dirty_change(diff_stats);
+                    self.rebuild_synthetic_entries();
                 }
                 changed
             }
         }
     }
 
-    /// Rebuild synthetic "uncommitted changes" rows after a dirty-check
-    /// result flipped a worktree's dirty state. Called from
-    /// [`Self::apply_dirty_check_result`] when `changed == true`.
-    fn rebuild_synthetics_after_dirty_change(&mut self, diff_stats: Option<(usize, usize)>) {
+    fn set_worktree_status(&mut self, path: &Path, status: WorkingDirStatus) -> bool {
+        let Some(view) = self.worktree_views.get_mut(path) else {
+            return false;
+        };
+        let changed = view.status != status;
+        view.status = status;
+        changed
+    }
+
+    /// Rebuild synthetic "uncommitted changes" rows from the
+    /// per-worktree view cache. This deliberately ignores
+    /// `self.worktrees`: libgit2's linked-worktree list omits the main
+    /// worktree, while `worktree_views` is the UI/data-model set.
+    fn rebuild_synthetic_entries(&mut self) {
         self.commits.retain(|c| !c.is_synthetic);
-        let mut synthetics = self.build_synthetic_entries();
-        // The dirty-check carries the *current* diff stats for the worktree
-        // whose state just changed. If a synthetic was emitted for that
-        // worktree, attach the fresh stats so the +N/-M chip is up-to-date
-        // immediately rather than waiting for the next status refresh.
-        if let Some((ins, del)) = diff_stats
-            && let Some(synth) = synthetics.first_mut()
-        {
-            synth.insertions = ins;
-            synth.deletions = del;
-        }
+        let synthetics = self.build_synthetic_entries();
         if !synthetics.is_empty() {
             insert_synthetics_sorted(&mut self.commits, synthetics);
         }
@@ -1190,6 +1187,7 @@ impl RepoTab {
         if let Some(v) = self.active_view_mut() {
             v.refresh();
         }
+        self.rebuild_synthetic_entries();
 
         let current = self.current_branch().to_string();
         for tip in &mut self.branch_tips {
@@ -1628,5 +1626,82 @@ impl RepoTab {
             branches.sort_unstable();
         }
         by_remote.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use anyhow::Result;
+
+    use super::*;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "whisper-git-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    }
+
+    fn commit_initial_file(repo: &git2::Repository, path: &Path, contents: &str) -> Result<()> {
+        fs::write(repo.workdir().unwrap().join(path), contents)?;
+        let mut index = repo.index()?;
+        index.add_path(path)?;
+        index.write()?;
+        let tree_id = index.write_tree()?;
+        let tree = repo.find_tree(tree_id)?;
+        let sig = git2::Signature::now("Whisper Test", "test@example.com")?;
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])?;
+        Ok(())
+    }
+
+    #[test]
+    fn status_result_updates_reported_worktree_instead_of_active_view() -> Result<()> {
+        let root = unique_temp_dir("status-path");
+        let main = root.join("main");
+        let linked = root.join("linked");
+        fs::create_dir_all(&main)?;
+
+        let raw = git2::Repository::init(&main)?;
+        commit_initial_file(&raw, Path::new("tracked.txt"), "base\n")?;
+        raw.worktree("linked", &linked, None)?;
+
+        let mut tab = RepoTab::open(&main)?;
+        tab.refresh();
+        assert!(!tab.commits.iter().any(|c| c.is_synthetic));
+
+        tab.select_worktree(linked.clone());
+        let linked_before = tab.worktree_views[&linked].status.clone();
+
+        fs::write(main.join("tracked.txt"), "dirty\n")?;
+        let dirty_status = GitRepo::open(&main)?.status()?;
+        assert_eq!(dirty_status.total_files(), 1);
+
+        tab.apply_status_result(StatusResult {
+            main_path: Some(main.clone()),
+            main_status: Some(dirty_status),
+            staging_path: None,
+            staging_status: None,
+            staging_repo_state: git2::RepositoryState::Clean,
+        });
+
+        assert_eq!(tab.worktree_views[&main].status.total_files(), 1);
+        assert_eq!(tab.worktree_views[&linked].status, linked_before);
+        assert!(
+            tab.commits
+                .iter()
+                .any(|c| { c.is_synthetic && c.synthetic_wt_name.as_deref() == Some("main") })
+        );
+
+        drop(tab);
+        drop(raw);
+        let _ = fs::remove_dir_all(root);
+        Ok(())
     }
 }

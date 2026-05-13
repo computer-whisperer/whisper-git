@@ -39,7 +39,7 @@ use git2::Oid;
 use winit::event_loop::EventLoopProxy;
 
 use crate::git::{
-    self, BranchTip, CommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus,
+    BranchTip, CommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus,
     WorktreeInfo, working_dir_status_from_statuses,
 };
 
@@ -53,25 +53,22 @@ pub const MAX_COMMITS: usize = 1000;
 // ============================================================================
 
 /// Result of a working-directory status refresh. Folded back into
-/// [`crate::repo_tab::WorktreeView::status`] for the active view.
+/// [`crate::repo_tab::WorktreeView::status`] for the worktree path
+/// each status was captured from.
 pub struct StatusResult {
+    /// Working directory path for [`Self::main_status`].
+    pub main_path: Option<PathBuf>,
     /// Main repo working-directory status. `None` for bare repos and
     /// when libgit2 fails to open the path.
     pub main_status: Option<WorkingDirStatus>,
+    /// Working directory path for [`Self::staging_status`].
+    pub staging_path: Option<PathBuf>,
     /// Staging-context working-directory status — the worktree the
     /// staging well is pointing at, which may differ from the main
     /// repo when the user has switched worktrees.
     pub staging_status: Option<WorkingDirStatus>,
     /// Staging repo state (merge / rebase / cherry-pick in progress).
     pub staging_repo_state: git2::RepositoryState,
-    /// Pre-computed diff stats for the main worktree's synthetic
-    /// "uncommitted changes" entry. `None` when the worktree is clean.
-    pub main_diff_stats: Option<(usize, usize)>,
-    /// HEAD OID of the main repo, captured for synthetic-entry parent
-    /// linkage. Cheap because it doesn't require a refdb cache flush.
-    pub head_oid: Option<Oid>,
-    /// Workdir path string (for the synthetic entry's display name).
-    pub workdir: Option<String>,
 }
 
 /// Spawn a worker that computes working-directory status off-thread.
@@ -128,28 +125,19 @@ pub(crate) fn spawn_status_refresh(
             None => (None, git2::RepositoryState::Clean),
         };
 
-        let (head_oid, workdir, main_diff_stats) = match main_repo.as_ref() {
-            Some(repo) => {
-                let head = repo.head().ok().and_then(|r| r.target());
-                let wd = repo.workdir().map(|p| p.to_string_lossy().to_string());
-                let has_dirty_files = main_status.as_ref().is_some_and(|s| s.total_files() > 0);
-                let stats = if has_dirty_files {
-                    Some(GitRepo::diff_stats_raw(repo))
-                } else {
-                    None
-                };
-                (head, wd, stats)
-            }
-            None => (None, None, None),
-        };
+        let main_path = main_repo
+            .as_ref()
+            .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
+        let staging_path = staging_repo
+            .as_ref()
+            .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
 
         let _ = tx.send(StatusResult {
+            main_path,
             main_status,
+            staging_path,
             staging_status,
             staging_repo_state,
-            main_diff_stats,
-            head_oid,
-            workdir,
         });
         let _ = proxy.send_event(());
     });
@@ -246,7 +234,7 @@ pub(crate) fn spawn_repo_state_refresh(
         } else {
             repo.commit_graph(MAX_COMMITS)
         };
-        let mut commits = match graph_result {
+        let commits = match graph_result {
             Ok(c) => c,
             Err(e) => {
                 errors.push(format!("Failed to load commits: {e}"));
@@ -289,14 +277,6 @@ pub(crate) fn spawn_repo_state_refresh(
             })
             .collect();
 
-        // Synthetic entries for dirty worktrees go into the commit list
-        // so the graph paints "uncommitted changes" rows. Per-worktree
-        // dirty state for these comes from `spawn_dirty_checks`.
-        let synthetics = git::create_synthetic_entries(&repo, &worktrees, &commits);
-        if !synthetics.is_empty() {
-            git::insert_synthetics_sorted(&mut commits, synthetics);
-        }
-
         let remote_names = repo.remote_names();
         let is_bare = repo.is_effectively_bare();
         let remote_urls: HashMap<String, String> = remote_names
@@ -311,7 +291,7 @@ pub(crate) fn spawn_repo_state_refresh(
 
         let stashes = repo.stash_list();
         let ahead_behind = repo.all_branches_ahead_behind();
-        let ref_fingerprint = git::ref_fingerprint(repo.git_dir());
+        let ref_fingerprint = crate::git::ref_fingerprint(repo.git_dir());
 
         let real_oids: Vec<Oid> = commits
             .iter()
@@ -359,10 +339,8 @@ pub enum DirtyCheckResult {
     },
     Worktree {
         tab_id: u64,
-        path: String,
-        is_dirty: bool,
-        dirty_file_count: usize,
-        diff_stats: Option<(usize, usize)>,
+        path: PathBuf,
+        status: WorkingDirStatus,
     },
 }
 
@@ -387,7 +365,7 @@ impl DirtyCheckResult {
 pub(crate) fn spawn_dirty_checks(
     tab_id: u64,
     submodules: &[SubmoduleInfo],
-    worktrees: &[WorktreeInfo],
+    worktree_paths: &[PathBuf],
     repo_workdir: Option<PathBuf>,
     tx: &Sender<DirtyCheckResult>,
     proxy: &EventLoopProxy<()>,
@@ -417,22 +395,19 @@ pub(crate) fn spawn_dirty_checks(
         count += 1;
     }
 
-    for wt in worktrees {
-        let wt_path = PathBuf::from(&wt.path);
+    for wt_path in worktree_paths {
         if !wt_path.is_dir() {
             continue;
         }
-        let path_str = wt.path.clone();
+        let wt_path = wt_path.clone();
         let tx = tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            let (is_dirty, dirty_file_count, diff_stats) = check_worktree_dirty(&wt_path);
+            let status = check_worktree_status(&wt_path);
             let _ = tx.send(DirtyCheckResult::Worktree {
                 tab_id,
-                path: path_str,
-                is_dirty,
-                dirty_file_count,
-                diff_stats,
+                path: wt_path,
+                status,
             });
             let _ = proxy.send_event(());
         });
@@ -458,33 +433,18 @@ fn check_dirty(path: &PathBuf) -> bool {
     })
 }
 
-/// Worktree variant — same exclude_submodules check, but also returns
-/// the dirty-file count (for the worktree pill's badge) and the diff
-/// stats (for the synthetic "uncommitted changes" row's +N/-M chip).
-/// Diff-stats are only computed when `is_dirty` so a clean worktree
-/// pays just for the status walk.
-fn check_worktree_dirty(path: &PathBuf) -> (bool, usize, Option<(usize, usize)>) {
+/// Worktree variant — same exclude_submodules check, but returns the
+/// full status so the tab's `WorktreeView` cache remains the single
+/// source of truth for staging rows, WT pills, and synthetic commits.
+fn check_worktree_status(path: &PathBuf) -> WorkingDirStatus {
     let Ok(repo) = git2::Repository::open(path) else {
-        return (false, 0, None);
+        return WorkingDirStatus::default();
     };
     let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true).exclude_submodules(true);
-    let (is_dirty, count) = repo
-        .statuses(Some(&mut opts))
-        .map(|statuses| {
-            let c = statuses
-                .iter()
-                .filter(|e| !e.status().intersects(git2::Status::IGNORED))
-                .count();
-            (c > 0, c)
-        })
-        .unwrap_or((false, 0));
-
-    let diff_stats = if is_dirty {
-        Some(GitRepo::diff_stats_raw(&repo))
-    } else {
-        None
-    };
-
-    (is_dirty, count, diff_stats)
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .exclude_submodules(true);
+    repo.statuses(Some(&mut opts))
+        .map(|statuses| working_dir_status_from_statuses(&statuses))
+        .unwrap_or_default()
 }
