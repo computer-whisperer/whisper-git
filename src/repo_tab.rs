@@ -388,6 +388,11 @@ pub struct RepoTab {
     /// `WhisperApp::poll_async_ops`; result folds back via
     /// [`Self::apply_status_result`].
     pub status_rx: Option<Receiver<StatusResult>>,
+    /// A status refresh was requested while one may already be in
+    /// flight. `trigger_status_refresh` clears this only when it
+    /// actually spawns a worker, so watcher events that arrive during
+    /// an older scan are replayed immediately after that scan lands.
+    pub status_dirty: bool,
     /// Cheap content hash of `git_dir/refs/`, captured on each
     /// successful state refresh. The 5 s reconciliation timer in
     /// `WhisperApp` compares against this and forces a reopen +
@@ -525,6 +530,7 @@ impl RepoTab {
             state_refresh_attempted: false,
             state_refresh_rx: None,
             status_rx: None,
+            status_dirty: false,
             ref_fingerprint: 0,
             watcher_init_rx: None,
             watcher: None,
@@ -670,10 +676,12 @@ impl RepoTab {
         if self.watcher.is_some() || self.watcher_init_rx.is_some() {
             return;
         }
-        let Some(workdir) = self.repo.workdir().map(|p| p.to_path_buf()) else {
-            // Bare repo with no workdir — nothing to watch.
+        if self.repo.workdir().is_none() && self.worktrees.is_empty() {
+            // Bare repo with no workdir or linked worktrees — nothing
+            // to watch.
             return;
-        };
+        }
+        let workdir = self.repo.workdir().map(|p| p.to_path_buf());
         let git_dir = self.repo.git_dir().to_path_buf();
         let common_dir = self.repo.common_dir().to_path_buf();
         let worktrees = self.worktrees.clone();
@@ -735,8 +743,10 @@ impl RepoTab {
     /// safety net. Idempotent while a status refresh is in flight.
     pub fn trigger_status_refresh(&mut self, proxy: &EventLoopProxy<()>) {
         if self.status_rx.is_some() {
+            self.status_dirty = true;
             return;
         }
+        self.status_dirty = false;
         let repo_context_path = self
             .repo
             .workdir()

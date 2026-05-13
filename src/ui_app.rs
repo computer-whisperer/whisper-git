@@ -379,14 +379,10 @@ pub struct WhisperApp {
     /// the system doesn't stack identical workers when the watcher
     /// fires repeatedly during a long-running scan.
     pub dirty_checks_in_flight: usize,
-    /// `true` when the active tab needs a fresh status query (working-
-    /// dir staleness from a watcher event, or the 30 s safety net
-    /// expired). Drained by the next polling pass — single bit so
-    /// repeated marks coalesce into one spawn.
-    pub status_dirty: bool,
     /// Wall time of the last successful status refresh on the active
-    /// tab. Drives the 30 s safety-net timer that flips `status_dirty`
-    /// on if no watcher event has arrived in that window.
+    /// tab. Drives the 30 s safety-net timer that marks the active
+    /// tab's status dirty if no watcher event has arrived in that
+    /// window.
     pub last_status_refresh: std::time::Instant,
     /// Wall time of the last `ref_fingerprint` check. Compared every
     /// 5 s against the active tab's cached fingerprint; a divergence
@@ -449,7 +445,6 @@ impl WhisperApp {
             dirty_check_tx,
             dirty_check_rx,
             dirty_checks_in_flight: 0,
-            status_dirty: false,
             last_status_refresh: now,
             last_ref_check: now,
         }
@@ -485,7 +480,6 @@ impl WhisperApp {
             dirty_check_tx,
             dirty_check_rx,
             dirty_checks_in_flight: 0,
-            status_dirty: false,
             last_status_refresh: now,
             last_ref_check: now,
         }
@@ -526,6 +520,16 @@ impl HostApp for WhisperApp {
             for sub in &outer.nav_stack {
                 merge_next_wake(&mut next, next_ci_wake_for(sub, now));
             }
+        }
+        if !self.tabs.is_empty() {
+            merge_next_wake(
+                &mut next,
+                Some(self.last_status_refresh + Duration::from_secs(30)),
+            );
+            merge_next_wake(
+                &mut next,
+                Some(self.last_ref_check + Duration::from_secs(5)),
+            );
         }
         next
     }
@@ -3090,20 +3094,20 @@ impl WhisperApp {
     /// job is to keep that tab from going stale silently.
     fn poll_status_safety_net(&mut self) {
         let now = std::time::Instant::now();
-        if now.duration_since(self.last_status_refresh).as_secs() >= 30 {
-            self.status_dirty = true;
-        }
-        if !self.status_dirty {
-            return;
-        }
+        let expired = now.duration_since(self.last_status_refresh).as_secs() >= 30;
         let Some(proxy) = self.proxy.clone() else {
             return;
         };
         if let Some(tab) = self.active_focus_mut() {
-            tab.trigger_status_refresh(&proxy);
+            if expired {
+                tab.status_dirty = true;
+            }
+            if tab.status_dirty {
+                tab.trigger_status_refresh(&proxy);
+            }
         }
-        // `poll_status_refresh_at` clears status_dirty when the active
-        // tab's result lands.
+        // `trigger_status_refresh` clears the tab's dirty bit only
+        // when it successfully spawns a worker.
     }
 
     /// 5 s ref_fingerprint reconciliation on the active tab. Cheap
@@ -3175,6 +3179,7 @@ impl WhisperApp {
                     let Some(tab) = self.tab_at_mut(tab_idx, depth) else {
                         return;
                     };
+                    tab.status_dirty = true;
                     tab.trigger_status_refresh(proxy);
                     (
                         tab.id,
@@ -3242,14 +3247,22 @@ impl WhisperApp {
             }
         };
         let Some(result) = result else { return };
-        if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+        let needs_follow_up = if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
             tab.apply_status_result(result);
+            tab.status_dirty
+        } else {
+            false
+        };
+        if needs_follow_up
+            && let Some(proxy) = self.proxy.clone()
+            && let Some(tab) = self.tab_at_mut(tab_idx, depth)
+        {
+            tab.trigger_status_refresh(&proxy);
         }
         // Stamp last_status_refresh on the active tab's result so the
         // 30 s safety net doesn't redundantly fire.
         if depth.is_none() && tab_idx == self.active_tab {
             self.last_status_refresh = std::time::Instant::now();
-            self.status_dirty = false;
         }
     }
 

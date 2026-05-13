@@ -20,7 +20,7 @@ pub type WatcherInitResult = notify::Result<(RepoWatcher, Receiver<FsChangeKind>
 /// arguments mirror [`RepoWatcher::new`]; see that constructor's
 /// docstring for the role of each path argument.
 pub fn spawn_init(
-    workdir: PathBuf,
+    workdir: Option<PathBuf>,
     git_dir: PathBuf,
     common_dir: PathBuf,
     worktrees: Vec<WorktreeInfo>,
@@ -31,7 +31,7 @@ pub fn spawn_init(
     let proxy_for_send = proxy.clone();
     std::thread::spawn(move || {
         let result = RepoWatcher::new(
-            &workdir,
+            workdir.as_deref(),
             &git_dir,
             &common_dir,
             &worktrees,
@@ -108,6 +108,9 @@ pub struct RepoWatcher {
 impl RepoWatcher {
     /// Create a new watcher for the given workdir, git dir, and common dir.
     ///
+    /// `workdir` is `None` for a bare/common repo that owns linked
+    /// worktrees but has no working directory of its own.
+    ///
     /// `git_dir` is the worktree-specific git dir (from `repo.path()`).
     /// `common_dir` is the shared git dir (from `repo.commondir()`) where refs,
     /// objects, and packed-refs live. For non-worktree repos these are the same.
@@ -120,7 +123,7 @@ impl RepoWatcher {
     /// (with `exclude_submodules`) is unaffected, and submodule dirty state is
     /// checked independently via the per-entity dirty check system.
     pub fn new(
-        workdir: &Path,
+        workdir: Option<&Path>,
         git_dir: &Path,
         common_dir: &Path,
         worktrees: &[WorktreeInfo],
@@ -136,7 +139,7 @@ impl RepoWatcher {
         // Build the event classifier with cloned paths for the closure.
         // Classify against both git_dir and common_dir so events from either
         // are recognised as git metadata changes.
-        let workdir_owned = workdir.to_path_buf();
+        let workdir_owned = workdir.map(Path::to_path_buf);
         let git_dir_owned = git_dir.to_path_buf();
         let common_dir_owned = common_dir.to_path_buf();
         let submodule_paths_shared: Arc<Mutex<Vec<PathBuf>>> =
@@ -160,7 +163,7 @@ impl RepoWatcher {
                             .expect("worktree_roots mutex poisoned");
                         if let Some(kind) = classify_event(
                             &event,
-                            &workdir_owned,
+                            workdir_owned.as_deref(),
                             &git_dir_owned,
                             &common_dir_owned,
                             &guard,
@@ -182,8 +185,12 @@ impl RepoWatcher {
             Config::default(),
         )?;
 
-        // Watch the working directory recursively for file edits
-        watcher.watch(workdir, RecursiveMode::Recursive)?;
+        // Watch the main working directory recursively for file edits,
+        // when this repo has one. Bare/common repos can still be
+        // useful through linked worktrees; those are watched below.
+        if let Some(workdir) = workdir {
+            watcher.watch(workdir, RecursiveMode::Recursive)?;
+        }
 
         // Watch worktree-specific git dir (HEAD, index for this worktree)
         if let Err(e) = watcher.watch(git_dir, RecursiveMode::NonRecursive) {
@@ -228,17 +235,16 @@ impl RepoWatcher {
                 watched_worktree_dirs.insert(wt_meta_dir);
             }
             // Watch the worktree's working directory for file edits.
-            // Use NonRecursive to avoid blocking the main thread — recursive
-            // inotify setup walks the entire directory tree synchronously and
-            // can stall the Wayland event loop long enough to cause a broken pipe.
-            // The 3-second periodic status refresh catches deeper changes.
+            // Initial watcher construction happens off-thread, so using
+            // Recursive here gives linked worktrees the same coverage as
+            // the main workdir without stalling the event loop.
             let wt_work_dir = PathBuf::from(&wt.path);
-            if wt_work_dir != workdir && wt_work_dir.is_dir() {
-                let _ = watcher.watch(&wt_work_dir, RecursiveMode::NonRecursive);
+            if workdir != Some(wt_work_dir.as_path()) && wt_work_dir.is_dir() {
+                let _ = watcher.watch(&wt_work_dir, RecursiveMode::Recursive);
                 watched_worktree_workdirs.insert(wt_work_dir.clone());
             }
             if let Some(parent) = wt_work_dir.parent()
-                && parent != workdir
+                && Some(parent) != workdir
                 && parent.is_dir()
             {
                 let parent = parent.to_path_buf();
@@ -341,7 +347,7 @@ impl RepoWatcher {
             .cloned()
             .collect::<Vec<_>>()
         {
-            self.watch_path(&path, false); // non-recursive to avoid blocking event loop
+            self.watch_path(&path, true);
             self.watched_worktree_workdirs.insert(path);
         }
 
@@ -377,7 +383,7 @@ impl RepoWatcher {
 /// Events inside submodule workdirs are silently dropped (return None).
 fn classify_event(
     event: &Event,
-    workdir: &Path,
+    workdir: Option<&Path>,
     git_dir: &Path,
     common_dir: &Path,
     submodule_paths: &[PathBuf],
@@ -427,7 +433,9 @@ fn classify_event(
         // when they are inside the main workdir or a known linked
         // worktree root. Parent-directory watches for external
         // worktrees should not turn unrelated siblings into refreshes.
-        if path.starts_with(workdir) || worktree_roots.iter().any(|root| path.starts_with(root)) {
+        if workdir.is_some_and(|workdir| path.starts_with(workdir))
+            || worktree_roots.iter().any(|root| path.starts_with(root))
+        {
             result = Some(match result {
                 Some(k) => k.max(FsChangeKind::WorkingTree),
                 None => FsChangeKind::WorkingTree,
@@ -620,7 +628,7 @@ fn lane_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{CreateKind, ModifyKind, RemoveKind};
+    use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
 
     #[test]
     fn worktree_root_delete_is_structural_even_outside_git_dir() {
@@ -654,5 +662,24 @@ mod tests {
             &root.join("src/main.rs"),
             &roots
         ));
+    }
+
+    #[test]
+    fn linked_worktree_edit_classifies_without_main_workdir() {
+        let root = PathBuf::from("/repo/worktrees/feature");
+        let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(root.join("src/lib.rs"));
+
+        assert_eq!(
+            classify_event(
+                &event,
+                None,
+                Path::new("/repo/common/worktrees/feature"),
+                Path::new("/repo/common"),
+                &[],
+                &[root],
+            ),
+            Some(FsChangeKind::WorkingTree)
+        );
     }
 }
