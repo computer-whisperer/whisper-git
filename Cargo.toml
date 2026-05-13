@@ -1,6 +1,6 @@
 [package]
 name = "whisper-git"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "GPU-accelerated Git client built in Rust with Vulkan"
 license = "MIT OR Apache-2.0"
