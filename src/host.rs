@@ -8,7 +8,11 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use aetna_core::{App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiKey};
+use aetna_core::{
+    App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
+    clipboard,
+    widgets::text_input::{self, ClipboardKind},
+};
 use aetna_vulkano::Runner;
 use anyhow::{Context, Result};
 use vulkano::{
@@ -75,6 +79,8 @@ pub fn run<A: HostApp + 'static>(
         instance,
         modifiers: KeyModifiers::default(),
         last_pointer: None,
+        clipboard: arboard::Clipboard::new().ok(),
+        last_primary: String::new(),
         rcx: None,
     };
     event_loop.run_app(&mut host).context("event loop")?;
@@ -88,6 +94,12 @@ struct Host<A: HostApp> {
     instance: Arc<Instance>,
     modifiers: KeyModifiers,
     last_pointer: Option<(f32, f32)>,
+    /// Best-effort native clipboard. Initialization can fail in
+    /// display-less/headless environments; in that case clipboard
+    /// shortcuts become no-ops but normal text input still works.
+    clipboard: Option<arboard::Clipboard>,
+    /// Last text mirrored into Linux's primary selection.
+    last_primary: String,
     rcx: Option<RenderContext>,
 }
 
@@ -226,7 +238,13 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                 self.last_pointer = Some((lx, ly));
                 let moved = rcx.runner.pointer_moved(lx, ly);
                 for ev in moved.events {
-                    self.app.on_event(ev);
+                    dispatch_app_event(
+                        &mut self.app,
+                        ev,
+                        rcx.runner.ui_state(),
+                        &mut self.clipboard,
+                        &mut self.last_primary,
+                    );
                 }
                 if moved.needs_redraw {
                     rcx.window.request_redraw();
@@ -235,7 +253,15 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
 
             WindowEvent::CursorLeft { .. } => {
                 self.last_pointer = None;
-                rcx.runner.pointer_left();
+                for ev in rcx.runner.pointer_left() {
+                    dispatch_app_event(
+                        &mut self.app,
+                        ev,
+                        rcx.runner.ui_state(),
+                        &mut self.clipboard,
+                        &mut self.last_primary,
+                    );
+                }
                 rcx.window.request_redraw();
             }
 
@@ -249,13 +275,26 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                 match state {
                     ElementState::Pressed => {
                         for ev in rcx.runner.pointer_down(lx, ly, button) {
-                            self.app.on_event(ev);
+                            dispatch_app_event(
+                                &mut self.app,
+                                ev,
+                                rcx.runner.ui_state(),
+                                &mut self.clipboard,
+                                &mut self.last_primary,
+                            );
                         }
                         rcx.window.request_redraw();
                     }
                     ElementState::Released => {
                         for ev in rcx.runner.pointer_up(lx, ly, button) {
-                            self.app.on_event(ev);
+                            let ev = attach_primary_selection_text(ev, self.clipboard.as_mut());
+                            dispatch_app_event(
+                                &mut self.app,
+                                ev,
+                                rcx.runner.ui_state(),
+                                &mut self.clipboard,
+                                &mut self.last_primary,
+                            );
                         }
                         rcx.window.request_redraw();
                     }
@@ -291,19 +330,89 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
             } => {
                 if let Some(key) = map_key(&key_event.logical_key) {
                     for ev in rcx.runner.key_down(key, self.modifiers, key_event.repeat) {
-                        self.app.on_event(ev);
+                        match text_input::clipboard_request(&ev) {
+                            Some(ClipboardKind::Copy) => {
+                                copy_current_selection(
+                                    &self.app,
+                                    rcx.runner.ui_state(),
+                                    self.clipboard.as_mut(),
+                                );
+                                dispatch_app_event(
+                                    &mut self.app,
+                                    ev,
+                                    rcx.runner.ui_state(),
+                                    &mut self.clipboard,
+                                    &mut self.last_primary,
+                                );
+                            }
+                            Some(ClipboardKind::Cut) => {
+                                copy_current_selection(
+                                    &self.app,
+                                    rcx.runner.ui_state(),
+                                    self.clipboard.as_mut(),
+                                );
+                                let delete = clipboard::delete_selection_event(ev);
+                                dispatch_app_event(
+                                    &mut self.app,
+                                    delete,
+                                    rcx.runner.ui_state(),
+                                    &mut self.clipboard,
+                                    &mut self.last_primary,
+                                );
+                            }
+                            Some(ClipboardKind::Paste) => {
+                                if let Some(paste) =
+                                    paste_text_from_clipboard(ev.clone(), self.clipboard.as_mut())
+                                {
+                                    dispatch_app_event(
+                                        &mut self.app,
+                                        paste,
+                                        rcx.runner.ui_state(),
+                                        &mut self.clipboard,
+                                        &mut self.last_primary,
+                                    );
+                                } else {
+                                    dispatch_app_event(
+                                        &mut self.app,
+                                        ev,
+                                        rcx.runner.ui_state(),
+                                        &mut self.clipboard,
+                                        &mut self.last_primary,
+                                    );
+                                }
+                            }
+                            None => dispatch_app_event(
+                                &mut self.app,
+                                ev,
+                                rcx.runner.ui_state(),
+                                &mut self.clipboard,
+                                &mut self.last_primary,
+                            ),
+                        }
                     }
                 }
                 if let Some(text) = &key_event.text
                     && let Some(ev) = rcx.runner.text_input(text.to_string())
                 {
-                    self.app.on_event(ev);
+                    dispatch_app_event(
+                        &mut self.app,
+                        ev,
+                        rcx.runner.ui_state(),
+                        &mut self.clipboard,
+                        &mut self.last_primary,
+                    );
                 }
                 rcx.window.request_redraw();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 if let Some(ev) = rcx.runner.text_input(text) {
-                    self.app.on_event(ev);
+                    dispatch_app_event(
+                        &mut self.app,
+                        ev,
+                        rcx.runner.ui_state(),
+                        &mut self.clipboard,
+                        &mut self.last_primary,
+                    );
                 }
                 rcx.window.request_redraw();
             }
@@ -342,7 +451,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
 
                 self.app.before_build();
                 let theme = self.app.theme();
-                let cx = BuildCx::new(&theme);
+                let cx = BuildCx::new(&theme).with_ui_state(rcx.runner.ui_state());
                 let mut tree = self.app.build(&cx);
                 rcx.runner.set_theme(theme);
                 rcx.runner.set_hotkeys(self.app.hotkeys());
@@ -688,6 +797,95 @@ fn srgb_to_linear(c: f32) -> f32 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn copy_current_selection<A: App>(
+    app: &A,
+    ui_state: &aetna_core::state::UiState,
+    clipboard: Option<&mut arboard::Clipboard>,
+) {
+    let Some(text) = clipboard::selected_text_for_app(app, ui_state) else {
+        return;
+    };
+    let Some(clipboard) = clipboard else {
+        return;
+    };
+    let _ = clipboard.set_text(text);
+}
+
+fn dispatch_app_event<A: App>(
+    app: &mut A,
+    event: UiEvent,
+    ui_state: &aetna_core::state::UiState,
+    clipboard: &mut Option<arboard::Clipboard>,
+    last_primary: &mut String,
+) {
+    let before = app.selection();
+    app.on_event(event);
+    if app.selection() != before {
+        sync_primary_selection(app, ui_state, clipboard.as_mut(), last_primary);
+    }
+}
+
+fn sync_primary_selection<A: App>(
+    app: &A,
+    ui_state: &aetna_core::state::UiState,
+    clipboard: Option<&mut arboard::Clipboard>,
+    last_primary: &mut String,
+) {
+    let text = clipboard::selected_text_for_app(app, ui_state)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default();
+    if text == *last_primary {
+        return;
+    }
+    if !text.is_empty() {
+        primary::set(clipboard, &text);
+    }
+    *last_primary = text;
+}
+
+fn paste_text_from_clipboard(
+    event: UiEvent,
+    clipboard: Option<&mut arboard::Clipboard>,
+) -> Option<UiEvent> {
+    let text = clipboard?.get_text().ok()?;
+    Some(clipboard::paste_text_event(event, text))
+}
+
+fn attach_primary_selection_text(
+    mut event: UiEvent,
+    clipboard: Option<&mut arboard::Clipboard>,
+) -> UiEvent {
+    if event.kind == UiEventKind::MiddleClick {
+        event.text = primary::get(clipboard);
+    }
+    event
+}
+
+mod primary {
+    #[cfg(target_os = "linux")]
+    pub fn set(clipboard: Option<&mut arboard::Clipboard>, text: &str) {
+        use arboard::{LinuxClipboardKind, SetExtLinux};
+        if let Some(cb) = clipboard {
+            let _ = cb.set().clipboard(LinuxClipboardKind::Primary).text(text);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn get(clipboard: Option<&mut arboard::Clipboard>) -> Option<String> {
+        use arboard::{GetExtLinux, LinuxClipboardKind};
+        let cb = clipboard?;
+        cb.get().clipboard(LinuxClipboardKind::Primary).text().ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn set(_clipboard: Option<&mut arboard::Clipboard>, _text: &str) {}
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn get(_clipboard: Option<&mut arboard::Clipboard>) -> Option<String> {
+        None
     }
 }
 
