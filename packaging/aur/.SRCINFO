@@ -1,7 +1,7 @@
 pkgbase = whisper-git
 	pkgdesc = GPU-accelerated Git client built in Rust with Vulkan
 	pkgver = 0.3.2
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/computer-whisperer/whisper-git
 	arch = x86_64
 	arch = aarch64

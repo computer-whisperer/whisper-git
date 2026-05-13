@@ -12,7 +12,7 @@
 
 pkgname=whisper-git
 pkgver=0.3.2
-pkgrel=1
+pkgrel=2
 pkgdesc="GPU-accelerated Git client built in Rust with Vulkan"
 arch=('x86_64' 'aarch64')
 url="https://github.com/computer-whisperer/whisper-git"
@@ -68,6 +68,8 @@ package() {
 
     install -Dm644 "${srcdir}/whisper-git.desktop" \
         "${pkgdir}/usr/share/applications/whisper-git.desktop"
+    install -Dm644 assets/git-client-icon.svg \
+        "${pkgdir}/usr/share/icons/hicolor/scalable/apps/${pkgname}.svg"
 
     install -Dm644 LICENSE-MIT \
         "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE-MIT"
