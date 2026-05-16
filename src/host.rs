@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aetna_core::{
-    App, BuildCx, Cursor, KeyModifiers, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
+    App, BuildCx, Cursor, KeyModifiers, Pointer, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
     clipboard,
     widgets::text_input::{self, ClipboardKind},
 };
@@ -236,7 +236,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                 let lx = position.x as f32 / scale;
                 let ly = position.y as f32 / scale;
                 self.last_pointer = Some((lx, ly));
-                let moved = rcx.runner.pointer_moved(lx, ly);
+                let moved = rcx.runner.pointer_moved(Pointer::moving(lx, ly));
                 for ev in moved.events {
                     dispatch_app_event(
                         &mut self.app,
@@ -274,7 +274,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                 };
                 match state {
                     ElementState::Pressed => {
-                        for ev in rcx.runner.pointer_down(lx, ly, button) {
+                        for ev in rcx.runner.pointer_down(Pointer::mouse(lx, ly, button)) {
                             dispatch_app_event(
                                 &mut self.app,
                                 ev,
@@ -286,7 +286,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                         rcx.window.request_redraw();
                     }
                     ElementState::Released => {
-                        for ev in rcx.runner.pointer_up(lx, ly, button) {
+                        for ev in rcx.runner.pointer_up(Pointer::mouse(lx, ly, button)) {
                             let ev = attach_primary_selection_text(ev, self.clipboard.as_mut());
                             dispatch_app_event(
                                 &mut self.app,
@@ -805,7 +805,7 @@ fn copy_current_selection<A: App>(
     ui_state: &aetna_core::state::UiState,
     clipboard: Option<&mut arboard::Clipboard>,
 ) {
-    let Some(text) = clipboard::selected_text_for_app(app, ui_state) else {
+    let Some(text) = selected_text_for_app(app, ui_state) else {
         return;
     };
     let Some(clipboard) = clipboard else {
@@ -834,7 +834,7 @@ fn sync_primary_selection<A: App>(
     clipboard: Option<&mut arboard::Clipboard>,
     last_primary: &mut String,
 ) {
-    let text = clipboard::selected_text_for_app(app, ui_state)
+    let text = selected_text_for_app(app, ui_state)
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
     if text == *last_primary {
@@ -844,6 +844,13 @@ fn sync_primary_selection<A: App>(
         primary::set(clipboard, &text);
     }
     *last_primary = text;
+}
+
+fn selected_text_for_app<A: App>(app: &A, ui_state: &aetna_core::state::UiState) -> Option<String> {
+    let theme = app.theme();
+    let cx = BuildCx::new(&theme).with_ui_state(ui_state);
+    let tree = app.build(&cx);
+    aetna_core::selected_text(&tree, &app.selection())
 }
 
 fn paste_text_from_clipboard(
