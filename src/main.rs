@@ -141,6 +141,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 app.context_menu = Some(ContextMenuState {
                     pos: (480.0, 200.0),
                     target: ContextTarget::Commit(oid),
+                    expanded_groups: Vec::new(),
                 });
             }
         }
@@ -215,6 +216,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                     app.context_menu = Some(ContextMenuState {
                         pos: (90.0, 200.0),
                         target,
+                        expanded_groups: Vec::new(),
                     });
                 }
             }

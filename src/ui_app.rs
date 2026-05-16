@@ -170,6 +170,7 @@ impl AsyncKind {
 pub enum ConfirmAction {
     CloseTab(usize),
     DeleteBranch(String),
+    DeleteRemote(String),
     DeleteRemoteBranch {
         remote: String,
         branch: String,
@@ -186,8 +187,11 @@ pub enum ConfirmAction {
         path: String,
         force: bool,
     },
-    /// `git reset --hard <oid>` from a commit-row context menu.
-    ResetHard(git2::Oid),
+    /// `git reset <mode> <oid>` from a commit-row context menu.
+    ResetToCommit {
+        oid: git2::Oid,
+        mode: git2::ResetType,
+    },
     /// `git push --force-with-lease` after a regular push was rejected
     /// non-fast-forward. Carries the same remote/branch the original
     /// push targeted so the retry hits the same ref.
@@ -209,6 +213,8 @@ pub enum ConfirmAction {
 #[derive(Clone, Debug)]
 pub enum ContextTarget {
     LocalBranch(String),
+    Remote(String),
+    RemoteSection,
     RemoteBranch {
         remote: String,
         branch: String,
@@ -217,6 +223,8 @@ pub enum ContextTarget {
     Stash(usize),
     /// A row in the commit history view.
     Commit(git2::Oid),
+    /// A linked-worktree selector pill.
+    Worktree(String),
     /// A row in the staging well.
     StagingFile {
         path: String,
@@ -229,6 +237,7 @@ pub enum ContextTarget {
 pub struct ContextMenuState {
     pub pos: (f32, f32),
     pub target: ContextTarget,
+    pub expanded_groups: Vec<String>,
 }
 
 const SIDEBAR_CTX_KEY: &str = "sidebar_ctx";
@@ -716,7 +725,10 @@ impl App for WhisperApp {
                 None => dialogs::worktrees_modal(&[], None),
             },
         });
-        let menu_layer = self.context_menu.as_ref().map(sidebar_context_menu);
+        let menu_layer = self
+            .context_menu
+            .as_ref()
+            .map(|state| context_menu_layer(state, self.active_focus()));
         // Worktree picker dropdown lives at the root so its popover
         // panel paints over the main layout. Anchored to the trigger
         // by key (`wt_select`) which lives in the active focus's
@@ -1438,12 +1450,16 @@ impl WhisperApp {
             let Ok(idx) = idx_str.parse::<usize>() else {
                 return false;
             };
-            let Some(oid) = self
-                .active_focus()
-                .and_then(|t| t.commits.get(idx).map(|c| c.id))
-            else {
+            let Some(tab) = self.active_focus_mut() else {
                 return false;
             };
+            let Some(oid) = tab.commits.get(idx).map(|c| c.id) else {
+                return false;
+            };
+            tab.select_commit(Some(oid));
+            if let Some(view) = tab.active_view_mut() {
+                view.selected_diff_file = None;
+            }
             ContextTarget::Commit(oid)
         } else if let Some(target) = self.parse_staging_context_target(route) {
             target
@@ -1456,7 +1472,11 @@ impl WhisperApp {
         let Some(pos) = event.pointer_pos() else {
             return false;
         };
-        self.context_menu = Some(ContextMenuState { pos, target });
+        self.context_menu = Some(ContextMenuState {
+            pos,
+            target,
+            expanded_groups: Vec::new(),
+        });
         true
     }
 
@@ -1746,6 +1766,10 @@ impl WhisperApp {
             ));
             return;
         };
+        self.open_branch_modal_at(target);
+    }
+
+    fn open_branch_modal_at(&mut self, target: git2::Oid) {
         self.active_modal = Some(ActiveModal::Branch {
             form: BranchForm {
                 name: String::new(),
@@ -1804,6 +1828,10 @@ impl WhisperApp {
             ));
             return;
         };
+        self.open_tag_modal_at(target);
+    }
+
+    fn open_tag_modal_at(&mut self, target: git2::Oid) {
         self.active_modal = Some(ActiveModal::Tag {
             form: TagForm::default(),
             target,
@@ -2148,6 +2176,76 @@ impl WhisperApp {
         });
     }
 
+    fn confirm_remove_worktree_by_key(&mut self, key: &str) {
+        let Some(tab) = self.active_focus() else {
+            return;
+        };
+        let Some(idx) = tab
+            .worktrees
+            .iter()
+            .position(|wt| wt.name == key || wt.path == key)
+        else {
+            self.toasts
+                .push(ToastSpec::warning("Worktree is no longer present"));
+            return;
+        };
+        self.confirm_remove_worktree(idx);
+    }
+
+    fn select_worktree_by_key(&mut self, key: &str) {
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        let path = tab
+            .worktrees
+            .iter()
+            .find(|wt| wt.name == key || wt.path == key)
+            .map(|wt| std::path::PathBuf::from(&wt.path))
+            .or_else(|| {
+                let path = std::path::PathBuf::from(key);
+                path.exists().then_some(path)
+            });
+        let Some(path) = path else {
+            self.toasts
+                .push(ToastSpec::warning("Worktree is no longer present"));
+            return;
+        };
+        tab.select_worktree(path);
+        tab.select_commit(None);
+        if let Some(view) = tab.active_view_mut() {
+            view.selected_diff_file = None;
+        }
+    }
+
+    fn jump_to_worktree_branch(&mut self, key: &str) {
+        let Some(tab) = self.active_focus() else {
+            return;
+        };
+        let Some(worktree) = tab
+            .worktrees
+            .iter()
+            .find(|wt| wt.name == key || wt.path == key)
+            .cloned()
+        else {
+            self.toasts
+                .push(ToastSpec::warning("Worktree is no longer present"));
+            return;
+        };
+        if worktree.branch.is_empty() {
+            self.toasts.push(ToastSpec::warning(
+                "Worktree is detached and has no branch to jump to",
+            ));
+            return;
+        }
+        let oid = tab
+            .branch_tips
+            .iter()
+            .find(|tip| !tip.is_remote && tip.name == worktree.branch)
+            .map(|tip| tip.oid)
+            .or(worktree.head_oid);
+        self.jump_to_commit(oid, &worktree.branch);
+    }
+
     /// Apply the worktree-creation form: spawn `git worktree add` (with
     /// optional `--detach` and submodule init follow-up) on the worktree
     /// helper that already chains those steps. Routes through the
@@ -2268,6 +2366,57 @@ impl WhisperApp {
                 source,
                 detached: false,
                 init_submodules: false,
+            },
+        });
+    }
+
+    fn open_worktree_modal_for_source(&mut self, source: String) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        let parent = focus
+            .repo
+            .git_command_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let dir_name = source.replace('/', "-");
+        let init_submodules = focus
+            .active_view()
+            .is_some_and(|view| !view.submodules.is_empty());
+        self.active_modal = Some(ActiveModal::Worktree {
+            form: WorktreeForm {
+                path: parent.join(dir_name).to_string_lossy().to_string(),
+                source,
+                detached: false,
+                init_submodules,
+            },
+        });
+    }
+
+    fn open_worktree_modal_at_commit(&mut self, oid: git2::Oid) {
+        let Some(focus) = self.active_focus() else {
+            return;
+        };
+        let short = oid.to_string()[..7].to_string();
+        let parent = focus
+            .repo
+            .git_command_dir()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let init_submodules = focus
+            .active_view()
+            .is_some_and(|view| !view.submodules.is_empty());
+        self.active_modal = Some(ActiveModal::Worktree {
+            form: WorktreeForm {
+                path: parent
+                    .join(format!("wt-{short}"))
+                    .to_string_lossy()
+                    .to_string(),
+                source: short,
+                detached: true,
+                init_submodules,
             },
         });
     }
@@ -2515,12 +2664,42 @@ impl WhisperApp {
     }
 
     fn handle_context_action(&mut self, action: &str) {
-        let Some(state) = self.context_menu.take() else {
+        let Some(mut state) = self.context_menu.take() else {
             return;
         };
+        if let Some(group) = action.strip_prefix("toggle_group:") {
+            if let Some(idx) = state.expanded_groups.iter().position(|g| g == group) {
+                state.expanded_groups.remove(idx);
+            } else {
+                state.expanded_groups.push(group.to_string());
+            }
+            self.context_menu = Some(state);
+            return;
+        }
+        if self.handle_dynamic_commit_context_action(action, state.target.clone()) {
+            return;
+        }
         match (action, state.target) {
             ("checkout", ContextTarget::LocalBranch(name)) => {
                 self.run_op("Checkout", |t| t.repo.checkout_branch(&name));
+            }
+            ("create_worktree", ContextTarget::LocalBranch(name)) => {
+                self.open_worktree_modal_for_source(name);
+            }
+            ("fetch_remote", ContextTarget::Remote(remote)) => {
+                self.fetch_remote(remote);
+            }
+            ("delete_remote", ContextTarget::Remote(remote)) => {
+                self.active_modal = Some(ActiveModal::Confirm {
+                    title: "Delete remote".to_string(),
+                    body: format!("Delete remote '{remote}' from this repository?"),
+                    ok_label: "Delete".to_string(),
+                    destructive: true,
+                    action: ConfirmAction::DeleteRemote(remote),
+                });
+            }
+            ("fetch_all", ContextTarget::RemoteSection) => {
+                self.fetch_all();
             }
             ("checkout", ContextTarget::RemoteBranch { remote, branch }) => {
                 self.run_op("Checkout", |t| {
@@ -2595,6 +2774,15 @@ impl WhisperApp {
                     action: ConfirmAction::DropStash(idx),
                 });
             }
+            ("switch_worktree", ContextTarget::Worktree(key)) => {
+                self.select_worktree_by_key(&key);
+            }
+            ("jump_to_worktree", ContextTarget::Worktree(key)) => {
+                self.jump_to_worktree_branch(&key);
+            }
+            ("remove_worktree", ContextTarget::Worktree(key)) => {
+                self.confirm_remove_worktree_by_key(&key);
+            }
             ("stage", ContextTarget::StagingFile { path, .. }) => {
                 self.run_op("Stage", move |t| t.active_repo().stage_file(&path));
             }
@@ -2620,18 +2808,34 @@ impl WhisperApp {
                         .push(ToastSpec::error(format!("Clipboard: {e}"))),
                 }
             }
-            ("checkout", ContextTarget::Commit(oid)) => {
+            ("view_details", ContextTarget::Commit(oid)) => {
+                if let Some(tab) = self.active_focus_mut() {
+                    tab.select_commit(Some(oid));
+                    if let Some(view) = tab.active_view_mut() {
+                        view.selected_diff_file = None;
+                    }
+                }
+            }
+            ("checkout_detached", ContextTarget::Commit(oid)) => {
                 self.run_op("Checkout", move |t| t.repo.checkout_commit_detached(oid));
             }
+            ("create_branch", ContextTarget::Commit(oid)) => {
+                self.open_branch_modal_at(oid);
+            }
+            ("create_tag", ContextTarget::Commit(oid)) => {
+                self.open_tag_modal_at(oid);
+            }
+            ("create_worktree", ContextTarget::Commit(oid)) => {
+                self.open_worktree_modal_at_commit(oid);
+            }
+            ("reset_soft", ContextTarget::Commit(oid)) => {
+                self.confirm_reset_to_commit(oid, git2::ResetType::Soft);
+            }
+            ("reset_mixed", ContextTarget::Commit(oid)) => {
+                self.confirm_reset_to_commit(oid, git2::ResetType::Mixed);
+            }
             ("reset_hard", ContextTarget::Commit(oid)) => {
-                let short = oid.to_string()[..7].to_string();
-                self.active_modal = Some(ActiveModal::Confirm {
-                    title: "Reset hard".to_string(),
-                    body: format!("Move HEAD to {short} and discard all changes in tracked files?"),
-                    ok_label: "Reset".to_string(),
-                    destructive: true,
-                    action: ConfirmAction::ResetHard(oid),
-                });
+                self.confirm_reset_to_commit(oid, git2::ResetType::Hard);
             }
             ("cherry_pick", ContextTarget::Commit(oid)) => {
                 self.cherry_pick(oid);
@@ -2641,6 +2845,30 @@ impl WhisperApp {
             }
             _ => {}
         }
+    }
+
+    fn handle_dynamic_commit_context_action(
+        &mut self,
+        action: &str,
+        target: ContextTarget,
+    ) -> bool {
+        if !matches!(target, ContextTarget::Commit(_)) {
+            return false;
+        }
+        if let Some(branch) = action.strip_prefix("checkout_branch:") {
+            let branch = branch.to_string();
+            self.run_op("Checkout", move |t| t.repo.checkout_branch(&branch));
+            return true;
+        }
+        if let Some(source) = action.strip_prefix("merge_ref:") {
+            self.merge_branch(source.to_string());
+            return true;
+        }
+        if let Some(base) = action.strip_prefix("rebase_ref:") {
+            self.rebase_onto(base.to_string());
+            return true;
+        }
+        false
     }
 
     fn handle_settings_route(&mut self, sub: &str) {
@@ -2711,6 +2939,9 @@ impl WhisperApp {
             ConfirmAction::DeleteBranch(name) => {
                 self.run_op("Delete branch", |t| t.repo.delete_branch(&name));
             }
+            ConfirmAction::DeleteRemote(name) => {
+                self.run_op("Delete remote", |t| t.repo.delete_remote(&name));
+            }
             ConfirmAction::DeleteRemoteBranch { remote, branch } => {
                 self.delete_remote_branch(remote, branch);
             }
@@ -2731,9 +2962,9 @@ impl WhisperApp {
             ConfirmAction::RemoveWorktree { name, path, force } => {
                 self.remove_worktree(name, path, force);
             }
-            ConfirmAction::ResetHard(oid) => {
-                self.run_op("Reset hard", move |t| {
-                    t.repo.reset_to_commit(oid, git2::ResetType::Hard)
+            ConfirmAction::ResetToCommit { oid, mode } => {
+                self.run_op(reset_label(mode), move |t| {
+                    t.repo.reset_to_commit(oid, mode)
                 });
             }
             ConfirmAction::ForcePush { remote, branch } => {
@@ -3699,6 +3930,35 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Fetching from {remote}…")));
     }
 
+    fn fetch_remote(&mut self, remote: String) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Fetch, true) else {
+            return;
+        };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        if tab.repo.remote_missing_fetch_refspec(&remote) {
+            let _ = tab.repo.add_default_fetch_refspec(&remote);
+        }
+        let rx = crate::git::fetch_remote_async(wd, remote.clone(), proxy);
+        tab.fetch_op = Some(TimedOp::new(rx, format!("from {remote}")));
+        self.toasts
+            .push(ToastSpec::info(format!("Fetching from {remote}…")));
+    }
+
+    fn fetch_all(&mut self) {
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Fetch, true) else {
+            return;
+        };
+        let rx = crate::git::fetch_all_async(wd, proxy);
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        tab.fetch_op = Some(TimedOp::new(rx, "all remotes".to_string()));
+        self.toasts
+            .push(ToastSpec::info("Fetching all remotes…".to_string()));
+    }
+
     fn push(&mut self) {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
             return;
@@ -3916,6 +4176,47 @@ impl WhisperApp {
         tab.mutation_op = Some(TimedOp::new(rx, format!("stash drop @{{{idx}}}")));
         self.toasts
             .push(ToastSpec::info(format!("Dropping stash @{{{idx}}}…")));
+    }
+
+    fn confirm_reset_to_commit(&mut self, oid: git2::Oid, mode: git2::ResetType) {
+        let short = oid.to_string()[..7].to_string();
+        let branch = self
+            .active_focus()
+            .map(|tab| {
+                let current = tab.current_branch();
+                if current.is_empty() {
+                    "HEAD".to_string()
+                } else {
+                    current.to_string()
+                }
+            })
+            .unwrap_or_else(|| "HEAD".to_string());
+        let (title, body, destructive) = match mode {
+            git2::ResetType::Soft => (
+                "Reset soft".to_string(),
+                format!("Move '{branch}' to {short}? Changes will remain staged."),
+                false,
+            ),
+            git2::ResetType::Mixed => (
+                "Reset mixed".to_string(),
+                format!("Move '{branch}' to {short}? Changes will remain unstaged."),
+                false,
+            ),
+            git2::ResetType::Hard => (
+                "Reset hard".to_string(),
+                format!(
+                    "Move '{branch}' to {short} and discard all changes in tracked files? This cannot be undone."
+                ),
+                true,
+            ),
+        };
+        self.active_modal = Some(ActiveModal::Confirm {
+            title,
+            body,
+            ok_label: "Reset".to_string(),
+            destructive,
+            action: ConfirmAction::ResetToCommit { oid, mode },
+        });
     }
 
     /// `git rebase --autostash <base>`. `--autostash` preserves
@@ -4205,6 +4506,21 @@ fn parse_section(key: &str) -> Option<SidebarSection> {
 }
 
 fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
+    if route == "section:REMOTE" {
+        return Some(ContextTarget::RemoteSection);
+    }
+    if let Some(remote) = route.strip_prefix("remote_group:") {
+        return Some(ContextTarget::Remote(remote.to_string()));
+    }
+    if let Some(path) = route.strip_prefix("wt_select:tab:") {
+        return Some(ContextTarget::Worktree(path.to_string()));
+    }
+    if let Some(path) = route.strip_prefix("wt_select:option:") {
+        return Some(ContextTarget::Worktree(path.to_string()));
+    }
+    if let Some(name) = route.strip_prefix("worktree:") {
+        return Some(ContextTarget::Worktree(name.to_string()));
+    }
     if let Some(name) = route.strip_prefix("branch:") {
         return Some(ContextTarget::LocalBranch(name.to_string()));
     }
@@ -4227,18 +4543,28 @@ fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
     None
 }
 
-fn sidebar_context_menu(state: &ContextMenuState) -> El {
+fn context_menu_layer(state: &ContextMenuState, tab: Option<&RepoTab>) -> El {
     use aetna_core::widgets::popover::{context_menu, menu_item};
+    use aetna_core::widgets::separator::separator;
 
     let items: Vec<El> = match &state.target {
         ContextTarget::LocalBranch(_) => vec![
             menu_item("Checkout").key("ctx:checkout"),
+            menu_item("Create Worktree").key("ctx:create_worktree"),
+            separator(),
             menu_item("Merge into HEAD").key("ctx:merge"),
             menu_item("Merge with options\u{2026}").key("ctx:merge_options"),
             menu_item("Rebase HEAD onto").key("ctx:rebase"),
             menu_item("Rebase with options\u{2026}").key("ctx:rebase_options"),
+            separator(),
             menu_item("Delete").key("ctx:delete"),
         ],
+        ContextTarget::Remote(remote) => vec![
+            menu_item(format!("Fetch from {remote}")).key("ctx:fetch_remote"),
+            separator(),
+            menu_item("Delete Remote").key("ctx:delete_remote"),
+        ],
+        ContextTarget::RemoteSection => vec![menu_item("Fetch All Remotes").key("ctx:fetch_all")],
         ContextTarget::RemoteBranch { .. } => vec![
             menu_item("Checkout").key("ctx:checkout"),
             menu_item("Merge into HEAD").key("ctx:merge"),
@@ -4253,13 +4579,8 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
             menu_item("Pop").key("ctx:pop"),
             menu_item("Drop").key("ctx:drop"),
         ],
-        ContextTarget::Commit(_) => vec![
-            menu_item("Copy SHA").key("ctx:copy_sha"),
-            menu_item("Checkout (detached)").key("ctx:checkout"),
-            menu_item("Reset hard to here").key("ctx:reset_hard"),
-            menu_item("Cherry-pick").key("ctx:cherry_pick"),
-            menu_item("Revert").key("ctx:revert"),
-        ],
+        ContextTarget::Commit(oid) => commit_context_menu_items(*oid, tab, &state.expanded_groups),
+        ContextTarget::Worktree(key) => worktree_context_menu_items(key, tab),
         ContextTarget::StagingFile { staged: true, .. } => vec![
             menu_item("Unstage File").key("ctx:unstage"),
             menu_item("View Diff").key("ctx:view_diff"),
@@ -4281,6 +4602,206 @@ fn sidebar_context_menu(state: &ContextMenuState) -> El {
     };
 
     context_menu(SIDEBAR_CTX_KEY, state.pos, items)
+}
+
+fn commit_context_menu_items(
+    oid: git2::Oid,
+    tab: Option<&RepoTab>,
+    expanded_groups: &[String],
+) -> Vec<El> {
+    use aetna_core::widgets::popover::menu_item;
+    use aetna_core::widgets::separator::separator;
+
+    let mut items = vec![
+        menu_item("Copy SHA").key("ctx:copy_sha"),
+        menu_item("View Details").key("ctx:view_details"),
+    ];
+    let Some(tab) = tab else {
+        items.extend([
+            menu_item("Checkout Commit (Detached)").key("ctx:checkout_detached"),
+            separator(),
+            commit_menu_group_toggle("history", expanded_groups, "History Actions", Some(2)),
+        ]);
+        if commit_menu_group_expanded(expanded_groups, "history") {
+            items.extend([
+                menu_item("Cherry-pick").key("ctx:cherry_pick"),
+                menu_item("Revert").key("ctx:revert"),
+                separator(),
+            ]);
+        }
+        items.push(commit_menu_group_toggle(
+            "create",
+            expanded_groups,
+            "Create Actions",
+            Some(3),
+        ));
+        if commit_menu_group_expanded(expanded_groups, "create") {
+            items.extend([
+                menu_item("Create Branch Here").key("ctx:create_branch"),
+                menu_item("Create Worktree Here").key("ctx:create_worktree"),
+                menu_item("Create Tag Here").key("ctx:create_tag"),
+                separator(),
+            ]);
+        }
+        items.extend([commit_menu_group_toggle(
+            "reset",
+            expanded_groups,
+            "Reset Actions",
+            Some(1),
+        )]);
+        if commit_menu_group_expanded(expanded_groups, "reset") {
+            items.extend([menu_item("Reset hard to here").key("ctx:reset_hard")]);
+        }
+        return items;
+    };
+
+    let current = current_branch_label(tab);
+    let local_branches: Vec<&str> = tab
+        .branch_tips
+        .iter()
+        .filter(|tip| tip.oid == oid && !tip.is_remote)
+        .map(|tip| tip.name.as_str())
+        .collect();
+    if let Some(first_branch) = local_branches.first() {
+        items.push(menu_item("Checkout").key(format!("ctx:checkout_branch:{first_branch}")));
+    }
+    items.push(menu_item("Checkout Commit (Detached)").key("ctx:checkout_detached"));
+
+    let mergeable_locals: Vec<&str> = tab
+        .branch_tips
+        .iter()
+        .filter(|tip| tip.oid == oid && !tip.is_remote && !tip.is_head)
+        .map(|tip| tip.name.as_str())
+        .collect();
+    let remote_branches: Vec<&str> = tab
+        .branch_tips
+        .iter()
+        .filter(|tip| tip.oid == oid && tip.is_remote)
+        .map(|tip| tip.name.as_str())
+        .collect();
+    let ref_count = mergeable_locals.len() + remote_branches.len();
+    if ref_count > 0 {
+        items.extend([
+            separator(),
+            commit_menu_group_toggle("branch", expanded_groups, "Branch Actions", Some(ref_count)),
+        ]);
+        if commit_menu_group_expanded(expanded_groups, "branch") {
+            for branch in &mergeable_locals {
+                items.push(
+                    menu_item(format!("Merge '{branch}' into '{current}'"))
+                        .key(format!("ctx:merge_ref:{branch}")),
+                );
+            }
+            for branch in &mergeable_locals {
+                items.push(
+                    menu_item(format!("Rebase '{current}' onto '{branch}'"))
+                        .key(format!("ctx:rebase_ref:{branch}")),
+                );
+            }
+            for branch in &remote_branches {
+                items.push(
+                    menu_item(format!("Merge '{branch}' into '{current}'"))
+                        .key(format!("ctx:merge_ref:{branch}")),
+                );
+                items.push(
+                    menu_item(format!("Rebase '{current}' onto '{branch}'"))
+                        .key(format!("ctx:rebase_ref:{branch}")),
+                );
+            }
+        }
+    }
+
+    items.extend([
+        separator(),
+        commit_menu_group_toggle("history", expanded_groups, "History Actions", Some(2)),
+    ]);
+    if commit_menu_group_expanded(expanded_groups, "history") {
+        items.extend([
+            menu_item(format!("Cherry-pick into '{current}'")).key("ctx:cherry_pick"),
+            menu_item(format!("Revert on '{current}'")).key("ctx:revert"),
+        ]);
+    }
+    items.extend([
+        separator(),
+        commit_menu_group_toggle("create", expanded_groups, "Create Actions", Some(3)),
+    ]);
+    if commit_menu_group_expanded(expanded_groups, "create") {
+        items.extend([
+            menu_item("Create Branch Here").key("ctx:create_branch"),
+            menu_item("Create Worktree Here").key("ctx:create_worktree"),
+            menu_item("Create Tag Here").key("ctx:create_tag"),
+        ]);
+    }
+    items.extend([
+        separator(),
+        commit_menu_group_toggle("reset", expanded_groups, "Reset Actions", Some(3)),
+    ]);
+    if commit_menu_group_expanded(expanded_groups, "reset") {
+        items.extend([
+            menu_item(format!("Reset '{current}' Soft to Here")).key("ctx:reset_soft"),
+            menu_item(format!("Reset '{current}' Mixed to Here")).key("ctx:reset_mixed"),
+            menu_item(format!("Reset '{current}' Hard to Here")).key("ctx:reset_hard"),
+        ]);
+    }
+    items
+}
+
+fn commit_menu_group_expanded(expanded_groups: &[String], group: &str) -> bool {
+    expanded_groups.iter().any(|expanded| expanded == group)
+}
+
+fn commit_menu_group_toggle(
+    group: &str,
+    expanded_groups: &[String],
+    label: &str,
+    count: Option<usize>,
+) -> El {
+    use aetna_core::widgets::popover::menu_item;
+
+    let expanded = commit_menu_group_expanded(expanded_groups, group);
+    let verb = if expanded { "Hide" } else { "Show" };
+    let label = match count {
+        Some(count) => format!("{verb} {label} ({count})"),
+        None => format!("{verb} {label}"),
+    };
+    menu_item(label).key(format!("ctx:toggle_group:{group}"))
+}
+
+fn worktree_context_menu_items(key: &str, tab: Option<&RepoTab>) -> Vec<El> {
+    use aetna_core::widgets::popover::menu_item;
+    use aetna_core::widgets::separator::separator;
+
+    let mut items = vec![
+        menu_item("Switch Staging").key("ctx:switch_worktree"),
+        menu_item("Jump to Branch").key("ctx:jump_to_worktree"),
+    ];
+    let can_remove = tab.is_some_and(|tab| {
+        tab.worktrees
+            .iter()
+            .any(|worktree| worktree.name == key || worktree.path == key)
+    });
+    if can_remove {
+        items.push(separator());
+        items.push(menu_item("Remove Worktree").key("ctx:remove_worktree"));
+    }
+    items
+}
+
+fn current_branch_label(tab: &RepoTab) -> String {
+    let current = tab.current_branch();
+    if current.is_empty() {
+        "HEAD".to_string()
+    } else {
+        current.to_string()
+    }
+}
+
+fn reset_label(mode: git2::ResetType) -> &'static str {
+    match mode {
+        git2::ResetType::Soft => "Reset soft",
+        git2::ResetType::Mixed => "Reset mixed",
+        git2::ResetType::Hard => "Reset hard",
+    }
 }
 
 // ---------------------------------------------------------------------------

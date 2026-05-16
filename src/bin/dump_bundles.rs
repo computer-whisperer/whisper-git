@@ -162,6 +162,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 app.context_menu = Some(ContextMenuState {
                     pos: (480.0, 200.0),
                     target: ContextTarget::Commit(commit_oid),
+                    expanded_groups: Vec::new(),
                 });
                 app
             }));
@@ -395,6 +396,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.context_menu = Some(ContextMenuState {
                 pos: (90.0, 200.0),
                 target: ContextTarget::LocalBranch("main".to_string()),
+                expanded_groups: Vec::new(),
             });
             app
         }));
@@ -403,6 +405,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.context_menu = Some(ContextMenuState {
                 pos: (90.0, 200.0),
                 target: ContextTarget::Stash(0),
+                expanded_groups: Vec::new(),
             });
             app
         }));
