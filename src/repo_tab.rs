@@ -271,9 +271,17 @@ impl WorktreeView {
     /// Re-query worktree-scoped state (status + branch + HEAD + submodules).
     pub fn refresh(&mut self) {
         self.status = self.repo.status().unwrap_or_default();
+        self.refresh_ref_state();
+        self.submodules = self.repo.submodules().unwrap_or_default();
+    }
+
+    /// Re-query only ref metadata for this worktree. This deliberately
+    /// skips status scans, so repo-state refreshes can keep inactive
+    /// worktree HEAD/branch data current without losing cached dirty
+    /// status or blocking on large working trees.
+    fn refresh_ref_state(&mut self) {
         self.current_branch = self.repo.current_branch().unwrap_or_default();
         self.head_oid = self.repo.head_oid().ok();
-        self.submodules = self.repo.submodules().unwrap_or_default();
     }
 }
 
@@ -1004,7 +1012,8 @@ impl RepoTab {
                 // for normal repos the worker covers it.
                 WorktreeView::open(main_wd.clone(), name.clone(), true)
             };
-            if let Some(v) = view {
+            if let Some(mut v) = view {
+                v.refresh_ref_state();
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(main_wd, v);
             }
@@ -1031,7 +1040,8 @@ impl RepoTab {
             } else {
                 WorktreeView::open(path.clone(), wt.name.clone(), false)
             };
-            if let Some(v) = view {
+            if let Some(mut v) = view {
+                v.refresh_ref_state();
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(path, v);
             }
@@ -1124,7 +1134,8 @@ impl RepoTab {
                     .unwrap_or_else(|| self.repo_name.clone());
                 WorktreeView::open(main_wd.clone(), name, true)
             });
-            if let Some(v) = entry {
+            if let Some(mut v) = entry {
+                v.refresh_ref_state();
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(main_wd, v);
             }
@@ -1140,7 +1151,8 @@ impl RepoTab {
                 .worktree_views
                 .remove(&path)
                 .or_else(|| WorktreeView::open(path.clone(), wt.name.clone(), false));
-            if let Some(v) = entry {
+            if let Some(mut v) = entry {
+                v.refresh_ref_state();
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(path, v);
             }
@@ -1671,6 +1683,37 @@ mod tests {
         Ok(())
     }
 
+    fn repo_state_result(repo: &GitRepo) -> Result<RepoStateResult> {
+        let commits = repo.commit_graph(COMMIT_LIMIT)?;
+        let real_oids = commits.iter().map(|c| c.id).collect();
+        let worktrees = repo.worktrees()?;
+        let worktree_repos = worktrees
+            .iter()
+            .filter_map(|wt| {
+                let path = PathBuf::from(&wt.path);
+                GitRepo::open(&path).ok().map(|repo| (path, repo))
+            })
+            .collect();
+        Ok(RepoStateResult {
+            commits,
+            branch_tips: repo.branch_tips()?,
+            tags: repo.tags().unwrap_or_default(),
+            current_branch: repo.current_branch().unwrap_or_default(),
+            head_oid: repo.head_oid().ok(),
+            worktrees,
+            remote_names: repo.remote_names(),
+            remote_urls: HashMap::new(),
+            is_bare: repo.is_effectively_bare(),
+            submodules: repo.submodules().unwrap_or_default(),
+            stashes: repo.stash_list(),
+            ahead_behind: repo.all_branches_ahead_behind(),
+            ref_fingerprint: crate::git::ref_fingerprint(repo.git_dir()),
+            real_oids,
+            worktree_repos,
+            errors: Vec::new(),
+        })
+    }
+
     #[test]
     fn status_result_updates_reported_worktree_instead_of_active_view() -> Result<()> {
         let root = unique_temp_dir("status-path");
@@ -1707,6 +1750,52 @@ mod tests {
             tab.commits
                 .iter()
                 .any(|c| { c.is_synthetic && c.synthetic_wt_name.as_deref() == Some("main") })
+        );
+
+        drop(tab);
+        drop(raw);
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_linked_worktree_survives_state_refresh_without_selecting_it() -> Result<()> {
+        let root = unique_temp_dir("linked-dirty-state");
+        let main = root.join("main");
+        let linked = root.join("linked");
+        fs::create_dir_all(&main)?;
+
+        let raw = git2::Repository::init(&main)?;
+        commit_initial_file(&raw, Path::new("tracked.txt"), "base\n")?;
+        raw.worktree("linked", &linked, None)?;
+
+        let repo = GitRepo::open(&main)?;
+        let mut tab = RepoTab::open(&main)?;
+        tab.apply_state_result(repo_state_result(&repo)?);
+        assert!(tab.worktree_views[&linked].head_oid.is_some());
+        tab.select_worktree(main.clone());
+        assert_eq!(tab.active_worktree.as_deref(), Some(main.as_path()));
+
+        fs::write(linked.join("tracked.txt"), "dirty\n")?;
+        let dirty_status = GitRepo::open(&linked)?.status()?;
+        assert_eq!(dirty_status.total_files(), 1);
+
+        tab.apply_dirty_check_result(DirtyCheckResult::Worktree {
+            tab_id: tab.id,
+            path: linked.clone(),
+            status: dirty_status,
+        });
+        assert!(
+            tab.commits
+                .iter()
+                .any(|c| { c.is_synthetic && c.synthetic_wt_name.as_deref() == Some("linked") })
+        );
+
+        tab.apply_state_result(repo_state_result(&repo)?);
+        assert!(
+            tab.commits
+                .iter()
+                .any(|c| { c.is_synthetic && c.synthetic_wt_name.as_deref() == Some("linked") })
         );
 
         drop(tab);

@@ -1483,6 +1483,7 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
             },
         )
         .key("commits")
+        .pin_start()
         .padding(Sides {
             left: tokens::RING_WIDTH,
             right: 0.0,
