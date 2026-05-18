@@ -11,8 +11,8 @@
 #   6. Push to AUR (separate `aur:whisper-git` git remote).
 
 pkgname=whisper-git
-pkgver=0.3.2
-pkgrel=2
+pkgver=0.3.3
+pkgrel=1
 pkgdesc="GPU-accelerated Git client built in Rust with Vulkan"
 arch=('x86_64' 'aarch64')
 url="https://github.com/computer-whisperer/whisper-git"
