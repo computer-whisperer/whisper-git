@@ -288,27 +288,32 @@ pub(crate) fn spawn_repo_state_refresh(
             Vec::new()
         });
 
-        // Open worktree repos on the worker — see struct doc above for
-        // why this can't live on the main thread.
-        let worktree_repos: HashMap<PathBuf, GitRepo> = worktrees
-            .iter()
-            .filter_map(|wt| {
-                let path = PathBuf::from(&wt.path);
-                GitRepo::open(&path).ok().map(|r| (path, r))
-            })
-            .collect();
+        // Open a fresh handle for every worktree on the worker — see the
+        // struct doc above for why this can't live on the main thread. The
+        // main worktree (the reference repo's workdir, which libgit2 omits
+        // from the worktrees list) is opened explicitly so the reducer
+        // never has to fall back to a synchronous open for it.
+        let mut worktree_repos: HashMap<PathBuf, GitRepo> = HashMap::new();
+        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf())
+            && let Ok(r) = GitRepo::open(&main_wd)
+        {
+            worktree_repos.insert(main_wd, r);
+        }
+        for wt in &worktrees {
+            let path = PathBuf::from(&wt.path);
+            if !worktree_repos.contains_key(&path)
+                && let Ok(r) = GitRepo::open(&path)
+            {
+                worktree_repos.insert(path, r);
+            }
+        }
 
-        // Per-worktree branch/HEAD/submodule snapshots, captured here so
-        // the reducer folds plain values instead of re-walking on the UI
-        // thread. Main worktree (the reference repo's workdir) plus every
-        // linked worktree handle we just opened.
-        let mut worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = HashMap::new();
-        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf()) {
-            worktree_snapshots.insert(main_wd, WorktreeSnapshot::capture(&repo));
-        }
-        for (path, r) in &worktree_repos {
-            worktree_snapshots.insert(path.clone(), WorktreeSnapshot::capture(r));
-        }
+        // Branch/HEAD/submodule snapshot per opened handle, captured here
+        // so the reducer folds plain values with no UI-thread re-walk.
+        let worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = worktree_repos
+            .iter()
+            .map(|(path, r)| (path.clone(), WorktreeSnapshot::capture(r)))
+            .collect();
 
         let remote_names = repo.remote_names();
         let is_bare = repo.is_effectively_bare();

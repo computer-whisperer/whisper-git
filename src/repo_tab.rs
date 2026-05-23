@@ -1043,23 +1043,20 @@ impl RepoTab {
                     existing.repo = repo;
                 }
                 Some(existing)
-            } else if let Some(repo) = pre_opened.remove(&main_wd) {
-                Some(WorktreeView::with_repo(
-                    main_wd.clone(),
-                    name.clone(),
-                    true,
-                    repo,
-                ))
             } else {
-                // Worker didn't pre-open the main worktree's path (e.g.
-                // bare repo with no workdir). Fall back to a sync open;
-                // for normal repos the worker covers it.
-                WorktreeView::open(main_wd.clone(), name.clone(), true)
+                // A brand-new view only when the worker pre-opened a
+                // handle. If it couldn't (pruned / inaccessible / bare with
+                // no workdir), the worktree is simply absent this refresh —
+                // no synchronous open on the UI thread.
+                pre_opened
+                    .remove(&main_wd)
+                    .map(|repo| WorktreeView::with_repo(main_wd.clone(), name.clone(), true, repo))
             };
             if let Some(mut v) = view {
-                match snapshots.remove(&v.path) {
-                    Some(snap) => v.apply_snapshot(snap),
-                    None => v.refresh_ref_state(),
+                // Fold the worker's snapshot when present; otherwise keep
+                // the view's existing ref state (no sync re-walk).
+                if let Some(snap) = snapshots.remove(&v.path) {
+                    v.apply_snapshot(snap);
                 }
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(main_wd, v);
@@ -1077,20 +1074,14 @@ impl RepoTab {
                     existing.repo = repo;
                 }
                 Some(existing)
-            } else if let Some(repo) = pre_opened.remove(&path) {
-                Some(WorktreeView::with_repo(
-                    path.clone(),
-                    wt.name.clone(),
-                    false,
-                    repo,
-                ))
             } else {
-                WorktreeView::open(path.clone(), wt.name.clone(), false)
+                pre_opened
+                    .remove(&path)
+                    .map(|repo| WorktreeView::with_repo(path.clone(), wt.name.clone(), false, repo))
             };
             if let Some(mut v) = view {
-                match snapshots.remove(&v.path) {
-                    Some(snap) => v.apply_snapshot(snap),
-                    None => v.refresh_ref_state(),
+                if let Some(snap) = snapshots.remove(&v.path) {
+                    v.apply_snapshot(snap);
                 }
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(path, v);
@@ -1230,32 +1221,14 @@ impl RepoTab {
         }
     }
 
-    /// Switch the active worktree to `path`. Opens (and caches) a
-    /// `WorktreeView` for it if not already in the map. No-op when
-    /// `path` doesn't resolve to an openable repository.
+    /// Switch the active worktree to `path`. This is a pure pointer swap
+    /// over the already-built view cache — `worktree_views` is populated
+    /// by the state-refresh merge, so every worktree the UI can surface is
+    /// already present. No-op for an untracked `path` (shouldn't happen
+    /// from the UI), which keeps any synchronous open off this path.
     pub fn select_worktree(&mut self, path: PathBuf) {
         if !self.worktree_views.contains_key(&path) {
-            // Look up display name from the linked-worktree metadata; fall
-            // back to the path's basename so we never end up with an empty
-            // pill label.
-            let path_str = path.to_string_lossy();
-            let name = self
-                .worktrees
-                .iter()
-                .find(|w| w.path == path_str)
-                .map(|w| w.name.clone())
-                .or_else(|| path.file_name().map(|n| n.to_string_lossy().to_string()))
-                .unwrap_or_default();
-            let is_main = self.repo.workdir().is_some_and(|wd| wd == path.as_path());
-            match WorktreeView::open(path.clone(), name, is_main) {
-                Some(v) => {
-                    self.worktree_views.insert(path.clone(), v);
-                    if !self.worktree_order.iter().any(|p| p == &path) {
-                        self.worktree_order.push(path.clone());
-                    }
-                }
-                None => return,
-            }
+            return;
         }
         self.active_worktree = Some(path);
         // No synchronous status walk here — switching worktrees is a
@@ -1740,34 +1713,35 @@ mod tests {
         let commits = repo.commit_graph(COMMIT_LIMIT)?;
         let real_oids = commits.iter().map(|c| c.id).collect();
         let worktrees = repo.worktrees()?;
-        let worktree_repos: HashMap<PathBuf, GitRepo> = worktrees
+        // Mirror the worker: pre-open the main worktree handle too (libgit2
+        // omits it from `worktrees`), then snapshot every opened handle.
+        let mut worktree_repos: HashMap<PathBuf, GitRepo> = HashMap::new();
+        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf())
+            && let Ok(r) = GitRepo::open(&main_wd)
+        {
+            worktree_repos.insert(main_wd, r);
+        }
+        for wt in &worktrees {
+            let path = PathBuf::from(&wt.path);
+            if !worktree_repos.contains_key(&path)
+                && let Ok(r) = GitRepo::open(&path)
+            {
+                worktree_repos.insert(path, r);
+            }
+        }
+        let worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = worktree_repos
             .iter()
-            .filter_map(|wt| {
-                let path = PathBuf::from(&wt.path);
-                GitRepo::open(&path).ok().map(|repo| (path, repo))
+            .map(|(path, r)| {
+                (
+                    path.clone(),
+                    WorktreeSnapshot {
+                        current_branch: r.current_branch().unwrap_or_default(),
+                        head_oid: r.head_oid().ok(),
+                        submodules: r.submodules().unwrap_or_default(),
+                    },
+                )
             })
             .collect();
-        let mut worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = HashMap::new();
-        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf()) {
-            worktree_snapshots.insert(
-                main_wd,
-                WorktreeSnapshot {
-                    current_branch: repo.current_branch().unwrap_or_default(),
-                    head_oid: repo.head_oid().ok(),
-                    submodules: repo.submodules().unwrap_or_default(),
-                },
-            );
-        }
-        for (path, r) in &worktree_repos {
-            worktree_snapshots.insert(
-                path.clone(),
-                WorktreeSnapshot {
-                    current_branch: r.current_branch().unwrap_or_default(),
-                    head_oid: r.head_oid().ok(),
-                    submodules: r.submodules().unwrap_or_default(),
-                },
-            );
-        }
         Ok(RepoStateResult {
             commits,
             branch_tips: repo.branch_tips()?,
