@@ -160,13 +160,10 @@ pub struct RepoStateResult {
     pub commits: Vec<CommitInfo>,
     pub branch_tips: Vec<BranchTip>,
     pub tags: Vec<TagInfo>,
-    pub current_branch: String,
-    pub head_oid: Option<Oid>,
     pub worktrees: Vec<WorktreeInfo>,
     pub remote_names: Vec<String>,
     pub remote_urls: HashMap<String, String>,
     pub is_bare: bool,
-    pub submodules: Vec<SubmoduleInfo>,
     pub stashes: Vec<StashEntry>,
     pub ahead_behind: HashMap<String, (usize, usize)>,
     /// Cheap hash of the contents of `git_dir/refs/`. Compared against
@@ -179,9 +176,34 @@ pub struct RepoStateResult {
     /// Per-worktree GitRepo handles opened on the worker. Merged into
     /// the per-worktree view cache by the reducer.
     pub worktree_repos: HashMap<PathBuf, GitRepo>,
+    /// Per-worktree ref + submodule snapshots, captured on the worker so
+    /// the reducer never re-walks refs or submodules on the UI thread.
+    /// Keyed by working-dir path (main + each linked worktree).
+    pub worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot>,
     /// Errors collected during the refresh. Surface as toasts; do not
     /// blank the existing data on a partial failure.
     pub errors: Vec<String>,
+}
+
+/// Branch / HEAD / submodules for one worktree, computed on the worker.
+/// Folded into the matching [`crate::repo_tab::WorktreeView`] by the
+/// reducer with no further git-fs on the main thread.
+pub struct WorktreeSnapshot {
+    pub current_branch: String,
+    pub head_oid: Option<Oid>,
+    pub submodules: Vec<SubmoduleInfo>,
+}
+
+impl WorktreeSnapshot {
+    /// Capture a snapshot from an open repo handle. All three calls walk
+    /// the refdb / `.gitmodules`, so this must run off the main thread.
+    fn capture(repo: &GitRepo) -> Self {
+        Self {
+            current_branch: repo.current_branch().unwrap_or_default(),
+            head_oid: repo.head_oid().ok(),
+            submodules: repo.submodules().unwrap_or_default(),
+        }
+    }
 }
 
 /// Spawn a worker that recomputes the full repo state off-thread.
@@ -205,18 +227,16 @@ pub(crate) fn spawn_repo_state_refresh(
                     commits: Vec::new(),
                     branch_tips: Vec::new(),
                     tags: Vec::new(),
-                    current_branch: String::new(),
-                    head_oid: None,
                     worktrees: Vec::new(),
                     remote_names: Vec::new(),
                     remote_urls: HashMap::new(),
                     is_bare: false,
-                    submodules: Vec::new(),
                     stashes: Vec::new(),
                     ahead_behind: HashMap::new(),
                     ref_fingerprint: 0,
                     real_oids: Vec::new(),
                     worktree_repos: HashMap::new(),
+                    worktree_snapshots: HashMap::new(),
                     errors,
                 });
                 let _ = proxy.send_event(());
@@ -254,10 +274,11 @@ pub(crate) fn spawn_repo_state_refresh(
             errors.push(format!("Failed to get current branch: {e}"));
             String::new()
         });
-        let head_oid = staging.head_oid().ok();
 
         // Patch is_head against the staging context — for multi-worktree
-        // repos this can differ from the main repo's HEAD.
+        // repos this can differ from the main repo's HEAD. (`current_branch`
+        // is not stored on the result; the active worktree's branch comes
+        // from `worktree_snapshots`.)
         for tip in &mut branch_tips {
             tip.is_head = tip.name == current_branch && !tip.is_remote;
         }
@@ -277,17 +298,24 @@ pub(crate) fn spawn_repo_state_refresh(
             })
             .collect();
 
+        // Per-worktree branch/HEAD/submodule snapshots, captured here so
+        // the reducer folds plain values instead of re-walking on the UI
+        // thread. Main worktree (the reference repo's workdir) plus every
+        // linked worktree handle we just opened.
+        let mut worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = HashMap::new();
+        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf()) {
+            worktree_snapshots.insert(main_wd, WorktreeSnapshot::capture(&repo));
+        }
+        for (path, r) in &worktree_repos {
+            worktree_snapshots.insert(path.clone(), WorktreeSnapshot::capture(r));
+        }
+
         let remote_names = repo.remote_names();
         let is_bare = repo.is_effectively_bare();
         let remote_urls: HashMap<String, String> = remote_names
             .iter()
             .filter_map(|name| repo.remote_url(name).map(|url| (name.clone(), url)))
             .collect();
-
-        let submodules = staging.submodules().unwrap_or_else(|e| {
-            errors.push(format!("Failed to load submodules: {e}"));
-            Vec::new()
-        });
 
         let stashes = repo.stash_list();
         let ahead_behind = repo.all_branches_ahead_behind();
@@ -303,18 +331,16 @@ pub(crate) fn spawn_repo_state_refresh(
             commits,
             branch_tips,
             tags,
-            current_branch,
-            head_oid,
             worktrees,
             remote_names,
             remote_urls,
             is_bare,
-            submodules,
             stashes,
             ahead_behind,
             ref_fingerprint,
             real_oids,
             worktree_repos,
+            worktree_snapshots,
             errors,
         });
         let _ = proxy.send_event(());

@@ -32,7 +32,8 @@ use crate::git::{
     StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
 use crate::git_async::{
-    DirtyCheckResult, RepoStateResult, StatusResult, spawn_repo_state_refresh, spawn_status_refresh,
+    DirtyCheckResult, RepoStateResult, StatusResult, WorktreeSnapshot, spawn_repo_state_refresh,
+    spawn_status_refresh,
 };
 use crate::watcher::{FsChangeKind, RepoWatcher, WatcherInitResult};
 use crate::{github, gitlab, token_store};
@@ -304,6 +305,15 @@ impl WorktreeView {
     fn refresh_ref_state(&mut self) {
         self.current_branch = self.repo.current_branch().unwrap_or_default();
         self.head_oid = self.repo.head_oid().ok();
+    }
+
+    /// Fold a worker-captured [`WorktreeSnapshot`] into this view — the
+    /// async equivalent of `refresh_ref_state` plus submodules, with no
+    /// git-fs on the calling (UI) thread.
+    fn apply_snapshot(&mut self, snap: WorktreeSnapshot) {
+        self.current_branch = snap.current_branch;
+        self.head_oid = snap.head_oid;
+        self.submodules = snap.submodules;
     }
 }
 
@@ -854,24 +864,17 @@ impl RepoTab {
         // selected_diff_file) and just swap their repo handle; new
         // entries get default empty drafts. Stale entries (worktree
         // pruned from disk) are dropped.
-        let watcher_paths_changed = self.merge_worktree_views(result.worktree_repos);
+        let watcher_paths_changed =
+            self.merge_worktree_views(result.worktree_repos, result.worktree_snapshots);
 
-        // Active view's submodules / current_branch / head_oid come from
-        // the worker, but re-query against the *currently active* view's
-        // repo handle in case the user switched worktrees mid-spawn.
-        let submodules = if let Some(view) = self.active_view() {
-            view.repo.submodules().unwrap_or(result.submodules.clone())
-        } else {
-            result.submodules.clone()
-        };
-        if let Some(view) = self.active_view_mut() {
-            view.submodules = submodules.clone();
-            view.current_branch = view
-                .repo
-                .current_branch()
-                .unwrap_or_else(|_| result.current_branch.clone());
-            view.head_oid = view.repo.head_oid().ok().or(result.head_oid);
-        }
+        // Per-worktree branch / HEAD / submodules were captured on the
+        // worker and folded in by `merge_worktree_views` — no UI-thread
+        // re-walk here. The active view's submodules feed the dirty-check
+        // fanout below.
+        let submodules = self
+            .active_view()
+            .map(|v| v.submodules.clone())
+            .unwrap_or_default();
 
         // Patch branch_tips' is_head against the active worktree's HEAD —
         // matches the sync `refresh()` path.
@@ -1021,7 +1024,11 @@ impl RepoTab {
     /// entries keep their drafts and selected-diff but swap to the fresh
     /// repo handle. Returns `true` if the resolved set differs from the
     /// previous one (the watcher needs `update_worktree_watches`).
-    fn merge_worktree_views(&mut self, mut pre_opened: HashMap<PathBuf, GitRepo>) -> bool {
+    fn merge_worktree_views(
+        &mut self,
+        mut pre_opened: HashMap<PathBuf, GitRepo>,
+        mut snapshots: HashMap<PathBuf, WorktreeSnapshot>,
+    ) -> bool {
         let mut new_views: HashMap<PathBuf, WorktreeView> = HashMap::new();
         let mut order: Vec<(String, PathBuf)> = Vec::new();
 
@@ -1050,7 +1057,10 @@ impl RepoTab {
                 WorktreeView::open(main_wd.clone(), name.clone(), true)
             };
             if let Some(mut v) = view {
-                v.refresh_ref_state();
+                match snapshots.remove(&v.path) {
+                    Some(snap) => v.apply_snapshot(snap),
+                    None => v.refresh_ref_state(),
+                }
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(main_wd, v);
             }
@@ -1078,7 +1088,10 @@ impl RepoTab {
                 WorktreeView::open(path.clone(), wt.name.clone(), false)
             };
             if let Some(mut v) = view {
-                v.refresh_ref_state();
+                match snapshots.remove(&v.path) {
+                    Some(snap) => v.apply_snapshot(snap),
+                    None => v.refresh_ref_state(),
+                }
                 order.push((v.name.clone(), v.path.clone()));
                 new_views.insert(path, v);
             }
@@ -1727,29 +1740,48 @@ mod tests {
         let commits = repo.commit_graph(COMMIT_LIMIT)?;
         let real_oids = commits.iter().map(|c| c.id).collect();
         let worktrees = repo.worktrees()?;
-        let worktree_repos = worktrees
+        let worktree_repos: HashMap<PathBuf, GitRepo> = worktrees
             .iter()
             .filter_map(|wt| {
                 let path = PathBuf::from(&wt.path);
                 GitRepo::open(&path).ok().map(|repo| (path, repo))
             })
             .collect();
+        let mut worktree_snapshots: HashMap<PathBuf, WorktreeSnapshot> = HashMap::new();
+        if let Some(main_wd) = repo.workdir().map(|p| p.to_path_buf()) {
+            worktree_snapshots.insert(
+                main_wd,
+                WorktreeSnapshot {
+                    current_branch: repo.current_branch().unwrap_or_default(),
+                    head_oid: repo.head_oid().ok(),
+                    submodules: repo.submodules().unwrap_or_default(),
+                },
+            );
+        }
+        for (path, r) in &worktree_repos {
+            worktree_snapshots.insert(
+                path.clone(),
+                WorktreeSnapshot {
+                    current_branch: r.current_branch().unwrap_or_default(),
+                    head_oid: r.head_oid().ok(),
+                    submodules: r.submodules().unwrap_or_default(),
+                },
+            );
+        }
         Ok(RepoStateResult {
             commits,
             branch_tips: repo.branch_tips()?,
             tags: repo.tags().unwrap_or_default(),
-            current_branch: repo.current_branch().unwrap_or_default(),
-            head_oid: repo.head_oid().ok(),
             worktrees,
             remote_names: repo.remote_names(),
             remote_urls: HashMap::new(),
             is_bare: repo.is_effectively_bare(),
-            submodules: repo.submodules().unwrap_or_default(),
             stashes: repo.stash_list(),
             ahead_behind: repo.all_branches_ahead_behind(),
             ref_fingerprint: crate::git::ref_fingerprint(repo.git_dir()),
             real_oids,
             worktree_repos,
+            worktree_snapshots,
             errors: Vec::new(),
         })
     }
