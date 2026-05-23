@@ -1561,7 +1561,7 @@ fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
     // HEAD, not on the HEAD itself, so we exclude them here.
     let mut by_oid_clean_wts: HashMap<Oid, Vec<String>> = HashMap::new();
     for view in tab.worktree_views.values() {
-        if view.status.total_files() != 0 {
+        if view.dirty_file_count != 0 {
             continue;
         }
         if let Some(head) = view.head_oid {

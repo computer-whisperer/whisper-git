@@ -340,7 +340,14 @@ pub enum DirtyCheckResult {
     Worktree {
         tab_id: u64,
         path: PathBuf,
-        status: WorkingDirStatus,
+        /// Count of dirty (non-ignored) entries, computed the same way
+        /// as the active view's full status so the pill / synthetic
+        /// counts agree with the staging well. `0` means clean.
+        dirty_file_count: usize,
+        /// Working-tree diff stats (insertions, deletions) computed on
+        /// the worker. Feeds the synthetic row's +N/-M chips so the UI
+        /// thread never recomputes a diff on apply.
+        diff_stats: (usize, usize),
     },
 }
 
@@ -403,11 +410,12 @@ pub(crate) fn spawn_dirty_checks(
         let tx = tx.clone();
         let proxy = proxy.clone();
         std::thread::spawn(move || {
-            let status = check_worktree_status(&wt_path);
+            let (dirty_file_count, diff_stats) = check_worktree_dirty(&wt_path);
             let _ = tx.send(DirtyCheckResult::Worktree {
                 tab_id,
                 path: wt_path,
-                status,
+                dirty_file_count,
+                diff_stats,
             });
             let _ = proxy.send_event(());
         });
@@ -433,18 +441,27 @@ fn check_dirty(path: &PathBuf) -> bool {
     })
 }
 
-/// Worktree variant — same exclude_submodules check, but returns the
-/// full status so the tab's `WorktreeView` cache remains the single
-/// source of truth for staging rows, WT pills, and synthetic commits.
-fn check_worktree_status(path: &PathBuf) -> WorkingDirStatus {
+/// Worktree variant — returns the dirty *summary* for one worktree:
+/// the non-ignored file count and the working-tree diff stats. This
+/// feeds the WT pills + synthetic "uncommitted changes" rows for every
+/// worktree (active or not). The active worktree's full file lists come
+/// separately from [`spawn_status_refresh`]; keeping the two split means
+/// the staging-well list has exactly one writer. The count is computed
+/// via `working_dir_status_from_statuses().total_files()` so it agrees
+/// with that status path; the diff runs here (on the worker) so the UI
+/// thread never recomputes it on apply.
+fn check_worktree_dirty(path: &PathBuf) -> (usize, (usize, usize)) {
     let Ok(repo) = git2::Repository::open(path) else {
-        return WorkingDirStatus::default();
+        return (0, (0, 0));
     };
     let mut opts = git2::StatusOptions::new();
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
         .exclude_submodules(true);
-    repo.statuses(Some(&mut opts))
-        .map(|statuses| working_dir_status_from_statuses(&statuses))
-        .unwrap_or_default()
+    let count = repo
+        .statuses(Some(&mut opts))
+        .map(|statuses| working_dir_status_from_statuses(&statuses).total_files())
+        .unwrap_or(0);
+    let diff_stats = GitRepo::diff_stats_raw(&repo);
+    (count, diff_stats)
 }

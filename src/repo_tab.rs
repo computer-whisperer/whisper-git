@@ -206,7 +206,23 @@ pub struct WorktreeView {
     /// status / stage / commit / hunk operations route through here.
     pub repo: GitRepo,
     /// Working-dir status (staged / unstaged / untracked / conflicted).
+    /// Full file lists, used to paint the staging well and diff pane.
+    /// **Maintained only for the active worktree**, and written by
+    /// exactly one path — the async status refresh ([`Self::apply_status_result`]).
+    /// Inactive worktrees keep whatever was last loaded here; their
+    /// dirtiness is tracked by [`Self::dirty_file_count`] instead.
     pub status: WorkingDirStatus,
+    /// Dirty-file count for *this* worktree, written only by the
+    /// per-worktree dirty-check fanout. This — not `status` — is the
+    /// source of truth for "is this worktree dirty / how many files"
+    /// across all worktrees (pills, the commit-graph clean/dirty gate,
+    /// and the synthetic "uncommitted changes" row). Splitting it from
+    /// `status` keeps the staging-well list single-writer.
+    pub dirty_file_count: usize,
+    /// Working-tree diff stats (insertions, deletions) for this
+    /// worktree, computed on the dirty-check worker. Feeds the synthetic
+    /// row's +N/-M chips without a UI-thread diff.
+    pub dirty_diff: (usize, usize),
     /// Branch checked out here, or empty when detached.
     pub current_branch: String,
     /// HEAD OID for this worktree.
@@ -236,6 +252,8 @@ impl WorktreeView {
             is_main,
             repo,
             status: WorkingDirStatus::default(),
+            dirty_file_count: 0,
+            dirty_diff: (0, 0),
             current_branch: String::new(),
             head_oid: None,
             submodules: Vec::new(),
@@ -259,6 +277,8 @@ impl WorktreeView {
             is_main,
             repo,
             status: WorkingDirStatus::default(),
+            dirty_file_count: 0,
+            dirty_diff: (0, 0),
             current_branch: String::new(),
             head_oid: None,
             submodules: Vec::new(),
@@ -271,6 +291,8 @@ impl WorktreeView {
     /// Re-query worktree-scoped state (status + branch + HEAD + submodules).
     pub fn refresh(&mut self) {
         self.status = self.repo.status().unwrap_or_default();
+        self.dirty_file_count = self.status.total_files();
+        self.dirty_diff = self.repo.working_tree_diff_stats();
         self.refresh_ref_state();
         self.submodules = self.repo.submodules().unwrap_or_default();
     }
@@ -903,16 +925,15 @@ impl RepoTab {
             staging_repo_state: _,
         } = result;
 
-        let mut changed = false;
+        // Status refresh owns the full file lists (staging well + diff
+        // pane). It does *not* touch the dirty summary or synthetic rows —
+        // those are driven by the dirty-check fanout, which always
+        // accompanies a status refresh (see `WhisperApp::refresh_working_tree`).
         if let (Some(path), Some(status)) = (main_path.as_deref(), main_status) {
-            changed |= self.set_worktree_status(path, status);
+            self.set_worktree_status(path, status);
         }
         if let (Some(path), Some(status)) = (staging_path.as_deref(), staging_status) {
-            changed |= self.set_worktree_status(path, status);
-        }
-
-        if changed {
-            self.rebuild_synthetic_entries();
+            self.set_worktree_status(path, status);
         }
     }
 
@@ -936,9 +957,9 @@ impl RepoTab {
             DirtyCheckResult::Worktree {
                 tab_id: _,
                 path,
-                status,
+                dirty_file_count,
+                diff_stats,
             } => {
-                let dirty_file_count = status.total_files();
                 let is_dirty = dirty_file_count > 0;
                 if let Some(wt) = self
                     .worktrees
@@ -948,7 +969,7 @@ impl RepoTab {
                     wt.is_dirty = Some(is_dirty);
                     wt.dirty_file_count = Some(dirty_file_count);
                 }
-                let changed = self.set_worktree_status(&path, status);
+                let changed = self.set_worktree_dirty(&path, dirty_file_count, diff_stats);
                 if changed {
                     self.rebuild_synthetic_entries();
                 }
@@ -957,12 +978,28 @@ impl RepoTab {
         }
     }
 
+    /// Writer for the full working-dir status (file lists). Sole caller
+    /// is [`Self::apply_status_result`] — keeps the staging-well list
+    /// single-writer.
     fn set_worktree_status(&mut self, path: &Path, status: WorkingDirStatus) -> bool {
         let Some(view) = self.worktree_views.get_mut(path) else {
             return false;
         };
         let changed = view.status != status;
         view.status = status;
+        changed
+    }
+
+    /// Writer for the per-worktree dirty summary (count + diff stats).
+    /// Sole caller is [`Self::apply_dirty_check_result`] — keeps the
+    /// pill / synthetic-row source single-writer.
+    fn set_worktree_dirty(&mut self, path: &Path, count: usize, diff: (usize, usize)) -> bool {
+        let Some(view) = self.worktree_views.get_mut(path) else {
+            return false;
+        };
+        let changed = view.dirty_file_count != count || view.dirty_diff != diff;
+        view.dirty_file_count = count;
+        view.dirty_diff = diff;
         changed
     }
 
@@ -1078,7 +1115,9 @@ impl RepoTab {
     fn build_synthetic_entries(&self) -> Vec<CommitInfo> {
         let mut out = Vec::new();
         for (path, view) in &self.worktree_views {
-            let count = view.status.total_files();
+            // Dirtiness comes from the dirty-check summary (one writer),
+            // never from `status` — see [`WorktreeView::dirty_file_count`].
+            let count = view.dirty_file_count;
             if count == 0 {
                 continue;
             }
@@ -1104,7 +1143,7 @@ impl RepoTab {
                 dirty_file_count: Some(count),
             };
             if let Some(mut entry) = CommitInfo::synthetic_for_worktree(&wt_info, parent_time) {
-                let (ins, del) = view.repo.working_tree_diff_stats();
+                let (ins, del) = view.dirty_diff;
                 entry.insertions = ins;
                 entry.deletions = del;
                 out.push(entry);
@@ -1206,9 +1245,10 @@ impl RepoTab {
             }
         }
         self.active_worktree = Some(path);
-        if let Some(v) = self.active_view_mut() {
-            v.refresh();
-        }
+        // No synchronous status walk here — switching worktrees is a
+        // pointer swap. Callers fire `WhisperApp::refresh_working_tree_focused`
+        // so the async status refresh fills the newly-active view's staging
+        // well (and the dirty fanout its summary) off the UI thread.
         self.rebuild_synthetic_entries();
 
         let current = self.current_branch().to_string();
@@ -1734,7 +1774,8 @@ mod tests {
 
         fs::write(main.join("tracked.txt"), "dirty\n")?;
         let dirty_status = GitRepo::open(&main)?.status()?;
-        assert_eq!(dirty_status.total_files(), 1);
+        let dirty_total = dirty_status.total_files();
+        assert_eq!(dirty_total, 1);
 
         tab.apply_status_result(StatusResult {
             main_path: Some(main.clone()),
@@ -1744,8 +1785,20 @@ mod tests {
             staging_repo_state: git2::RepositoryState::Clean,
         });
 
+        // Status results own the file lists and route to the reported
+        // path — not the active (linked) view.
         assert_eq!(tab.worktree_views[&main].status.total_files(), 1);
         assert_eq!(tab.worktree_views[&linked].status, linked_before);
+        // Synthetic rows are driven by the dirty-check summary, so a
+        // status result alone does not produce one.
+        assert!(!tab.commits.iter().any(|c| c.is_synthetic));
+
+        tab.apply_dirty_check_result(DirtyCheckResult::Worktree {
+            tab_id: tab.id,
+            path: main.clone(),
+            dirty_file_count: dirty_total,
+            diff_stats: (1, 0),
+        });
         assert!(
             tab.commits
                 .iter()
@@ -1783,7 +1836,8 @@ mod tests {
         tab.apply_dirty_check_result(DirtyCheckResult::Worktree {
             tab_id: tab.id,
             path: linked.clone(),
-            status: dirty_status,
+            dirty_file_count: dirty_status.total_files(),
+            diff_stats: (1, 0),
         });
         assert!(
             tab.commits

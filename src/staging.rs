@@ -220,10 +220,10 @@ fn worktree_dropdown_trigger(tab: &RepoTab) -> El {
 }
 
 fn dirty_count(view: &WorktreeView) -> usize {
-    view.status.unstaged.len()
-        + view.status.untracked.len()
-        + view.status.staged.len()
-        + view.status.conflicted.len()
+    // Per-worktree dirtiness comes from the dirty-check summary, which
+    // is maintained for every worktree (the full `status` lists are only
+    // current for the active one).
+    view.dirty_file_count
 }
 
 /// Strip the longest common prefix (up to the last separator: `-`,

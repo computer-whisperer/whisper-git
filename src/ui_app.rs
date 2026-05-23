@@ -1117,6 +1117,9 @@ impl WhisperApp {
                     view.selected_diff_file = None;
                 }
             }
+            if let Some(proxy) = self.proxy.clone() {
+                self.refresh_working_tree_focused(&proxy);
+            }
             return;
         }
         // wt_select:option:{path} — dropdown-mode selection. Same effect
@@ -1131,6 +1134,9 @@ impl WhisperApp {
                 if let Some(view) = tab.active_view_mut() {
                     view.selected_diff_file = None;
                 }
+            }
+            if let Some(proxy) = self.proxy.clone() {
+                self.refresh_working_tree_focused(&proxy);
             }
             return;
         }
@@ -1224,6 +1230,9 @@ impl WhisperApp {
                 if let Some(p) = path {
                     tab.select_worktree(p);
                 }
+            }
+            if let Some(proxy) = self.proxy.clone() {
+                self.refresh_working_tree_focused(&proxy);
             }
             return;
         }
@@ -2215,6 +2224,9 @@ impl WhisperApp {
         if let Some(view) = tab.active_view_mut() {
             view.selected_diff_file = None;
         }
+        if let Some(proxy) = self.proxy.clone() {
+            self.refresh_working_tree_focused(&proxy);
+        }
     }
 
     fn jump_to_worktree_branch(&mut self, key: &str) {
@@ -3204,6 +3216,14 @@ impl WhisperApp {
             &proxy,
         );
 
+        // The status refresh owns the active worktree's full file lists
+        // (the staging well). Fire it alongside the dirty-check fanout so
+        // a state refresh — including the very first one on tab open —
+        // populates the staging well without any synchronous read.
+        if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
+            tab.trigger_status_refresh(&proxy);
+        }
+
         // Update the watcher's per-worktree watch set if the resolved
         // worktree list changed, and refresh its submodule exclusion
         // list so submodules added/removed mid-session are reflected
@@ -3329,16 +3349,51 @@ impl WhisperApp {
         let Some(proxy) = self.proxy.clone() else {
             return;
         };
-        if let Some(tab) = self.active_focus_mut() {
-            if expired {
-                tab.status_dirty = true;
-            }
-            if tab.status_dirty {
-                tab.trigger_status_refresh(&proxy);
-            }
+        let should_refresh = self
+            .active_focus_mut()
+            .map(|tab| {
+                if expired {
+                    tab.status_dirty = true;
+                }
+                tab.status_dirty
+            })
+            .unwrap_or(false);
+        if should_refresh {
+            // `trigger_status_refresh` (inside the helper) clears the
+            // tab's dirty bit only when it successfully spawns a worker.
+            self.refresh_working_tree_focused(&proxy);
         }
-        // `trigger_status_refresh` clears the tab's dirty bit only
-        // when it successfully spawns a worker.
+    }
+
+    /// Refresh working-dir state for the focused tab: the cheap async
+    /// status refresh (full file lists for the active worktree's staging
+    /// well) **and** the per-worktree dirty-check fanout (counts + diff
+    /// stats for the pills and synthetic rows). `WorktreeView::status` and
+    /// the dirty summary are separate single-writer fields, so both
+    /// producers fire together whenever the working tree may have changed
+    /// — a worktree switch, the 30 s safety net, etc. (Watcher
+    /// `WorkingTree` events run the same pair inline in
+    /// `dispatch_watcher_events_at`, scoped to the event's tab.)
+    fn refresh_working_tree_focused(&mut self, proxy: &winit::event_loop::EventLoopProxy<()>) {
+        let Some((tab_id, repo_workdir, worktree_paths)) = self.active_focus_mut().map(|tab| {
+            tab.status_dirty = true;
+            tab.trigger_status_refresh(proxy);
+            (
+                tab.id,
+                tab.repo.workdir().map(|p| p.to_path_buf()),
+                tab.worktree_order.clone(),
+            )
+        }) else {
+            return;
+        };
+        self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+            tab_id,
+            &[],
+            &worktree_paths,
+            repo_workdir,
+            &self.dirty_check_tx,
+            proxy,
+        );
     }
 
     /// 5 s ref_fingerprint reconciliation on the active tab. Cheap
