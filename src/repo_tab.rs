@@ -796,11 +796,12 @@ impl RepoTab {
             .active_view()
             .and_then(|v| v.repo.workdir().map(|p| p.to_path_buf()))
             .or_else(|| Some(repo_context_path.clone()));
-        let is_bare = self.repo.is_effectively_bare();
+        // Bareness is decided per-repo inside the worker — see
+        // `spawn_status_refresh`. A bare reference repo must not suppress a
+        // non-bare worktree's status walk.
         self.status_rx = Some(spawn_status_refresh(
             repo_context_path,
             staging_context_path,
-            is_bare,
             proxy.clone(),
         ));
     }

@@ -72,76 +72,68 @@ pub struct StatusResult {
 }
 
 /// Spawn a worker that computes working-directory status off-thread.
-/// `is_bare` short-circuits the status walk for bare repos that have
-/// no working tree at all.
+///
+/// Bareness is evaluated *per opened repo*, never as a single flag from
+/// the reference repo. A bare reference repo (`*.git`) can still host
+/// non-bare linked worktrees whose working trees do need walking — the
+/// canonical whisper-git layout is exactly this (bare `whisper-git.git`
+/// + `whisper-git.main` worktree). A global `is_bare` would suppress the
+/// worktree's status walk and leave the staging well permanently empty
+/// even though the worktree is dirty.
 pub(crate) fn spawn_status_refresh(
     repo_context_path: PathBuf,
     staging_context_path: Option<PathBuf>,
-    is_bare: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<StatusResult> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let main_repo = git2::Repository::open(&repo_context_path).ok();
-
-        let main_status = if !is_bare {
-            main_repo.as_ref().and_then(|repo| {
-                let mut opts = git2::StatusOptions::new();
-                // exclude_submodules is the load-bearing flag here: without
-                // it, a parent status walk on a repo with giant submodules
-                // (esp-idf, 25K files) takes seconds and stalls the next
-                // refresh. Submodule dirty state is checked separately by
-                // `spawn_dirty_checks`.
-                opts.include_untracked(true)
-                    .recurse_untracked_dirs(true)
-                    .exclude_submodules(true);
-                let statuses = repo.statuses(Some(&mut opts)).ok()?;
-                Some(working_dir_status_from_statuses(&statuses))
-            })
-        } else {
-            Some(WorkingDirStatus::default())
-        };
-
-        let staging_repo = staging_context_path
-            .as_ref()
-            .and_then(|dir| git2::Repository::open(dir).ok());
-
-        let (staging_status, staging_repo_state) = match staging_repo.as_ref() {
-            Some(repo) => {
-                let state = repo.state();
-                let status = if !is_bare {
-                    let mut opts = git2::StatusOptions::new();
-                    opts.include_untracked(true)
-                        .recurse_untracked_dirs(true)
-                        .exclude_submodules(true);
-                    repo.statuses(Some(&mut opts))
-                        .ok()
-                        .map(|s| working_dir_status_from_statuses(&s))
-                } else {
-                    Some(WorkingDirStatus::default())
-                };
-                (status, state)
-            }
-            None => (None, git2::RepositoryState::Clean),
-        };
-
-        let main_path = main_repo
-            .as_ref()
-            .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
-        let staging_path = staging_repo
-            .as_ref()
-            .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
-
-        let _ = tx.send(StatusResult {
-            main_path,
-            main_status,
-            staging_path,
-            staging_status,
-            staging_repo_state,
-        });
+        let _ = tx.send(compute_status_result(
+            &repo_context_path,
+            staging_context_path.as_deref(),
+        ));
         let _ = proxy.send_event(());
     });
     rx
+}
+
+/// Pure core of the status refresh — opens each context path and walks
+/// its working dir. Split out from the thread spawn so it's testable
+/// without an event loop.
+///
+/// `GitRepo::status()` does the bareness-aware walk per-repo (empty for
+/// an effectively-bare repo, otherwise untracked + recursed +
+/// submodule-excluded) — the same path the synchronous engine uses, so
+/// async and sync results agree. `workdir()` is likewise `None` for an
+/// effectively-bare repo. Each path is resolved independently, so a bare
+/// *reference* repo never suppresses a non-bare worktree's status walk
+/// (the canonical whisper-git layout: bare `whisper-git.git` + the
+/// `whisper-git.main` worktree the staging well points at).
+pub(crate) fn compute_status_result(
+    repo_context_path: &std::path::Path,
+    staging_context_path: Option<&std::path::Path>,
+) -> StatusResult {
+    let main_repo = GitRepo::open(repo_context_path).ok();
+    let main_status = main_repo.as_ref().map(|r| r.status().unwrap_or_default());
+    let main_path = main_repo
+        .as_ref()
+        .and_then(|r| r.workdir().map(|p| p.to_path_buf()));
+
+    let staging_repo = staging_context_path.and_then(|dir| GitRepo::open(dir).ok());
+    let (staging_status, staging_repo_state) = match staging_repo.as_ref() {
+        Some(r) => (Some(r.status().unwrap_or_default()), r.repo_state()),
+        None => (None, git2::RepositoryState::Clean),
+    };
+    let staging_path = staging_repo
+        .as_ref()
+        .and_then(|r| r.workdir().map(|p| p.to_path_buf()));
+
+    StatusResult {
+        main_path,
+        main_status,
+        staging_path,
+        staging_status,
+        staging_repo_state,
+    }
 }
 
 // ============================================================================
@@ -495,4 +487,67 @@ fn check_worktree_dirty(path: &PathBuf) -> (usize, (usize, usize)) {
         .unwrap_or(0);
     let diff_stats = GitRepo::diff_stats_raw(&repo);
     (count, diff_stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "whisper-git-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ))
+    }
+
+    /// Regression: a bare *reference* repo must not suppress the status
+    /// walk of the non-bare worktree the staging well points at. This is
+    /// the canonical whisper-git layout (bare `whisper-git.git` +
+    /// `whisper-git.main` worktree). Pre-fix, a single `is_bare` flag
+    /// derived from the bare reference repo blanked the worktree's status
+    /// even while it was dirty — pill showed dirty, staging well empty.
+    #[test]
+    fn bare_reference_does_not_blank_worktree_status() {
+        let root = unique_temp_dir("bare-status");
+        let bare = root.join("repo.git");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        // Bare reference repo (no working tree of its own).
+        git2::Repository::init_bare(&bare).unwrap();
+        // A separate non-bare repo standing in for the linked worktree,
+        // made dirty with an untracked file. `compute_status_result`
+        // resolves the two context paths independently, so this models the
+        // reference-bare / staging-non-bare split without worktree linkage.
+        git2::Repository::init(&work).unwrap();
+        std::fs::write(work.join("dirty.txt"), "uncommitted\n").unwrap();
+
+        let result = compute_status_result(&bare, Some(work.as_path()));
+
+        // Reference (bare) contributes no file list and no key to write to.
+        assert_eq!(result.main_path, None);
+        assert_eq!(
+            result.main_status.map(|s| s.total_files()),
+            Some(0),
+            "bare reference repo should walk to an empty status"
+        );
+        // The worktree's real status survives despite the bare reference.
+        assert!(
+            result.staging_path.is_some(),
+            "non-bare worktree should report a workdir key"
+        );
+        assert_eq!(
+            result.staging_status.as_ref().map(|s| s.total_files()),
+            Some(1),
+            "non-bare worktree must report its dirty file"
+        );
+        assert_eq!(result.staging_status.map(|s| s.untracked.len()), Some(1));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
