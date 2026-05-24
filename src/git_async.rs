@@ -77,9 +77,9 @@ pub struct StatusResult {
 /// the reference repo. A bare reference repo (`*.git`) can still host
 /// non-bare linked worktrees whose working trees do need walking — the
 /// canonical whisper-git layout is exactly this (bare `whisper-git.git`
-/// + `whisper-git.main` worktree). A global `is_bare` would suppress the
-/// worktree's status walk and leave the staging well permanently empty
-/// even though the worktree is dirty.
+/// hosting the `whisper-git.main` worktree). A global `is_bare` would
+/// suppress the worktree's status walk and leave the staging well
+/// permanently empty even though the worktree is dirty.
 pub(crate) fn spawn_status_refresh(
     repo_context_path: PathBuf,
     staging_context_path: Option<PathBuf>,
