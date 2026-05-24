@@ -25,6 +25,11 @@ git2 = "0.20"
 # Screenshot/image output
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# SVG rasterization — turns the bundled app icon SVG into RGBA for the
+# window icon (X11/Windows). default-features off drops resvg's text/font
+# and raster-image machinery; our icon is pure vector + filters.
+resvg = { version = "0.47", default-features = false }
+
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

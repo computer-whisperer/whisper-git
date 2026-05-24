@@ -40,8 +40,53 @@ use winit::{
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, NamedKey},
-    window::{CursorIcon, Window, WindowId},
+    window::{CursorIcon, Icon, Window, WindowId},
 };
+
+/// Application id matching the installed `whisper-git.desktop`. Used as the
+/// Wayland app_id and X11 WM_CLASS so compositors (KDE, GNOME, …) can resolve
+/// the installed icon — the only icon mechanism Wayland offers, since it
+/// ignores `with_window_icon`.
+const APP_ID: &str = "whisper-git";
+
+/// Pixel size of the rasterized window icon. A single 256² image; X11 and
+/// Windows downscale it as needed for title bars and task switchers.
+const ICON_SIZE: u32 = 256;
+
+/// Rasterize the bundled icon SVG into straight-alpha RGBA8 (`ICON_SIZE`²).
+/// Returns `None` if the SVG fails to parse or the pixmap can't be allocated.
+fn rasterize_app_icon() -> Option<Vec<u8>> {
+    use resvg::{tiny_skia, usvg};
+
+    let svg = include_str!("../assets/git-client-icon.svg");
+    let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(ICON_SIZE, ICON_SIZE)?;
+
+    let s = tree.size();
+    let scale = ICON_SIZE as f32 / s.width().max(s.height());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+
+    // tiny-skia stores premultiplied RGBA; winit wants straight alpha.
+    let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
+    for px in pixmap.pixels() {
+        let c = px.demultiply();
+        rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    Some(rgba)
+}
+
+/// Rasterize the bundled icon SVG into a winit [`Icon`].
+///
+/// Honored on X11 and Windows. A no-op on Wayland/macOS, where the icon comes
+/// from the installed `.desktop` file via [`APP_ID`] instead. Returns `None`
+/// if rasterization fails — the window then just opens without an icon.
+fn app_icon() -> Option<Icon> {
+    Icon::from_rgba(rasterize_app_icon()?, ICON_SIZE, ICON_SIZE).ok()
+}
 
 pub trait HostApp: App {
     fn next_wake(&self) -> Option<Instant> {
@@ -132,12 +177,27 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
         if self.rcx.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        #[allow(unused_mut)]
+        let mut attrs = Window::default_attributes()
             .with_title(self.title)
+            .with_window_icon(app_icon())
             .with_inner_size(PhysicalSize::new(
                 self.viewport.w as u32,
                 self.viewport.h as u32,
             ));
+
+        // Wayland ignores the pixel icon above and matches app_id against the
+        // installed .desktop file; X11 matches WM_CLASS. Set both so KDE et al.
+        // resolve the bundled icon. Fully-qualified to disambiguate the two
+        // traits' identically-named `with_name`.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs = WindowAttributesExtWayland::with_name(attrs, APP_ID, "");
+            attrs = WindowAttributesExtX11::with_name(attrs, APP_ID, APP_ID);
+        }
+
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         window.set_ime_allowed(true);
 
@@ -920,5 +980,21 @@ fn winit_cursor(c: Cursor) -> CursorIcon {
         Cursor::RowResize => CursorIcon::RowResize,
         Cursor::Crosshair => CursorIcon::Crosshair,
         _ => CursorIcon::Default,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The icon SVG must rasterize to a full-size buffer that actually has
+    /// visible content — guards against a parse regression or an all-blank
+    /// render (e.g. a feature flag dropping filter support) slipping through.
+    #[test]
+    fn app_icon_rasterizes_with_content() {
+        let rgba = rasterize_app_icon().expect("icon should rasterize");
+        assert_eq!(rgba.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
+        let opaque = rgba.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(opaque > 0, "rasterized icon is fully transparent");
     }
 }
