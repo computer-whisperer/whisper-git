@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-use damascene_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 use anyhow::{Context, Result};
+use damascene_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 
 use whisper_git::{
     WhisperApp,

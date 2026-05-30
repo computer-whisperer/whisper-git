@@ -27,10 +27,10 @@
 
 use std::path::PathBuf;
 
+use anyhow::Result;
 use damascene_core::tree::Color;
 use damascene_core::vector::{PathBuilder, VectorAsset, VectorLineCap};
 use damascene_core::{App, BuildCx, El, prelude::*};
-use anyhow::Result;
 use whisper_git::screenshot_mode;
 
 const ROW_H: f32 = 28.0;

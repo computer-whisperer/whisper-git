@@ -8,13 +8,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::{Context, Result};
 use damascene_core::{
     App, BuildCx, Cursor, KeyModifiers, Pointer, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
     clipboard,
     widgets::text_input::{self, ClipboardKind},
 };
 use damascene_vulkano::Runner;
-use anyhow::{Context, Result};
 use vulkano::{
     VulkanLibrary,
     command_buffer::{
@@ -906,7 +906,10 @@ fn sync_primary_selection<A: App>(
     *last_primary = text;
 }
 
-fn selected_text_for_app<A: App>(app: &A, ui_state: &damascene_core::state::UiState) -> Option<String> {
+fn selected_text_for_app<A: App>(
+    app: &A,
+    ui_state: &damascene_core::state::UiState,
+) -> Option<String> {
     let theme = app.theme();
     let cx = BuildCx::new(&theme).with_ui_state(ui_state);
     let tree = app.build(&cx);

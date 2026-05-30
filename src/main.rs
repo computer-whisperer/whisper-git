@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use damascene_core::Rect;
 use anyhow::{Context, Result};
+use damascene_core::Rect;
 
 use whisper_git::{WhisperApp, crash_log, host, screenshot_mode};
 

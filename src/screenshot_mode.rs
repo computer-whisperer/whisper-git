@@ -9,9 +9,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use anyhow::{Context, Result};
 use damascene_core::{App, BuildCx, Rect};
 use damascene_vulkano::Runner;
-use anyhow::{Context, Result};
 use vulkano::{
     Validated, VulkanLibrary,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
