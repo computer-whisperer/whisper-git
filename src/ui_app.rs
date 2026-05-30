@@ -1537,14 +1537,18 @@ impl WhisperApp {
     fn handle_modal_route(&mut self, key: &str) -> bool {
         // Scrim dismiss — match the specific overlay so we don't close
         // a modal when the user clicked outside the context menu (or
-        // vice versa).
+        // vice versa). Unknown scopes fall through so dismiss routes
+        // owned by other handlers (e.g. `wt_select:dismiss` in
+        // `handle_action`) still get a chance to run.
         if let Some(scope) = key.strip_suffix(":dismiss") {
             if scope == SIDEBAR_CTX_KEY {
                 self.context_menu = None;
-            } else if scope.starts_with("modal:") {
-                self.active_modal = None;
+                return true;
             }
-            return true;
+            if scope.starts_with("modal:") {
+                self.active_modal = None;
+                return true;
+            }
         }
 
         // Context-menu actions (`ctx:action`).
@@ -2693,7 +2697,7 @@ impl WhisperApp {
         }
         match (action, state.target) {
             ("checkout", ContextTarget::LocalBranch(name)) => {
-                self.run_op("Checkout", |t| t.repo.checkout_branch(&name));
+                self.run_op("Checkout", |t| t.active_repo().checkout_branch(&name));
             }
             ("create_worktree", ContextTarget::LocalBranch(name)) => {
                 self.open_worktree_modal_for_source(name);
@@ -2715,7 +2719,7 @@ impl WhisperApp {
             }
             ("checkout", ContextTarget::RemoteBranch { remote, branch }) => {
                 self.run_op("Checkout", |t| {
-                    t.repo.checkout_remote_branch(&remote, &branch)
+                    t.active_repo().checkout_remote_branch(&remote, &branch)
                 });
             }
             ("merge", ContextTarget::LocalBranch(name)) => {
@@ -2829,7 +2833,9 @@ impl WhisperApp {
                 }
             }
             ("checkout_detached", ContextTarget::Commit(oid)) => {
-                self.run_op("Checkout", move |t| t.repo.checkout_commit_detached(oid));
+                self.run_op("Checkout", move |t| {
+                    t.active_repo().checkout_commit_detached(oid)
+                });
             }
             ("create_branch", ContextTarget::Commit(oid)) => {
                 self.open_branch_modal_at(oid);
@@ -2869,7 +2875,7 @@ impl WhisperApp {
         }
         if let Some(branch) = action.strip_prefix("checkout_branch:") {
             let branch = branch.to_string();
-            self.run_op("Checkout", move |t| t.repo.checkout_branch(&branch));
+            self.run_op("Checkout", move |t| t.active_repo().checkout_branch(&branch));
             return true;
         }
         if let Some(source) = action.strip_prefix("merge_ref:") {
@@ -2976,7 +2982,7 @@ impl WhisperApp {
             }
             ConfirmAction::ResetToCommit { oid, mode } => {
                 self.run_op(reset_label(mode), move |t| {
-                    t.repo.reset_to_commit(oid, mode)
+                    t.active_repo().reset_to_commit(oid, mode)
                 });
             }
             ConfirmAction::ForcePush { remote, branch } => {

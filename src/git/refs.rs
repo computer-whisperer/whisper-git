@@ -92,6 +92,12 @@ impl GitRepo {
 
     /// Checkout a local branch by name
     pub fn checkout_branch(&self, name: &str) -> Result<()> {
+        // No working tree to materialize (bare repo, no linked worktree
+        // selected): there are no files to write, so "checkout" just means
+        // pointing HEAD at the branch. `checkout_tree` would error here.
+        if self.is_effectively_bare() {
+            return self.set_head_to(name);
+        }
         let branch = self
             .repo
             .find_branch(name, git2::BranchType::Local)
@@ -126,6 +132,16 @@ impl GitRepo {
             .repo
             .find_commit(oid)
             .with_context(|| format!("Commit '{}' not found", oid))?;
+
+        // No working tree (bare / no worktree selected): just detach HEAD
+        // at the commit; there are no files to write.
+        if self.is_effectively_bare() {
+            return self
+                .repo
+                .set_head_detached(oid)
+                .context("Failed to set HEAD detached");
+        }
+
         let tree = commit.tree().context("Failed to get commit tree")?;
 
         self.repo
@@ -176,16 +192,18 @@ impl GitRepo {
             .set_upstream(Some(&remote_branch_name))
             .context("Failed to set upstream")?;
 
-        // Checkout
-        let tree = commit.tree().context("Failed to get tree")?;
-        self.repo
-            .checkout_tree(
-                tree.as_object(),
-                Some(git2::build::CheckoutBuilder::new().safe()),
-            )
-            .context("Failed to checkout tree")?;
-
+        // Checkout. With no working tree (bare / no worktree selected),
+        // skip materializing files and just point HEAD at the new branch.
         let refname = format!("refs/heads/{}", branch);
+        if !self.is_effectively_bare() {
+            let tree = commit.tree().context("Failed to get tree")?;
+            self.repo
+                .checkout_tree(
+                    tree.as_object(),
+                    Some(git2::build::CheckoutBuilder::new().safe()),
+                )
+                .context("Failed to checkout tree")?;
+        }
         self.repo.set_head(&refname)?;
 
         Ok(())
