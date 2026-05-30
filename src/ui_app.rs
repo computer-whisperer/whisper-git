@@ -2875,7 +2875,9 @@ impl WhisperApp {
         }
         if let Some(branch) = action.strip_prefix("checkout_branch:") {
             let branch = branch.to_string();
-            self.run_op("Checkout", move |t| t.active_repo().checkout_branch(&branch));
+            self.run_op("Checkout", move |t| {
+                t.active_repo().checkout_branch(&branch)
+            });
             return true;
         }
         if let Some(source) = action.strip_prefix("merge_ref:") {
