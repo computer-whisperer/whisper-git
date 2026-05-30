@@ -4,7 +4,7 @@
 //! `git::DiffHunk` / `git::DiffLine` into the widget's pure
 //! data types; routes per-hunk Stage / Unstage keys.
 
-use aetna_core::{El, prelude::*};
+use damascene_core::{El, prelude::*};
 
 use crate::git::{self, FileStatus};
 use crate::repo_tab::{RepoTab, WorktreeView};

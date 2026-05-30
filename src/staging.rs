@@ -12,7 +12,7 @@
 //! - `discard_file:{path}` — destructive working-tree discard
 //! - `diff:{path}` — preview file's diff
 
-use aetna_core::{El, IconName, Selection, prelude::*};
+use damascene_core::{El, IconName, Selection, prelude::*};
 
 use crate::git::{FileStatus, FileStatusKind, SubmoduleInfo};
 use crate::repo_tab::{RepoTab, WorktreeView};
@@ -32,7 +32,7 @@ const WORKTREE_PILL_TRIGGER_HEIGHT: f32 = tokens::CONTROL_HEIGHT - 2.0 * tokens:
 /// - **≤ [`WORKTREE_PILL_LIMIT`] worktrees**: a pill bar built from
 ///   `tabs_list_from_triggers`. Pills are routed under
 ///   `wt_select:tab:{path}` — the standard `{list_key}:tab:{value}`
-///   shape that aetna's tabs use. `ui_app.rs` strips that prefix and
+///   shape that damascene's tabs use. `ui_app.rs` strips that prefix and
 ///   calls `RepoTab::select_worktree` with the resolved path.
 /// - **> [`WORKTREE_PILL_LIMIT`] worktrees**: a single dropdown trigger
 ///   keyed `wt_select` (toggle) plus an overlay menu emitted by
@@ -89,7 +89,7 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
 /// root of the El tree (alongside other popover layers) so it paints
 /// above the main layout.
 pub fn worktree_picker_overlay(tab: &RepoTab) -> Option<El> {
-    use aetna_core::widgets::popover::{dropdown, menu_item};
+    use damascene_core::widgets::popover::{dropdown, menu_item};
 
     if !tab.worktree_picker_open
         || !tab.has_worktree_selector()
@@ -136,7 +136,7 @@ pub fn worktree_picker_overlay(tab: &RepoTab) -> Option<El> {
 /// pill stays readable. Each option is a [`tab_trigger_content`] keyed
 /// `wt_select:tab:{path}`.
 fn worktree_pill_bar(tab: &RepoTab) -> El {
-    use aetna_core::widgets::tabs::{tab_trigger_content, tabs_list_from_triggers};
+    use damascene_core::widgets::tabs::{tab_trigger_content, tabs_list_from_triggers};
 
     let names: Vec<String> = tab
         .worktree_order
@@ -198,7 +198,7 @@ fn worktree_pill_bar(tab: &RepoTab) -> El {
 /// keyed `wt_select` (bare). Toggling it flips the picker open; the
 /// matching [`worktree_picker_overlay`] paints the option menu.
 fn worktree_dropdown_trigger(tab: &RepoTab) -> El {
-    use aetna_core::widgets::select::select_trigger;
+    use damascene_core::widgets::select::select_trigger;
 
     let active_view = tab
         .active_worktree
@@ -407,7 +407,7 @@ fn file_section(
     };
 
     let header_fill = if is_danger {
-        tokens::DESTRUCTIVE.with_alpha(40)
+        tokens::DESTRUCTIVE.with_alpha_u8(40)
     } else {
         tokens::MUTED
     };

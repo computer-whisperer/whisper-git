@@ -1,12 +1,12 @@
 //! Commit-graph history view.
 //!
 //! `GraphLayout` is the lane-assignment algorithm — pure data, no
-//! aetna types. It walks topologically-ordered commits and assigns
+//! damascene types. It walks topologically-ordered commits and assigns
 //! each one a lane index plus inherits the lane palette from
 //! [`LANE_COLORS`]. Ported from the pre-aetna `views/commit_graph.rs`
 //! with the terminal-graph parts (Bezier merge curves, scrollbar
 //! widget, search bar) stripped — Phase 6 paints lane lines per row
-//! via the `commit_node` shader and lets aetna own scroll + hit-test.
+//! via the `commit_node` shader and lets damascene own scroll + hit-test.
 //!
 //! `history_view` composes a `virtual_list_dyn` and per-row `El`. Row
 //! heights are time-spaced — bigger time deltas between consecutive
@@ -16,10 +16,10 @@
 
 use std::collections::HashMap;
 
-use aetna_core::image::Image;
-use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
-use aetna_core::widgets::text_input::text_input;
-use aetna_core::{Color, El, Selection, prelude::*};
+use damascene_core::image::Image;
+use damascene_core::vector::{PathBuilder, VectorAsset, VectorLineCap, VectorPath};
+use damascene_core::widgets::text_input::text_input;
+use damascene_core::{Color, El, Selection, prelude::*};
 use git2::Oid;
 
 use crate::ci::{CiState, ProviderCommitRollup};
@@ -53,7 +53,7 @@ const TIME_BASE_SECONDS: f64 = 7200.0;
 /// — 30 days. Longer gaps don't make rows any taller.
 const TIME_MAX_DELTA_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 
-/// Lane palette — picks from aetna tokens that are stable across
+/// Lane palette — picks from damascene tokens that are stable across
 /// theme swaps. The fixed RGB constants in the original whisper-git
 /// palette would have re-introduced theme drift.
 pub const LANE_COLORS: [Color; 6] = [
@@ -81,14 +81,14 @@ pub const ORPHAN_COLOR: Color = tokens::MUTED_FOREGROUND;
 /// active theme, but they also shouldn't read to the linter as drift
 /// from the design system.
 const IDENTICON_COLORS: &[Color] = &[
-    Color::token("identicon-red", 231, 76, 60, 255),
-    Color::token("identicon-green", 52, 168, 83, 255),
-    Color::token("identicon-blue", 66, 133, 244, 255),
-    Color::token("identicon-purple", 155, 89, 182, 255),
-    Color::token("identicon-amber", 243, 156, 18, 255),
-    Color::token("identicon-teal", 44, 187, 180, 255),
-    Color::token("identicon-deep-orange", 233, 100, 44, 255),
-    Color::token("identicon-indigo", 118, 128, 229, 255),
+    Color::srgb_token("identicon-red", 231, 76, 60, 255),
+    Color::srgb_token("identicon-green", 52, 168, 83, 255),
+    Color::srgb_token("identicon-blue", 66, 133, 244, 255),
+    Color::srgb_token("identicon-purple", 155, 89, 182, 255),
+    Color::srgb_token("identicon-amber", 243, 156, 18, 255),
+    Color::srgb_token("identicon-teal", 44, 187, 180, 255),
+    Color::srgb_token("identicon-deep-orange", 233, 100, 44, 255),
+    Color::srgb_token("identicon-indigo", 118, 128, 229, 255),
 ];
 
 /// Pixel diameter of the author identicon — sized to align with row
@@ -130,7 +130,7 @@ fn author_color(author: &str) -> Color {
 /// `gravatar` is `Some` when the avatar cache has finished fetching
 /// and decoding for this email; `None` covers in-flight, failed (404),
 /// and not-yet-requested. `key` is required so the avatar
-/// participates in pointer hit-testing — aetna only fires tooltips on
+/// participates in pointer hit-testing — damascene only fires tooltips on
 /// keyed elements.
 fn author_avatar(author: &str, gravatar: Option<Image>, key: String) -> El {
     if let Some(img) = gravatar {
@@ -912,7 +912,7 @@ fn graph_cell(
 /// orphan / clean-worktree rendering inside commit rows.
 ///
 /// `key` is required so the pill takes part in pointer hit-testing
-/// (aetna only fires tooltips and dispatches clicks on keyed nodes).
+/// (damascene only fires tooltips and dispatches clicks on keyed nodes).
 /// Pills with a `worktree:` key prefix opt into the focus chain so
 /// keyboard navigation can land on them; other keys (informational
 /// branch / tag / HEAD / ORPHAN / PINNED chrome) stay out of focus
@@ -929,8 +929,8 @@ fn pill(
         .padding(Sides::xy(tokens::SPACE_2, PILL_PAD_Y))
         .gap(tokens::SPACE_1)
         .align(Align::Center)
-        .fill(fg.with_alpha(bg_alpha))
-        .stroke(fg.with_alpha(120))
+        .fill(fg.with_alpha_u8(bg_alpha))
+        .stroke(fg.with_alpha_u8(120))
         .translate(0.0, PILL_DOWN_NUDGE)
         .key(key);
     if focusable {
@@ -1101,7 +1101,7 @@ fn build_row(
     // "Author · time" text keeps the right cluster predictable in
     // width across rows. Tooltips on each leaf carry the long-form
     // info that doesn't fit in the cell. Each leaf carries a
-    // `commit:{idx}.<part>` key so it's a hit-test target (aetna's
+    // `commit:{idx}.<part>` key so it's a hit-test target (damascene's
     // tooltip pipeline only fires on keyed nodes); the click handler
     // strips the trailing `.<part>` and routes the click to commit
     // selection on the row's idx.
@@ -1189,7 +1189,7 @@ fn build_row(
         // helps the eye track across long lines without competing with
         // the selected-row highlight (which paints its own fill via
         // `.selected()`).
-        outer = outer.fill(tokens::MUTED.with_alpha(40));
+        outer = outer.fill(tokens::MUTED.with_alpha_u8(40));
     }
     outer
 }

@@ -1,6 +1,6 @@
 //! whisper-git library crate.
 //!
-//! UI is built on the aetna toolkit; the renderer is `aetna-vulkano`
+//! UI is built on the damascene toolkit; the renderer is `damascene-vulkano`
 //! over our own `Arc<Device>` / `Arc<Queue>`. The git backend under
 //! `git/` is preserved verbatim from the pre-port app.
 

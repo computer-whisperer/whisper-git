@@ -10,7 +10,7 @@
 
 use std::sync::LazyLock;
 
-use aetna_core::{El, IconName, SvgIcon, prelude::*};
+use damascene_core::{El, IconName, SvgIcon, prelude::*};
 
 use crate::recent::RecentRepoEntry;
 

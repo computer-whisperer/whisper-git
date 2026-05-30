@@ -1,7 +1,7 @@
 //! Branch sidebar composition.
 //!
 //! Renders the four collapsible sections (Local / Remote / Tags /
-//! Stashes) as plain aetna primitives. Toggle keys: `section:<KEY>`.
+//! Stashes) as plain damascene primitives. Toggle keys: `section:<KEY>`.
 //! Item keys: `branch:<name>`, `remote:<remote>/<branch>`,
 //! `tag:<name>`, `stash:<idx>`.
 //!
@@ -11,7 +11,7 @@
 //! lists for submodules. Both are properties of the active
 //! worktree, not the repo.
 
-use aetna_core::{El, IconName, prelude::*, widgets::sidebar::sidebar as sidebar_panel};
+use damascene_core::{El, IconName, prelude::*, widgets::sidebar::sidebar as sidebar_panel};
 
 use crate::repo_tab::{RepoTab, SidebarSection, SidebarSelection};
 

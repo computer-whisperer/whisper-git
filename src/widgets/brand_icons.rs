@@ -10,7 +10,7 @@
 
 use std::sync::LazyLock;
 
-use aetna_core::SvgIcon;
+use damascene_core::SvgIcon;
 
 const GITHUB_SVG: &str = include_str!("../../assets/icons/github.svg");
 const GITLAB_SVG: &str = include_str!("../../assets/icons/gitlab.svg");

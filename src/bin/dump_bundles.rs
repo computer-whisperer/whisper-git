@@ -1,4 +1,4 @@
-//! Dump aetna bundle artifacts (svg + tree + draw_ops + lint +
+//! Dump damascene bundle artifacts (svg + tree + draw_ops + lint +
 //! shader_manifest) for whisper-git's scenes. CPU-only: no GPU, no
 //! window.
 //!
@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use aetna_core::{App, BuildCx, Rect, render_bundle, write_bundle};
+use damascene_core::{App, BuildCx, Rect, render_bundle, write_bundle};
 use anyhow::{Context, Result};
 
 use whisper_git::{

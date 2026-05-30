@@ -27,9 +27,9 @@
 
 use std::path::PathBuf;
 
-use aetna_core::tree::Color;
-use aetna_core::vector::{PathBuilder, VectorAsset, VectorLineCap};
-use aetna_core::{App, BuildCx, El, prelude::*};
+use damascene_core::tree::Color;
+use damascene_core::vector::{PathBuilder, VectorAsset, VectorLineCap};
+use damascene_core::{App, BuildCx, El, prelude::*};
 use anyhow::Result;
 use whisper_git::screenshot_mode;
 
@@ -37,8 +37,8 @@ const ROW_H: f32 = 28.0;
 const COL_W: f32 = 72.0;
 const NUM_ROWS: usize = 14;
 const LINE_W: f32 = 2.0;
-const LINE_COLOR: Color = Color::rgb(120, 200, 240);
-const NODE_COLOR: Color = Color::rgb(244, 114, 182);
+const LINE_COLOR: Color = Color::srgb_u8(120, 200, 240);
+const NODE_COLOR: Color = Color::srgb_u8(244, 114, 182);
 
 /// Where on this row, in {none, top, bottom, both, node}, the curve
 /// from lane 0 to lane 1 reaches into. Drives the geometry the row
@@ -84,7 +84,7 @@ fn lane_x(lane: usize) -> f32 {
 /// Build the geometry for one row at the given vertical extent. `y0`
 /// and `y1` are the top and bottom of the row inside whatever
 /// coordinate system the caller is composing in.
-fn build_row_paths(kind: RowKind, y0: f32, y1: f32) -> Vec<aetna_core::vector::VectorPath> {
+fn build_row_paths(kind: RowKind, y0: f32, y1: f32) -> Vec<damascene_core::vector::VectorPath> {
     let mut paths = Vec::new();
     let mid_y = (y0 + y1) * 0.5;
     let h = y1 - y0;

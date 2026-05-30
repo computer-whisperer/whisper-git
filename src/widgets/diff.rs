@@ -6,7 +6,7 @@
 //! Whisper-git's `diff_view::diff_view(tab)` is the thin adapter that
 //! resolves the right hunks (working-tree vs commit) and builds the
 //! input. Once the API settles this module is a candidate for moving
-//! upstream into aetna's catalog.
+//! upstream into damascene's catalog.
 //!
 //! The body is a single [`virtual_list_dyn`]: hunks are flattened into
 //! a row stream where hunk-header rows interleave with line rows, and
@@ -14,7 +14,7 @@
 //! 5,000-line diff cheap to scroll. The flat stream also matches
 //! Github's hunk-header-as-band layout — there is no per-hunk card.
 
-use aetna_core::{El, prelude::*};
+use damascene_core::{El, prelude::*};
 
 /// One line in a diff. The `kind` drives row + gutter color; the
 /// optional `highlights` are byte ranges within `content` that paint
@@ -387,14 +387,14 @@ fn lineno_col(s: String) -> El {
 fn backgrounds_for(kind: DiffLineKind) -> (Option<Color>, Color) {
     match kind {
         DiffLineKind::Addition => (
-            Some(tokens::SUCCESS.with_alpha(ROW_BG_ALPHA)),
-            tokens::SUCCESS.with_alpha(GUTTER_TINT_ALPHA),
+            Some(tokens::SUCCESS.with_alpha_u8(ROW_BG_ALPHA)),
+            tokens::SUCCESS.with_alpha_u8(GUTTER_TINT_ALPHA),
         ),
         DiffLineKind::Deletion => (
-            Some(tokens::DESTRUCTIVE.with_alpha(ROW_BG_ALPHA)),
-            tokens::DESTRUCTIVE.with_alpha(GUTTER_TINT_ALPHA),
+            Some(tokens::DESTRUCTIVE.with_alpha_u8(ROW_BG_ALPHA)),
+            tokens::DESTRUCTIVE.with_alpha_u8(GUTTER_TINT_ALPHA),
         ),
-        DiffLineKind::Context => (None, tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA)),
+        DiffLineKind::Context => (None, tokens::MUTED.with_alpha_u8(GUTTER_TINT_ALPHA)),
     }
 }
 
@@ -436,8 +436,8 @@ fn side_half(line: Option<&DiffLine>, side: Side) -> El {
     let (row_bg, gutter_overlay) = if line.is_some() {
         backgrounds_for(kind_for_tint)
     } else {
-        let muted = tokens::MUTED.with_alpha(ROW_BG_ALPHA);
-        let muted_gutter = tokens::MUTED.with_alpha(GUTTER_TINT_ALPHA + 24);
+        let muted = tokens::MUTED.with_alpha_u8(ROW_BG_ALPHA);
+        let muted_gutter = tokens::MUTED.with_alpha_u8(GUTTER_TINT_ALPHA + 24);
         (Some(muted), muted_gutter)
     };
 
@@ -535,8 +535,8 @@ fn pair_lines(lines: &[DiffLine]) -> Vec<PairedRow> {
 /// text on tinted bg hurts readability for context-rich diffs.
 fn line_content(line: &DiffLine) -> El {
     let highlight_bg = match line.kind {
-        DiffLineKind::Addition => Some(tokens::SUCCESS.with_alpha(HIGHLIGHT_BG_ALPHA)),
-        DiffLineKind::Deletion => Some(tokens::DESTRUCTIVE.with_alpha(HIGHLIGHT_BG_ALPHA)),
+        DiffLineKind::Addition => Some(tokens::SUCCESS.with_alpha_u8(HIGHLIGHT_BG_ALPHA)),
+        DiffLineKind::Deletion => Some(tokens::DESTRUCTIVE.with_alpha_u8(HIGHLIGHT_BG_ALPHA)),
         DiffLineKind::Context => None,
     };
 

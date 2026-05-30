@@ -1,11 +1,11 @@
 //! Modal dialog compositions.
 //!
-//! Each modal is an aetna `overlay([scrim, modal_panel(...)])`. The
+//! Each modal is an damascene `overlay([scrim, modal_panel(...)])`. The
 //! scrim emits `{key}:dismiss` on outside-click; Escape is handled
-//! globally by aetna and arrives as `UiEventKind::Escape` so the host
+//! globally by damascene and arrives as `UiEventKind::Escape` so the host
 //! can close whichever modal is currently active.
 
-use aetna_core::{El, IconName, Selection, prelude::*};
+use damascene_core::{El, IconName, Selection, prelude::*};
 
 use crate::config::Config;
 use crate::git::WorktreeInfo;
@@ -133,7 +133,7 @@ pub fn confirm_modal(title: &str, body: &str, ok_label: &str, destructive: bool)
 }
 
 pub fn error_modal(title: &str, body: &str) -> El {
-    // Icon + paragraph stacked, not paired in a row: aetna's
+    // Icon + paragraph stacked, not paired in a row: damascene's
     // row-with-wrappable-child sizing computes the row's hug height
     // from the icon's single-line height first, leaving the
     // paragraph with one line of allocation and forcing it to

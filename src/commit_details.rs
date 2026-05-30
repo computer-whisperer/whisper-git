@@ -8,7 +8,7 @@
 //! cached on `RepoTab::commit_detail` so opening the pane doesn't
 //! rerun libgit2 every frame.
 
-use aetna_core::{El, IconName, prelude::*};
+use damascene_core::{El, IconName, prelude::*};
 
 use crate::repo_tab::RepoTab;
 

@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use aetna_core::Rect;
+use damascene_core::Rect;
 use anyhow::{Context, Result};
 
 use whisper_git::{WhisperApp, crash_log, host, screenshot_mode};

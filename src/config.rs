@@ -45,7 +45,7 @@ pub struct Config {
 }
 
 fn default_sidebar_w() -> f32 {
-    aetna_core::tokens::SIDEBAR_WIDTH
+    damascene_core::tokens::SIDEBAR_WIDTH
 }
 fn default_right_w() -> f32 {
     420.0

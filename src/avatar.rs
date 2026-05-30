@@ -3,7 +3,7 @@
 //! `AvatarCache` is the per-app coordinator: it tracks which emails
 //! we've requested, spawns a worker thread per request to download +
 //! decode + cache, and surfaces completed RGBA pixel buffers as
-//! [`aetna_core::Image`] handles for direct use with the `image()`
+//! [`damascene_core::Image`] handles for direct use with the `image()`
 //! widget.
 //!
 //! Disk cache lives at `$XDG_CACHE_HOME/whisper-git/avatars/{hash}.png`
@@ -16,7 +16,7 @@ use std::io::Read as _;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use aetna_core::image::Image;
+use damascene_core::image::Image;
 use winit::event_loop::EventLoopProxy;
 
 /// Side length of the avatar image we request from Gravatar and store

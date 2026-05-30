@@ -1,16 +1,16 @@
-//! Headless screenshot mode: drives the same `aetna_vulkano::Runner`
+//! Headless screenshot mode: drives the same `damascene_vulkano::Runner`
 //! used in the windowed host into an offscreen framebuffer, captures
 //! the result, and writes a PNG. No surface, no swapchain.
 //!
-//! Coexists with the `aetna-core` bundle dump (`bin/dump_bundles`).
+//! Coexists with the `damascene-core` bundle dump (`bin/dump_bundles`).
 //! Bundle dumps are CPU-only and verify layout; this path renders
 //! through the real GPU pipeline and verifies shader output.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use aetna_core::{App, BuildCx, Rect};
-use aetna_vulkano::Runner;
+use damascene_core::{App, BuildCx, Rect};
+use damascene_vulkano::Runner;
 use anyhow::{Context, Result};
 use vulkano::{
     Validated, VulkanLibrary,
@@ -68,7 +68,7 @@ pub fn run<A: App + 'static>(
 
     // Offscreen target — single image, no swapchain. TRANSFER_SRC so we
     // can copy out for capture; TRANSFER_DST for backdrop snapshot copies
-    // (aetna-vulkano performs them when a backdrop-sampling shader is
+    // (damascene-vulkano performs them when a backdrop-sampling shader is
     // present).
     let target_image = Image::new(
         mem_alloc.clone(),
@@ -185,7 +185,7 @@ fn select_headless_device(instance: &Arc<Instance>) -> Result<(Arc<Device>, Arc<
         physical_device,
         DeviceCreateInfo {
             enabled_extensions: device_extensions,
-            enabled_features: aetna_vulkano::required_device_features(),
+            enabled_features: damascene_vulkano::required_device_features(),
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()
@@ -260,13 +260,13 @@ fn capture_to_buffer(
     })
 }
 
-fn clear_color(theme: &aetna_core::Theme) -> [f32; 4] {
-    let c = theme.resolve(aetna_core::tokens::BACKGROUND);
+fn clear_color(theme: &damascene_core::Theme) -> [f32; 4] {
+    let c = theme.resolve(damascene_core::tokens::BACKGROUND);
     [
-        srgb_to_linear(c.r as f32 / 255.0),
-        srgb_to_linear(c.g as f32 / 255.0),
-        srgb_to_linear(c.b as f32 / 255.0),
-        c.a as f32 / 255.0,
+        srgb_to_linear(c.r),
+        srgb_to_linear(c.g),
+        srgb_to_linear(c.b),
+        c.a,
     ]
 }
 

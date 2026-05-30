@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use aetna_core::{
+use damascene_core::{
     App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent, UiEventKind,
     UiKey,
     prelude::*,
@@ -338,7 +338,7 @@ pub struct WhisperApp {
     pub focus_requests: Vec<String>,
     /// Global text selection. Aetna's `text_input` / `text_area`
     /// `apply_event` helpers fold per-input selection state through
-    /// this single value (see `aetna_core::Selection::within`).
+    /// this single value (see `damascene_core::Selection::within`).
     pub selection: Selection,
     /// Persistent user settings. Loaded at startup, saved on each
     /// successful settings change. `Default` for fixture / dump scenes.
@@ -646,7 +646,7 @@ impl App for WhisperApp {
                 // Resizable layout: sidebar | resize_handle | center
                 // | resize_handle | right. The handle widgets live as
                 // siblings inside the row and route drag events to the
-                // app via their keys; aetna's `apply_event_fixed` folds
+                // app via their keys; damascene's `apply_event_fixed` folds
                 // the drag delta back into the size value.
                 let children: Vec<El> = vec![
                     sidebar::sidebar(tab).width(Size::Fixed(self.sidebar_w)),
@@ -802,7 +802,7 @@ impl App for WhisperApp {
         // Resize-handle drags. Each handle owns its anchor state on
         // `WhisperApp`; PointerUp persists the new width to disk so
         // the layout survives a relaunch. The `Side` parameter tells
-        // aetna which sibling owns the value — `Start` for the
+        // damascene which sibling owns the value — `Start` for the
         // left-anchored sidebar, `End` for the right-anchored pane
         // (so drag-left grows it, drag-right shrinks it).
         if resize_handle::apply_event_fixed(
@@ -898,7 +898,7 @@ impl App for WhisperApp {
                 apply_routed_text_input(&mut form.name, &mut self.selection, "tag:name", &event);
             }
             Some(ActiveModal::PullPicker { form, .. }) => {
-                aetna_core::widgets::radio::apply_event(
+                damascene_core::widgets::radio::apply_event(
                     &mut form.source,
                     &event,
                     "pull:source",
@@ -906,7 +906,7 @@ impl App for WhisperApp {
                 );
             }
             Some(ActiveModal::PushPicker { form, .. }) => {
-                aetna_core::widgets::radio::apply_event(
+                damascene_core::widgets::radio::apply_event(
                     &mut form.remote,
                     &event,
                     "push:remote",
@@ -920,7 +920,7 @@ impl App for WhisperApp {
                 );
             }
             Some(ActiveModal::MergeOptions { form, .. }) => {
-                aetna_core::widgets::radio::apply_event(
+                damascene_core::widgets::radio::apply_event(
                     &mut form.strategy,
                     &event,
                     "merge:strategy",
@@ -4607,8 +4607,8 @@ fn parse_sidebar_target(route: &str) -> Option<ContextTarget> {
 }
 
 fn context_menu_layer(state: &ContextMenuState, tab: Option<&RepoTab>) -> El {
-    use aetna_core::widgets::popover::{context_menu, menu_item};
-    use aetna_core::widgets::separator::separator;
+    use damascene_core::widgets::popover::{context_menu, menu_item};
+    use damascene_core::widgets::separator::separator;
 
     let items: Vec<El> = match &state.target {
         ContextTarget::LocalBranch(_) => vec![
@@ -4672,8 +4672,8 @@ fn commit_context_menu_items(
     tab: Option<&RepoTab>,
     expanded_groups: &[String],
 ) -> Vec<El> {
-    use aetna_core::widgets::popover::menu_item;
-    use aetna_core::widgets::separator::separator;
+    use damascene_core::widgets::popover::menu_item;
+    use damascene_core::widgets::separator::separator;
 
     let mut items = vec![
         menu_item("Copy SHA").key("ctx:copy_sha"),
@@ -4819,7 +4819,7 @@ fn commit_menu_group_toggle(
     label: &str,
     count: Option<usize>,
 ) -> El {
-    use aetna_core::widgets::popover::menu_item;
+    use damascene_core::widgets::popover::menu_item;
 
     let expanded = commit_menu_group_expanded(expanded_groups, group);
     let verb = if expanded { "Hide" } else { "Show" };
@@ -4831,8 +4831,8 @@ fn commit_menu_group_toggle(
 }
 
 fn worktree_context_menu_items(key: &str, tab: Option<&RepoTab>) -> Vec<El> {
-    use aetna_core::widgets::popover::menu_item;
-    use aetna_core::widgets::separator::separator;
+    use damascene_core::widgets::popover::menu_item;
+    use damascene_core::widgets::separator::separator;
 
     let mut items = vec![
         menu_item("Switch Staging").key("ctx:switch_worktree"),
@@ -4873,7 +4873,7 @@ fn reset_label(mode: git2::ResetType) -> &'static str {
 
 fn tab_bar(app: &WhisperApp) -> El {
     // Aetna's `editor_tabs` wrapper is the doc-tab strip we want, but
-    // it doesn't thread a per-tab leading element. Per aetna's
+    // it doesn't thread a per-tab leading element. Per damascene's
     // dogfood path (see widget_kit.md and the editor_tab doc), apps
     // that need a leading slot compose the strip themselves with
     // `editor_tab` calls + the trailing `+` add button.
@@ -4885,8 +4885,8 @@ fn tab_bar(app: &WhisperApp) -> El {
     // should leave whisper-git on the welcome view (not refuse), and
     // (b) `+` opens the rfd file picker asynchronously rather than
     // minting a fresh value synchronously.
-    use aetna_core::widgets::button::icon_button;
-    use aetna_core::widgets::editor_tabs::{EditorTabsConfig, editor_tab, editor_tab_add_key};
+    use damascene_core::widgets::button::icon_button;
+    use damascene_core::widgets::editor_tabs::{EditorTabsConfig, editor_tab, editor_tab_add_key};
 
     let active = app.active_tab.to_string();
     let config = EditorTabsConfig::default();
@@ -4950,7 +4950,7 @@ fn tab_ci_pip(tab: &RepoTab, idx: usize) -> Option<El> {
     // returns keyed nodes). Routing `tab_ci:{idx}` back to a tab
     // select keeps the visual area clickable for switching tabs.
     Some(
-        El::new(aetna_core::tree::Kind::Group)
+        El::new(damascene_core::tree::Kind::Group)
             .width(Size::Fixed(8.0))
             .height(Size::Fixed(8.0))
             .fill(color)
@@ -5102,8 +5102,8 @@ fn sibling_submodule_strip(outer: &RepoTab, focus: &RepoTab) -> Option<El> {
         .gap(tokens::SPACE_1)
         .align(Align::Center)
         .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-        .fill(color.with_alpha(28))
-        .stroke(color.with_alpha(96))
+        .fill(color.with_alpha_u8(28))
+        .stroke(color.with_alpha_u8(96))
         .key(format!("submodule:switch:{}", sib.path))
         .focusable()
         .cursor(Cursor::Pointer)
@@ -5355,7 +5355,7 @@ fn op_status_lines(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> Vec<
 }
 
 fn status_row(verb: &str, label: &str, secs: u64) -> El {
-    use aetna_core::widgets::spinner::spinner_with_color;
+    use damascene_core::widgets::spinner::spinner_with_color;
     let stalled = secs >= STALL_WARN_SECS;
     let arc_color = if stalled {
         tokens::DESTRUCTIVE
@@ -5424,8 +5424,8 @@ fn ci_badges(tab: &RepoTab) -> Vec<El> {
                 .gap(tokens::SPACE_1)
                 .align(Align::Center)
                 .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))
-                .fill(color.with_alpha(28))
-                .stroke(color.with_alpha(96));
+                .fill(color.with_alpha_u8(28))
+                .stroke(color.with_alpha_u8(96));
             if result.status.url.is_some() {
                 badge = badge.key(format!("ci:open:{idx}")).focusable();
             }

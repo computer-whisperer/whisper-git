@@ -1,6 +1,6 @@
-//! Windowed host: winit ApplicationHandler that drives `aetna_vulkano::Runner`.
+//! Windowed host: winit ApplicationHandler that drives `damascene_vulkano::Runner`.
 //!
-//! Modeled on `aetna-vulkano-demo/src/lib.rs`. Whisper-git-specific bits:
+//! Modeled on `damascene-vulkano-demo/src/lib.rs`. Whisper-git-specific bits:
 //! `WHISPER_GPU` device-preference hook (preserved from the legacy
 //! `VulkanContext`) and a `with_visible(false)` toggle so screenshot
 //! mode can reuse this path with a hidden window.
@@ -8,12 +8,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use aetna_core::{
+use damascene_core::{
     App, BuildCx, Cursor, KeyModifiers, Pointer, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
     clipboard,
     widgets::text_input::{self, ClipboardKind},
 };
-use aetna_vulkano::Runner;
+use damascene_vulkano::Runner;
 use anyhow::{Context, Result};
 use vulkano::{
     VulkanLibrary,
@@ -149,7 +149,7 @@ struct Host<A: HostApp> {
 }
 
 /// MSAA samples per pixel for the host's color attachment. Matches
-/// the `aetna-vulkano-demo` default. Set to `1` to disable MSAA — the
+/// the `damascene-vulkano-demo` default. Set to `1` to disable MSAA — the
 /// host then skips the multisampled image and binds only the swapchain
 /// image per framebuffer.
 const DEFAULT_SAMPLE_COUNT: u32 = 4;
@@ -530,7 +530,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                 );
                 let prepare = rcx.runner.prepare(&mut tree, viewport, scale_factor);
 
-                // Reflect the resolved aetna cursor onto the OS window
+                // Reflect the resolved damascene cursor onto the OS window
                 // each frame. winit dedupes set_cursor under the hood
                 // when the icon hasn't changed, so this is a cheap call
                 // even when nothing's hovered.
@@ -591,7 +591,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
 
                 match future.map_err(|e| e.unwrap()) {
                     Ok(fence) => {
-                        // Serial wait — see aetna-vulkano-demo for the
+                        // Serial wait — see damascene-vulkano-demo for the
                         // reasoning. Move to a SubbufferAllocator when
                         // perf matters.
                         fence.wait(None).expect("frame fence wait");
@@ -675,7 +675,7 @@ pub fn select_device_and_queue(
         physical_device,
         DeviceCreateInfo {
             enabled_extensions: device_extensions,
-            enabled_features: aetna_vulkano::required_device_features(),
+            enabled_features: damascene_vulkano::required_device_features(),
             queue_create_infos: vec![QueueCreateInfo {
                 queue_family_index,
                 ..Default::default()
@@ -842,13 +842,13 @@ fn key_modifiers(mods: winit::keyboard::ModifiersState) -> KeyModifiers {
     }
 }
 
-fn clear_color(theme: &aetna_core::Theme) -> [f32; 4] {
-    let c = theme.resolve(aetna_core::tokens::BACKGROUND);
+fn clear_color(theme: &damascene_core::Theme) -> [f32; 4] {
+    let c = theme.resolve(damascene_core::tokens::BACKGROUND);
     [
-        srgb_to_linear(c.r as f32 / 255.0),
-        srgb_to_linear(c.g as f32 / 255.0),
-        srgb_to_linear(c.b as f32 / 255.0),
-        c.a as f32 / 255.0,
+        srgb_to_linear(c.r),
+        srgb_to_linear(c.g),
+        srgb_to_linear(c.b),
+        c.a,
     ]
 }
 
@@ -862,7 +862,7 @@ fn srgb_to_linear(c: f32) -> f32 {
 
 fn copy_current_selection<A: App>(
     app: &A,
-    ui_state: &aetna_core::state::UiState,
+    ui_state: &damascene_core::state::UiState,
     clipboard: Option<&mut arboard::Clipboard>,
 ) {
     let Some(text) = selected_text_for_app(app, ui_state) else {
@@ -877,7 +877,7 @@ fn copy_current_selection<A: App>(
 fn dispatch_app_event<A: App>(
     app: &mut A,
     event: UiEvent,
-    ui_state: &aetna_core::state::UiState,
+    ui_state: &damascene_core::state::UiState,
     clipboard: &mut Option<arboard::Clipboard>,
     last_primary: &mut String,
 ) {
@@ -890,7 +890,7 @@ fn dispatch_app_event<A: App>(
 
 fn sync_primary_selection<A: App>(
     app: &A,
-    ui_state: &aetna_core::state::UiState,
+    ui_state: &damascene_core::state::UiState,
     clipboard: Option<&mut arboard::Clipboard>,
     last_primary: &mut String,
 ) {
@@ -906,11 +906,11 @@ fn sync_primary_selection<A: App>(
     *last_primary = text;
 }
 
-fn selected_text_for_app<A: App>(app: &A, ui_state: &aetna_core::state::UiState) -> Option<String> {
+fn selected_text_for_app<A: App>(app: &A, ui_state: &damascene_core::state::UiState) -> Option<String> {
     let theme = app.theme();
     let cx = BuildCx::new(&theme).with_ui_state(ui_state);
     let tree = app.build(&cx);
-    aetna_core::selected_text(&tree, &app.selection())
+    damascene_core::selected_text(&tree, &app.selection())
 }
 
 fn paste_text_from_clipboard(
@@ -960,7 +960,7 @@ mod primary {
 /// CSS / winit's vocabulary so this is a straight translation; the
 /// wildcard arm is a forward-compat safety net since `Cursor` is
 /// `non_exhaustive`. Mirrors the helper in
-/// `aetna-winit-wgpu/src/lib.rs::winit_cursor` (we'd re-export it but
+/// `damascene-winit-wgpu/src/lib.rs::winit_cursor` (we'd re-export it but
 /// that crate ties in wgpu, which we don't want as a transitive dep
 /// just for this one function).
 fn winit_cursor(c: Cursor) -> CursorIcon {
