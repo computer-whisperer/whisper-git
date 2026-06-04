@@ -70,7 +70,7 @@ fn main() -> Result<()> {
     }
 
     if total_findings > 0 {
-        eprintln!("\n{total_findings} total lint findings");
+        anyhow::bail!("{total_findings} total lint findings");
     }
     Ok(())
 }

@@ -47,3 +47,25 @@ jobs:
           sudo apt-get install -y libvulkan-dev libwayland-dev libxkbcommon-dev libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+
+  bundle-lint:
+    name: Bundle lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history so the history/CI-dot scenes have real commit
+          # rows rather than a single shallow tip.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev libwayland-dev libxkbcommon-dev libdbus-1-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Dirty a tracked file so diff scenes render
+        # The diff_view scenes pick the first unstaged file; a clean
+        # checkout would silently skip them.
+        run: echo "// ci diff probe" >> src/main.rs
+      - name: Dump bundles and assert no lint findings
+        run: cargo run --bin dump_bundles
