@@ -157,10 +157,22 @@ where
     I: IntoIterator<Item = E>,
     E: Into<El>,
 {
-    overlay([
-        scrim(format!("{key}:dismiss")),
-        modal_panel(title, body).block_pointer(),
-    ])
+    overlays_panel_sized(key, title, None, body)
+}
+
+/// `overlays_panel` with an optional width override for dialogs whose
+/// rows don't fit `modal_panel`'s stock 420px (e.g. the token modal's
+/// host label + input + button rows).
+fn overlays_panel_sized<I, E>(key: &str, title: &str, width: Option<f32>, body: I) -> El
+where
+    I: IntoIterator<Item = E>,
+    E: Into<El>,
+{
+    let mut panel = modal_panel(title, body).block_pointer();
+    if let Some(w) = width {
+        panel = panel.width(Size::Fixed(w));
+    }
+    overlay([scrim(format!("{key}:dismiss")), panel])
 }
 
 /// Open-repository picker. Shown when the tab-bar `+` is clicked.
@@ -860,7 +872,10 @@ pub fn token_modal(
 
     let body = form(sections);
 
-    overlays_panel(MODAL_TOKEN_KEY, "Manage tokens", [body])
+    // Wider than the stock 420px: the GitLab edit rows stack a fixed
+    // 180px host label, the token input, and Save/Cancel buttons —
+    // at 420px the input collapses to ~60px and clips its contents.
+    overlays_panel_sized(MODAL_TOKEN_KEY, "Manage tokens", Some(560.0), [body])
 }
 
 /// Render one row of the GitLab section. Mirrors the GitHub row's
