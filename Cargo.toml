@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/computer-whisperer/whisper-git"
 homepage = "https://github.com/computer-whisperer/whisper-git"
 readme = "README.md"
+default-run = "whisper-git"
 keywords = ["git", "vulkan", "gui", "graphics"]
 categories = ["development-tools", "gui"]
 
