@@ -11,12 +11,12 @@
 #   6. Push to AUR (separate `aur:whisper-git` git remote).
 
 pkgname=whisper-git
-pkgver=0.3.4
+pkgver=0.3.5
 pkgrel=1
 pkgdesc="GPU-accelerated Git client built in Rust with Vulkan"
-arch=('x86_64' 'aarch64')
+arch=('x86_64')
 url="https://github.com/computer-whisperer/whisper-git"
-license=('MIT' 'Apache')
+license=('MIT OR Apache-2.0')
 # Runtime: Vulkan loader (driver ICD comes from mesa/NVIDIA/etc., not us),
 # wayland + libxkbcommon for winit, dbus for the secret-service keyring
 # backend and for arboard's wayland-data-control clipboard path.
@@ -26,20 +26,14 @@ depends=('vulkan-icd-loader' 'wayland' 'libxkbcommon' 'dbus' 'gcc-libs' 'glibc')
 # static lib referenced via cargo:rustc-link-lib=static), producing
 # undefined ring_core_* symbol errors. Opt out here.
 options=('!lto')
-makedepends=('rust' 'cargo' 'vulkan-headers' 'glslang')
+# 'cargo' is provided by both `rust` and `rustup` — don't force one of them.
+makedepends=('cargo' 'vulkan-headers' 'glslang')
 optdepends=('gnome-keyring: libsecret backend for credential storage'
             'kwallet: KDE backend for credential storage'
             'xorg-server-xwayland: run on X11 / XWayland')
-source=(
-    "${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz"
-    'whisper-git.desktop'
-)
-# Refresh the first checksum with `updpkgsums` whenever pkgver bumps.
-# The .desktop is local, versioned in upstream — SKIP is fine.
-sha256sums=(
-    'SKIP'
-    'SKIP'
-)
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+# Refresh with `updpkgsums` whenever pkgver bumps.
+sha256sums=('SKIP')
 
 prepare() {
     cd "${srcdir}/${pkgname}-${pkgver}"
@@ -66,7 +60,7 @@ package() {
     install -Dm755 "${srcdir}/target/release/${pkgname}" \
         "${pkgdir}/usr/bin/${pkgname}"
 
-    install -Dm644 "${srcdir}/whisper-git.desktop" \
+    install -Dm644 packaging/aur/whisper-git.desktop \
         "${pkgdir}/usr/share/applications/whisper-git.desktop"
     install -Dm644 assets/git-client-icon.svg \
         "${pkgdir}/usr/share/icons/hicolor/scalable/apps/${pkgname}.svg"
