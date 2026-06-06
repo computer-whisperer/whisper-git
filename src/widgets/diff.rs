@@ -100,7 +100,11 @@ impl DiffData {
     }
 }
 
-const LINENO_COL_WIDTH: f32 = 44.0;
+/// Width of one line-number column. Budget: 5 mono caption digits
+/// (~7.5px each) + `SPACE_2` padding both sides — files beyond
+/// 99,999 lines would clip again, but the old 44px clipped at a mere
+/// 4 digits (TextOverflow in any 1000+-line file's diff).
+const LINENO_COL_WIDTH: f32 = 56.0;
 /// Estimated row height for `virtual_list_dyn`. Most rows are single
 /// mono lines (~18px) — hunk-header rows are taller (~32px) but rare.
 /// The library measures actual heights as rows enter the viewport and
