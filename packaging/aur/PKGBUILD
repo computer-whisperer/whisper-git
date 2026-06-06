@@ -33,7 +33,7 @@ optdepends=('gnome-keyring: libsecret backend for credential storage'
             'xorg-server-xwayland: run on X11 / XWayland')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 # Refresh with `updpkgsums` whenever pkgver bumps.
-sha256sums=('SKIP')
+sha256sums=('6335dd0675ad8a66f3611583952c81b0cac6bec86a18d2c73cd90b3b340514fc')
 
 prepare() {
     cd "${srcdir}/${pkgname}-${pkgver}"
