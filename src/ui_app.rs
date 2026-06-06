@@ -10,8 +10,8 @@ use std::{
 };
 
 use damascene_core::{
-    App, BuildCx, El, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent, UiEventKind,
-    UiKey,
+    App, BuildCx, El, EventCx, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
+    UiEventKind, UiKey,
     prelude::*,
     scroll::{ScrollAlignment, ScrollRequest},
     toast::ToastSpec,
@@ -739,7 +739,7 @@ impl App for WhisperApp {
         overlays(main, [wt_picker_layer, menu_layer, modal_layer])
     }
 
-    fn on_event(&mut self, event: UiEvent) {
+    fn on_event(&mut self, event: UiEvent, _cx: &EventCx) {
         // Escape unwinds the deepest active state, one step at a time:
         // (1) close any open modal, (2) clear the focused view's diff
         // (returns center to graph), (3) clear the focused view's

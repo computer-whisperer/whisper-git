@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use damascene_core::{
-    App, BuildCx, Cursor, KeyModifiers, Pointer, PointerButton, Rect, UiEvent, UiEventKind, UiKey,
-    clipboard,
+    App, BuildCx, Cursor, EventCx, KeyModifiers, Pointer, PointerButton, Rect, UiEvent,
+    UiEventKind, UiKey, clipboard,
     widgets::text_input::{self, ClipboardKind},
 };
 use damascene_vulkano::Runner;
@@ -882,7 +882,8 @@ fn dispatch_app_event<A: App>(
     last_primary: &mut String,
 ) {
     let before = app.selection();
-    app.on_event(event);
+    let cx = EventCx::new().with_ui_state(ui_state);
+    app.on_event(event, &cx);
     if app.selection() != before {
         sync_primary_selection(app, ui_state, clipboard.as_mut(), last_primary);
     }
