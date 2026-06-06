@@ -267,13 +267,14 @@ fn stashes_body(tab: &RepoTab) -> Option<El> {
 
 /// The dense `tree_row` recipe the README catalog calls out for sidebar
 /// trees and resource lists. Bakes the envelope (focusable + cursor +
-/// list-item metrics + radius for the focus ring + paint_overflow so
-/// the ring has somewhere to render + spring animation) so hover,
-/// press, focus-visible, and the `.current()` / `.selected()`
-/// chainables all light up like they would on the catalog `item`
-/// widget — just at a denser 28 px height. Children are pre-built so
-/// each section can stack its own chevron / caption / icon / badge /
-/// detail anatomy.
+/// list-item metrics + radius for the focus ring + spring animation)
+/// so hover, press, focus-visible, and the `.current()` /
+/// `.selected()` chainables all light up like they would on the
+/// catalog `item` widget — just at a denser 28 px height. Rows stack
+/// flush, so the focus ring draws inside the rect (an outside ring's
+/// bleed would be painted over by the next row). Children are
+/// pre-built so each section can stack its own chevron / caption /
+/// icon / badge / detail anatomy.
 fn tree_row<I, E>(children: I, key: impl Into<String>) -> El
 where
     I: IntoIterator<Item = E>,
@@ -282,10 +283,10 @@ where
     row(children)
         .key(key)
         .focusable()
+        .focus_ring_inside()
         .style_profile(StyleProfile::Surface)
         .metrics_role(MetricsRole::ListItem)
         .cursor(Cursor::Pointer)
-        .paint_overflow(Sides::all(tokens::RING_WIDTH))
         .radius(tokens::RADIUS_SM)
         .animate(Timing::SPRING_QUICK)
         .padding(Sides::xy(tokens::SPACE_2, tokens::SPACE_1))

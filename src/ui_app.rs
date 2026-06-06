@@ -648,11 +648,21 @@ impl App for WhisperApp {
                 // siblings inside the row and route drag events to the
                 // app via their keys; damascene's `apply_event_fixed` folds
                 // the drag delta back into the size value.
+                // `.focus_ring_inside()` on the handles: they span the
+                // full row height, flush against the status-bar divider
+                // below, so an outside ring's bottom band would be
+                // painted over. resize_handle should arguably default
+                // to an inside ring upstream (damascene#48); drop
+                // these chains when that lands.
                 let children: Vec<El> = vec![
                     sidebar::sidebar(tab).width(Size::Fixed(self.sidebar_w)),
-                    resize_handle(Axis::Row).key("sidebar:resize"),
+                    resize_handle(Axis::Row)
+                        .key("sidebar:resize")
+                        .focus_ring_inside(),
                     center,
-                    resize_handle(Axis::Row).key("right:resize"),
+                    resize_handle(Axis::Row)
+                        .key("right:resize")
+                        .focus_ring_inside(),
                     right.width(Size::Fixed(self.right_pane_w)),
                 ];
                 let main_row = row(children)

@@ -1165,6 +1165,9 @@ fn build_row(
     ])
     .key(format!("commit:{idx}"))
     .focusable()
+    // Rows stack flush in the virtual list, so an outside ring's bleed
+    // would be painted over by the next row (FocusRingObscured).
+    .focus_ring_inside()
     .gap(tokens::SPACE_3)
     .padding(Sides::xy(tokens::SPACE_2, 0.0))
     .height(Size::Fixed(geom.height))
@@ -1273,6 +1276,8 @@ fn synthetic_row(
     let inner = row(children)
         .key(format!("commit:{idx}"))
         .focusable()
+        // See build_row: flush-stacked rows need an inside ring.
+        .focus_ring_inside()
         .gap(tokens::SPACE_3)
         .padding(Sides::xy(tokens::SPACE_2, 0.0))
         .height(Size::Fixed(geom.height))

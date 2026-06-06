@@ -77,7 +77,12 @@ pub fn worktree_selector(tab: &RepoTab) -> Option<El> {
             .padding(Sides {
                 top: RIGHT_PANE_EDGE_INSET,
                 right: RIGHT_PANE_EDGE_INSET,
-                bottom: 0.0,
+                // Keep the icon buttons' expanded hit targets
+                // (tokens::HIT_OVERFLOW on every side) from poking
+                // into the scroll region flush below, which would own
+                // that invisible band by paint order
+                // (HitOverflowCollision).
+                bottom: tokens::HIT_OVERFLOW,
                 left: RIGHT_PANE_EDGE_INSET,
             }),
     )
