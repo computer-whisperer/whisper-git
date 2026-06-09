@@ -388,6 +388,11 @@ pub struct WhisperApp {
     /// the system doesn't stack identical workers when the watcher
     /// fires repeatedly during a long-running scan.
     pub dirty_checks_in_flight: usize,
+    /// Set when a fanout request arrived while one was already in
+    /// flight. `poll_dirty_checks` re-fans-out for the focused view
+    /// once the in-flight set drains, so the trailing state isn't
+    /// stale — without ever stacking concurrent fanouts.
+    pub dirty_checks_queued: bool,
     /// Wall time of the last successful status refresh on the active
     /// tab. Drives the 30 s safety-net timer that marks the active
     /// tab's status dirty if no watcher event has arrived in that
@@ -454,6 +459,7 @@ impl WhisperApp {
             dirty_check_tx,
             dirty_check_rx,
             dirty_checks_in_flight: 0,
+            dirty_checks_queued: false,
             last_status_refresh: now,
             last_ref_check: now,
         }
@@ -489,6 +495,7 @@ impl WhisperApp {
             dirty_check_tx,
             dirty_check_rx,
             dirty_checks_in_flight: 0,
+            dirty_checks_queued: false,
             last_status_refresh: now,
             last_ref_check: now,
         }
@@ -3225,12 +3232,11 @@ impl WhisperApp {
             };
             (tab.id, tab.repo.workdir().map(|p| p.to_path_buf()))
         };
-        self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+        self.spawn_dirty_checks_gated(
             tab_id,
             &effects.dirty_checks_submodules,
             &effects.dirty_checks_worktree_paths,
             repo_workdir,
-            &self.dirty_check_tx,
             &proxy,
         );
 
@@ -3373,13 +3379,22 @@ impl WhisperApp {
                 if expired {
                     tab.status_dirty = true;
                 }
-                tab.status_dirty
+                // Hold off while a status walk is in flight — its apply
+                // step sees the dirty bit and fires the follow-up. Firing
+                // here anyway would re-run the fanout path on every frame
+                // for the entire duration of the walk.
+                tab.status_dirty && tab.status_rx.is_none()
             })
             .unwrap_or(false);
         if should_refresh {
             // `trigger_status_refresh` (inside the helper) clears the
             // tab's dirty bit only when it successfully spawns a worker.
             self.refresh_working_tree_focused(&proxy);
+            // Stamp at fire time, not just on apply: `next_wake` keys off
+            // this instant, and leaving it >30 s in the past turns
+            // `about_to_wait` into a max-rate redraw loop until the
+            // worker's result lands.
+            self.last_status_refresh = now;
         }
     }
 
@@ -3404,14 +3419,7 @@ impl WhisperApp {
         }) else {
             return;
         };
-        self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
-            tab_id,
-            &[],
-            &worktree_paths,
-            repo_workdir,
-            &self.dirty_check_tx,
-            proxy,
-        );
+        self.spawn_dirty_checks_gated(tab_id, &[], &worktree_paths, repo_workdir, proxy);
     }
 
     /// 5 s ref_fingerprint reconciliation on the active tab. Cheap
@@ -3493,14 +3501,7 @@ impl WhisperApp {
                 };
                 // Re-check worktree dirty state — a working-tree edit
                 // may have flipped a worktree's pill.
-                self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
-                    tab_id,
-                    &[],
-                    &worktree_paths,
-                    repo_workdir,
-                    &self.dirty_check_tx,
-                    proxy,
-                );
+                self.spawn_dirty_checks_gated(tab_id, &[], &worktree_paths, repo_workdir, proxy);
             }
             FsChangeKind::GitMetadata | FsChangeKind::WorktreeStructure => {
                 if let Some(tab) = self.tab_at_mut(tab_idx, depth) {
@@ -3563,36 +3564,109 @@ impl WhisperApp {
         {
             tab.trigger_status_refresh(&proxy);
         }
-        // Stamp last_status_refresh on the active tab's result so the
-        // 30 s safety net doesn't redundantly fire.
-        if depth.is_none() && tab_idx == self.active_tab {
+        // Stamp last_status_refresh when the result lands on the focused
+        // view so the 30 s safety net doesn't redundantly fire. The net
+        // refreshes `active_focus` — the deepest drilled-in level — so
+        // the depth must match too: stamping only depth-None results
+        // would leave the net permanently expired while the user is
+        // drilled into a submodule, re-firing forever.
+        let focused_depth = self
+            .tabs
+            .get(self.active_tab)
+            .and_then(|t| t.nav_stack.len().checked_sub(1));
+        if tab_idx == self.active_tab && depth == focused_depth {
             self.last_status_refresh = std::time::Instant::now();
         }
+    }
+
+    /// Fan out per-entity dirty checks unless a fanout is already in
+    /// flight. This is the back-off the `dirty_checks_in_flight`
+    /// counter exists for: without it, every wake-up that wants fresh
+    /// pills (watcher bursts, the 30 s safety net firing while a
+    /// status walk is still running) stacks a new thread-per-entity
+    /// fanout on top of the last — and because each finished worker
+    /// wakes the event loop, which polls, which fans out again, the
+    /// stacking compounds into a thread-spawn storm that saturates
+    /// every core. A request that arrives while workers are running
+    /// sets `dirty_checks_queued` instead; `poll_dirty_checks` runs
+    /// one trailing fanout for the focused view after the in-flight
+    /// set drains.
+    fn spawn_dirty_checks_gated(
+        &mut self,
+        tab_id: u64,
+        submodules: &[crate::git::SubmoduleInfo],
+        worktree_paths: &[std::path::PathBuf],
+        repo_workdir: Option<std::path::PathBuf>,
+        proxy: &winit::event_loop::EventLoopProxy<()>,
+    ) {
+        if self.dirty_checks_in_flight > 0 {
+            self.dirty_checks_queued = true;
+            return;
+        }
+        self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+            tab_id,
+            submodules,
+            worktree_paths,
+            repo_workdir,
+            &self.dirty_check_tx,
+            proxy,
+        );
     }
 
     /// Drain the global per-entity dirty-check channel and route each
     /// result back to its originating `RepoTab` by `tab_id`. Stale
     /// results from closed tabs match no live tab and drop silently.
     fn poll_dirty_checks(&mut self) {
-        if self.dirty_checks_in_flight == 0 {
-            return;
-        }
-        loop {
-            match self.dirty_check_rx.try_recv() {
-                Ok(result) => {
-                    self.dirty_checks_in_flight = self.dirty_checks_in_flight.saturating_sub(1);
-                    let target_id = result.tab_id();
-                    if let Some(tab) = self.find_tab_by_id_mut(target_id) {
-                        tab.apply_dirty_check_result(result);
+        if self.dirty_checks_in_flight > 0 {
+            loop {
+                match self.dirty_check_rx.try_recv() {
+                    Ok(result) => {
+                        self.dirty_checks_in_flight = self.dirty_checks_in_flight.saturating_sub(1);
+                        let target_id = result.tab_id();
+                        if let Some(tab) = self.find_tab_by_id_mut(target_id) {
+                            tab.apply_dirty_check_result(result);
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Should never happen — we hold the sender.
+                        self.dirty_checks_in_flight = 0;
+                        break;
                     }
                 }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // Should never happen — we hold the sender.
-                    self.dirty_checks_in_flight = 0;
-                    break;
-                }
             }
+        }
+        // Trailing catch-up: a fanout was requested while one was in
+        // flight. Re-run it for the focused view now that the channel
+        // has drained, so pills converge on the latest working-tree
+        // state instead of staying stale until the next watcher event.
+        if self.dirty_checks_in_flight == 0 && self.dirty_checks_queued {
+            self.dirty_checks_queued = false;
+            let Some(proxy) = self.proxy.clone() else {
+                return;
+            };
+            let Some((tab_id, repo_workdir, worktree_paths, submodules)) =
+                self.active_focus_mut().map(|tab| {
+                    (
+                        tab.id,
+                        tab.repo.workdir().map(|p| p.to_path_buf()),
+                        tab.worktree_order.clone(),
+                        tab.active_view()
+                            .map(|v| v.submodules.clone())
+                            .unwrap_or_default(),
+                    )
+                })
+            else {
+                return;
+            };
+            self.dirty_checks_in_flight += crate::git_async::spawn_dirty_checks(
+                tab_id,
+                &submodules,
+                &worktree_paths,
+                repo_workdir,
+                &self.dirty_check_tx,
+                &proxy,
+            );
         }
     }
 
