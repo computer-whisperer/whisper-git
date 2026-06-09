@@ -127,7 +127,16 @@ const HIGHLIGHT_BG_ALPHA: u8 = 130;
 pub fn diff(data: &DiffData) -> El {
     let (adds, dels) = data.stats();
 
-    let mut header_children: Vec<El> = vec![text(data.title.clone()).label(), spacer()];
+    // Fill + ellipsis: a long file path yields to the stats / badge /
+    // mode-toggle cluster on narrow panes; full path on hover.
+    let mut header_children: Vec<El> = vec![
+        text(data.title.clone())
+            .label()
+            .ellipsis()
+            .width(Size::Fill(1.0))
+            .key("diff:title")
+            .tooltip(data.title.clone()),
+    ];
     if !data.hunks.is_empty() {
         // .caption() applies TEXT_XS metrics but resets font_mono to
         // false (caption is intentionally proportional). Apply .mono()

@@ -147,6 +147,19 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             app.shortcut_bar_visible = false;
             app
         }));
+        // Collapsible panes (Ctrl+B / Ctrl+Shift+B): sidebar hidden,
+        // and the maximal-graph case with both side panes hidden.
+        scenes.push(("pane_sidebar_collapsed".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.config.sidebar_collapsed = true;
+            app
+        }));
+        scenes.push(("pane_both_collapsed".to_string(), {
+            let mut app = WhisperApp::with_tabs(vec![reopen(first)]);
+            app.config.sidebar_collapsed = true;
+            app.config.right_pane_collapsed = true;
+            app
+        }));
         // Pre-select the first changed file so the diff view actually
         // renders content rather than the placeholder.
         let diff_target = first.active_view().and_then(|v| {

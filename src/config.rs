@@ -39,6 +39,13 @@ pub struct Config {
     /// commit details pane in History view.
     #[serde(default = "default_right_w")]
     pub right_pane_w: f32,
+    /// Left sidebar hidden (Ctrl+B / header toggle). The stored width
+    /// survives a collapse so reopening restores the dragged layout.
+    #[serde(default)]
+    pub sidebar_collapsed: bool,
+    /// Right pane hidden (Ctrl+Shift+B / header toggle).
+    #[serde(default)]
+    pub right_pane_collapsed: bool,
     /// `true` for side-by-side diff view; `false` for unified.
     #[serde(default)]
     pub diff_split: bool,
@@ -80,6 +87,8 @@ impl Default for Config {
             gitlab_hosts: Vec::new(),
             sidebar_w: default_sidebar_w(),
             right_pane_w: default_right_w(),
+            sidebar_collapsed: false,
+            right_pane_collapsed: false,
             diff_split: false,
         }
     }

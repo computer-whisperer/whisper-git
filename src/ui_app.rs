@@ -604,7 +604,11 @@ impl App for WhisperApp {
                 chrome.push(strip);
             }
         }
-        chrome.push(header_bar(self.active_focus(), self.clone_op.as_ref()));
+        chrome.push(header_bar(
+            self.active_focus(),
+            self.clone_op.as_ref(),
+            &self.config,
+        ));
         // Welcome state has no tab-bound shortcuts that would benefit
         // the user — Open is already a primary button on the welcome
         // body, Close tab has nothing to act on. Suppress the
@@ -687,17 +691,27 @@ impl App for WhisperApp {
                 // these chains when that lands.
                 let (sidebar_w, right_pane_w) =
                     effective_pane_widths(self.sidebar_w, self.right_pane_w, cx.viewport());
-                let children: Vec<El> = vec![
-                    sidebar::sidebar(tab).width(Size::Fixed(sidebar_w)),
-                    resize_handle(Axis::Row)
-                        .key("sidebar:resize")
-                        .focus_ring_inside(),
-                    center,
-                    resize_handle(Axis::Row)
-                        .key("right:resize")
-                        .focus_ring_inside(),
-                    right.width(Size::Fixed(right_pane_w)),
-                ];
+                // Collapsed panes are omitted entirely (handle
+                // included); the stored widths survive in config so
+                // toggling back restores the dragged layout.
+                let mut children: Vec<El> = Vec::with_capacity(5);
+                if !self.config.sidebar_collapsed {
+                    children.push(sidebar::sidebar(tab).width(Size::Fixed(sidebar_w)));
+                    children.push(
+                        resize_handle(Axis::Row)
+                            .key("sidebar:resize")
+                            .focus_ring_inside(),
+                    );
+                }
+                children.push(center);
+                if !self.config.right_pane_collapsed {
+                    children.push(
+                        resize_handle(Axis::Row)
+                            .key("right:resize")
+                            .focus_ring_inside(),
+                    );
+                    children.push(right.width(Size::Fixed(right_pane_w)));
+                }
                 let main_row = row(children)
                     .gap(tokens::RING_WIDTH)
                     .height(Size::Fill(1.0));
@@ -1017,6 +1031,8 @@ impl App for WhisperApp {
         vec![
             (KeyChord::ctrl('o'), "open_repo".to_string()),
             (KeyChord::ctrl('w'), "close_tab".to_string()),
+            (KeyChord::ctrl('b'), "toggle_sidebar".to_string()),
+            (KeyChord::ctrl_shift('b'), "toggle_right_pane".to_string()),
             (KeyChord::ctrl('/'), "toggle_shortcut_bar".to_string()),
             (KeyChord::ctrl('f'), "history:search_open".to_string()),
             (
@@ -1407,6 +1423,14 @@ impl WhisperApp {
             "stage_untracked_all" => self.stage_untracked_all(),
             "unstage_all" => self.unstage_all(),
             "settings" => self.active_modal = Some(ActiveModal::Settings),
+            "toggle_sidebar" => {
+                self.config.sidebar_collapsed = !self.config.sidebar_collapsed;
+                let _ = self.config.save();
+            }
+            "toggle_right_pane" => {
+                self.config.right_pane_collapsed = !self.config.right_pane_collapsed;
+                let _ = self.config.save();
+            }
             "toggle_shortcut_bar" => {
                 self.shortcut_bar_visible = !self.shortcut_bar_visible;
             }
@@ -5288,7 +5312,7 @@ fn breadcrumb_bar(names: &[String]) -> El {
 /// to investigate before assuming the op will finish.
 const STALL_WARN_SECS: u64 = 60;
 
-fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
+fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>, config: &Config) -> El {
     // Welcome state — no tab open: drop the repo-action toolbar
     // (Fetch / Pull / Push / Commit) and the branch indicator, both
     // of which only make sense against a checkout. Keep an in-flight
@@ -5373,7 +5397,37 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         push_options_btn = push_options_btn.disabled();
     }
 
-    let mut left_items: Vec<El> = vec![branch];
+    // Panel toggles: far left for the sidebar, far right (after
+    // Settings) for the right pane, mirroring where the panes live.
+    // Muted glyph = pane currently hidden.
+    let sidebar_toggle = {
+        let mut b = icon_button(crate::widgets::brand_icons::PANEL_LEFT.clone())
+            .key("toggle_sidebar")
+            .tooltip(if config.sidebar_collapsed {
+                "Show sidebar (Ctrl+B)"
+            } else {
+                "Hide sidebar (Ctrl+B)"
+            });
+        if config.sidebar_collapsed {
+            b = b.muted();
+        }
+        b
+    };
+    let right_pane_toggle = {
+        let mut b = icon_button(crate::widgets::brand_icons::PANEL_RIGHT.clone())
+            .key("toggle_right_pane")
+            .tooltip(if config.right_pane_collapsed {
+                "Show right pane (Ctrl+Shift+B)"
+            } else {
+                "Hide right pane (Ctrl+Shift+B)"
+            });
+        if config.right_pane_collapsed {
+            b = b.muted();
+        }
+        b
+    };
+
+    let mut left_items: Vec<El> = vec![sidebar_toggle, branch];
     if let Some(tab) = active {
         left_items.extend(ci_badges(tab));
     }
@@ -5403,6 +5457,7 @@ fn header_bar(active: Option<&RepoTab>, clone_op: Option<&CloneOp>) -> El {
         icon_button(IconName::Settings)
             .key("settings")
             .tooltip("Settings"),
+        right_pane_toggle,
     ]));
 
     let bar = toolbar(bar_items)
@@ -5565,6 +5620,8 @@ fn shortcut_bar() -> El {
     row([
         kbd("Ctrl+O", "Open"),
         kbd("Ctrl+W", "Close tab"),
+        kbd("Ctrl+B", "Sidebar"),
+        kbd("Ctrl+Shift+B", "Right pane"),
         kbd("Ctrl+/", "Toggle shortcuts"),
     ])
     .padding(Sides::xy(tokens::SPACE_4, tokens::SPACE_1))
