@@ -1424,7 +1424,9 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
     let geom_per_row: Vec<RowGeometry> = tab
         .graph_layout
         .row_geometry_with_bands(&tab.commits, &band_heights);
-    let commits = tab.commits.clone();
+    // Refcount bump, not a deep clone — `commits` is an Arc shared
+    // with the virtual-list closures below.
+    let commits = std::sync::Arc::clone(&tab.commits);
     let commit_row_keys: Vec<String> = commits.iter().map(|c| format!("commit:{}", c.id)).collect();
     let selected_oid = tab.selected_commit;
 

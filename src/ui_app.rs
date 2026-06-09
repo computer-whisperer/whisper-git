@@ -3720,11 +3720,11 @@ impl WhisperApp {
             .avatar_cache
             .get_or_insert_with(|| crate::avatar::AvatarCache::new(proxy));
         for tab in &self.tabs {
-            for c in &tab.commits {
+            for c in tab.commits.iter() {
                 cache.request(&c.author_email);
             }
             for sub in &tab.nav_stack {
-                for c in &sub.commits {
+                for c in sub.commits.iter() {
                     cache.request(&c.author_email);
                 }
             }

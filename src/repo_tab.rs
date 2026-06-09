@@ -15,6 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
@@ -365,7 +366,11 @@ pub struct RepoTab {
     pub sidebar: SidebarState,
     /// Reachable commit history, refreshed alongside repo metadata.
     /// Capped at `COMMIT_LIMIT` until infinite-scroll comes back.
-    pub commits: Vec<CommitInfo>,
+    /// `Arc` so the history view's virtual-list closures can share the
+    /// list with a refcount bump instead of deep-cloning ~1000 commits
+    /// every frame; writers go through `Arc::make_mut` (copy-on-write
+    /// when a frame still holds a reference).
+    pub commits: Arc<Vec<CommitInfo>>,
     /// Lane / color assignment for `commits`. Rebuilt each refresh.
     pub graph_layout: GraphLayout,
 
@@ -581,7 +586,7 @@ impl RepoTab {
             worktrees: Vec::new(),
             stashes: Vec::new(),
             sidebar: SidebarState::default(),
-            commits: Vec::new(),
+            commits: Arc::new(Vec::new()),
             graph_layout: GraphLayout::new(),
             selected_commit: None,
             commit_detail: None,
@@ -646,14 +651,14 @@ impl RepoTab {
         // unreachable work — finished rebases, dropped branches —
         // doesn't disappear. Falls back to plain commit_graph on error
         // so a flaky reflog doesn't blank the History view.
-        self.commits = if show_orphaned_commits {
+        self.commits = Arc::new(if show_orphaned_commits {
             self.repo
                 .commit_graph_with_orphans(COMMIT_LIMIT)
                 .or_else(|_| self.repo.commit_graph(COMMIT_LIMIT))
                 .unwrap_or_default()
         } else {
             self.repo.commit_graph(COMMIT_LIMIT).unwrap_or_default()
-        };
+        });
 
         self.rebuild_worktree_views();
 
@@ -672,7 +677,7 @@ impl RepoTab {
         // committed history.
         let synthetics = self.build_synthetic_entries();
         if !synthetics.is_empty() {
-            insert_synthetics_sorted(&mut self.commits, synthetics);
+            insert_synthetics_sorted(Arc::make_mut(&mut self.commits), synthetics);
         }
         self.graph_layout.build(&self.commits);
 
@@ -920,7 +925,7 @@ impl RepoTab {
                 c.deletions = del;
             }
         }
-        self.commits = commits;
+        self.commits = Arc::new(commits);
         self.branch_tips = result.branch_tips;
         self.tags = result.tags;
         self.worktrees = result.worktrees.clone();
@@ -1080,10 +1085,10 @@ impl RepoTab {
     /// `self.worktrees`: libgit2's linked-worktree list omits the main
     /// worktree, while `worktree_views` is the UI/data-model set.
     fn rebuild_synthetic_entries(&mut self) {
-        self.commits.retain(|c| !c.is_synthetic);
+        Arc::make_mut(&mut self.commits).retain(|c| !c.is_synthetic);
         let synthetics = self.build_synthetic_entries();
         if !synthetics.is_empty() {
-            insert_synthetics_sorted(&mut self.commits, synthetics);
+            insert_synthetics_sorted(Arc::make_mut(&mut self.commits), synthetics);
         }
         self.graph_layout.build(&self.commits);
     }
@@ -1615,7 +1620,7 @@ impl RepoTab {
             .into_iter()
             .map(|(oid, ins, del)| (oid, (ins, del)))
             .collect();
-        for c in &mut self.commits {
+        for c in Arc::make_mut(&mut self.commits) {
             if let Some(&(ins, del)) = by_oid.get(&c.id) {
                 c.insertions = ins;
                 c.deletions = del;
@@ -1675,7 +1680,7 @@ impl RepoTab {
                         .into_iter()
                         .map(|(oid, ins, del)| (oid, (ins, del)))
                         .collect();
-                    for c in &mut self.commits {
+                    for c in Arc::make_mut(&mut self.commits) {
                         if let Some(&(ins, del)) = by_oid.get(&c.id) {
                             c.insertions = ins;
                             c.deletions = del;
