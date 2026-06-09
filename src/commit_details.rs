@@ -62,13 +62,21 @@ fn details_pane(detail: &crate::repo_tab::CommitDetail) -> El {
         .gap(tokens::SPACE_2)
         .align(Align::Center),
         text(parents_label).muted().caption(),
-        text(format!(
-            "{} <{}> · {}",
-            info.author_name,
-            info.author_email,
-            info.relative_author_time(),
-        ))
-        .muted(),
+        {
+            let author_line = format!(
+                "{} <{}> · {}",
+                info.author_name,
+                info.author_email,
+                info.relative_author_time(),
+            );
+            // Name + email can outgrow a narrow right pane; keep the
+            // full string reachable via hover.
+            text(author_line.clone())
+                .muted()
+                .ellipsis()
+                .key("details:author")
+                .tooltip(author_line)
+        },
     ])
     .padding(tokens::SPACE_3)
     .gap(tokens::SPACE_1)]);
@@ -208,8 +216,9 @@ fn submodule_entry_row(entry: &crate::git::CommitSubmoduleEntry) -> El {
 
     row([
         icon(IconName::Folder).muted(),
-        name_el.nowrap_text(),
-        spacer(),
+        // Fill + ellipsis: the name yields to the SHA cluster when
+        // the right pane is narrow instead of pushing it out.
+        name_el.ellipsis().width(Size::Fill(1.0)),
         sha_el,
     ])
     .key(format!("submodule:open:{}", entry.path))

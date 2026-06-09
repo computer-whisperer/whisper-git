@@ -35,6 +35,30 @@ const KM_CTRL: KeyModifiers = KeyModifiers {
 const RIGHT_PANE_MIN: f32 = 280.0;
 const RIGHT_PANE_MAX: f32 = 720.0;
 
+/// Largest share of the window each fixed side pane may render at.
+/// On a full-width window the configured widths sit well under these
+/// caps; on a half-width tiling layout (~960px) they keep the center
+/// graph pane usable instead of letting sidebar + right pane squeeze
+/// it to nothing. Only the rendered width is capped — the stored
+/// (dragged) widths survive in config, so growing the window back
+/// restores the user's layout.
+const SIDEBAR_MAX_FRACTION: f32 = 0.20;
+const RIGHT_PANE_MAX_FRACTION: f32 = 0.35;
+
+fn effective_pane_widths(
+    sidebar_w: f32,
+    right_pane_w: f32,
+    viewport: Option<(f32, f32)>,
+) -> (f32, f32) {
+    let Some((vw, _)) = viewport else {
+        return (sidebar_w, right_pane_w);
+    };
+    (
+        sidebar_w.min(vw * SIDEBAR_MAX_FRACTION),
+        right_pane_w.min(vw * RIGHT_PANE_MAX_FRACTION),
+    )
+}
+
 fn apply_routed_text_input(
     value: &mut String,
     selection: &mut Selection,
@@ -567,7 +591,7 @@ impl App for WhisperApp {
         self.poll_async_ops();
     }
 
-    fn build(&self, _cx: &BuildCx) -> El {
+    fn build(&self, cx: &BuildCx) -> El {
         let mut chrome: Vec<El> = Vec::with_capacity(3);
         if !self.tabs.is_empty() {
             chrome.push(tab_bar(self));
@@ -661,8 +685,10 @@ impl App for WhisperApp {
                 // painted over. resize_handle should arguably default
                 // to an inside ring upstream (damascene#48); drop
                 // these chains when that lands.
+                let (sidebar_w, right_pane_w) =
+                    effective_pane_widths(self.sidebar_w, self.right_pane_w, cx.viewport());
                 let children: Vec<El> = vec![
-                    sidebar::sidebar(tab).width(Size::Fixed(self.sidebar_w)),
+                    sidebar::sidebar(tab).width(Size::Fixed(sidebar_w)),
                     resize_handle(Axis::Row)
                         .key("sidebar:resize")
                         .focus_ring_inside(),
@@ -670,7 +696,7 @@ impl App for WhisperApp {
                     resize_handle(Axis::Row)
                         .key("right:resize")
                         .focus_ring_inside(),
-                    right.width(Size::Fixed(self.right_pane_w)),
+                    right.width(Size::Fixed(right_pane_w)),
                 ];
                 let main_row = row(children)
                     .gap(tokens::RING_WIDTH)

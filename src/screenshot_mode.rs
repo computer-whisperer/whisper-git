@@ -101,15 +101,15 @@ pub fn run<A: App + 'static>(
     // Build + prepare
     app.before_build();
     let theme = app.theme();
-    let cx = BuildCx::new(&theme);
-    let mut tree = app.build(&cx);
-    runner.set_theme(theme.clone());
     let viewport = Rect::new(
         0.0,
         0.0,
         width as f32 / scale_factor,
         height as f32 / scale_factor,
     );
+    let cx = BuildCx::new(&theme).with_viewport(viewport.w, viewport.h);
+    let mut tree = app.build(&cx);
+    runner.set_theme(theme.clone());
     runner.prepare(&mut tree, viewport, scale_factor);
 
     // Record + submit

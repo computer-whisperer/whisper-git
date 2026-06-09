@@ -1433,8 +1433,15 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
     // Search bar is hidden by default; Ctrl+F flips `history_search_open`
     // to true and the row appears beneath the count chip. Escape closes
     // it and clears the query (handled in `WhisperApp::on_event`).
-    let mut header_children: Vec<El> =
-        vec![row([text(header_text).caption().muted()]).align(Align::Center)];
+    // The selected-commit form ("sha · author · summary") is
+    // arbitrarily long — ellipsize instead of overflowing the card
+    // on narrow windows.
+    let mut header_children: Vec<El> = vec![
+        row([text(header_text).caption().muted().ellipsis()])
+            .align(Align::Center)
+            .width(Size::Fill(1.0))
+            .clip(),
+    ];
     if tab.history_search_open {
         let search_input =
             text_input(&tab.search_query, selection, SEARCH_INPUT_KEY).width(Size::Fill(1.0));

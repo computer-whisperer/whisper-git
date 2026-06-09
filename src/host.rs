@@ -283,6 +283,12 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
             return;
         };
         let scale = rcx.window.scale_factor() as f32;
+        // Logical-pixel viewport for builds triggered outside the
+        // redraw path (selection-text extraction re-runs `app.build`).
+        let viewport = {
+            let size = rcx.window.inner_size();
+            (size.width as f32 / scale, size.height as f32 / scale)
+        };
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -304,6 +310,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                         rcx.runner.ui_state(),
                         &mut self.clipboard,
                         &mut self.last_primary,
+                        viewport,
                     );
                 }
                 if moved.needs_redraw {
@@ -320,6 +327,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                         rcx.runner.ui_state(),
                         &mut self.clipboard,
                         &mut self.last_primary,
+                        viewport,
                     );
                 }
                 rcx.window.request_redraw();
@@ -341,6 +349,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                 rcx.runner.ui_state(),
                                 &mut self.clipboard,
                                 &mut self.last_primary,
+                                viewport,
                             );
                         }
                         rcx.window.request_redraw();
@@ -354,6 +363,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                 rcx.runner.ui_state(),
                                 &mut self.clipboard,
                                 &mut self.last_primary,
+                                viewport,
                             );
                         }
                         rcx.window.request_redraw();
@@ -396,6 +406,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                     &self.app,
                                     rcx.runner.ui_state(),
                                     self.clipboard.as_mut(),
+                                    viewport,
                                 );
                                 dispatch_app_event(
                                     &mut self.app,
@@ -403,6 +414,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                     rcx.runner.ui_state(),
                                     &mut self.clipboard,
                                     &mut self.last_primary,
+                                    viewport,
                                 );
                             }
                             Some(ClipboardKind::Cut) => {
@@ -410,6 +422,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                     &self.app,
                                     rcx.runner.ui_state(),
                                     self.clipboard.as_mut(),
+                                    viewport,
                                 );
                                 let delete = clipboard::delete_selection_event(ev);
                                 dispatch_app_event(
@@ -418,6 +431,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                     rcx.runner.ui_state(),
                                     &mut self.clipboard,
                                     &mut self.last_primary,
+                                    viewport,
                                 );
                             }
                             Some(ClipboardKind::Paste) => {
@@ -430,6 +444,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                         rcx.runner.ui_state(),
                                         &mut self.clipboard,
                                         &mut self.last_primary,
+                                        viewport,
                                     );
                                 } else {
                                     dispatch_app_event(
@@ -438,6 +453,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                         rcx.runner.ui_state(),
                                         &mut self.clipboard,
                                         &mut self.last_primary,
+                                        viewport,
                                     );
                                 }
                             }
@@ -447,6 +463,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                                 rcx.runner.ui_state(),
                                 &mut self.clipboard,
                                 &mut self.last_primary,
+                                viewport,
                             ),
                         }
                     }
@@ -460,6 +477,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                         rcx.runner.ui_state(),
                         &mut self.clipboard,
                         &mut self.last_primary,
+                        viewport,
                     );
                 }
                 rcx.window.request_redraw();
@@ -472,6 +490,7 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                         rcx.runner.ui_state(),
                         &mut self.clipboard,
                         &mut self.last_primary,
+                        viewport,
                     );
                 }
                 rcx.window.request_redraw();
@@ -511,7 +530,16 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
 
                 self.app.before_build();
                 let theme = self.app.theme();
-                let cx = BuildCx::new(&theme).with_ui_state(rcx.runner.ui_state());
+                let scale_factor = rcx.window.scale_factor() as f32;
+                let viewport = Rect::new(
+                    0.0,
+                    0.0,
+                    extent[0] as f32 / scale_factor,
+                    extent[1] as f32 / scale_factor,
+                );
+                let cx = BuildCx::new(&theme)
+                    .with_ui_state(rcx.runner.ui_state())
+                    .with_viewport(viewport.w, viewport.h);
                 let mut tree = self.app.build(&cx);
                 rcx.runner.set_theme(theme);
                 rcx.runner.set_hotkeys(self.app.hotkeys());
@@ -521,13 +549,6 @@ impl<A: HostApp> ApplicationHandler for Host<A> {
                     .push_focus_requests(self.app.drain_focus_requests());
                 rcx.runner
                     .push_scroll_requests(self.app.drain_scroll_requests());
-                let scale_factor = rcx.window.scale_factor() as f32;
-                let viewport = Rect::new(
-                    0.0,
-                    0.0,
-                    extent[0] as f32 / scale_factor,
-                    extent[1] as f32 / scale_factor,
-                );
                 let prepare = rcx.runner.prepare(&mut tree, viewport, scale_factor);
 
                 // Reflect the resolved damascene cursor onto the OS window
@@ -864,8 +885,9 @@ fn copy_current_selection<A: App>(
     app: &A,
     ui_state: &damascene_core::state::UiState,
     clipboard: Option<&mut arboard::Clipboard>,
+    viewport: (f32, f32),
 ) {
-    let Some(text) = selected_text_for_app(app, ui_state) else {
+    let Some(text) = selected_text_for_app(app, ui_state, viewport) else {
         return;
     };
     let Some(clipboard) = clipboard else {
@@ -880,12 +902,13 @@ fn dispatch_app_event<A: App>(
     ui_state: &damascene_core::state::UiState,
     clipboard: &mut Option<arboard::Clipboard>,
     last_primary: &mut String,
+    viewport: (f32, f32),
 ) {
     let before = app.selection();
     let cx = EventCx::new().with_ui_state(ui_state);
     app.on_event(event, &cx);
     if app.selection() != before {
-        sync_primary_selection(app, ui_state, clipboard.as_mut(), last_primary);
+        sync_primary_selection(app, ui_state, clipboard.as_mut(), last_primary, viewport);
     }
 }
 
@@ -894,8 +917,9 @@ fn sync_primary_selection<A: App>(
     ui_state: &damascene_core::state::UiState,
     clipboard: Option<&mut arboard::Clipboard>,
     last_primary: &mut String,
+    viewport: (f32, f32),
 ) {
-    let text = selected_text_for_app(app, ui_state)
+    let text = selected_text_for_app(app, ui_state, viewport)
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
     if text == *last_primary {
@@ -907,12 +931,18 @@ fn sync_primary_selection<A: App>(
     *last_primary = text;
 }
 
+/// Rebuild the app tree to extract the current text selection. The
+/// viewport must match the live window so width-branching builds
+/// produce the same tree the user is looking at.
 fn selected_text_for_app<A: App>(
     app: &A,
     ui_state: &damascene_core::state::UiState,
+    viewport: (f32, f32),
 ) -> Option<String> {
     let theme = app.theme();
-    let cx = BuildCx::new(&theme).with_ui_state(ui_state);
+    let cx = BuildCx::new(&theme)
+        .with_ui_state(ui_state)
+        .with_viewport(viewport.0, viewport.1);
     let tree = app.build(&cx);
     damascene_core::selected_text(&tree, &app.selection())
 }
