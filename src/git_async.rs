@@ -328,6 +328,90 @@ pub(crate) fn spawn_repo_state_refresh(
 }
 
 // ============================================================================
+// Diff-pane fetch — hunks for the selected file, off-thread
+// ============================================================================
+
+/// Identity of one rendered diff: which worktree / file / source
+/// produced it. `epoch` folds in the working-tree status generation
+/// (bumped whenever a status refresh lands changed content), so an
+/// edit to the selected file re-fetches even though the target is
+/// unchanged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiffKey {
+    /// Working-dir path of the worktree the diff reads from.
+    pub worktree: PathBuf,
+    /// Repo-relative path of the selected file.
+    pub file: String,
+    /// `Some` = the file's diff within this commit; `None` = the
+    /// working-tree diff.
+    pub commit: Option<Oid>,
+    /// Working-tree diffs only: diff the staged side (HEAD → index)
+    /// rather than the unstaged side.
+    pub staged: bool,
+    /// Working-tree status generation — see [`DiffKey`] docs.
+    pub epoch: u64,
+}
+
+impl DiffKey {
+    /// Same diff target, ignoring the content generation. Used by the
+    /// renderer to keep showing the previous hunks while a re-fetch
+    /// for a newer epoch is in flight (stale-while-revalidate),
+    /// instead of flashing a loading state on every edit.
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.worktree == other.worktree
+            && self.file == other.file
+            && self.commit == other.commit
+            && self.staged == other.staged
+    }
+}
+
+/// Result of an off-thread diff fetch. Carries the key it was
+/// computed for so the consumer can tell a current result from a
+/// stale one (selection moved while the worker ran).
+pub struct DiffFetchResult {
+    pub key: DiffKey,
+    pub hunks: Vec<crate::git::DiffHunk>,
+}
+
+/// Spawn a worker that computes the diff hunks for one file
+/// off-thread. Opens its own repo handle — large-file diffs were
+/// previously computed synchronously during view construction, which
+/// froze the UI thread for the duration (and risked a Wayland
+/// disconnect, the exact stall this module exists to prevent).
+pub(crate) fn spawn_diff_fetch(
+    key: DiffKey,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<DiffFetchResult> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let hunks = compute_diff_hunks(&key);
+        let _ = tx.send(DiffFetchResult { key, hunks });
+        let _ = proxy.send_event(());
+    });
+    rx
+}
+
+/// Worker body shared by [`spawn_diff_fetch`] and the synchronous
+/// fill used by headless contexts (screenshot mode, dump_bundles)
+/// that have no poll loop to drain a receiver.
+pub(crate) fn compute_diff_hunks(key: &DiffKey) -> Vec<crate::git::DiffHunk> {
+    match GitRepo::open(&key.worktree) {
+        Ok(repo) => match key.commit {
+            Some(oid) => repo
+                .diff_file_in_commit(oid, &key.file)
+                .unwrap_or_default()
+                .into_iter()
+                .flat_map(|f| f.hunks)
+                .collect(),
+            None => repo
+                .diff_working_file(&key.file, key.staged)
+                .unwrap_or_default(),
+        },
+        Err(_) => Vec::new(),
+    }
+}
+
+// ============================================================================
 // Per-entity dirty checks — fan out one worker per submodule / worktree
 // ============================================================================
 

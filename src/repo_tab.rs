@@ -32,8 +32,8 @@ use crate::git::{
     StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
 use crate::git_async::{
-    DirtyCheckResult, RepoStateResult, StatusResult, WorktreeSnapshot, spawn_repo_state_refresh,
-    spawn_status_refresh,
+    DiffFetchResult, DiffKey, DirtyCheckResult, RepoStateResult, StatusResult, WorktreeSnapshot,
+    spawn_diff_fetch, spawn_repo_state_refresh, spawn_status_refresh,
 };
 use crate::watcher::{FsChangeKind, RepoWatcher, WatcherInitResult};
 use crate::{github, gitlab, token_store};
@@ -239,6 +239,11 @@ pub struct WorktreeView {
     pub commit_body: String,
     /// Currently previewed file in the diff pane (None = no diff selected).
     pub selected_diff_file: Option<String>,
+    /// Working-tree content generation. Bumped whenever a status
+    /// refresh lands *changed* content for this view; folded into
+    /// [`crate::git_async::DiffKey`] so the async diff pane re-fetches
+    /// when the file it's showing may have changed.
+    pub status_epoch: u64,
 }
 
 impl WorktreeView {
@@ -261,6 +266,7 @@ impl WorktreeView {
             commit_subject: String::new(),
             commit_body: String::new(),
             selected_diff_file: None,
+            status_epoch: 0,
         };
         view.refresh();
         Some(view)
@@ -286,6 +292,20 @@ impl WorktreeView {
             commit_subject: String::new(),
             commit_body: String::new(),
             selected_diff_file: None,
+            status_epoch: 0,
+        }
+    }
+
+    /// Which side of the working tree the diff pane should show for
+    /// `path`: `true` = the staged (HEAD → index) side. A file present
+    /// on both sides prefers unstaged — that's where the user is
+    /// actively editing.
+    pub fn diff_staged_side(&self, path: &str) -> bool {
+        if self.status.staged.iter().any(|f| f.path == path) {
+            !self.status.unstaged.iter().any(|f| f.path == path)
+                && !self.status.untracked.iter().any(|f| f.path == path)
+        } else {
+            false
         }
     }
 
@@ -294,6 +314,7 @@ impl WorktreeView {
         self.status = self.repo.status().unwrap_or_default();
         self.dirty_file_count = self.status.total_files();
         self.dirty_diff = self.repo.working_tree_diff_stats();
+        self.status_epoch += 1;
         self.refresh_ref_state();
         self.submodules = self.repo.submodules().unwrap_or_default();
     }
@@ -467,6 +488,17 @@ pub struct RepoTab {
     /// commit list. Cleared on `refresh()` so a fresh load re-fetches.
     pub diff_stats_fetched: bool,
 
+    // ---- Diff pane ----
+    /// In-flight diff fetch for the diff pane (one-shot). Spawned by
+    /// [`Self::poll_diff_fetch`] whenever the desired [`DiffKey`]
+    /// diverges from `diff_cache`; at most one in flight per tab.
+    pub diff_fetch_rx: Option<Receiver<DiffFetchResult>>,
+    /// Last fetched diff: the key it was computed for + its hunks.
+    /// The renderer shows these whenever the key's *target* matches
+    /// the current selection, even if a re-fetch for a newer content
+    /// epoch is still in flight (stale-while-revalidate).
+    pub diff_cache: Option<(DiffKey, Vec<crate::git::DiffHunk>)>,
+
     // ---- History search ----
     /// Query string for the history-view filter. Empty means "no
     /// filter active"; non-empty dims rows whose subject / author /
@@ -572,6 +604,8 @@ impl RepoTab {
             status_rx: None,
             status_dirty: false,
             ref_fingerprint: 0,
+            diff_fetch_rx: None,
+            diff_cache: None,
             watcher_init_rx: None,
             watcher: None,
             watcher_rx: None,
@@ -791,6 +825,59 @@ impl RepoTab {
         ));
     }
 
+    /// The diff the pane should currently display, or `None` when no
+    /// file is selected. Pure derivation from selection state — the
+    /// async diff fetch compares this against `diff_cache` to decide
+    /// whether a re-fetch is needed.
+    pub fn desired_diff_key(&self) -> Option<DiffKey> {
+        let view = self.active_view()?;
+        let file = view.selected_diff_file.clone()?;
+        let staged = self.selected_commit.is_none() && view.diff_staged_side(&file);
+        Some(DiffKey {
+            worktree: view.path.clone(),
+            file,
+            commit: self.selected_commit,
+            staged,
+            epoch: view.status_epoch,
+        })
+    }
+
+    /// Drain a finished diff fetch and spawn a new one when the
+    /// desired key has moved past the cache. At most one fetch in
+    /// flight; a result that lands stale (selection moved while the
+    /// worker ran) still fills the cache, and the mismatch re-spawns
+    /// on the next poll — converges with at most one extra fetch.
+    pub fn poll_diff_fetch(&mut self, proxy: &EventLoopProxy<()>) {
+        if let Some(rx) = self.diff_fetch_rx.take() {
+            match rx.try_recv() {
+                Ok(res) => self.diff_cache = Some((res.key, res.hunks)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.diff_fetch_rx = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if self.diff_fetch_rx.is_some() {
+            return;
+        }
+        let Some(key) = self.desired_diff_key() else {
+            return;
+        };
+        if self.diff_cache.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        self.diff_fetch_rx = Some(spawn_diff_fetch(key, proxy.clone()));
+    }
+
+    /// Synchronous variant of [`Self::poll_diff_fetch`] — headless
+    /// contexts (screenshot mode, dump_bundles) have no event loop to
+    /// drain a receiver, so they fill the diff cache inline after
+    /// selecting a file.
+    pub fn fetch_diff_sync(&mut self) {
+        if let Some(key) = self.desired_diff_key() {
+            let hunks = crate::git_async::compute_diff_hunks(&key);
+            self.diff_cache = Some((key, hunks));
+        }
+    }
+
     // ========================================================================
     // Async-refresh reducers
     // ========================================================================
@@ -969,6 +1056,9 @@ impl RepoTab {
         };
         let changed = view.status != status;
         view.status = status;
+        if changed {
+            view.status_epoch += 1;
+        }
         changed
     }
 

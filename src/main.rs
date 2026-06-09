@@ -148,17 +148,22 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
         "diff" => {
             // Pick the first changed file so the diff viewer has content
             // to render. Fall through silently when no repos are open.
-            if let Some(view) = app.tabs.first_mut().and_then(|t| t.active_view_mut()) {
-                let pick = view
-                    .status
-                    .unstaged
-                    .first()
-                    .or_else(|| view.status.untracked.first())
-                    .or_else(|| view.status.staged.first())
-                    .map(|f| f.path.clone());
-                if let Some(p) = pick {
-                    view.selected_diff_file = Some(p);
+            if let Some(tab) = app.tabs.first_mut() {
+                if let Some(view) = tab.active_view_mut() {
+                    let pick = view
+                        .status
+                        .unstaged
+                        .first()
+                        .or_else(|| view.status.untracked.first())
+                        .or_else(|| view.status.staged.first())
+                        .map(|f| f.path.clone());
+                    if let Some(p) = pick {
+                        view.selected_diff_file = Some(p);
+                    }
                 }
+                // No event loop here to drain the async fetch — fill
+                // the diff cache inline so the scene renders content.
+                tab.fetch_diff_sync();
             }
         }
         "settings" => {

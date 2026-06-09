@@ -6,70 +6,69 @@
 
 use damascene_core::{El, prelude::*};
 
-use crate::git::{self, FileStatus};
-use crate::repo_tab::{RepoTab, WorktreeView};
+use crate::git;
+use crate::repo_tab::RepoTab;
 use crate::widgets::diff::{
     DiffData, DiffHunk, DiffHunkAction, DiffLine, DiffLineKind, DiffMode, diff,
 };
 
 pub const DIFF_MODE_TOGGLE_KEY: &str = "diff:mode_toggle";
 
+/// Render the diff pane from the tab's async diff cache. The hunks
+/// are computed off-thread by `git_async::spawn_diff_fetch` (driven
+/// from `WhisperApp::poll_diff_fetch`); this function never touches
+/// libgit2. While a re-fetch for newer content is in flight, the
+/// previous hunks for the same target keep rendering
+/// (stale-while-revalidate) so edits don't flash a loading state.
 pub fn diff_view(tab: &RepoTab, mode: DiffMode) -> El {
     let Some(view) = tab.active_view() else {
         return empty_diff("No active worktree.");
     };
-    let Some(path) = view.selected_diff_file.as_deref() else {
+    if view.selected_diff_file.is_none() {
+        return empty_diff("No file selected.");
+    }
+    let Some(desired) = tab.desired_diff_key() else {
         return empty_diff("No file selected.");
     };
-
-    let mut data = if let Some(oid) = tab.selected_commit {
-        commit_diff(view, oid, path)
-    } else {
-        working_diff(view, path)
+    let Some((key, hunks)) = tab
+        .diff_cache
+        .as_ref()
+        .filter(|(k, _)| k.same_target(&desired))
+    else {
+        return empty_diff("Loading diff…");
     };
-    data.mode = mode;
-    data.mode_toggle_key = Some(DIFF_MODE_TOGGLE_KEY.to_string());
-    diff(&data)
-}
 
-fn working_diff(view: &WorktreeView, path: &str) -> DiffData {
-    let staged = file_is_staged(view, path);
-    let hunks = view
-        .repo
-        .diff_working_file(path, staged)
-        .unwrap_or_default();
-    let badge = if staged { "staged" } else { "unstaged" }.to_string();
-    let widget_hunks: Vec<DiffHunk> = hunks
-        .into_iter()
-        .enumerate()
-        .map(|(idx, h)| convert_hunk(h, working_actions(idx, path, staged)))
-        .collect();
-    DiffData {
+    let path = key.file.as_str();
+    let (badge, widget_hunks) = if let Some(oid) = key.commit {
+        // No per-hunk Stage / Unstage in commit context — the commit
+        // is already history.
+        let short = oid.to_string()[..7].to_string();
+        let converted = hunks
+            .iter()
+            .cloned()
+            .map(|h| convert_hunk(h, Vec::new()))
+            .collect();
+        (short, converted)
+    } else {
+        let staged = key.staged;
+        let badge = if staged { "staged" } else { "unstaged" }.to_string();
+        let converted = hunks
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(idx, h)| convert_hunk(h, working_actions(idx, path, staged)))
+            .collect();
+        (badge, converted)
+    };
+
+    let data = DiffData {
         title: path.to_string(),
         badge: Some(badge),
         hunks: widget_hunks,
-        mode: DiffMode::Unified,
-        mode_toggle_key: None,
-    }
-}
-
-fn commit_diff(view: &WorktreeView, oid: git2::Oid, path: &str) -> DiffData {
-    let files = view.repo.diff_file_in_commit(oid, path).unwrap_or_default();
-    let widget_hunks: Vec<DiffHunk> = files
-        .into_iter()
-        .flat_map(|f| f.hunks)
-        // No per-hunk Stage / Unstage in commit context — the commit is
-        // already history.
-        .map(|h| convert_hunk(h, Vec::new()))
-        .collect();
-    let short = oid.to_string()[..7].to_string();
-    DiffData {
-        title: path.to_string(),
-        badge: Some(short),
-        hunks: widget_hunks,
-        mode: DiffMode::Unified,
-        mode_toggle_key: None,
-    }
+        mode,
+        mode_toggle_key: Some(DIFF_MODE_TOGGLE_KEY.to_string()),
+    };
+    diff(&data)
 }
 
 fn convert_hunk(hunk: git::DiffHunk, actions: Vec<DiffHunkAction>) -> DiffHunk {
@@ -118,22 +117,6 @@ fn working_actions(idx: usize, path: &str, staged: bool) -> Vec<DiffHunkAction> 
             destructive: true,
         },
     ]
-}
-
-fn file_is_staged(view: &WorktreeView, path: &str) -> bool {
-    if view
-        .status
-        .staged
-        .iter()
-        .any(|f: &FileStatus| f.path == path)
-    {
-        // If it's *also* in unstaged, prefer unstaged (where the user is
-        // actively editing). Otherwise show the staged side.
-        !view.status.unstaged.iter().any(|f| f.path == path)
-            && !view.status.untracked.iter().any(|f| f.path == path)
-    } else {
-        false
-    }
 }
 
 fn empty_diff(msg: &str) -> El {

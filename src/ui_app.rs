@@ -3130,6 +3130,7 @@ impl WhisperApp {
         self.poll_ci_refresh();
         self.drain_diff_stats();
         self.trigger_diff_stats_fetches();
+        self.poll_diff_fetch();
         self.drain_avatar_completions();
         self.request_visible_avatars();
     }
@@ -3753,6 +3754,18 @@ impl WhisperApp {
             for sub in &mut tab.nav_stack {
                 sub.trigger_diff_stats_fetch(proxy.clone());
             }
+        }
+    }
+
+    /// Diff-pane fetch for the focused view only — the pane renders a
+    /// single tab's selection, so background tabs keep their last
+    /// cache until refocused.
+    fn poll_diff_fetch(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        if let Some(tab) = self.active_focus_mut() {
+            tab.poll_diff_fetch(&proxy);
         }
     }
 

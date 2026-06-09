@@ -129,6 +129,9 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                     if let Some(view) = t.active_view_mut() {
                         view.selected_diff_file = Some(diff_target.clone());
                     }
+                    // No event loop in the dump pipeline — fill the
+                    // diff cache inline so the scene renders hunks.
+                    t.fetch_diff_sync();
                     t
                 }]),
             ));
@@ -138,6 +141,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                     if let Some(view) = t.active_view_mut() {
                         view.selected_diff_file = Some(diff_target);
                     }
+                    t.fetch_diff_sync();
                     t
                 }]);
                 app.config.diff_split = true;
