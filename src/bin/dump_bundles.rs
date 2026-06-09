@@ -17,9 +17,15 @@ use whisper_git::{
     ui_app::{ActiveModal, ContextMenuState, ContextTarget},
 };
 
+/// The two real-world window shapes the app must feel first-class in:
+/// fullscreen on a 1080p display, and half-width under a tiling WM.
+/// Every scene is dumped and linted at both.
+const VIEWPORTS: &[(&str, f32, f32)] =
+    &[("1920x1080", 1920.0, 1080.0), ("960x1080", 960.0, 1080.0)];
+
 fn main() -> Result<()> {
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out");
-    let viewport = Rect::new(0.0, 0.0, 1600.0, 900.0);
+    clean_stale_bundles(&out_dir);
 
     let cli_paths: Vec<PathBuf> = std::env::args().skip(1).map(PathBuf::from).collect();
     let paths: Vec<PathBuf> = if cli_paths.is_empty() {
@@ -52,20 +58,25 @@ fn main() -> Result<()> {
     let mut total_findings = 0;
     for (name, app) in scenes {
         let theme = app.theme();
-        let cx = BuildCx::new(&theme);
-        let mut tree = app.build(&cx);
-        let bundle = render_bundle(&mut tree, viewport);
-        let written = write_bundle(&bundle, &out_dir, &name).context("write_bundle")?;
-        for p in &written {
-            println!("wrote {}", p.display());
-        }
-        if !bundle.lint.findings.is_empty() {
-            eprintln!(
-                "\nlint findings ({} in {name}):",
-                bundle.lint.findings.len()
-            );
-            eprint!("{}", bundle.lint.text());
-            total_findings += bundle.lint.findings.len();
+        for &(size, w, h) in VIEWPORTS {
+            // Attach the viewport so builds can branch on width the
+            // same way they do under the live host.
+            let cx = BuildCx::new(&theme).with_viewport(w, h);
+            let mut tree = app.build(&cx);
+            let bundle = render_bundle(&mut tree, Rect::new(0.0, 0.0, w, h));
+            let scene = format!("{name}@{size}");
+            let written = write_bundle(&bundle, &out_dir, &scene).context("write_bundle")?;
+            for p in &written {
+                println!("wrote {}", p.display());
+            }
+            if !bundle.lint.findings.is_empty() {
+                eprintln!(
+                    "\nlint findings ({} in {scene}):",
+                    bundle.lint.findings.len()
+                );
+                eprint!("{}", bundle.lint.text());
+                total_findings += bundle.lint.findings.len();
+            }
         }
     }
 
@@ -73,6 +84,31 @@ fn main() -> Result<()> {
         anyhow::bail!("{total_findings} total lint findings");
     }
     Ok(())
+}
+
+/// Remove prior bundle artifacts so renamed/removed scenes don't leave
+/// stale files behind. Only touches the five extensions `write_bundle`
+/// produces; anything else in `out/` is left alone.
+fn clean_stale_bundles(out_dir: &Path) {
+    const BUNDLE_SUFFIXES: &[&str] = &[
+        ".svg",
+        ".tree.txt",
+        ".draw_ops.txt",
+        ".shader_manifest.txt",
+        ".lint.txt",
+    ];
+    let Ok(entries) = std::fs::read_dir(out_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if BUNDLE_SUFFIXES.iter().any(|s| file_name.ends_with(s)) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
