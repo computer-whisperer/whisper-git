@@ -155,12 +155,18 @@ impl RepoWatcher {
             move |res: notify::Result<Event>| {
                 match res {
                     Ok(event) => {
+                        // Recover from poisoning rather than panic: this
+                        // closure runs on notify's thread, and the guarded
+                        // data is a plain Vec swap that a panicking writer
+                        // can't leave half-updated. Propagating the panic
+                        // here would kill watching (or the app) on the
+                        // next fs event after any unrelated panic.
                         let guard = submodule_paths_for_closure
                             .lock()
-                            .expect("submodule_paths mutex poisoned");
+                            .unwrap_or_else(|e| e.into_inner());
                         let roots = worktree_roots_for_closure
                             .lock()
-                            .expect("worktree_roots mutex poisoned");
+                            .unwrap_or_else(|e| e.into_inner());
                         if let Some(kind) = classify_event(
                             &event,
                             workdir_owned.as_deref(),
@@ -273,9 +279,11 @@ impl RepoWatcher {
     /// fresh watcher (the recursive workdir watch survives, so we
     /// avoid the multi-hundred-ms inotify reinstall).
     pub fn update_submodule_paths(&self, paths: Vec<PathBuf>) {
-        if let Ok(mut guard) = self.submodule_paths.lock() {
-            *guard = paths;
-        }
+        let mut guard = self
+            .submodule_paths
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = paths;
     }
 
     /// Add a path to watch. Ignores errors gracefully (e.g., path doesn't exist).
@@ -297,7 +305,11 @@ impl RepoWatcher {
     /// `common_dir` is the shared git dir (where worktrees/ metadata lives).
     pub fn update_worktree_watches(&mut self, worktrees: &[WorktreeInfo], common_dir: &Path) {
         let roots: Vec<PathBuf> = worktrees.iter().map(|wt| PathBuf::from(&wt.path)).collect();
-        if let Ok(mut guard) = self.worktree_roots.lock() {
+        {
+            let mut guard = self
+                .worktree_roots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *guard = roots.clone();
         }
 
