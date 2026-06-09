@@ -203,7 +203,6 @@ impl WorktreeSnapshot {
 /// commits unreachable from any current ref.
 pub(crate) fn spawn_repo_state_refresh(
     repo_context_path: PathBuf,
-    staging_context_path: Option<PathBuf>,
     show_orphaned_commits: bool,
     proxy: EventLoopProxy<()>,
 ) -> Receiver<RepoStateResult> {
@@ -236,11 +235,6 @@ pub(crate) fn spawn_repo_state_refresh(
             }
         };
 
-        let staging_repo = staging_context_path
-            .as_ref()
-            .and_then(|dir| GitRepo::open(dir).ok());
-        let staging = staging_repo.as_ref().unwrap_or(&repo);
-
         let graph_result = if show_orphaned_commits {
             repo.commit_graph_with_orphans(MAX_COMMITS)
         } else {
@@ -254,7 +248,7 @@ pub(crate) fn spawn_repo_state_refresh(
             }
         };
 
-        let mut branch_tips = repo.branch_tips().unwrap_or_else(|e| {
+        let branch_tips = repo.branch_tips().unwrap_or_else(|e| {
             errors.push(format!("Failed to load branches: {e}"));
             Vec::new()
         });
@@ -262,18 +256,6 @@ pub(crate) fn spawn_repo_state_refresh(
             errors.push(format!("Failed to load tags: {e}"));
             Vec::new()
         });
-        let current_branch = staging.current_branch().unwrap_or_else(|e| {
-            errors.push(format!("Failed to get current branch: {e}"));
-            String::new()
-        });
-
-        // Patch is_head against the staging context — for multi-worktree
-        // repos this can differ from the main repo's HEAD. (`current_branch`
-        // is not stored on the result; the active worktree's branch comes
-        // from `worktree_snapshots`.)
-        for tip in &mut branch_tips {
-            tip.is_head = tip.name == current_branch && !tip.is_remote;
-        }
 
         let worktrees = repo.worktrees().unwrap_or_else(|e| {
             errors.push(format!("Failed to load worktrees: {e}"));

@@ -1542,7 +1542,7 @@ fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
         }
         let kind = if tip.is_remote {
             BranchKind::Remote
-        } else if tip.is_head {
+        } else if tab.branch_is_head(tip) {
             BranchKind::Head
         } else {
             BranchKind::Local

@@ -1957,7 +1957,7 @@ impl WhisperApp {
         let default = focus
             .branch_tips
             .iter()
-            .find(|b| !b.is_remote && b.is_head)
+            .find(|b| focus.branch_is_head(b))
             .and_then(|b| b.upstream.clone())
             .or_else(|| {
                 let remote = focus.repo.default_remote().ok()?;
@@ -4817,7 +4817,7 @@ fn commit_context_menu_items(
     let mergeable_locals: Vec<&str> = tab
         .branch_tips
         .iter()
-        .filter(|tip| tip.oid == oid && !tip.is_remote && !tip.is_head)
+        .filter(|tip| tip.oid == oid && !tip.is_remote && !tab.branch_is_head(tip))
         .map(|tip| tip.name.as_str())
         .collect();
     let remote_branches: Vec<&str> = tab

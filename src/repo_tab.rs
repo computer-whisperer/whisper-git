@@ -656,16 +656,6 @@ impl RepoTab {
         // would fire a redundant state refresh because the cached
         // value is 0.
         self.ref_fingerprint = crate::git::ref_fingerprint(self.repo.git_dir());
-
-        // Rewrite branch_tips' `is_head` to reflect the active worktree's
-        // HEAD rather than the reference repo's HEAD. For multi-worktree
-        // repos these can differ; the sidebar uses `current_branch()`
-        // directly, but other consumers iterating `branch_tips` see the
-        // worktree-scoped truth.
-        let current = self.current_branch().to_string();
-        for tip in &mut self.branch_tips {
-            tip.is_head = !tip.is_remote && tip.name == current;
-        }
     }
 
     // ========================================================================
@@ -690,13 +680,8 @@ impl RepoTab {
             .workdir()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| self.repo.git_dir().to_path_buf());
-        let staging_context_path = self
-            .active_view()
-            .and_then(|v| v.repo.workdir().map(|p| p.to_path_buf()))
-            .or_else(|| Some(repo_context_path.clone()));
         self.state_refresh_rx = Some(spawn_repo_state_refresh(
             repo_context_path,
-            staging_context_path,
             show_orphaned_commits,
             proxy.clone(),
         ));
@@ -876,13 +861,6 @@ impl RepoTab {
             .active_view()
             .map(|v| v.submodules.clone())
             .unwrap_or_default();
-
-        // Patch branch_tips' is_head against the active worktree's HEAD —
-        // matches the sync `refresh()` path.
-        let current = self.current_branch().to_string();
-        for tip in &mut self.branch_tips {
-            tip.is_head = !tip.is_remote && tip.name == current;
-        }
 
         self.rebuild_synthetic_entries();
 
@@ -1237,11 +1215,6 @@ impl RepoTab {
         // so the async status refresh fills the newly-active view's staging
         // well (and the dirty fanout its summary) off the UI thread.
         self.rebuild_synthetic_entries();
-
-        let current = self.current_branch().to_string();
-        for tip in &mut self.branch_tips {
-            tip.is_head = !tip.is_remote && tip.name == current;
-        }
     }
 
     /// Active worktree view, if any. `None` only for effectively-bare
@@ -1273,6 +1246,15 @@ impl RepoTab {
         self.active_view()
             .map(|v| v.current_branch.as_str())
             .unwrap_or("")
+    }
+
+    /// Whether `tip` is the HEAD branch of the active worktree. Derived
+    /// on demand from the focused view's cached branch name so it can
+    /// never go stale when HEAD moves or the active worktree changes —
+    /// this used to be a stored flag on `BranchTip` that three separate
+    /// code paths had to remember to re-patch.
+    pub fn branch_is_head(&self, tip: &BranchTip) -> bool {
+        !tip.is_remote && tip.name == self.current_branch()
     }
 
     /// `true` when there's at least one worktree to render in the

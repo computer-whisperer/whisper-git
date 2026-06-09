@@ -1071,7 +1071,6 @@ impl GitRepo {
 
     /// Get branch tips (for graph labels)
     pub fn branch_tips(&self) -> Result<Vec<BranchTip>> {
-        let head_oid = self.repo.head().ok().and_then(|h| h.target());
         let mut tips = Vec::new();
 
         for branch in self.repo.branches(None)? {
@@ -1081,7 +1080,6 @@ impl GitRepo {
             {
                 let name = branch.name().ok().flatten().unwrap_or("").to_string();
                 let is_remote = branch_type == git2::BranchType::Remote;
-                let is_head = head_oid == Some(oid);
 
                 let upstream = if !is_remote {
                     branch
@@ -1096,7 +1094,6 @@ impl GitRepo {
                     name,
                     oid,
                     is_remote,
-                    is_head,
                     upstream,
                 });
             }
@@ -1194,7 +1191,6 @@ pub struct BranchTip {
     pub name: String,
     pub oid: Oid,
     pub is_remote: bool,
-    pub is_head: bool,
     /// Upstream tracking branch name (e.g. "origin/main"), if any
     pub upstream: Option<String>,
 }
