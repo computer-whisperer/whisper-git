@@ -697,19 +697,11 @@ impl App for WhisperApp {
                 let mut children: Vec<El> = Vec::with_capacity(5);
                 if !self.config.sidebar_collapsed {
                     children.push(sidebar::sidebar(tab).width(Size::Fixed(sidebar_w)));
-                    children.push(
-                        resize_handle(Axis::Row)
-                            .key("sidebar:resize")
-                            .focus_ring_inside(),
-                    );
+                    children.push(resize_handle("sidebar:resize", Axis::Row).focus_ring_inside());
                 }
                 children.push(center);
                 if !self.config.right_pane_collapsed {
-                    children.push(
-                        resize_handle(Axis::Row)
-                            .key("right:resize")
-                            .focus_ring_inside(),
-                    );
+                    children.push(resize_handle("right:resize", Axis::Row).focus_ring_inside());
                     children.push(right.width(Size::Fixed(right_pane_w)));
                 }
                 let main_row = row(children)

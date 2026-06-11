@@ -35,7 +35,7 @@ pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
             [
                 field_row(
                     "Orphaned commits",
-                    switch(config.show_orphaned_commits).key("settings:orphans"),
+                    switch("settings:orphans", config.show_orphaned_commits),
                 ),
                 field_row("Row size", row_size_selector(config.row_scale)),
             ],
@@ -45,15 +45,15 @@ pub fn settings_modal(config: &Config, shortcut_bar_visible: bool) -> El {
             [
                 field_row(
                     "Avatars",
-                    switch(config.avatars_enabled).key("settings:avatars"),
+                    switch("settings:avatars", config.avatars_enabled),
                 ),
                 field_row(
                     "Shortcut bar",
-                    switch(shortcut_bar_visible).key("settings:shortcut_bar"),
+                    switch("settings:shortcut_bar", shortcut_bar_visible),
                 ),
                 field_row(
                     "Split diff",
-                    switch(config.diff_split).key("settings:diff_split"),
+                    switch("settings:diff_split", config.diff_split),
                 ),
             ],
         ),
@@ -247,20 +247,14 @@ pub fn clone_modal(state: &CloneForm, selection: &Selection, in_flight: bool) ->
     // shape for stacked-field intent.
     let url_field = form_item([
         form_label("Repository URL"),
-        form_control(
-            text_input(&state.url, selection, "clone:url")
-                .key("clone:url")
-                .width(Size::Fill(1.0)),
-        ),
+        form_control(text_input("clone:url", &state.url, selection).width(Size::Fill(1.0))),
     ]);
 
     let dest_field = form_item([
         form_label("Destination"),
         form_control(
             row([
-                text_input(&state.dest, selection, "clone:dest")
-                    .key("clone:dest")
-                    .width(Size::Fill(1.0)),
+                text_input("clone:dest", &state.dest, selection).width(Size::Fill(1.0)),
                 button("Browse\u{2026}").key("clone:browse").ghost(),
             ])
             .gap(tokens::SPACE_2)
@@ -269,7 +263,7 @@ pub fn clone_modal(state: &CloneForm, selection: &Selection, in_flight: bool) ->
         ),
     ]);
 
-    let bare_field = field_row("Bare clone", switch(state.bare).key("clone:bare"));
+    let bare_field = field_row("Bare clone", switch("clone:bare", state.bare));
 
     let primary = if in_flight {
         // Disabled-ish: the action handler short-circuits when an op is
@@ -311,17 +305,13 @@ pub struct BranchForm {
 pub fn branch_modal(state: &BranchForm, selection: &Selection, target_short: &str) -> El {
     let name_field = form_item([
         form_label("Branch name"),
-        form_control(
-            text_input(&state.name, selection, "branch:name")
-                .key("branch:name")
-                .width(Size::Fill(1.0)),
-        ),
+        form_control(text_input("branch:name", &state.name, selection).width(Size::Fill(1.0))),
         form_description(format!("Will be created at {target_short}.")),
     ]);
 
     let checkout_field = field_row(
         "Check out after creating",
-        switch(state.checkout).key("branch:checkout"),
+        switch("branch:checkout", state.checkout),
     );
 
     let actions = row([
@@ -350,11 +340,7 @@ pub struct TagForm {
 pub fn tag_modal(state: &TagForm, selection: &Selection, target_short: &str) -> El {
     let name_field = form_item([
         form_label("Tag name"),
-        form_control(
-            text_input(&state.name, selection, "tag:name")
-                .key("tag:name")
-                .width(Size::Fill(1.0)),
-        ),
+        form_control(text_input("tag:name", &state.name, selection).width(Size::Fill(1.0))),
         form_description(format!("Will be created at {target_short}.")),
     ]);
 
@@ -397,7 +383,7 @@ pub fn pull_modal(state: &PullForm, sources: &[String]) -> El {
 
     let rebase_field = field_row(
         "Rebase instead of merge",
-        switch(state.rebase).key("pull:rebase"),
+        switch("pull:rebase", state.rebase),
     );
 
     let mut pull_btn = button("Pull").key("pull:execute").primary();
@@ -445,23 +431,19 @@ pub fn push_modal(state: &PushForm, selection: &Selection, remotes: &[String]) -
 
     let branch_field = form_item([
         form_label("Branch"),
-        form_control(
-            text_input(&state.branch, selection, "push:branch")
-                .key("push:branch")
-                .width(Size::Fill(1.0)),
-        ),
+        form_control(text_input("push:branch", &state.branch, selection).width(Size::Fill(1.0))),
         form_description("Local branch to push. Defaults to the current branch.".to_string()),
     ]);
 
     let force_field = field_row(
         "Force with lease",
-        switch(state.force_with_lease).key("push:force"),
+        switch("push:force", state.force_with_lease),
     );
     let upstream_field = field_row(
         "Set upstream",
-        switch(state.set_upstream).key("push:set_upstream"),
+        switch("push:set_upstream", state.set_upstream),
     );
-    let tags_field = field_row("Include tags", switch(state.include_tags).key("push:tags"));
+    let tags_field = field_row("Include tags", switch("push:tags", state.include_tags));
 
     let mut push_btn = button("Push").key("push:execute").primary();
     if state.remote.trim().is_empty() || state.branch.trim().is_empty() {
@@ -563,9 +545,7 @@ pub fn merge_modal(state: &MergeForm, selection: &Selection, source: &str) -> El
         sections.push(form_item([
             form_label("Merge commit message"),
             form_control(
-                text_input(&state.no_ff_message, selection, "merge:message")
-                    .key("merge:message")
-                    .width(Size::Fill(1.0)),
+                text_input("merge:message", &state.no_ff_message, selection).width(Size::Fill(1.0)),
             ),
             form_description(
                 "Optional. Leave empty to use git's default `Merge branch ‘…’`.".to_string(),
@@ -601,11 +581,11 @@ pub struct RebaseForm {
 pub fn rebase_modal(state: &RebaseForm, base: &str) -> El {
     let autostash_field = field_row(
         "Autostash dirty changes",
-        switch(state.autostash).key("rebase:autostash"),
+        switch("rebase:autostash", state.autostash),
     );
     let merges_field = field_row(
         "Preserve merge commits",
-        switch(state.rebase_merges).key("rebase:merges"),
+        switch("rebase:merges", state.rebase_merges),
     );
 
     let target_caption =
@@ -643,11 +623,7 @@ pub struct WorktreeForm {
 pub fn worktree_modal(state: &WorktreeForm, selection: &Selection) -> El {
     let path_field = form_item([
         form_label("Path"),
-        form_control(
-            text_input(&state.path, selection, "worktree:path")
-                .key("worktree:path")
-                .width(Size::Fill(1.0)),
-        ),
+        form_control(text_input("worktree:path", &state.path, selection).width(Size::Fill(1.0))),
         form_description(
             "The directory the worktree will be created at. \
              Must not exist yet."
@@ -657,9 +633,7 @@ pub fn worktree_modal(state: &WorktreeForm, selection: &Selection) -> El {
     let source_field = form_item([
         form_label("Source"),
         form_control(
-            text_input(&state.source, selection, "worktree:source")
-                .key("worktree:source")
-                .width(Size::Fill(1.0)),
+            text_input("worktree:source", &state.source, selection).width(Size::Fill(1.0)),
         ),
         form_description(
             "Branch name (creates a checkout of that branch) or, with \
@@ -668,13 +642,10 @@ pub fn worktree_modal(state: &WorktreeForm, selection: &Selection) -> El {
         ),
     ]);
 
-    let detached_field = field_row(
-        "Detached HEAD",
-        switch(state.detached).key("worktree:detached"),
-    );
+    let detached_field = field_row("Detached HEAD", switch("worktree:detached", state.detached));
     let submodules_field = field_row(
         "Initialize submodules after",
-        switch(state.init_submodules).key("worktree:submodules"),
+        switch("worktree:submodules", state.init_submodules),
     );
 
     let mut create_btn = button("Create").key("worktree:create").primary();
@@ -801,9 +772,7 @@ pub fn token_modal(
 ) -> El {
     let github_controls: El = if state.editing_github {
         row([
-            text_input(&state.github_input, selection, "token:github")
-                .key("token:github")
-                .width(Size::Fill(1.0)),
+            text_input("token:github", &state.github_input, selection).width(Size::Fill(1.0)),
             button("Save").key("token:github:save").primary(),
             button("Cancel").key("token:github:cancel").ghost(),
         ])
@@ -888,8 +857,7 @@ fn gitlab_host_row(state: &TokenForm, selection: &Selection, host: &str, configu
     let controls: El = if editing {
         let buf = state.gitlab_inputs.get(host).cloned().unwrap_or_default();
         row([
-            text_input(&buf, selection, &format!("token:gitlab:input:{host}"))
-                .key(format!("token:gitlab:input:{host}"))
+            text_input(&format!("token:gitlab:input:{host}"), &buf, selection)
                 .width(Size::Fill(1.0)),
             button("Save")
                 .key(format!("token:gitlab:save:{host}"))

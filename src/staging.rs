@@ -351,11 +351,8 @@ fn commit_message(view: &WorktreeView, selection: &Selection, ai_in_flight: bool
         .padding(tokens::SPACE_3)
         .pb(tokens::SPACE_2),
         card_content([
-            text_input(&view.commit_subject, selection, "subject")
-                .key("subject")
-                .width(Size::Fill(1.0)),
-            text_area(&view.commit_body, selection, "body")
-                .key("body")
+            text_input("subject", &view.commit_subject, selection).width(Size::Fill(1.0)),
+            text_area("body", &view.commit_body, selection)
                 .width(Size::Fill(1.0))
                 .height(Size::Fixed(120.0)),
         ])

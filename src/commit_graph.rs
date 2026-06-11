@@ -1444,7 +1444,7 @@ pub fn history_view(tab: &RepoTab, selection: &Selection, avatars: HashMap<Strin
     ];
     if tab.history_search_open {
         let search_input =
-            text_input(&tab.search_query, selection, SEARCH_INPUT_KEY).width(Size::Fill(1.0));
+            text_input(SEARCH_INPUT_KEY, &tab.search_query, selection).width(Size::Fill(1.0));
         header_children.push(
             row([
                 icon(IconName::Search).icon_size(tokens::ICON_SM).muted(),
