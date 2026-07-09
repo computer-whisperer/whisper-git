@@ -1306,11 +1306,15 @@ impl WhisperApp {
         // staging well is the primary affordance).
         if let Some(name) = key.strip_prefix("worktree:") {
             if let Some(tab) = self.active_focus_mut() {
+                // Resolve against `worktree_views` — the same set the
+                // pills are built from. `tab.worktrees` is libgit2's
+                // linked-only list, which omits the main worktree and
+                // made its pill a dead click.
                 let path = tab
-                    .worktrees
+                    .worktree_views
                     .iter()
-                    .find(|w| w.name == name)
-                    .map(|w| std::path::PathBuf::from(&w.path));
+                    .find(|(_, v)| v.name == name)
+                    .map(|(p, _)| p.clone());
                 if let Some(p) = path {
                     tab.select_worktree(p);
                 }
@@ -2860,9 +2864,22 @@ impl WhisperApp {
                 self.open_rebase_options(format!("{remote}/{branch}"));
             }
             ("delete", ContextTarget::LocalBranch(name)) => {
+                // libgit2's branch delete is unconditional (`-D`
+                // semantics, no merged-ness check), so surface the
+                // `git branch -d` warning in the confirm instead.
+                let unmerged_note = match self
+                    .active_focus()
+                    .is_some_and(|t| t.active_repo().branch_is_merged(&name))
+                {
+                    true => "",
+                    false => {
+                        "\n\nThis branch is NOT merged into HEAD — \
+                         its commits may be lost."
+                    }
+                };
                 self.active_modal = Some(ActiveModal::Confirm {
                     title: "Delete branch".to_string(),
-                    body: format!("Delete local branch '{name}' permanently?"),
+                    body: format!("Delete local branch '{name}' permanently?{unmerged_note}"),
                     ok_label: "Delete".to_string(),
                     destructive: true,
                     action: ConfirmAction::DeleteBranch(name),
@@ -4250,33 +4267,54 @@ impl WhisperApp {
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
-        let remote = tab
-            .repo
-            .default_remote()
-            .unwrap_or_else(|_| "origin".to_string());
-        let branch = tab.current_branch().to_string();
-        if branch.is_empty() {
+        // Live detached check — the cached view branch shows a short
+        // commit id on detached HEAD, so it is never empty and can't
+        // serve as the guard.
+        if tab.active_repo().head_detached() {
             self.toasts
                 .push(ToastSpec::error("Push: HEAD is detached, no branch"));
             return;
         }
-        let rx = crate::git::push_remote_async(wd, remote.clone(), branch.clone(), proxy);
+        let branch = tab.current_branch().to_string();
+        if branch.is_empty() {
+            self.toasts
+                .push(ToastSpec::error("Push: no branch to push"));
+            return;
+        }
+        // Tracked upstream wins: `main` tracking `origin/master` must
+        // push `main:master` to origin, not create `origin/main`. No
+        // upstream → same-name push to the default remote (the push
+        // picker offers --set-upstream for making it tracked).
+        let (remote, refspec) = match tab.active_repo().upstream_target() {
+            Some((remote, upstream_branch)) if upstream_branch != branch => {
+                (remote, format!("{branch}:{upstream_branch}"))
+            }
+            Some((remote, _)) => (remote, branch.clone()),
+            None => (
+                tab.active_repo()
+                    .default_remote()
+                    .unwrap_or_else(|_| "origin".to_string()),
+                branch.clone(),
+            ),
+        };
+        let rx = crate::git::push_remote_async(wd, remote.clone(), refspec.clone(), proxy);
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
         tab.push_op = Some(
-            TimedOp::new(rx, format!("{branch} → {remote}"))
-                .with_push_retry(remote.clone(), branch.clone()),
+            TimedOp::new(rx, format!("{refspec} → {remote}"))
+                .with_push_retry(remote.clone(), refspec.clone()),
         );
         self.toasts
-            .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
+            .push(ToastSpec::info(format!("Pushing {refspec} to {remote}…")));
     }
 
-    /// Pull the upstream of the current branch — `git pull <remote> <branch>`,
-    /// where `<remote>` is `default_remote()` (the upstream's remote when
-    /// tracking info exists; falls back to `origin`) and `<branch>` is
-    /// the current branch shorthand. Detached HEAD is rejected up-front
-    /// since pull has no source to use.
+    /// Pull the upstream of the current branch — `git pull <remote> <branch>`
+    /// against the tracked upstream (`upstream_target()`), so a branch
+    /// tracking a differently-named remote branch pulls the right one.
+    /// Without tracking info, falls back to the current branch name on
+    /// `default_remote()`. Detached HEAD is rejected up-front since pull
+    /// has no source to use.
     fn pull(&mut self) {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Pull, true) else {
             return;
@@ -4284,16 +4322,33 @@ impl WhisperApp {
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
-        let remote = tab
-            .repo
-            .default_remote()
-            .unwrap_or_else(|_| "origin".to_string());
-        let branch = tab.current_branch().to_string();
-        if branch.is_empty() {
+        // Live detached check — see `push` for why the cached view
+        // branch can't serve as the guard.
+        if tab.active_repo().head_detached() {
             self.toasts
                 .push(ToastSpec::error("Pull: HEAD is detached, no branch"));
             return;
         }
+        // Pull the tracked upstream when one exists — `main` tracking
+        // `origin/master` must pull master, not a same-named remote
+        // branch that may not even exist.
+        let (remote, branch) = match tab.active_repo().upstream_target() {
+            Some(target) => target,
+            None => {
+                let branch = tab.current_branch().to_string();
+                if branch.is_empty() {
+                    self.toasts
+                        .push(ToastSpec::error("Pull: no branch to pull"));
+                    return;
+                }
+                (
+                    tab.active_repo()
+                        .default_remote()
+                        .unwrap_or_else(|_| "origin".to_string()),
+                    branch,
+                )
+            }
+        };
         let rx = crate::git::pull_remote_async(wd, remote.clone(), branch.clone(), proxy);
         let Some(tab) = self.active_focus_mut() else {
             return;

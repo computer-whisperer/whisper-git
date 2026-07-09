@@ -90,6 +90,55 @@ impl GitRepo {
             .ok_or_else(|| anyhow::anyhow!("No remotes configured"))
     }
 
+    /// The current branch's tracked upstream as `(remote, remote_branch)`
+    /// — e.g. `("origin", "master")` for a local `main` tracking
+    /// `origin/master`. `None` on detached HEAD or when no upstream is
+    /// configured. Resolved via libgit2's upstream config lookup rather
+    /// than splitting the `origin/master` shorthand, which is ambiguous
+    /// when branch names contain `/`.
+    pub fn upstream_target(&self) -> Option<(String, String)> {
+        let head = self.repo.head().ok()?;
+        if !head.is_branch() {
+            return None;
+        }
+        let refname = head.name()?;
+        let remote_buf = self.repo.branch_upstream_remote(refname).ok()?;
+        let remote = remote_buf.as_str()?.to_string();
+        let upstream_buf = self.repo.branch_upstream_name(refname).ok()?;
+        let branch = upstream_buf
+            .as_str()?
+            .strip_prefix("refs/remotes/")?
+            .strip_prefix(&remote)?
+            .strip_prefix('/')?
+            .to_string();
+        Some((remote, branch))
+    }
+
+    /// Whether HEAD is detached — a live read, unlike the cached view
+    /// branch name (which shows a short commit id on detached HEAD and
+    /// is therefore never empty).
+    pub fn head_detached(&self) -> bool {
+        self.repo.head_detached().unwrap_or(false)
+    }
+
+    /// Whether `name`'s tip is reachable from HEAD — the "fully merged"
+    /// test `git branch -d` applies against HEAD. Errs on `false`
+    /// (treat as unmerged) so callers warn rather than stay silent.
+    pub fn branch_is_merged(&self, name: &str) -> bool {
+        let Some(tip) = self
+            .repo
+            .find_branch(name, git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().target())
+        else {
+            return false;
+        };
+        let Ok(head) = self.head_oid() else {
+            return false;
+        };
+        tip == head || self.repo.graph_descendant_of(head, tip).unwrap_or(false)
+    }
+
     /// Checkout a local branch by name
     pub fn checkout_branch(&self, name: &str) -> Result<()> {
         // No working tree to materialize (bare repo, no linked worktree
@@ -890,5 +939,128 @@ mod tests {
         assert_eq!(v2_branches, vec![current_branch]);
 
         let _ = fs::remove_dir_all(&repo_dir);
+    }
+
+    fn temp_repo(name: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("whisper-git-{name}-{unique}"));
+        fs::create_dir_all(&dir).expect("create temp repo dir");
+        run_git(&dir, &["init", "-b", "main"]);
+        run_git(&dir, &["config", "user.name", "Test"]);
+        run_git(&dir, &["config", "user.email", "test@example.com"]);
+        dir
+    }
+
+    fn commit_file(dir: &Path, path: &str, content: &str, msg: &str) {
+        fs::write(dir.join(path), content).expect("write file");
+        run_git(dir, &["add", path]);
+        run_git(dir, &["commit", "-m", msg]);
+    }
+
+    /// Regression: toolbar push/pull used the *local* branch shorthand,
+    /// so `main` tracking `origin/master` pushed to/pulled from a
+    /// remote branch named `main`. `upstream_target` must resolve the
+    /// tracked remote branch name, including names containing '/'.
+    #[test]
+    fn upstream_target_resolves_differently_named_upstream() {
+        let origin = temp_repo("upstream-origin");
+        commit_file(&origin, "a.txt", "hi\n", "initial");
+        run_git(&origin, &["branch", "feature/x"]);
+
+        let local = temp_repo("upstream-local");
+        commit_file(&local, "a.txt", "hi\n", "initial");
+        run_git(
+            &local,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run_git(&local, &["fetch", "origin"]);
+        run_git(
+            &local,
+            &["branch", "--set-upstream-to=origin/feature/x", "main"],
+        );
+
+        let repo = GitRepo::open(&local).expect("open repo");
+        assert_eq!(
+            repo.upstream_target(),
+            Some(("origin".to_string(), "feature/x".to_string()))
+        );
+        assert!(!repo.head_detached());
+
+        // Detached HEAD → no upstream, and the detached check fires.
+        run_git(&local, &["checkout", "--detach", "HEAD"]);
+        let repo = GitRepo::open(&local).expect("reopen repo");
+        assert_eq!(repo.upstream_target(), None);
+        assert!(repo.head_detached());
+
+        let _ = fs::remove_dir_all(&origin);
+        let _ = fs::remove_dir_all(&local);
+    }
+
+    /// `branch_is_merged` backs the unmerged-branch warning in the
+    /// delete confirm: merged (ancestor-of-HEAD) branches pass, a
+    /// branch with commits HEAD can't reach does not.
+    #[test]
+    fn branch_is_merged_distinguishes_reachability() {
+        let dir = temp_repo("merged-check");
+        commit_file(&dir, "a.txt", "one\n", "base");
+        run_git(&dir, &["branch", "merged-here"]);
+        run_git(&dir, &["checkout", "-b", "unmerged"]);
+        commit_file(&dir, "b.txt", "two\n", "diverge");
+        run_git(&dir, &["checkout", "main"]);
+        commit_file(&dir, "c.txt", "three\n", "advance main");
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        assert!(repo.branch_is_merged("merged-here"));
+        assert!(!repo.branch_is_merged("unmerged"));
+        assert!(!repo.branch_is_merged("no-such-branch"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: the diff pane showed "(no changes)" for untracked
+    /// files — `diff_working_file` skipped untracked content.
+    #[test]
+    fn diff_working_file_shows_untracked_content() {
+        let dir = temp_repo("untracked-diff");
+        commit_file(&dir, "a.txt", "hi\n", "initial");
+        fs::write(dir.join("new.txt"), "line1\nline2\n").unwrap();
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let hunks = repo
+            .diff_working_file("new.txt", false)
+            .expect("diff untracked");
+        let added: Vec<&str> = hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .filter(|l| l.origin == '+')
+            .map(|l| l.content.as_str())
+            .collect();
+        assert_eq!(added, vec!["line1\n", "line2\n"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: `stage_file` routed on `Path::exists()`, which
+    /// follows symlinks — a broken symlink read as "deleted" and was
+    /// removed from the index instead of staged.
+    #[cfg(unix)]
+    #[test]
+    fn stage_file_stages_broken_symlink() {
+        let dir = temp_repo("broken-symlink");
+        commit_file(&dir, "a.txt", "hi\n", "initial");
+        std::os::unix::fs::symlink("does-not-exist", dir.join("link")).unwrap();
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        repo.stage_file("link").expect("stage broken symlink");
+        assert_eq!(
+            run_git(&dir, &["show", ":link"]),
+            "does-not-exist",
+            "the symlink target must be staged as blob content"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

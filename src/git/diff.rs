@@ -90,6 +90,13 @@ impl GitRepo {
     pub fn diff_working_file(&self, path: &str, staged: bool) -> Result<Vec<DiffHunk>> {
         let mut opts = git2::DiffOptions::new();
         opts.pathspec(path);
+        // Untracked files otherwise produce an empty diff — the pane
+        // showed "(no changes)" for every new file. Content arrives as
+        // one all-additions hunk. No effect on the tree→index (staged)
+        // half, where the flags don't apply.
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
 
         // Reload the index if it changed on disk — hunk ops mutate it
         // through an external `git apply --cached` process, and libgit2

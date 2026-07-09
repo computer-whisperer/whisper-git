@@ -221,9 +221,14 @@ impl GitRepo {
         self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
 
-        // Check if the file exists on disk to determine correct index operation
+        // Check if the file exists on disk to determine correct index
+        // operation. `symlink_metadata` (not `exists()`, which follows
+        // links) — a broken symlink is still a stageable entry, not a
+        // deletion.
         let full_path = self.workdir().map(|wd| wd.join(path));
-        let exists_on_disk = full_path.as_ref().is_some_and(|p| p.exists());
+        let exists_on_disk = full_path
+            .as_ref()
+            .is_some_and(|p| p.symlink_metadata().is_ok());
 
         if exists_on_disk {
             // File exists: add it (works for new + modified + typechange)
