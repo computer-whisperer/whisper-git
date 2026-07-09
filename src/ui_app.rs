@@ -3274,6 +3274,7 @@ impl WhisperApp {
         self.drain_diff_stats();
         self.trigger_diff_stats_fetches();
         self.poll_diff_fetch();
+        self.poll_commit_detail_fetch();
         self.drain_avatar_completions();
         self.request_visible_avatars();
     }
@@ -3909,6 +3910,17 @@ impl WhisperApp {
         };
         if let Some(tab) = self.active_focus_mut() {
             tab.poll_diff_fetch(&proxy);
+        }
+    }
+
+    /// Commit-detail fetch for the focused view only — same rationale
+    /// as [`Self::poll_diff_fetch`].
+    fn poll_commit_detail_fetch(&mut self) {
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        if let Some(tab) = self.active_focus_mut() {
+            tab.poll_commit_detail_fetch(&proxy);
         }
     }
 

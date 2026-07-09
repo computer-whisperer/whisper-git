@@ -33,8 +33,9 @@ use crate::git::{
     StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus, WorktreeInfo, insert_synthetics_sorted,
 };
 use crate::git_async::{
-    DiffFetchResult, DiffKey, DirtyCheckResult, RepoStateResult, StatusResult, WorktreeSnapshot,
-    spawn_diff_fetch, spawn_repo_state_refresh, spawn_status_refresh,
+    CommitDetailResult, DiffFetchResult, DiffKey, DirtyCheckResult, RepoStateResult, StatusResult,
+    WorktreeSnapshot, compute_commit_detail, spawn_commit_detail_fetch, spawn_diff_fetch,
+    spawn_repo_state_refresh, spawn_status_refresh,
 };
 use crate::watcher::{FsChangeKind, RepoWatcher, WatcherInitResult};
 use crate::{github, gitlab, token_store};
@@ -522,6 +523,11 @@ pub struct RepoTab {
     /// the current selection, even if a re-fetch for a newer content
     /// epoch is still in flight (stale-while-revalidate).
     pub diff_cache: Option<(DiffKey, Vec<crate::git::DiffHunk>)>,
+    /// In-flight commit-detail fetch (one-shot, same shape as
+    /// `diff_fetch_rx`). Spawned by [`Self::poll_commit_detail_fetch`]
+    /// whenever `selected_commit` diverges from the cached
+    /// `commit_detail`; at most one in flight per tab.
+    pub commit_detail_rx: Option<Receiver<CommitDetailResult>>,
 
     // ---- History search ----
     /// Query string for the history-view filter. Empty means "no
@@ -630,6 +636,7 @@ impl RepoTab {
             ref_fingerprint: 0,
             diff_fetch_rx: None,
             diff_cache: None,
+            commit_detail_rx: None,
             watcher_init_rx: None,
             watcher: None,
             watcher_rx: None,
@@ -705,8 +712,10 @@ impl RepoTab {
         {
             self.selected_commit = None;
             self.commit_detail = None;
-        } else if let Some(oid) = self.selected_commit {
-            self.load_commit_detail(oid);
+        } else {
+            // Sync context (this whole fn is headless-only): fill the
+            // detail inline so a render right after refresh() has it.
+            self.fetch_commit_detail_sync();
         }
 
         // Refresh ref_fingerprint so the 5s reconciliation timer has a
@@ -988,14 +997,15 @@ impl RepoTab {
 
         self.rebuild_synthetic_entries();
 
-        // Refresh selected commit detail if the selection's still valid.
+        // Drop the selection if the commit vanished from the list. No
+        // reload otherwise: commit data is immutable per oid, and the
+        // old synchronous re-parse here ran the full commit diff on
+        // the UI thread at every state refresh (Wayland-stall class).
         if let Some(oid) = self.selected_commit
             && !self.commits.iter().any(|c| c.id == oid)
         {
             self.selected_commit = None;
             self.commit_detail = None;
-        } else if let Some(oid) = self.selected_commit {
-            self.load_commit_detail(oid);
         }
 
         if frame_diag {
@@ -1437,28 +1447,94 @@ impl RepoTab {
         if self.selected_commit == oid && self.commit_detail.is_some() {
             return;
         }
+        // Record the selection only — the detail loads off-thread via
+        // [`Self::poll_commit_detail_fetch`] (headless contexts call
+        // [`Self::fetch_commit_detail_sync`] instead). Clearing a
+        // mismatched cache makes the pane show its loading state
+        // rather than the previous commit's data.
         self.selected_commit = oid;
-        match oid {
-            Some(o) => self.load_commit_detail(o),
-            None => self.commit_detail = None,
+        if self.commit_detail.as_ref().map(|d| d.info.id) != oid {
+            self.commit_detail = None;
         }
     }
 
-    fn load_commit_detail(&mut self, oid: git2::Oid) {
-        let info = match self.repo.full_commit_info(oid) {
-            Ok(i) => i,
-            Err(_) => {
-                self.commit_detail = None;
-                return;
+    /// The oid whose detail needs fetching: the selection, unless the
+    /// cache already holds it. Commit data is immutable per oid, so a
+    /// matching cache never needs a re-fetch.
+    fn commit_detail_wanted(&self) -> Option<git2::Oid> {
+        let oid = self.selected_commit?;
+        match self.commit_detail.as_ref() {
+            Some(d) if d.info.id == oid => None,
+            _ => Some(oid),
+        }
+    }
+
+    /// Fold a finished detail fetch in. Results for a commit the user
+    /// has moved off of are dropped (the mismatch respawns a fetch on
+    /// the next poll). A commit missing from the odb (pruned/GC'd out
+    /// from under the selection) drops the selection too — otherwise
+    /// the poll would respawn the doomed fetch forever.
+    fn apply_commit_detail(&mut self, res: CommitDetailResult) {
+        if Some(res.oid) != self.selected_commit {
+            return;
+        }
+        match res.info {
+            Some(info) => {
+                self.commit_detail = Some(CommitDetail {
+                    info,
+                    files: res.files,
+                    submodule_entries: res.submodule_entries,
+                });
             }
+            None => {
+                self.selected_commit = None;
+                self.commit_detail = None;
+            }
+        }
+    }
+
+    /// Drain a finished commit-detail fetch and spawn a new one when
+    /// the selection has moved past the cache. Same convergence story
+    /// as [`Self::poll_diff_fetch`]: at most one in flight, a stale
+    /// landing re-spawns on the next poll.
+    pub fn poll_commit_detail_fetch(&mut self, proxy: &EventLoopProxy<()>) {
+        if let Some(rx) = self.commit_detail_rx.take() {
+            match rx.try_recv() {
+                Ok(res) => self.apply_commit_detail(res),
+                Err(std::sync::mpsc::TryRecvError::Empty) => self.commit_detail_rx = Some(rx),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if self.commit_detail_rx.is_some() {
+            return;
+        }
+        let Some(oid) = self.commit_detail_wanted() else {
+            return;
         };
-        let files = self.repo.diff_for_commit(oid).unwrap_or_default();
-        let submodule_entries = self.repo.submodules_at_commit(oid).unwrap_or_default();
-        self.commit_detail = Some(CommitDetail {
-            info,
-            files,
-            submodule_entries,
-        });
+        self.commit_detail_rx = Some(spawn_commit_detail_fetch(
+            self.detail_context_path(),
+            oid,
+            proxy.clone(),
+        ));
+    }
+
+    /// Synchronous variant of [`Self::poll_commit_detail_fetch`] for
+    /// headless contexts (screenshot mode, dump_bundles) with no event
+    /// loop to drain a receiver.
+    pub fn fetch_commit_detail_sync(&mut self) {
+        if let Some(oid) = self.commit_detail_wanted() {
+            let res = compute_commit_detail(&self.detail_context_path(), oid);
+            self.apply_commit_detail(res);
+        }
+    }
+
+    /// Path the detail worker opens its own repo handle from — the
+    /// workdir when one exists, else the git dir (bare reference repo).
+    fn detail_context_path(&self) -> PathBuf {
+        self.repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.repo.git_dir().to_path_buf())
     }
 
     /// Local branches sorted alphabetically.
@@ -2001,6 +2077,60 @@ mod tests {
         drop(tab);
         drop(raw);
         let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    /// Commit detail loads through the async worker path (sync-filled
+    /// here, as headless contexts do): selection alone leaves the
+    /// pane in its loading state, the fetch fills it, stale results
+    /// are dropped, and a selection whose commit is missing from the
+    /// odb is cleared rather than refetched forever.
+    #[test]
+    fn commit_detail_fetch_fills_drops_stale_and_clears_missing() -> Result<()> {
+        let dir = unique_temp_dir("commit-detail");
+        let repo = git2::Repository::init(&dir)?;
+        commit_initial_file(&repo, Path::new("a.txt"), "one\n")?;
+
+        let mut tab = RepoTab::open(&dir)?;
+        tab.refresh();
+        let oid = tab
+            .commits
+            .iter()
+            .find(|c| !c.is_synthetic)
+            .expect("one real commit")
+            .id;
+
+        tab.select_commit(Some(oid));
+        assert!(
+            tab.commit_detail.is_none(),
+            "select_commit must not load synchronously"
+        );
+        tab.fetch_commit_detail_sync();
+        let detail = tab.commit_detail.as_ref().expect("detail filled");
+        assert_eq!(detail.info.id, oid);
+        assert_eq!(detail.files.len(), 1, "root commit diff has one file");
+
+        // A worker result landing after the user moved off the commit
+        // must be dropped.
+        tab.select_commit(None);
+        assert!(tab.commit_detail.is_none());
+        tab.apply_commit_detail(crate::git_async::compute_commit_detail(&dir, oid));
+        assert!(
+            tab.commit_detail.is_none(),
+            "stale result must not repopulate the pane"
+        );
+
+        // A selected oid missing from the odb clears the selection so
+        // the poll loop can't respawn the doomed fetch forever.
+        let missing = git2::Oid::from_str("1234567890123456789012345678901234567890")?;
+        tab.selected_commit = Some(missing);
+        tab.fetch_commit_detail_sync();
+        assert!(tab.selected_commit.is_none());
+        assert!(tab.commit_detail.is_none());
+
+        drop(tab);
+        drop(repo);
+        let _ = fs::remove_dir_all(&dir);
         Ok(())
     }
 }

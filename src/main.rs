@@ -111,6 +111,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
             if let Some(tab) = app.tabs.first_mut() {
                 let pick = tab.commits.first().map(|c| c.id);
                 tab.select_commit(pick);
+                tab.fetch_commit_detail_sync();
                 // Screenshot mode runs without a polling loop, so the
                 // async diff-stats fetcher never gets a chance to land
                 // its results. Block on the fetch synchronously here
@@ -123,6 +124,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
             if let Some(tab) = app.tabs.first_mut() {
                 let pick = tab.commits.first().map(|c| c.id);
                 tab.select_commit(pick);
+                tab.fetch_commit_detail_sync();
                 tab.fetch_diff_stats_sync();
                 // Synthetic query that matches "graph:" prefix commits
                 // — exercises the dim-non-matching-rows path so the
@@ -138,6 +140,7 @@ fn apply_screenshot_state(app: &mut WhisperApp, state: Option<&str>) {
                 && let Some(oid) = tab.commits.first().map(|c| c.id)
             {
                 tab.select_commit(Some(oid));
+                tab.fetch_commit_detail_sync();
                 app.context_menu = Some(ContextMenuState {
                     pos: (480.0, 200.0),
                     target: ContextTarget::Commit(oid),

@@ -429,6 +429,67 @@ pub(crate) fn compute_diff_hunks(key: &DiffKey) -> Vec<crate::git::DiffHunk> {
 }
 
 // ============================================================================
+// Commit-detail fetch — full message, file diff list, submodule pins
+// ============================================================================
+
+/// Result of an off-thread commit-detail fetch. Carries the oid it was
+/// computed for so the consumer can drop a stale result (selection
+/// moved while the worker ran). `info: None` means the commit isn't in
+/// the object database (pruned/GC'd out from under the selection).
+pub struct CommitDetailResult {
+    pub oid: Oid,
+    pub info: Option<crate::git::FullCommitInfo>,
+    pub files: Vec<crate::git::DiffFile>,
+    pub submodule_entries: Vec<crate::git::CommitSubmoduleEntry>,
+}
+
+/// Spawn a worker that loads the detail pane's data for one commit.
+/// The full-commit diff parse (tree diff + patch text + intra-line
+/// highlights) was previously done synchronously on the UI thread on
+/// every selection change AND every state refresh — the Wayland-stall
+/// class this module exists to prevent.
+pub(crate) fn spawn_commit_detail_fetch(
+    repo_path: std::path::PathBuf,
+    oid: Oid,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<CommitDetailResult> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(compute_commit_detail(&repo_path, oid));
+        let _ = proxy.send_event(());
+    });
+    rx
+}
+
+/// Worker body shared by [`spawn_commit_detail_fetch`] and the
+/// synchronous fill used by headless contexts.
+pub(crate) fn compute_commit_detail(repo_path: &std::path::Path, oid: Oid) -> CommitDetailResult {
+    let Ok(repo) = GitRepo::open(repo_path) else {
+        return CommitDetailResult {
+            oid,
+            info: None,
+            files: Vec::new(),
+            submodule_entries: Vec::new(),
+        };
+    };
+    let info = repo.full_commit_info(oid).ok();
+    let (files, submodule_entries) = if info.is_some() {
+        (
+            repo.diff_for_commit(oid).unwrap_or_default(),
+            repo.submodules_at_commit(oid).unwrap_or_default(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    CommitDetailResult {
+        oid,
+        info,
+        files,
+        submodule_entries,
+    }
+}
+
+// ============================================================================
 // Per-entity dirty checks — fan out one worker per submodule / worktree
 // ============================================================================
 

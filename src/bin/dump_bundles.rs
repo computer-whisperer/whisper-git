@@ -205,12 +205,14 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             // falling through to the default staging well.
             let pick = t.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id);
             t.select_commit(pick);
+            t.fetch_commit_detail_sync();
             WhisperApp::with_tabs(vec![t])
         }));
         if let Some(commit_oid) = first.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id) {
             scenes.push(("history_context_menu".to_string(), {
                 let mut t = reopen(first);
                 t.select_commit(Some(commit_oid));
+                t.fetch_commit_detail_sync();
                 let mut app = WhisperApp::with_tabs(vec![t]);
                 app.context_menu = Some(ContextMenuState {
                     pos: (480.0, 200.0),
@@ -296,6 +298,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                     git2::Oid::from_str("0000000000000000000000000000000000000000").unwrap()
                 });
             t.select_commit(Some(target));
+            t.fetch_commit_detail_sync();
             let mut app = WhisperApp::with_tabs(vec![t]);
             app.active_modal = Some(whisper_git::ui_app::ActiveModal::Branch {
                 form: BranchForm {
@@ -318,6 +321,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                     git2::Oid::from_str("0000000000000000000000000000000000000000").unwrap()
                 });
             t.select_commit(Some(target));
+            t.fetch_commit_detail_sync();
             let mut app = WhisperApp::with_tabs(vec![t]);
             app.active_modal = Some(whisper_git::ui_app::ActiveModal::Tag {
                 form: TagForm {
@@ -506,6 +510,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
             let mut t = reopen(first);
             let pick = t.commits.iter().find(|c| !c.is_synthetic).map(|c| c.id);
             t.select_commit(pick);
+            t.fetch_commit_detail_sync();
             inject_synthetic_submodules_commit_detail(&mut t);
             WhisperApp::with_tabs(vec![t])
         }));
