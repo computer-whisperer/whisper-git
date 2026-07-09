@@ -11,7 +11,10 @@ mod status;
 
 pub use async_ops::*;
 pub use diff::{DiffFile, DiffHunk, DiffLine};
-pub use status::{FileStatus, FileStatusKind, WorkingDirStatus, working_dir_status_from_statuses};
+pub use status::{
+    FileStatus, FileStatusKind, WorkingDirStatus, append_staged_gitlinks, staged_gitlinks,
+    working_dir_status_from_statuses,
+};
 
 use anyhow::{Context, Result};
 use git2::{Commit, Oid, Repository, RepositoryState};

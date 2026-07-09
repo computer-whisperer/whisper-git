@@ -126,6 +126,66 @@ pub fn working_dir_status_from_statuses(statuses: &git2::Statuses<'_>) -> Workin
     }
 }
 
+/// Staged submodule-pointer (gitlink) changes — HEAD tree vs index,
+/// gitlink entries only.
+///
+/// The status walk runs with `exclude_submodules`, which libgit2 maps
+/// to submodule-ignore=all on *both* diff halves. That keeps the walk
+/// out of submodule working directories (the recursion the option
+/// exists to prevent), but it also hides a staged pointer change —
+/// dead-ending the app's own "Update pointer" flow at "No staged
+/// changes". A tree→index diff never opens a submodule workdir, so
+/// re-adding just the staged half is cheap and can't recurse.
+pub fn staged_gitlinks(repo: &git2::Repository) -> Vec<FileStatus> {
+    // Reload the index if it changed on disk — this handle may be
+    // long-lived and libgit2 caches the snapshot (same fix as
+    // `GitRepo::commit`), whereas the status walk refreshes itself.
+    let Ok(mut index) = repo.index() else {
+        return Vec::new();
+    };
+    let _ = index.read(false);
+    // Unborn HEAD → diff against the empty tree, so a gitlink staged
+    // into a fresh repo still shows.
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), None) else {
+        return Vec::new();
+    };
+    diff.deltas()
+        .filter(|d| {
+            d.old_file().mode() == git2::FileMode::Commit
+                || d.new_file().mode() == git2::FileMode::Commit
+        })
+        .map(|d| FileStatus {
+            path: d
+                .new_file()
+                .path()
+                .or_else(|| d.old_file().path())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            status: match d.status() {
+                git2::Delta::Added => FileStatusKind::New,
+                git2::Delta::Deleted => FileStatusKind::Deleted,
+                git2::Delta::Renamed => FileStatusKind::Renamed,
+                git2::Delta::Typechange => FileStatusKind::TypeChange,
+                _ => FileStatusKind::Modified,
+            },
+        })
+        .collect()
+}
+
+/// Merge staged gitlink entries into `status.staged`, keeping the list
+/// path-sorted and free of duplicates (in case a libgit2 version does
+/// report the entry despite `exclude_submodules`).
+pub fn append_staged_gitlinks(repo: &git2::Repository, status: &mut WorkingDirStatus) {
+    let mut gitlinks = staged_gitlinks(repo);
+    if gitlinks.is_empty() {
+        return;
+    }
+    status.staged.append(&mut gitlinks);
+    status.staged.sort_by(|a, b| a.path.cmp(&b.path));
+    status.staged.dedup_by(|a, b| a.path == b.path);
+}
+
 impl GitRepo {
     /// Get working directory status
     pub fn status(&self) -> Result<WorkingDirStatus> {
@@ -142,7 +202,9 @@ impl GitRepo {
             .statuses(Some(&mut opts))
             .context("Failed to get status")?;
 
-        Ok(working_dir_status_from_statuses(&statuses))
+        let mut status = working_dir_status_from_statuses(&statuses);
+        append_staged_gitlinks(&self.repo, &mut status);
+        Ok(status)
     }
 
     /// Stage a file.
@@ -204,5 +266,112 @@ impl GitRepo {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gitlink_tests {
+    use super::super::GitRepo;
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("failed to run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("whisper-git-{name}-{unique}"));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn init_repo(dir: &Path) {
+        run_git(dir, &["init", "-b", "main"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+    }
+
+    fn commit_file(dir: &Path, path: &str, content: &str, msg: &str) {
+        fs::write(dir.join(path), content).expect("write file");
+        run_git(dir, &["add", path]);
+        run_git(dir, &["commit", "-m", msg]);
+    }
+
+    /// Regression: `exclude_submodules` hid staged gitlink changes, so
+    /// the app's own "Update pointer" flow staged a change that never
+    /// appeared in the staging well and commit refused with "No staged
+    /// changes". A staged pointer bump must show up as a staged
+    /// Modified entry — and only there (not unstaged/untracked).
+    #[test]
+    fn staged_submodule_pointer_is_visible() {
+        let root = temp_dir("gitlink-status");
+        let sub_src = root.join("sub");
+        fs::create_dir_all(&sub_src).unwrap();
+        init_repo(&sub_src);
+        commit_file(&sub_src, "lib.txt", "v1\n", "sub v1");
+
+        let parent = root.join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        init_repo(&parent);
+        commit_file(&parent, "readme.txt", "hi\n", "initial");
+        run_git(
+            &parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                sub_src.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        run_git(&parent, &["commit", "-m", "add submodule"]);
+
+        let repo = GitRepo::open(&parent).expect("open parent");
+        assert_eq!(
+            repo.status().expect("status").total_files(),
+            0,
+            "clean parent must stay clean"
+        );
+
+        // Advance the submodule and stage the new pointer, exactly as
+        // the in-app flow does (commit inside submodule, then
+        // stage_file on the gitlink path from the parent).
+        let sub_wt = parent.join("sub");
+        commit_file(&sub_wt, "lib.txt", "v2\n", "sub v2");
+        repo.stage_file("sub").expect("stage gitlink");
+
+        let status = repo.status().expect("status");
+        assert_eq!(
+            status
+                .staged
+                .iter()
+                .map(|f| (f.path.as_str(), f.status))
+                .collect::<Vec<_>>(),
+            vec![("sub", FileStatusKind::Modified)],
+            "staged pointer bump must be visible as staged"
+        );
+        assert!(status.unstaged.is_empty(), "no unstaged entries expected");
+        assert!(status.untracked.is_empty(), "no untracked entries expected");
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

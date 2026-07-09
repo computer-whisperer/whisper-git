@@ -40,7 +40,7 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::git::{
     BranchTip, CommitInfo, GitRepo, StashEntry, SubmoduleInfo, TagInfo, WorkingDirStatus,
-    WorktreeInfo, working_dir_status_from_statuses,
+    WorktreeInfo, append_staged_gitlinks, staged_gitlinks, working_dir_status_from_statuses,
 };
 
 /// Maximum commits walked per refresh. The legacy used the same cap;
@@ -534,7 +534,9 @@ pub(crate) fn spawn_dirty_checks(
 /// Cheap dirty check for a single repo path — opens, runs status with
 /// submodules excluded, returns whether any non-ignored entry exists.
 /// `exclude_submodules` is critical: without it, a submodule's own
-/// dirty check would recurse into nested sub-submodules.
+/// dirty check would recurse into nested sub-submodules. Staged
+/// gitlink changes (hidden by that exclusion) are checked separately
+/// so a staged pointer update still reads as dirty.
 fn check_dirty(path: &PathBuf) -> bool {
     let Ok(repo) = git2::Repository::open(path) else {
         return false;
@@ -544,7 +546,7 @@ fn check_dirty(path: &PathBuf) -> bool {
     repo.statuses(Some(&mut opts)).is_ok_and(|s| {
         s.iter()
             .any(|e| !e.status().intersects(git2::Status::IGNORED))
-    })
+    }) || !staged_gitlinks(&repo).is_empty()
 }
 
 /// Worktree variant — returns the dirty *summary* for one worktree:
@@ -566,7 +568,11 @@ fn check_worktree_dirty(path: &PathBuf) -> (usize, (usize, usize)) {
         .exclude_submodules(true);
     let count = repo
         .statuses(Some(&mut opts))
-        .map(|statuses| working_dir_status_from_statuses(&statuses).total_files())
+        .map(|statuses| {
+            let mut status = working_dir_status_from_statuses(&statuses);
+            append_staged_gitlinks(&repo, &mut status);
+            status.total_files()
+        })
         .unwrap_or(0);
     let diff_stats = GitRepo::diff_stats_raw(&repo);
     (count, diff_stats)
