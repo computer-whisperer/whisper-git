@@ -245,6 +245,11 @@ pub struct WorktreeView {
     /// [`crate::git_async::DiffKey`] so the async diff pane re-fetches
     /// when the file it's showing may have changed.
     pub status_epoch: u64,
+    /// In-progress operation state (merge / rebase / cherry-pick / …)
+    /// for this worktree. Written alongside `status` by the async
+    /// status refresh; drives the staging well's operation banner and
+    /// the commit gating.
+    pub repo_state: git2::RepositoryState,
 }
 
 impl WorktreeView {
@@ -268,6 +273,7 @@ impl WorktreeView {
             commit_body: String::new(),
             selected_diff_file: None,
             status_epoch: 0,
+            repo_state: git2::RepositoryState::Clean,
         };
         view.refresh();
         Some(view)
@@ -294,6 +300,7 @@ impl WorktreeView {
             commit_body: String::new(),
             selected_diff_file: None,
             status_epoch: 0,
+            repo_state: git2::RepositoryState::Clean,
         }
     }
 
@@ -313,6 +320,7 @@ impl WorktreeView {
     /// Re-query worktree-scoped state (status + branch + HEAD + submodules).
     pub fn refresh(&mut self) {
         self.status = self.repo.status().unwrap_or_default();
+        self.repo_state = self.repo.repo_state();
         self.dirty_file_count = self.status.total_files();
         self.dirty_diff = self.repo.working_tree_diff_stats();
         self.status_epoch += 1;
@@ -996,7 +1004,8 @@ impl RepoTab {
             main_status,
             staging_path,
             staging_status,
-            staging_repo_state: _,
+            staging_repo_state,
+            staging_merge_msg,
         } = result;
 
         // Status refresh owns the full file lists (staging well + diff
@@ -1008,6 +1017,26 @@ impl RepoTab {
         }
         if let (Some(path), Some(status)) = (staging_path.as_deref(), staging_status) {
             self.set_worktree_status(path, status);
+            if let Some(view) = self.worktree_views.get_mut(path) {
+                // An operation just stopped on conflicts: prefill the
+                // prepared MERGE_MSG so concluding it commits with the
+                // conventional message. Gated on the state *transition*
+                // (not the state) so a draft the user cleared isn't
+                // refilled by every later status refresh — and only
+                // into an empty draft, never over user-typed text.
+                let entered_op =
+                    staging_repo_state != view.repo_state && staging_merge_msg.is_some();
+                view.repo_state = staging_repo_state;
+                if entered_op
+                    && view.commit_subject.trim().is_empty()
+                    && view.commit_body.trim().is_empty()
+                    && let Some(msg) = staging_merge_msg
+                {
+                    let mut lines = msg.splitn(2, '\n');
+                    view.commit_subject = lines.next().unwrap_or("").trim().to_string();
+                    view.commit_body = lines.next().unwrap_or("").trim().to_string();
+                }
+            }
         }
     }
 
@@ -1867,6 +1896,7 @@ mod tests {
             staging_path: None,
             staging_status: None,
             staging_repo_state: git2::RepositoryState::Clean,
+            staging_merge_msg: None,
         });
 
         // Status results own the file lists and route to the reported

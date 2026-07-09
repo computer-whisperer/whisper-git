@@ -24,11 +24,20 @@ fn run_git_async(
             .args(&args)
             .current_dir(&workdir)
             .env("GIT_TERMINAL_PROMPT", "0")
+            // Ops that conclude with a commit (merge, rebase --continue,
+            // cherry-pick --continue) try to open an editor for the
+            // message; `true` accepts the prepared default instead of
+            // blocking the worker on a child that can never get a tty.
+            .env("GIT_EDITOR", "true")
             .output();
         let op_result = match result {
             Ok(output) => RemoteOpResult {
                 success: output.status.success(),
-                error: String::from_utf8_lossy(&output.stderr).to_string(),
+                // Conflict reports ("CONFLICT (content): …", "Automatic
+                // merge failed; fix conflicts…") go to *stdout*, not
+                // stderr — capture both or a conflicted merge/pull
+                // surfaces as an empty "unknown error".
+                error: combine_output(&output.stderr, &output.stdout),
             },
             Err(e) => RemoteOpResult {
                 success: false,
@@ -43,6 +52,21 @@ fn run_git_async(
         let _ = proxy.send_event(());
     });
     rx
+}
+
+/// Join stderr + stdout into one error text, skipping whichever is
+/// empty. stderr leads: it carries the fatal/error lines, while stdout
+/// carries progress and conflict reports.
+fn combine_output(stderr: &[u8], stdout: &[u8]) -> String {
+    let err = String::from_utf8_lossy(stderr);
+    let out = String::from_utf8_lossy(stdout);
+    let err = err.trim();
+    let out = out.trim();
+    match (err.is_empty(), out.is_empty()) {
+        (false, false) => format!("{err}\n{out}"),
+        (false, true) => err.to_string(),
+        (true, _) => out.to_string(),
+    }
 }
 
 /// Define an async git wrapper that delegates to `run_git_async`.
@@ -142,6 +166,26 @@ define_async_git_op! {
     /// Spawn a background thread to merge with --squash (stage changes, don't auto-commit)
     merge_squash_async(branch_name: String) =>
         ["merge", "--squash", branch_name], "merge --squash";
+
+    /// Spawn a background thread to abort an in-progress merge
+    merge_abort_async() =>
+        ["merge", "--abort"], "merge --abort";
+
+    /// Spawn a background thread to abort an in-progress rebase
+    rebase_abort_async() =>
+        ["rebase", "--abort"], "rebase --abort";
+
+    /// Spawn a background thread to continue a conflicted rebase after resolution
+    rebase_continue_async() =>
+        ["rebase", "--continue"], "rebase --continue";
+
+    /// Spawn a background thread to abort an in-progress cherry-pick
+    cherry_pick_abort_async() =>
+        ["cherry-pick", "--abort"], "cherry-pick --abort";
+
+    /// Spawn a background thread to abort an in-progress revert
+    revert_abort_async() =>
+        ["revert", "--abort"], "revert --abort";
 
 }
 
@@ -561,9 +605,16 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
             "{} failed: Cannot fast-forward — the branches have diverged. Pull with merge or rebase instead.",
             op
         )
-    } else if lower.contains("merge conflict") || lower.contains("fix conflicts") {
+    } else if lower.contains("merge conflict")
+        || lower.contains("fix conflicts")
+        // cherry-pick / rebase / revert phrase it differently on stderr:
+        // "could not apply <sha>… hint: After resolving the conflicts…"
+        || lower.contains("could not apply")
+        || lower.contains("after resolving the conflicts")
+        || lower.contains("resolve all conflicts")
+    {
         format!(
-            "{} stopped: Merge conflicts need to be resolved. Check the staging area for conflicted files.",
+            "{} stopped: Conflicts need to be resolved. Check the staging area for conflicted files.",
             op
         )
     } else if lower.contains("needs merge") {
@@ -608,4 +659,33 @@ pub fn classify_git_error(op: &str, stderr: &str) -> (String, bool) {
     };
 
     (friendly, is_rejected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{classify_git_error, combine_output};
+
+    #[test]
+    fn combine_output_keeps_both_streams() {
+        assert_eq!(combine_output(b"err\n", b"out\n"), "err\nout");
+        assert_eq!(combine_output(b"", b"out\n"), "out");
+        assert_eq!(combine_output(b"err\n", b""), "err");
+        assert_eq!(combine_output(b"", b""), "");
+    }
+
+    /// A conflicted merge/pull reports entirely on stdout; the combined
+    /// text must classify as a conflict, not "unknown error".
+    #[test]
+    fn classify_recognizes_conflict_reports() {
+        let merge_stdout = "CONFLICT (content): Merge conflict in f.txt\n\
+                            Automatic merge failed; fix conflicts and then commit the result.";
+        let (msg, _) = classify_git_error("Merge", merge_stdout);
+        assert!(msg.contains("Conflicts need to be resolved"), "{msg}");
+
+        // cherry-pick / rebase phrase it differently, on stderr.
+        let pick_stderr = "error: could not apply 1234abc... feature change\n\
+                           hint: After resolving the conflicts, mark them with...";
+        let (msg, _) = classify_git_error("Operation", pick_stderr);
+        assert!(msg.contains("Conflicts need to be resolved"), "{msg}");
+    }
 }

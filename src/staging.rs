@@ -11,6 +11,8 @@
 //! - `stage_file:{path}` / `unstage_file:{path}` — per-file toggle
 //! - `discard_file:{path}` — destructive working-tree discard
 //! - `diff:{path}` — preview file's diff
+//! - `op_abort` / `op_continue` — operation-state banner actions
+//!   (abort or continue an in-progress merge / rebase / …)
 
 use damascene_core::{El, IconName, Selection, prelude::*};
 
@@ -273,6 +275,9 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
     let conflicted = &view.status.conflicted;
 
     let mut sections: Vec<El> = Vec::new();
+    if let Some(banner) = op_state_banner(view) {
+        sections.push(banner);
+    }
     sections.push(commit_message(view, selection, ai_in_flight));
     if !conflicted.is_empty() {
         sections.push(file_section(
@@ -322,6 +327,80 @@ pub fn staging_well(view: &WorktreeView, selection: &Selection, ai_in_flight: bo
     .key("staging:scroll")
     .width(Size::Fill(1.0))
     .height(Size::Fill(1.0))
+}
+
+/// Banner shown while a merge / rebase / cherry-pick / revert is in
+/// progress on the active worktree. Names the state, explains how to
+/// conclude it, and offers Abort (all states) + Continue (rebase — the
+/// only state a plain commit can't conclude).
+///
+/// Item keys: `op_abort` (confirm + abort the in-progress operation),
+/// `op_continue` (`git rebase --continue`).
+fn op_state_banner(view: &WorktreeView) -> Option<El> {
+    use git2::RepositoryState as S;
+    // Only the conflict-lifecycle states get a banner: they're the ones
+    // whose Abort / Continue / Commit guidance below is true. Bisect and
+    // am-apply are legitimate long-running states where this copy would
+    // just be wrong.
+    if !matches!(
+        view.repo_state,
+        S::Merge
+            | S::Rebase
+            | S::RebaseInteractive
+            | S::RebaseMerge
+            | S::CherryPick
+            | S::CherryPickSequence
+            | S::Revert
+            | S::RevertSequence
+    ) {
+        return None;
+    }
+    let label = crate::git::repo_state_label(view.repo_state)?;
+    let is_rebase = matches!(
+        view.repo_state,
+        S::Rebase | S::RebaseInteractive | S::RebaseMerge
+    );
+    let hint = if is_rebase {
+        "Resolve conflicts, stage the files, then Continue — or Abort to restore the pre-rebase state."
+    } else if view.repo_state == S::Merge {
+        "Resolve conflicts, stage the files, then Commit to conclude the merge — or Abort to restore the pre-merge state."
+    } else {
+        "Resolve conflicts, stage the files, then Commit to conclude — or Abort to restore the previous state."
+    };
+
+    let mut actions: Vec<El> = vec![spacer()];
+    if is_rebase {
+        actions.push(
+            button("Continue")
+                .key("op_continue")
+                .tooltip("git rebase --continue"),
+        );
+    }
+    actions.push(
+        button("Abort")
+            .key("op_abort")
+            .destructive()
+            .tooltip("Abort and restore the previous state"),
+    );
+
+    let mut header_children: Vec<El> = vec![
+        icon(IconName::AlertCircle).text_color(tokens::DESTRUCTIVE),
+        text(label).label().text_color(tokens::DESTRUCTIVE),
+    ];
+    header_children.extend(actions);
+
+    Some(
+        card([
+            card_header([row(header_children)
+                .align(Align::Center)
+                .gap(tokens::SPACE_2)])
+            .padding(tokens::SPACE_3)
+            .fill(tokens::DESTRUCTIVE.with_alpha_u8(40)),
+            card_content([text(hint).caption().muted().wrap_text()])
+                .padding(Sides::xy(tokens::SPACE_3, tokens::SPACE_2)),
+        ])
+        .surface_role(SurfaceRole::Danger),
+    )
 }
 
 fn commit_message(view: &WorktreeView, selection: &Selection, ai_in_flight: bool) -> El {
@@ -485,7 +564,12 @@ fn file_row(file: &FileStatus, mode: FileRowMode) -> El {
             children.push(
                 icon(IconName::AlertCircle)
                     .text_color(tokens::DESTRUCTIVE)
-                    .tooltip("Resolve conflicts before staging"),
+                    .tooltip("Has unresolved conflict markers"),
+            );
+            children.push(
+                staging_row_button(IconName::Check)
+                    .key(format!("stage_file:{}", file.path))
+                    .tooltip("Mark resolved (stage file)"),
             );
         }
     }

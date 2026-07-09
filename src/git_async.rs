@@ -69,6 +69,9 @@ pub struct StatusResult {
     pub staging_status: Option<WorkingDirStatus>,
     /// Staging repo state (merge / rebase / cherry-pick in progress).
     pub staging_repo_state: git2::RepositoryState,
+    /// Prepared merge commit message (`MERGE_MSG`), captured on the
+    /// worker when a merge is in progress. Prefills the commit draft.
+    pub staging_merge_msg: Option<String>,
 }
 
 /// Spawn a worker that computes working-directory status off-thread.
@@ -123,6 +126,19 @@ pub(crate) fn compute_status_result(
         Some(r) => (Some(r.status().unwrap_or_default()), r.repo_state()),
         None => (None, git2::RepositoryState::Clean),
     };
+    // MERGE_MSG is written by conflicted merges, cherry-picks, and
+    // reverts alike — capture it for any of those so the commit draft
+    // can carry the conventional message.
+    let staging_merge_msg = match staging_repo_state {
+        git2::RepositoryState::Merge
+        | git2::RepositoryState::CherryPick
+        | git2::RepositoryState::CherryPickSequence
+        | git2::RepositoryState::Revert
+        | git2::RepositoryState::RevertSequence => {
+            staging_repo.as_ref().and_then(|r| r.merge_message())
+        }
+        _ => None,
+    };
     let staging_path = staging_repo
         .as_ref()
         .and_then(|r| r.workdir().map(|p| p.to_path_buf()));
@@ -133,6 +149,7 @@ pub(crate) fn compute_status_result(
         staging_path,
         staging_status,
         staging_repo_state,
+        staging_merge_msg,
     }
 }
 
@@ -615,5 +632,47 @@ mod tests {
         assert_eq!(result.staging_status.map(|s| s.untracked.len()), Some(1));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The status worker must surface an in-progress merge (state +
+    /// prepared MERGE_MSG) so the staging well can show the operation
+    /// banner and prefill the commit draft.
+    #[test]
+    fn status_result_carries_merge_state_and_message() {
+        let dir = unique_temp_dir("merge-state");
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("run git")
+        };
+        assert!(run(&["init", "-b", "main"]).status.success());
+        assert!(run(&["config", "user.name", "Test"]).status.success());
+        assert!(run(&["config", "user.email", "t@e.st"]).status.success());
+        std::fs::write(dir.join("f.txt"), "base\n").unwrap();
+        assert!(run(&["add", "f.txt"]).status.success());
+        assert!(run(&["commit", "-m", "base"]).status.success());
+        assert!(run(&["checkout", "-b", "feature"]).status.success());
+        std::fs::write(dir.join("f.txt"), "feature\n").unwrap();
+        assert!(run(&["commit", "-am", "feature"]).status.success());
+        assert!(run(&["checkout", "main"]).status.success());
+        std::fs::write(dir.join("f.txt"), "main\n").unwrap();
+        assert!(run(&["commit", "-am", "main"]).status.success());
+        // Conflicting merge — expected to fail and leave merge state.
+        assert!(!run(&["merge", "feature"]).status.success());
+
+        let result = compute_status_result(&dir, Some(dir.as_path()));
+        assert_eq!(result.staging_repo_state, git2::RepositoryState::Merge);
+        let msg = result.staging_merge_msg.expect("MERGE_MSG captured");
+        assert!(msg.contains("feature"), "unexpected MERGE_MSG: {msg}");
+        assert_eq!(
+            result.staging_status.map(|s| s.conflicted.len()),
+            Some(1),
+            "conflicted file must be listed"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

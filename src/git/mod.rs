@@ -950,29 +950,142 @@ impl GitRepo {
         result
     }
 
-    /// Create a commit with the staged changes
+    /// Create a commit with the staged changes.
+    ///
+    /// Repository-state aware, matching `git commit` semantics:
+    /// - Unborn HEAD (fresh `git init`): creates the root commit (zero
+    ///   parents).
+    /// - Merge in progress: appends every `MERGE_HEAD` as an extra
+    ///   parent so concluding a resolved merge produces a real merge
+    ///   commit, then clears the merge state.
+    /// - Cherry-pick / revert in progress: single-parent commit, then
+    ///   clears `CHERRY_PICK_HEAD` / `REVERT_HEAD` so the operation is
+    ///   concluded rather than left dangling. Cherry-picks keep the
+    ///   original commit's author, like `git commit` does.
+    /// - Unresolved index conflicts are refused up front — `write_tree`
+    ///   would fail anyway, but with a much worse message.
+    /// - Empty commits (tree identical to the sole parent) are refused
+    ///   unless concluding a merge.
     pub fn commit(&self, message: &str) -> Result<Oid> {
         self.ensure_not_bare()?;
         let mut index = self.repo.index().context("Failed to get index")?;
+        // The handle is long-lived and libgit2 caches the index
+        // snapshot — reload so staging done outside this handle (git
+        // CLI in a terminal, another view's handle) is visible.
+        index.read(false).context("Failed to re-read index")?;
+        if index.has_conflicts() {
+            anyhow::bail!("Unresolved conflicts remain — stage each conflicted file once resolved");
+        }
         let tree_oid = index.write_tree().context("Failed to write tree")?;
         let tree = self
             .repo
             .find_tree(tree_oid)
             .context("Failed to find tree")?;
 
-        let head = self.repo.head().context("Failed to get HEAD")?;
-        let parent_commit = head
-            .peel_to_commit()
-            .context("Failed to get parent commit")?;
+        let mut parents: Vec<Commit> = Vec::new();
+        match self.repo.head() {
+            Ok(head) => parents.push(
+                head.peel_to_commit()
+                    .context("Failed to get parent commit")?,
+            ),
+            // Unborn HEAD: no parent — this is the root commit.
+            Err(e)
+                if e.code() == git2::ErrorCode::UnbornBranch
+                    || e.code() == git2::ErrorCode::NotFound => {}
+            Err(e) => return Err(e).context("Failed to get HEAD"),
+        }
+
+        let state = self.repo.state();
+        if state == RepositoryState::Merge {
+            // MERGE_HEAD is one OID per line in the (worktree-private)
+            // git dir. Read directly — git2's `mergehead_foreach` needs
+            // `&mut Repository`, which this read-only handle isn't.
+            let merge_head = std::fs::read_to_string(self.repo.path().join("MERGE_HEAD"))
+                .context("Failed to read MERGE_HEAD")?;
+            for line in merge_head.lines() {
+                let oid = Oid::from_str(line.trim()).context("Malformed MERGE_HEAD entry")?;
+                parents.push(
+                    self.repo
+                        .find_commit(oid)
+                        .context("Failed to find merge parent")?,
+                );
+            }
+        }
+
+        // Empty-commit guard at the plumbing layer: the UI's staged-list
+        // check reads async state that can be stale (e.g. a merge that
+        // was concluded externally a moment ago). Concluding a merge is
+        // the one case where committing an unchanged tree is legitimate.
+        if state != RepositoryState::Merge && parents.len() == 1 && parents[0].tree_id() == tree_oid
+        {
+            anyhow::bail!("No staged changes to commit");
+        }
 
         let sig = self.repo.signature().context("Failed to get signature")?;
-
+        // `git commit` concluding a cherry-pick keeps the *original*
+        // author (the committer is the user); match that. Reverts are
+        // authored by the reverter, so no override there.
+        let author = match state {
+            RepositoryState::CherryPick | RepositoryState::CherryPickSequence => self
+                .state_head_commit("CHERRY_PICK_HEAD")
+                .map(|c| c.author().to_owned()),
+            _ => None,
+        };
+        let author = author.as_ref().unwrap_or(&sig);
+        let parent_refs: Vec<&Commit> = parents.iter().collect();
         let commit_oid = self
             .repo
-            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])
+            .commit(Some("HEAD"), author, &sig, message, &tree, &parent_refs)
             .context("Failed to create commit")?;
 
+        // The commit concludes these operations — consume their state
+        // files the way `git commit` does. For multi-commit sequences
+        // (external `git cherry-pick A B`), git deletes only the
+        // per-commit head file and keeps `sequencer/` so `--continue`
+        // proceeds to the next pick; `cleanup_state` would drop the
+        // whole queue. Rebase states never reach here (gated in the UI).
+        match state {
+            RepositoryState::Merge | RepositoryState::CherryPick | RepositoryState::Revert => {
+                let _ = self.repo.cleanup_state();
+            }
+            RepositoryState::CherryPickSequence => {
+                let _ = std::fs::remove_file(self.repo.path().join("CHERRY_PICK_HEAD"));
+            }
+            RepositoryState::RevertSequence => {
+                let _ = std::fs::remove_file(self.repo.path().join("REVERT_HEAD"));
+            }
+            _ => {}
+        }
+
         Ok(commit_oid)
+    }
+
+    /// Resolve the commit a single-OID state file (`CHERRY_PICK_HEAD`,
+    /// `REVERT_HEAD`) points at, if present and valid.
+    fn state_head_commit(&self, file: &str) -> Option<Commit<'_>> {
+        let content = std::fs::read_to_string(self.repo.path().join(file)).ok()?;
+        let oid = Oid::from_str(content.trim()).ok()?;
+        self.repo.find_commit(oid).ok()
+    }
+
+    /// The prepared commit message for an in-progress operation
+    /// (`MERGE_MSG` — written by conflicted merges, cherry-picks, and
+    /// reverts alike), if one exists. Used to prefill the commit draft
+    /// when a conflicted operation lands in the staging well.
+    ///
+    /// Comment lines (`# Conflicts: …`) are stripped here: `git commit`
+    /// strips them at cleanup, but our commit path goes through libgit2,
+    /// which performs no message cleanup — left in, they'd be committed
+    /// verbatim.
+    pub fn merge_message(&self) -> Option<String> {
+        let msg = std::fs::read_to_string(self.repo.path().join("MERGE_MSG")).ok()?;
+        let cleaned: String = msg
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let trimmed = cleaned.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
     /// Get submodule metadata (lightweight — no dirty checks).
@@ -1224,5 +1337,173 @@ pub struct FullCommitInfo {
 impl FullCommitInfo {
     pub fn relative_author_time(&self) -> String {
         format_relative_time(self.author_time)
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::GitRepo;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("failed to run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn temp_repo(name: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("whisper-git-{name}-{unique}"));
+        fs::create_dir_all(&dir).expect("create temp repo dir");
+        run_git(&dir, &["init", "-b", "main"]);
+        run_git(&dir, &["config", "user.name", "Test"]);
+        run_git(&dir, &["config", "user.email", "test@example.com"]);
+        dir
+    }
+
+    fn commit_file(dir: &Path, path: &str, content: &str, msg: &str) {
+        fs::write(dir.join(path), content).expect("write file");
+        run_git(dir, &["add", path]);
+        run_git(dir, &["commit", "-m", msg]);
+    }
+
+    /// Regression: a fresh `git init` repo has an unborn HEAD; commit()
+    /// must create the root commit instead of failing on "no HEAD".
+    #[test]
+    fn commit_creates_root_commit_on_unborn_head() {
+        let dir = temp_repo("root-commit");
+        fs::write(dir.join("a.txt"), "hello\n").unwrap();
+        run_git(&dir, &["add", "a.txt"]);
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let oid = repo.commit("initial").expect("root commit should succeed");
+        let commit = repo.repo.find_commit(oid).unwrap();
+        assert_eq!(commit.parent_count(), 0);
+        assert_eq!(run_git(&dir, &["rev-parse", "HEAD"]), oid.to_string());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: committing a resolved merge must produce a
+    /// two-parent merge commit and clear the merge state — previously
+    /// it silently dropped the second parent and left MERGE_HEAD.
+    #[test]
+    fn commit_concludes_merge_with_both_parents() {
+        let dir = temp_repo("merge-commit");
+        commit_file(&dir, "f.txt", "base\n", "base");
+        run_git(&dir, &["checkout", "-b", "feature"]);
+        commit_file(&dir, "f.txt", "feature\n", "feature change");
+        let feature_tip = run_git(&dir, &["rev-parse", "HEAD"]);
+        run_git(&dir, &["checkout", "main"]);
+        commit_file(&dir, "f.txt", "main\n", "main change");
+        let main_tip = run_git(&dir, &["rev-parse", "HEAD"]);
+
+        // Conflicting merge stops with MERGE_HEAD in place.
+        let merge = Command::new("git")
+            .args(["merge", "feature"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "merge should conflict");
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        assert_eq!(repo.repo_state(), git2::RepositoryState::Merge);
+        assert!(repo.merge_message().is_some());
+
+        // Unresolved conflicts are refused up front.
+        assert!(repo.commit("too early").is_err());
+
+        // Resolve and stage, then conclude through commit().
+        fs::write(dir.join("f.txt"), "resolved\n").unwrap();
+        run_git(&dir, &["add", "f.txt"]);
+        let oid = repo.commit("merge feature").expect("merge commit");
+
+        let commit = repo.repo.find_commit(oid).unwrap();
+        let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
+        assert_eq!(parents, vec![main_tip, feature_tip]);
+        assert_eq!(repo.repo_state(), git2::RepositoryState::Clean);
+        assert!(!dir.join(".git/MERGE_HEAD").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: committing during a conflicted cherry-pick must
+    /// clear CHERRY_PICK_HEAD (conclude the pick), not leave the repo
+    /// stuck in cherry-pick state — and must keep the picked commit's
+    /// original author, as `git commit` does.
+    #[test]
+    fn commit_concludes_conflicted_cherry_pick() {
+        let dir = temp_repo("cherry-commit");
+        commit_file(&dir, "f.txt", "base\n", "base");
+        run_git(&dir, &["checkout", "-b", "feature"]);
+        fs::write(dir.join("f.txt"), "feature\n").expect("write file");
+        run_git(&dir, &["add", "f.txt"]);
+        run_git(
+            &dir,
+            &[
+                "-c",
+                "user.name=Alice",
+                "-c",
+                "user.email=alice@example.com",
+                "commit",
+                "-m",
+                "feature change",
+            ],
+        );
+        let pick = run_git(&dir, &["rev-parse", "HEAD"]);
+        run_git(&dir, &["checkout", "main"]);
+        commit_file(&dir, "f.txt", "main\n", "main change");
+
+        let cp = Command::new("git")
+            .args(["cherry-pick", &pick])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert!(!cp.status.success(), "cherry-pick should conflict");
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        assert_eq!(repo.repo_state(), git2::RepositoryState::CherryPick);
+
+        fs::write(dir.join("f.txt"), "resolved\n").unwrap();
+        run_git(&dir, &["add", "f.txt"]);
+        let oid = repo.commit("picked").expect("commit should succeed");
+
+        let commit = repo.repo.find_commit(oid).unwrap();
+        assert_eq!(commit.parent_count(), 1);
+        assert_eq!(commit.author().name(), Some("Alice"));
+        assert_eq!(commit.committer().name(), Some("Test"));
+        assert_eq!(repo.repo_state(), git2::RepositoryState::Clean);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The plumbing refuses an empty commit (tree identical to the sole
+    /// parent) — the UI's staged-list guard reads async state that can
+    /// be stale, so this is the backstop.
+    #[test]
+    fn commit_refuses_empty_tree_outside_merge() {
+        let dir = temp_repo("empty-commit");
+        commit_file(&dir, "f.txt", "base\n", "base");
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let err = repo.commit("nothing").expect_err("empty commit refused");
+        assert!(err.to_string().contains("No staged changes"), "{err}");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -230,6 +230,11 @@ pub enum ConfirmAction {
     UpdateSubmodulePin {
         sm_path: String,
     },
+    /// Abort the in-progress operation (merge / rebase / cherry-pick /
+    /// revert) on the focused view. Carries nothing — the state is
+    /// re-read at execute time so a stale confirm can't abort the
+    /// wrong thing.
+    AbortOpState,
 }
 
 /// Per-section right-click target. Carries the exact identity needed to
@@ -1123,6 +1128,16 @@ impl WhisperApp {
             if let Some(tab) = self.active_focus_mut() {
                 tab.sidebar.toggle_remote(remote);
             }
+            return;
+        }
+
+        // Operation-state banner routes (merge/rebase/… in progress).
+        if key == "op_abort" {
+            self.confirm_abort_op_state();
+            return;
+        }
+        if key == "op_continue" {
+            self.continue_op_state();
             return;
         }
 
@@ -3052,6 +3067,9 @@ impl WhisperApp {
             ConfirmAction::UpdateSubmodulePin { sm_path } => {
                 self.stage_submodule_pin_update(&sm_path);
             }
+            ConfirmAction::AbortOpState => {
+                self.abort_op_state();
+            }
         }
     }
 
@@ -4279,6 +4297,125 @@ impl WhisperApp {
             .push(ToastSpec::info(format!("Merging {source}…")));
     }
 
+    /// Short noun for the in-progress operation, for banner/modal copy.
+    fn op_state_noun(state: git2::RepositoryState) -> &'static str {
+        use git2::RepositoryState as S;
+        match state {
+            S::Merge => "merge",
+            S::Rebase | S::RebaseInteractive | S::RebaseMerge => "rebase",
+            S::CherryPick | S::CherryPickSequence => "cherry-pick",
+            S::Revert | S::RevertSequence => "revert",
+            _ => "operation",
+        }
+    }
+
+    /// `op_abort` route: confirm before aborting the in-progress
+    /// operation on the focused view. The confirm action carries no
+    /// state — [`Self::abort_op_state`] re-reads it at execute time.
+    fn confirm_abort_op_state(&mut self) {
+        // Live read — the cached view.repo_state can lag an operation
+        // that was concluded or aborted externally.
+        let Some(state) = self
+            .active_focus()
+            .and_then(|t| t.active_view())
+            .map(|v| v.repo.repo_state())
+        else {
+            return;
+        };
+        if state == git2::RepositoryState::Clean {
+            self.toasts
+                .push(ToastSpec::info("No operation in progress"));
+            return;
+        }
+        let noun = Self::op_state_noun(state);
+        self.active_modal = Some(ActiveModal::Confirm {
+            title: format!("Abort {noun}?"),
+            body: format!(
+                "Aborting restores the working tree and index to their state \
+                 before the {noun} began. Any conflict resolutions you've made \
+                 will be lost."
+            ),
+            ok_label: "Abort".to_string(),
+            destructive: true,
+            action: ConfirmAction::AbortOpState,
+        });
+    }
+
+    /// Abort the in-progress operation on the focused view via the
+    /// matching `git <op> --abort`, which restores the pre-operation
+    /// working tree and index (unlike libgit2's `cleanup_state`, which
+    /// only deletes the state files).
+    fn abort_op_state(&mut self) {
+        use git2::RepositoryState as S;
+        // Live read, not the cached view.repo_state — see
+        // `confirm_abort_op_state`.
+        let Some(state) = self
+            .active_focus()
+            .and_then(|t| t.active_view())
+            .map(|v| v.repo.repo_state())
+        else {
+            return;
+        };
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let (rx, label) = match state {
+            S::Merge => (crate::git::merge_abort_async(wd, proxy), "merge --abort"),
+            S::Rebase | S::RebaseInteractive | S::RebaseMerge => {
+                (crate::git::rebase_abort_async(wd, proxy), "rebase --abort")
+            }
+            S::CherryPick | S::CherryPickSequence => (
+                crate::git::cherry_pick_abort_async(wd, proxy),
+                "cherry-pick --abort",
+            ),
+            S::Revert | S::RevertSequence => {
+                (crate::git::revert_abort_async(wd, proxy), "revert --abort")
+            }
+            _ => {
+                self.toasts
+                    .push(ToastSpec::info("No abortable operation in progress"));
+                return;
+            }
+        };
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label.to_string()));
+        self.toasts
+            .push(ToastSpec::info(format!("Running git {label}…")));
+    }
+
+    /// `op_continue` route: `git rebase --continue` after the user has
+    /// resolved and staged conflicts. Rebase is the only state whose
+    /// conclusion a plain commit can't express — merge / cherry-pick /
+    /// revert conclude through the state-aware [`crate::git::GitRepo::commit`].
+    fn continue_op_state(&mut self) {
+        use git2::RepositoryState as S;
+        // Live read, not the cached view.repo_state — see
+        // `confirm_abort_op_state`.
+        let Some(state) = self
+            .active_focus()
+            .and_then(|t| t.active_view())
+            .map(|v| v.repo.repo_state())
+        else {
+            return;
+        };
+        if !matches!(state, S::Rebase | S::RebaseInteractive | S::RebaseMerge) {
+            self.toasts
+                .push(ToastSpec::info("No rebase in progress to continue"));
+            return;
+        }
+        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
+            return;
+        };
+        let rx = crate::git::rebase_continue_async(wd, proxy);
+        let Some(tab) = self.active_focus_mut() else {
+            return;
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, "rebase --continue".to_string()));
+        self.toasts.push(ToastSpec::info("Continuing rebase…"));
+    }
+
     fn open_merge_options(&mut self, source: String) {
         self.active_modal = Some(ActiveModal::MergeOptions {
             form: MergeForm::default(),
@@ -4642,12 +4779,35 @@ impl WhisperApp {
             self.toasts.push(ToastSpec::warning("No worktree selected"));
             return;
         };
+        let repo_state = view.repo_state;
+        // A rebase's conclusion is `rebase --continue`, not a commit —
+        // committing mid-rebase would strand the rebase state.
+        if matches!(
+            repo_state,
+            git2::RepositoryState::Rebase
+                | git2::RepositoryState::RebaseInteractive
+                | git2::RepositoryState::RebaseMerge
+        ) {
+            self.toasts.push(ToastSpec::warning(
+                "Rebase in progress — resolve conflicts, then use Continue (or Abort)",
+            ));
+            return;
+        }
+        if !view.status.conflicted.is_empty() {
+            self.toasts.push(ToastSpec::warning(
+                "Unresolved conflicts — mark each conflicted file resolved first",
+            ));
+            return;
+        }
         if view.commit_subject.trim().is_empty() {
             self.toasts
                 .push(ToastSpec::warning("Commit subject is empty"));
             return;
         }
-        if view.status.staged.is_empty() {
+        // Concluding a merge legitimately commits with nothing newly
+        // staged (e.g. conflicts resolved by keeping "ours") — the
+        // merge parents are the change. Everything else needs content.
+        if view.status.staged.is_empty() && repo_state != git2::RepositoryState::Merge {
             self.toasts.push(ToastSpec::warning("No staged changes"));
             return;
         }
