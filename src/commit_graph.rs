@@ -954,7 +954,9 @@ struct RowPills {
     /// Names of clean worktrees pointing here. Dirty worktrees show
     /// their pill on the synthetic row instead, so this list excludes
     /// them.
-    clean_worktrees: Vec<String>,
+    /// `(name, workdir path)` per clean worktree at this commit — the
+    /// name is the pill label, the path is the click key.
+    clean_worktrees: Vec<(String, String)>,
 }
 
 #[derive(Clone, Copy)]
@@ -1021,12 +1023,12 @@ fn build_row(
             Some("Parent repo pins this commit".to_string()),
         ));
     }
-    for wt_name in &pills.clean_worktrees {
+    for (wt_name, wt_path) in &pills.clean_worktrees {
         pill_kids.push(pill(
             format!("WT: {wt_name}"),
             tokens::WARNING,
             40,
-            format!("worktree:{wt_name}"),
+            format!("worktree:{wt_path}"),
             Some("Switch to this worktree".to_string()),
         ));
     }
@@ -1253,11 +1255,15 @@ fn synthetic_row(
 
     let mut children: Vec<El> = vec![graph_cell(geom, lane, amber, selected, graph_width)];
     if let Some(name) = commit.synthetic_wt_name.as_deref() {
+        // Key by path, not name — worktree names are directory
+        // basenames and can collide (e.g. a linked worktree named
+        // like the main worktree's directory).
+        let target = commit.synthetic_wt_path.as_deref().unwrap_or(name);
         children.push(pill(
             format!("WT: {name}"),
             amber,
             40,
-            format!("worktree:{name}"),
+            format!("worktree:{target}"),
             Some("Switch to this worktree".to_string()),
         ));
     }
@@ -1573,8 +1579,8 @@ fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
     // Clean worktrees: those whose status reports zero dirty files. A
     // dirty worktree's pill belongs on the synthetic row above its
     // HEAD, not on the HEAD itself, so we exclude them here.
-    let mut by_oid_clean_wts: HashMap<Oid, Vec<String>> = HashMap::new();
-    for view in tab.worktree_views.values() {
+    let mut by_oid_clean_wts: HashMap<Oid, Vec<(String, String)>> = HashMap::new();
+    for (path, view) in &tab.worktree_views {
         if view.dirty_file_count != 0 {
             continue;
         }
@@ -1582,7 +1588,7 @@ fn build_row_pills(tab: &RepoTab) -> Vec<RowPills> {
             by_oid_clean_wts
                 .entry(head)
                 .or_default()
-                .push(view.name.clone());
+                .push((view.name.clone(), path.to_string_lossy().into_owned()));
         }
     }
 
@@ -1770,6 +1776,7 @@ mod tests {
             deletions: 0,
             is_synthetic: false,
             synthetic_wt_name: None,
+            synthetic_wt_path: None,
             is_orphaned: false,
             orphan_source: None,
         }

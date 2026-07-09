@@ -1,6 +1,7 @@
 //! Hunk-level staging, unstaging, and discarding operations.
 
 use anyhow::{Context, Result};
+use std::path::Path;
 
 use super::GitRepo;
 use super::diff::DiffHunk;
@@ -30,13 +31,66 @@ impl GitRepo {
         })
     }
 
+    /// Whether the (freshly reloaded) index has a stage-0 entry for `path`.
+    fn index_has_path(&self, path: &str) -> bool {
+        let Ok(mut index) = self.repo.index() else {
+            return false;
+        };
+        let _ = index.read(false);
+        index.get_path(Path::new(path), 0).is_some()
+    }
+
+    /// Whether HEAD's tree contains `path`.
+    fn head_has_path(&self, path: &str) -> bool {
+        self.repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_tree().ok())
+            .is_some_and(|t| t.get_path(Path::new(path)).is_ok())
+    }
+
+    /// git file mode string for a new-file patch header, read from the
+    /// working copy: `120000` symlink, `100755` executable, else `100644`.
+    fn new_file_mode(&self, path: &str) -> &'static str {
+        let Some(md) = self
+            .workdir()
+            .and_then(|wd| wd.join(path).symlink_metadata().ok())
+        else {
+            return "100644";
+        };
+        if md.file_type().is_symlink() {
+            return "120000";
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if md.permissions().mode() & 0o111 != 0 {
+                return "100755";
+            }
+        }
+        "100644"
+    }
+
     /// Apply a hunk patch to the index. When `reverse` is true the patch is
     /// applied in reverse (unstage); when false it stages the hunk.
     fn apply_hunk_patch(&self, file_path: &str, hunk_header: &str, reverse: bool) -> Result<()> {
         let hunks = self.diff_working_file(file_path, reverse)?;
         let hunk = Self::find_hunk(&hunks, hunk_header)?;
 
-        let patch = build_hunk_patch(file_path, file_path, hunk);
+        // A hunk from a file-*creation* diff (untracked file when
+        // staging, INDEX_NEW file when unstaging) must be shaped as a
+        // git new-file patch. With plain `--- a/path` headers git
+        // apply still exits 0 but does the wrong thing: forward
+        // application drops the file mode (exec bit), and reverse
+        // application truncates the file to zero bytes instead of
+        // removing it.
+        let is_creation = if reverse {
+            !self.head_has_path(file_path)
+        } else {
+            !self.index_has_path(file_path)
+        };
+        let new_file_mode = is_creation.then(|| self.new_file_mode(file_path));
+        let patch = build_hunk_patch(file_path, hunk, new_file_mode);
         let workdir = self
             .workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
@@ -82,7 +136,12 @@ impl GitRepo {
         let hunks = self.diff_working_file(file_path, false)?;
         let hunk = Self::find_hunk(&hunks, hunk_header)?;
 
-        let patch = build_hunk_patch(file_path, file_path, hunk);
+        // See apply_hunk_patch: reverse-applying an untracked file's
+        // creation hunk must *remove* the file, which needs new-file
+        // patch headers (plain headers truncate it to zero bytes).
+        let new_file_mode =
+            (!self.index_has_path(file_path)).then(|| self.new_file_mode(file_path));
+        let patch = build_hunk_patch(file_path, hunk, new_file_mode);
         let workdir = self
             .workdir()
             .ok_or_else(|| anyhow::anyhow!("No working directory"))?;
@@ -111,11 +170,21 @@ impl GitRepo {
     }
 }
 
-/// Build a minimal unified-diff patch for a single hunk.
-fn build_hunk_patch(old_path: &str, new_path: &str, hunk: &DiffHunk) -> String {
+/// Build a minimal unified-diff patch for a single hunk. Pass
+/// `new_file_mode` when the hunk creates the file — the patch then
+/// carries git's extended new-file headers (`diff --git`, `new file
+/// mode`, `--- /dev/null`) so mode is preserved on apply and reverse
+/// application deletes the file.
+fn build_hunk_patch(path: &str, hunk: &DiffHunk, new_file_mode: Option<&str>) -> String {
     let mut patch = String::new();
-    patch.push_str(&format!("--- a/{}\n", old_path));
-    patch.push_str(&format!("+++ b/{}\n", new_path));
+    if let Some(mode) = new_file_mode {
+        patch.push_str(&format!("diff --git a/{path} b/{path}\n"));
+        patch.push_str(&format!("new file mode {mode}\n"));
+        patch.push_str("--- /dev/null\n");
+    } else {
+        patch.push_str(&format!("--- a/{}\n", path));
+    }
+    patch.push_str(&format!("+++ b/{}\n", path));
     patch.push_str(&hunk.header);
     if !hunk.header.ends_with('\n') {
         patch.push('\n');
@@ -231,6 +300,95 @@ mod hunk_tests {
             "workdir must be restored byte-exact (no trailing newline)"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: untracked-file hunks were emitted with plain
+    /// `--- a/path` headers; `git apply` exits 0 on those but drops
+    /// the exec bit when staging. A creation hunk must stage the
+    /// file's content AND mode.
+    #[cfg(unix)]
+    #[test]
+    fn stage_hunk_creates_index_entry_with_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_repo("hunk-untracked-stage");
+        commit_file_helper(&dir);
+        let script = dir.join("run.sh");
+        fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let hunks = repo.diff_working_file("run.sh", false).expect("diff");
+        assert_eq!(hunks.len(), 1);
+        repo.stage_hunk("run.sh", &hunks[0].header)
+            .expect("stage untracked hunk");
+
+        let entry = run_git(&dir, &["ls-files", "-s", "run.sh"]);
+        assert!(
+            entry.starts_with("100755"),
+            "exec bit must be staged, got: {entry}"
+        );
+        assert_eq!(run_git(&dir, &["show", ":run.sh"]), "#!/bin/sh\necho hi");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: discarding an untracked file's hunk truncated the
+    /// file to zero bytes (git apply reverse on a plain-header patch)
+    /// instead of removing it. With new-file headers, reverse
+    /// application deletes the file — matching whole-file discard.
+    #[test]
+    fn discard_hunk_removes_untracked_file() {
+        let dir = temp_repo("hunk-untracked-discard");
+        commit_file_helper(&dir);
+        fs::write(dir.join("scratch.txt"), "temp\n").unwrap();
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let hunks = repo.diff_working_file("scratch.txt", false).expect("diff");
+        assert_eq!(hunks.len(), 1);
+        repo.discard_hunk("scratch.txt", &hunks[0].header)
+            .expect("discard untracked hunk");
+
+        assert!(
+            !dir.join("scratch.txt").exists(),
+            "discard must remove the untracked file, not truncate it"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Unstaging the only hunk of an INDEX_NEW file must remove the
+    /// index entry entirely, not leave a zero-byte blob staged.
+    #[test]
+    fn unstage_hunk_removes_index_new_entry() {
+        let dir = temp_repo("hunk-untracked-unstage");
+        commit_file_helper(&dir);
+        fs::write(dir.join("added.txt"), "fresh\n").unwrap();
+        run_git(&dir, &["add", "added.txt"]);
+
+        let repo = GitRepo::open(&dir).expect("open repo");
+        let hunks = repo.diff_working_file("added.txt", true).expect("diff");
+        assert_eq!(hunks.len(), 1);
+        repo.unstage_hunk("added.txt", &hunks[0].header)
+            .expect("unstage INDEX_NEW hunk");
+
+        assert_eq!(
+            run_git(&dir, &["ls-files", "--", "added.txt"]),
+            "",
+            "index entry must be gone"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("added.txt")).unwrap(),
+            "fresh\n",
+            "workdir copy must be untouched"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn commit_file_helper(dir: &Path) {
+        fs::write(dir.join("base.txt"), "base\n").unwrap();
+        run_git(dir, &["add", "base.txt"]);
+        run_git(dir, &["commit", "-m", "base"]);
     }
 
     /// Regression: hunk ops used to trust a list index computed at

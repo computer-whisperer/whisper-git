@@ -100,9 +100,10 @@ pub fn repo_state_label(state: RepositoryState) -> Option<&'static str> {
 }
 
 /// Compute a fingerprint of the repository's ref state by opening a FRESH
-/// git2::Repository handle (bypassing any cached state), reading HEAD OID +
-/// sorted local branch tip OIDs, and hashing them into a u64.
-/// Cost: ~0.5ms. Returns 0 on error.
+/// git2::Repository handle (bypassing any cached state) and hashing HEAD's
+/// OID plus every local / remote-tracking / tag ref as sorted (name, oid)
+/// pairs. Cost scales with ref count — around a millisecond for ordinary
+/// repos; called from the 5 s reconciliation poll. Returns 0 on error.
 pub fn ref_fingerprint(git_dir: &Path) -> u64 {
     let repo = match Repository::open(git_dir) {
         Ok(r) => r,
@@ -282,6 +283,10 @@ pub struct CommitInfo {
     pub is_synthetic: bool,
     /// For synthetic entries: the worktree name this entry represents
     pub synthetic_wt_name: Option<String>,
+    /// For synthetic entries: the worktree's workdir path. Pill click
+    /// keys carry this rather than the name — names are directory
+    /// basenames, which can collide across worktrees.
+    pub synthetic_wt_path: Option<String>,
     /// True for orphaned commits discovered via reflogs (unreachable from any branch tip)
     pub is_orphaned: bool,
     /// Reflog source label for orphaned commits, e.g. "HEAD@{3}: rebase (finish)"
@@ -328,6 +333,7 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: false,
             synthetic_wt_name: None,
+            synthetic_wt_path: None,
             is_orphaned: false,
             orphan_source: None,
         }
@@ -388,6 +394,7 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: true,
             synthetic_wt_name: Some(wt.name.clone()),
+            synthetic_wt_path: Some(wt.path.clone()),
             is_orphaned: false,
             orphan_source: None,
         })
@@ -432,6 +439,7 @@ impl CommitInfo {
             deletions: 0,
             is_synthetic: true,
             synthetic_wt_name: None, // single-worktree, no specific name
+            synthetic_wt_path: Some(workdir.to_string()),
             is_orphaned: false,
             orphan_source: None,
         }

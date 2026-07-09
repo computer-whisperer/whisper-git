@@ -1304,17 +1304,26 @@ impl WhisperApp {
         // worktree rows in the commit graph (the sidebar no longer
         // has a Worktrees section; the pill bar at the top of the
         // staging well is the primary affordance).
-        if let Some(name) = key.strip_prefix("worktree:") {
+        if let Some(target) = key.strip_prefix("worktree:") {
             if let Some(tab) = self.active_focus_mut() {
                 // Resolve against `worktree_views` — the same set the
                 // pills are built from. `tab.worktrees` is libgit2's
                 // linked-only list, which omits the main worktree and
-                // made its pill a dead click.
+                // made its pill a dead click. Pills key by workdir
+                // path (names are basenames and can collide); fall
+                // back to a name match for any legacy key.
+                let target_path = Path::new(target);
                 let path = tab
                     .worktree_views
-                    .iter()
-                    .find(|(_, v)| v.name == name)
-                    .map(|(p, _)| p.clone());
+                    .keys()
+                    .find(|p| p.as_path() == target_path)
+                    .cloned()
+                    .or_else(|| {
+                        tab.worktree_views
+                            .iter()
+                            .find(|(_, v)| v.name == target)
+                            .map(|(p, _)| p.clone())
+                    });
                 if let Some(p) = path {
                     tab.select_worktree(p);
                 }
@@ -4275,7 +4284,10 @@ impl WhisperApp {
                 .push(ToastSpec::error("Push: HEAD is detached, no branch"));
             return;
         }
-        let branch = tab.current_branch().to_string();
+        // Live HEAD read, matching the detached guard and upstream
+        // lookup above — the cached view name can lag an external
+        // checkout and pair the old branch with the new upstream.
+        let branch = tab.active_repo().current_branch().unwrap_or_default();
         if branch.is_empty() {
             self.toasts
                 .push(ToastSpec::error("Push: no branch to push"));
@@ -4335,7 +4347,8 @@ impl WhisperApp {
         let (remote, branch) = match tab.active_repo().upstream_target() {
             Some(target) => target,
             None => {
-                let branch = tab.current_branch().to_string();
+                // Live HEAD read — see `push`.
+                let branch = tab.active_repo().current_branch().unwrap_or_default();
                 if branch.is_empty() {
                     self.toasts
                         .push(ToastSpec::error("Pull: no branch to pull"));
