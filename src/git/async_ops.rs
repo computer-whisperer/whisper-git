@@ -328,13 +328,42 @@ define_async_git_op! {
     stash_pop_async() =>
         ["stash", "pop"], "stash pop";
 
-    /// Spawn a background thread to cherry-pick a commit
-    cherry_pick_async(sha: String) =>
-        ["cherry-pick", sha], "cherry-pick";
+}
 
-    /// Spawn a background thread to revert a commit
-    revert_commit_async(sha: String) =>
-        ["revert", "--no-edit", sha], "revert";
+/// Spawn a background thread to cherry-pick a commit. Merge commits
+/// need a mainline (`-m 1` = diff against the first parent — the
+/// branch that was merged into); without it git refuses outright.
+pub fn cherry_pick_async(
+    workdir: PathBuf,
+    sha: String,
+    mainline_first_parent: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    let mut args = vec!["cherry-pick".to_string()];
+    if mainline_first_parent {
+        args.push("-m".into());
+        args.push("1".into());
+    }
+    args.push(sha);
+    run_git_async(args, workdir, "cherry-pick", proxy)
+}
+
+/// Spawn a background thread to revert a commit. Same mainline rule as
+/// [`cherry_pick_async`]: reverting a merge with `-m 1` undoes the
+/// merged branch's changes relative to the first parent.
+pub fn revert_commit_async(
+    workdir: PathBuf,
+    sha: String,
+    mainline_first_parent: bool,
+    proxy: EventLoopProxy<()>,
+) -> Receiver<RemoteOpResult> {
+    let mut args = vec!["revert".to_string(), "--no-edit".to_string()];
+    if mainline_first_parent {
+        args.push("-m".into());
+        args.push("1".into());
+    }
+    args.push(sha);
+    run_git_async(args, workdir, "revert", proxy)
 }
 
 /// Spawn a background thread to apply a stash entry (without removing it)

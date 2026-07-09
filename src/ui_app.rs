@@ -4362,13 +4362,22 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
             return;
         };
-        let sha = oid.to_string();
-        let rx = crate::git::cherry_pick_async(wd, sha.clone(), proxy);
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
+        // Merge commits need a mainline or git refuses; -m 1 applies
+        // the diff against the first parent (the branch merged into) —
+        // what "pick this merge" means in practice.
+        let mainline = tab.repo.is_merge_commit(oid);
+        let sha = oid.to_string();
+        let rx = crate::git::cherry_pick_async(wd, sha.clone(), mainline, proxy);
         let short = &sha[..7];
-        tab.mutation_op = Some(TimedOp::new(rx, format!("cherry-pick {short}")));
+        let label = if mainline {
+            format!("cherry-pick {short} (-m 1)")
+        } else {
+            format!("cherry-pick {short}")
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label));
         self.toasts
             .push(ToastSpec::info(format!("Cherry-picking {short}…")));
     }
@@ -4377,13 +4386,21 @@ impl WhisperApp {
         let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Mutation, false) else {
             return;
         };
-        let sha = oid.to_string();
-        let rx = crate::git::revert_commit_async(wd, sha.clone(), proxy);
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
+        // See cherry_pick: reverting a merge with -m 1 undoes the
+        // merged branch's changes relative to the first parent.
+        let mainline = tab.repo.is_merge_commit(oid);
+        let sha = oid.to_string();
+        let rx = crate::git::revert_commit_async(wd, sha.clone(), mainline, proxy);
         let short = &sha[..7];
-        tab.mutation_op = Some(TimedOp::new(rx, format!("revert {short}")));
+        let label = if mainline {
+            format!("revert {short} (-m 1)")
+        } else {
+            format!("revert {short}")
+        };
+        tab.mutation_op = Some(TimedOp::new(rx, label));
         self.toasts
             .push(ToastSpec::info(format!("Reverting {short}…")));
     }

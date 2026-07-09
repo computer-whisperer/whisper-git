@@ -115,14 +115,30 @@ pub fn ref_fingerprint(git_dir: &Path) -> u64 {
     {
         oid.as_bytes().hash(&mut hasher);
     }
-    // Hash sorted local branch tip OIDs
-    if let Ok(branches) = repo.branches(Some(git2::BranchType::Local)) {
-        let mut oids: Vec<Oid> = branches
-            .filter_map(|b| b.ok())
-            .filter_map(|(b, _)| b.get().resolve().ok()?.target())
+    // Hash every local, remote-tracking, and tag ref as sorted
+    // (name, oid) pairs. Remote refs and tags matter: an external
+    // `git fetch` only moves refs/remotes/*, and hashing names (not
+    // just OIDs) makes renames and ref creation at an existing OID
+    // visible to the reconciliation timer.
+    if let Ok(refs) = repo.references() {
+        let mut entries: Vec<(String, Oid)> = refs
+            .filter_map(|r| r.ok())
+            .filter(|r| {
+                r.name().is_some_and(|n| {
+                    n.starts_with("refs/heads/")
+                        || n.starts_with("refs/remotes/")
+                        || n.starts_with("refs/tags/")
+                })
+            })
+            .filter_map(|r| {
+                let name = r.name()?.to_string();
+                let oid = r.resolve().ok()?.target()?;
+                Some((name, oid))
+            })
             .collect();
-        oids.sort();
-        for oid in &oids {
+        entries.sort();
+        for (name, oid) in &entries {
+            name.hash(&mut hasher);
             oid.as_bytes().hash(&mut hasher);
         }
     }
@@ -902,6 +918,15 @@ impl GitRepo {
     }
 
     /// Get the head commit OID (falls back to first local branch tip for bare repos)
+    /// Whether `oid` is a merge commit (more than one parent) —
+    /// cherry-pick / revert need a mainline for these.
+    pub fn is_merge_commit(&self, oid: Oid) -> bool {
+        self.repo
+            .find_commit(oid)
+            .map(|c| c.parent_count() > 1)
+            .unwrap_or(false)
+    }
+
     pub fn head_oid(&self) -> Result<Oid> {
         if let Ok(head) = self.repo.head()
             && let Some(oid) = head.target()
@@ -1506,6 +1531,34 @@ mod commit_tests {
         let repo = GitRepo::open(&dir).expect("open repo");
         let err = repo.commit("nothing").expect_err("empty commit refused");
         assert!(err.to_string().contains("No staged changes"), "{err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression: the fingerprint only covered HEAD + local branch
+    /// tips, so an external `git fetch` (moving refs/remotes/*) or a
+    /// new tag never tripped the reconciliation timer.
+    #[test]
+    fn ref_fingerprint_sees_remote_refs_and_tags() {
+        let dir = temp_repo("ref-fingerprint");
+        commit_file(&dir, "f.txt", "base\n", "base");
+        let head = run_git(&dir, &["rev-parse", "HEAD"]);
+        let git_dir = PathBuf::from(run_git(&dir, &["rev-parse", "--absolute-git-dir"]));
+
+        let base = super::ref_fingerprint(&git_dir);
+
+        // Simulate what an external fetch does: create/move a
+        // remote-tracking ref.
+        run_git(&dir, &["update-ref", "refs/remotes/origin/main", &head]);
+        let with_remote = super::ref_fingerprint(&git_dir);
+        assert_ne!(base, with_remote, "remote-tracking ref must be visible");
+
+        run_git(&dir, &["tag", "v1"]);
+        let with_tag = super::ref_fingerprint(&git_dir);
+        assert_ne!(with_remote, with_tag, "tag creation must be visible");
+
+        // Stable when nothing changed.
+        assert_eq!(with_tag, super::ref_fingerprint(&git_dir));
 
         let _ = fs::remove_dir_all(&dir);
     }
