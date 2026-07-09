@@ -152,8 +152,13 @@ pub fn staged_gitlinks(repo: &git2::Repository) -> Vec<FileStatus> {
     };
     diff.deltas()
         .filter(|d| {
-            d.old_file().mode() == git2::FileMode::Commit
-                || d.new_file().mode() == git2::FileMode::Commit
+            // tree→index diffs include conflict entries as
+            // Delta::Conflicted — an unresolved merge conflict on a
+            // pointer is NOT a staged change (the status walk already
+            // reports it under `conflicted`).
+            d.status() != git2::Delta::Conflicted
+                && (d.old_file().mode() == git2::FileMode::Commit
+                    || d.new_file().mode() == git2::FileMode::Commit)
         })
         .map(|d| FileStatus {
             path: d
@@ -371,6 +376,88 @@ mod gitlink_tests {
         );
         assert!(status.unstaged.is_empty(), "no unstaged entries expected");
         assert!(status.untracked.is_empty(), "no untracked entries expected");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A merge conflict on the submodule pointer must be reported as
+    /// conflicted ONLY — tree→index diffs include conflict entries as
+    /// `Delta::Conflicted` with gitlink modes, which the staged-gitlink
+    /// supplement must not misfile as a staged change (the path would
+    /// otherwise show in both lists and "has staged changes" gates
+    /// would fire mid-conflict).
+    #[test]
+    fn conflicted_submodule_pointer_is_not_staged() {
+        let root = temp_dir("gitlink-conflict");
+        let sub_src = root.join("sub");
+        fs::create_dir_all(&sub_src).unwrap();
+        init_repo(&sub_src);
+        // v2 and v3 must be *divergent* — for ancestor/descendant
+        // pointers git fast-forwards the gitlink merge instead of
+        // conflicting.
+        commit_file(&sub_src, "lib.txt", "v1\n", "sub v1");
+        let v1 = run_git(&sub_src, &["rev-parse", "HEAD"]);
+        run_git(&sub_src, &["checkout", "-b", "side"]);
+        commit_file(&sub_src, "lib.txt", "v2\n", "sub v2");
+        let v2 = run_git(&sub_src, &["rev-parse", "HEAD"]);
+        run_git(&sub_src, &["checkout", "main"]);
+        commit_file(&sub_src, "lib.txt", "v3\n", "sub v3");
+        let v3 = run_git(&sub_src, &["rev-parse", "HEAD"]);
+
+        let parent = root.join("parent");
+        fs::create_dir_all(&parent).unwrap();
+        init_repo(&parent);
+        commit_file(&parent, "readme.txt", "hi\n", "initial");
+        run_git(
+            &parent,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                sub_src.to_str().unwrap(),
+                "sub",
+            ],
+        );
+        let sub_wt = parent.join("sub");
+        run_git(&sub_wt, &["checkout", &v1]);
+        run_git(&parent, &["add", "sub"]);
+        run_git(&parent, &["commit", "-m", "pin v1"]);
+
+        // Two branches pin the submodule to different commits …
+        run_git(&parent, &["checkout", "-b", "b1"]);
+        run_git(&sub_wt, &["checkout", &v2]);
+        run_git(&parent, &["add", "sub"]);
+        run_git(&parent, &["commit", "-m", "pin v2"]);
+        run_git(&parent, &["checkout", "main"]);
+        run_git(&sub_wt, &["checkout", &v3]);
+        run_git(&parent, &["add", "sub"]);
+        run_git(&parent, &["commit", "-m", "pin v3"]);
+
+        // … and merging them conflicts on the gitlink (merge exits
+        // non-zero; assert the conflict happened rather than success).
+        let out = Command::new("git")
+            .args(["merge", "b1"])
+            .current_dir(&parent)
+            .output()
+            .expect("run git merge");
+        assert!(!out.status.success(), "gitlink merge must conflict");
+
+        let repo = GitRepo::open(&parent).expect("open parent");
+        let status = repo.status().expect("status");
+        assert_eq!(
+            status
+                .conflicted
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sub"],
+            "the pointer conflict must be reported as conflicted"
+        );
+        assert!(
+            !status.staged.iter().any(|f| f.path == "sub"),
+            "a conflicted pointer must not be misfiled as staged"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
