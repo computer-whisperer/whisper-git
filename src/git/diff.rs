@@ -56,6 +56,10 @@ pub struct DiffLine {
     /// Byte ranges within `content` that represent intra-line changes (word-level highlight).
     /// Empty means the entire line is changed (no paired line found for comparison).
     pub highlight_ranges: Vec<(usize, usize)>,
+    /// This side of the file ends without a trailing newline at this
+    /// line (git's "\ No newline at end of file"). Patch construction
+    /// must reproduce the marker or `git apply` rejects the hunk.
+    pub no_newline: bool,
 }
 
 impl GitRepo {
@@ -87,16 +91,23 @@ impl GitRepo {
         let mut opts = git2::DiffOptions::new();
         opts.pathspec(path);
 
+        // Reload the index if it changed on disk — hunk ops mutate it
+        // through an external `git apply --cached` process, and libgit2
+        // caches the snapshot on long-lived handles (same fix as
+        // `GitRepo::commit`).
+        let mut index = self.repo.index().context("Failed to get index")?;
+        index
+            .read(false)
+            .context("Failed to refresh index from disk")?;
+
         let diff = if staged {
             let head = self.repo.head().context("Failed to get HEAD")?;
             let head_tree = head.peel_to_tree().context("Failed to get HEAD tree")?;
-            self.repo.diff_tree_to_index(
-                Some(&head_tree),
-                Some(&self.repo.index()?),
-                Some(&mut opts),
-            )?
+            self.repo
+                .diff_tree_to_index(Some(&head_tree), Some(&index), Some(&mut opts))?
         } else {
-            self.repo.diff_index_to_workdir(None, Some(&mut opts))?
+            self.repo
+                .diff_index_to_workdir(Some(&index), Some(&mut opts))?
         };
 
         let files = parse_diff(&diff)?;
@@ -311,7 +322,19 @@ pub(super) fn parse_diff(diff: &Diff) -> Result<Vec<DiffFile>> {
                         old_lineno: line.old_lineno(),
                         new_lineno: line.new_lineno(),
                         highlight_ranges: Vec::new(),
+                        no_newline: false,
                     });
+                }
+            }
+            // EOFNL markers ("\ No newline at end of file") arrive as
+            // their own callbacks immediately after the unterminated
+            // line: '=' both sides, '>' old side only, '<' new side
+            // only. Flag the preceding line so patch construction can
+            // reproduce the marker — dropping it makes `git apply`
+            // reject any hunk touching the file's last line.
+            '=' | '<' | '>' => {
+                if let Some(l) = file.hunks.last_mut().and_then(|h| h.lines.last_mut()) {
+                    l.no_newline = true;
                 }
             }
             _ => {}

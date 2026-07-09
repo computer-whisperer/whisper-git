@@ -866,6 +866,19 @@ impl RepoTab {
         })
     }
 
+    /// Header of hunk `idx` in the *currently displayed* working-tree
+    /// diff for `path`. Resolved at click time against the same cache
+    /// the diff pane rendered from, so hunk ops address the hunk the
+    /// user actually saw (by `@@` header) instead of trusting a list
+    /// index that may have gone stale between render and click.
+    pub fn displayed_hunk_header(&self, path: &str, idx: usize) -> Option<String> {
+        let (key, hunks) = self.diff_cache.as_ref()?;
+        if key.file != path || key.commit.is_some() {
+            return None;
+        }
+        hunks.get(idx).map(|h| h.header.clone())
+    }
+
     /// Drain a finished diff fetch and spawn a new one when the
     /// desired key has moved past the cache. At most one fetch in
     /// flight; a result that lands stale (selection moved while the
@@ -1117,6 +1130,14 @@ impl RepoTab {
         let changed = view.dirty_file_count != count || view.dirty_diff != diff;
         view.dirty_file_count = count;
         view.dirty_diff = diff;
+        if changed {
+            // Content-only edits (file already Modified, still
+            // Modified) leave the status file *lists* unchanged, so
+            // `set_worktree_status` won't bump the epoch — but the
+            // dirty totals move, and a stale epoch would pin the diff
+            // pane to hunks that no longer match the disk.
+            view.status_epoch += 1;
+        }
         changed
     }
 

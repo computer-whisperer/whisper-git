@@ -218,7 +218,10 @@ pub enum ConfirmAction {
     DiscardFile(String),
     DiscardHunk {
         path: String,
-        idx: usize,
+        /// `@@` header of the hunk as displayed — matched against a
+        /// fresh diff at execute time so a stale confirm can't discard
+        /// the wrong hunk.
+        header: String,
     },
     RemoveWorktree {
         name: String,
@@ -1268,33 +1271,30 @@ impl WhisperApp {
             }
             return;
         }
+        // Hunk ops: the button key carries the hunk's index in the
+        // *displayed* diff; resolve it to the hunk's `@@` header
+        // against the same cache the pane rendered from, and let the
+        // backend re-find that header in a fresh diff. A stale index
+        // silently hits the wrong hunk; a stale header fails safe.
         if let Some(rest) = key.strip_prefix("stage_hunk:") {
-            if let Some((idx_str, path)) = rest.split_once(':')
-                && let Ok(idx) = idx_str.parse::<usize>()
-            {
-                let path = path.to_string();
+            if let Some((path, header)) = self.resolve_hunk_key(rest) {
                 self.run_op("Stage hunk", move |t| {
-                    t.active_repo().stage_hunk(&path, idx)
+                    t.active_repo().stage_hunk(&path, &header)
                 });
             }
             return;
         }
         if let Some(rest) = key.strip_prefix("unstage_hunk:") {
-            if let Some((idx_str, path)) = rest.split_once(':')
-                && let Ok(idx) = idx_str.parse::<usize>()
-            {
-                let path = path.to_string();
+            if let Some((path, header)) = self.resolve_hunk_key(rest) {
                 self.run_op("Unstage hunk", move |t| {
-                    t.active_repo().unstage_hunk(&path, idx)
+                    t.active_repo().unstage_hunk(&path, &header)
                 });
             }
             return;
         }
         if let Some(rest) = key.strip_prefix("discard_hunk:") {
-            if let Some((idx_str, path)) = rest.split_once(':')
-                && let Ok(idx) = idx_str.parse::<usize>()
-            {
-                self.confirm_discard_hunk(path.to_string(), idx);
+            if let Some((path, header)) = self.resolve_hunk_key(rest) {
+                self.confirm_discard_hunk(path, header);
             }
             return;
         }
@@ -2230,17 +2230,37 @@ impl WhisperApp {
         });
     }
 
-    fn confirm_discard_hunk(&mut self, path: String, idx: usize) {
+    /// Parse a `{idx}:{path}` hunk-button key and resolve the index to
+    /// the displayed hunk's `@@` header (see the dispatch comment in
+    /// `on_event`). Toasts and returns `None` when the displayed diff
+    /// no longer covers the click — e.g. the cache moved to another
+    /// file between render and click.
+    fn resolve_hunk_key(&mut self, rest: &str) -> Option<(String, String)> {
+        let (idx_str, path) = rest.split_once(':')?;
+        let idx = idx_str.parse::<usize>().ok()?;
+        match self
+            .active_focus()
+            .and_then(|t| t.displayed_hunk_header(path, idx))
+        {
+            Some(header) => Some((path.to_string(), header)),
+            None => {
+                self.toasts
+                    .push(ToastSpec::warning("The diff changed — try again"));
+                None
+            }
+        }
+    }
+
+    fn confirm_discard_hunk(&mut self, path: String, header: String) {
         self.active_modal = Some(ActiveModal::Confirm {
             title: "Discard hunk".to_string(),
             body: format!(
-                "Discard hunk {} from '{}'? This cannot be undone.",
-                idx + 1,
-                path
+                "Discard hunk '{}' from '{}'? This cannot be undone.",
+                header, path
             ),
             ok_label: "Discard".to_string(),
             destructive: true,
-            action: ConfirmAction::DiscardHunk { path, idx },
+            action: ConfirmAction::DiscardHunk { path, header },
         });
     }
 
@@ -3067,9 +3087,9 @@ impl WhisperApp {
             ConfirmAction::DiscardFile(path) => {
                 self.run_op("Discard", move |t| t.active_repo().discard_file(&path));
             }
-            ConfirmAction::DiscardHunk { path, idx } => {
+            ConfirmAction::DiscardHunk { path, header } => {
                 self.run_op("Discard hunk", move |t| {
-                    t.active_repo().discard_hunk(&path, idx)
+                    t.active_repo().discard_hunk(&path, &header)
                 });
             }
             ConfirmAction::RemoveWorktree { name, path, force } => {
