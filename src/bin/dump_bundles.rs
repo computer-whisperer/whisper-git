@@ -248,6 +248,7 @@ fn build_scenes(opened: &[RepoTab]) -> Vec<(String, WhisperApp)> {
                 ok_label: "Force push".to_string(),
                 destructive: true,
                 action: whisper_git::ui_app::ConfirmAction::ForcePush {
+                    tab_id: 0,
                     remote: "origin".to_string(),
                     branch: "main".to_string(),
                 },

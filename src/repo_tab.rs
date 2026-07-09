@@ -61,6 +61,11 @@ pub struct TimedOp {
     /// Human-readable label baked into the success toast / error
     /// summary: `"origin"`, `"main → origin/main"`, `"abc1234"`, etc.
     pub label: String,
+    /// `(remote, branch)` exactly as passed to the git CLI, set only on
+    /// push ops. The rejected-push force-push offer reads this instead
+    /// of re-parsing `label`, which carries display suffixes like
+    /// `"(set-upstream)"` that would corrupt the remote name.
+    pub push_retry: Option<(String, String)>,
 }
 
 impl TimedOp {
@@ -69,7 +74,13 @@ impl TimedOp {
             rx,
             started: Instant::now(),
             label: label.into(),
+            push_retry: None,
         }
+    }
+
+    pub fn with_push_retry(mut self, remote: impl Into<String>, branch: impl Into<String>) -> Self {
+        self.push_retry = Some((remote.into(), branch.into()));
+        self
     }
 }
 

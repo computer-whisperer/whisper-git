@@ -112,6 +112,20 @@ fn resolve_tab_mut(tabs: &mut [RepoTab], idx: usize, depth: Option<usize>) -> Op
     }
 }
 
+/// Find a tab (outermost or drilled-in submodule level) by its stable
+/// `RepoTab::id`. Used by deferred actions — e.g. the force-push
+/// confirm — that must target the tab they were created for even if
+/// tabs were switched, closed, or reordered in the meantime.
+fn tab_by_id_mut(tabs: &mut [RepoTab], id: u64) -> Option<&mut RepoTab> {
+    tabs.iter_mut().find_map(|outer| {
+        if outer.id == id {
+            Some(outer)
+        } else {
+            outer.nav_stack.iter_mut().find(|t| t.id == id)
+        }
+    })
+}
+
 /// One level's CI poll: checks the dynamic interval against
 /// `last_ci_fetch`, kicks off a refresh when due. Pulled to a free fn
 /// so `poll_ci_refresh` can apply it to the outermost tab and to every
@@ -218,8 +232,12 @@ pub enum ConfirmAction {
     },
     /// `git push --force-with-lease` after a regular push was rejected
     /// non-fast-forward. Carries the same remote/branch the original
-    /// push targeted so the retry hits the same ref.
+    /// push targeted so the retry hits the same ref, and the id of the
+    /// tab whose push failed — the modal outlives focus changes, so
+    /// executing against the focused tab could force-push the wrong
+    /// repo.
     ForcePush {
+        tab_id: u64,
         remote: String,
         branch: String,
     },
@@ -2112,7 +2130,8 @@ impl WhisperApp {
         } else {
             format!("{branch} → {remote} ({})", suffix.join(", "))
         };
-        tab.push_op = Some(TimedOp::new(rx, label.clone()));
+        tab.push_op =
+            Some(TimedOp::new(rx, label.clone()).with_push_retry(remote.clone(), branch.clone()));
         self.toasts
             .push(ToastSpec::info(format!("Pushing {label}…")));
         self.active_modal = None;
@@ -3061,8 +3080,12 @@ impl WhisperApp {
                     t.active_repo().reset_to_commit(oid, mode)
                 });
             }
-            ConfirmAction::ForcePush { remote, branch } => {
-                self.force_push(remote, branch);
+            ConfirmAction::ForcePush {
+                tab_id,
+                remote,
+                branch,
+            } => {
+                self.force_push(tab_id, remote, branch);
             }
             ConfirmAction::UpdateSubmodulePin { sm_path } => {
                 self.stage_submodule_pin_update(&sm_path);
@@ -3128,21 +3151,35 @@ impl WhisperApp {
 
     /// `git push --force-with-lease <remote> <branch>`. Reached only via
     /// the rejected-push Confirm modal, so the user has explicitly opted
-    /// in. Writes through the same `push_op` slot as a regular push, so
+    /// in. Targets the tab whose push was rejected (by id, not by
+    /// focus — the user may have switched tabs while the modal was up).
+    /// Writes through the same `push_op` slot as a regular push, so
     /// the header progress affordance and the failure-handling path
     /// don't need a separate code path.
-    fn force_push(&mut self, remote: String, branch: String) {
-        let Some((wd, proxy)) = self.prepare_remote_op(AsyncKind::Push, true) else {
+    fn force_push(&mut self, tab_id: u64, remote: String, branch: String) {
+        let Some(proxy) = self.proxy.clone() else {
+            self.toasts.push(ToastSpec::error(
+                "Push unavailable: event loop proxy missing",
+            ));
             return;
         };
+        let Some(tab) = tab_by_id_mut(&mut self.tabs, tab_id) else {
+            self.toasts.push(ToastSpec::error(
+                "The tab whose push was rejected is no longer open",
+            ));
+            return;
+        };
+        if tab.push_op.is_some() {
+            self.toasts
+                .push(ToastSpec::info("Push already in progress"));
+            return;
+        }
+        let wd = tab.active_repo().git_command_dir();
         let rx = crate::git::push_force_async(wd, remote.clone(), branch.clone(), proxy);
-        let Some(tab) = self.active_focus_mut() else {
-            return;
-        };
-        tab.push_op = Some(TimedOp::new(
-            rx,
-            format!("{branch} \u{2192} {remote} (force)"),
-        ));
+        tab.push_op = Some(
+            TimedOp::new(rx, format!("{branch} \u{2192} {remote} (force)"))
+                .with_push_retry(remote.clone(), branch.clone()),
+        );
         self.toasts.push(ToastSpec::info(format!(
             "Force-pushing {branch} to {remote}…"
         )));
@@ -3937,6 +3974,7 @@ impl WhisperApp {
             let Some(tab) = resolve_tab_mut(&mut self.tabs, idx, depth) else {
                 return;
             };
+            let tab_id = tab.id;
             let slot = match kind {
                 AsyncKind::Fetch => &mut tab.fetch_op,
                 AsyncKind::Pull => &mut tab.pull_op,
@@ -3945,7 +3983,11 @@ impl WhisperApp {
             };
             let outcome = match slot {
                 Some(op) => match op.rx.try_recv() {
-                    Ok(result) => Some(Ok((std::mem::take(&mut op.label), result))),
+                    Ok(result) => Some(Ok((
+                        std::mem::take(&mut op.label),
+                        op.push_retry.take(),
+                        result,
+                    ))),
                     Err(std::sync::mpsc::TryRecvError::Empty) => None,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(())),
                 },
@@ -3962,7 +4004,7 @@ impl WhisperApp {
             }
             tab.request_state_refresh(self.proxy.as_ref(), self.config.show_orphaned_commits);
             match outcome {
-                Ok((label, RemoteOpResult { success: true, .. })) => {
+                Ok((label, _, RemoteOpResult { success: true, .. })) => {
                     self.toasts
                         .push(ToastSpec::success(format!("{} {}", kind.past(), label)));
                     // Push success: stamp the time so poll_ci_refresh
@@ -3977,7 +4019,8 @@ impl WhisperApp {
                     }
                 }
                 Ok((
-                    label,
+                    _,
+                    push_retry,
                     RemoteOpResult {
                         success: false,
                         error,
@@ -3990,12 +4033,12 @@ impl WhisperApp {
                         format!("{summary}\n\n{error}")
                     };
                     // Rejected pushes get a Force-push offer rather than a
-                    // dead-end Error modal. The label was set at op kickoff
-                    // as `"<branch> → <remote>"` — split it back so the
-                    // retry hits the same ref.
+                    // dead-end Error modal. The op carries its structured
+                    // (remote, branch) target so the retry hits the same
+                    // ref on the same tab.
                     if matches!(kind, AsyncKind::Push)
                         && retryable
-                        && let Some((branch, remote)) = label.split_once(" \u{2192} ")
+                        && let Some((remote, branch)) = push_retry
                     {
                         self.active_modal = Some(ActiveModal::Confirm {
                             title: "Push rejected".to_string(),
@@ -4008,8 +4051,9 @@ impl WhisperApp {
                             ok_label: "Force push".to_string(),
                             destructive: true,
                             action: ConfirmAction::ForcePush {
-                                remote: remote.to_string(),
-                                branch: branch.to_string(),
+                                tab_id,
+                                remote,
+                                branch,
                             },
                         });
                     } else {
@@ -4200,7 +4244,10 @@ impl WhisperApp {
         let Some(tab) = self.active_focus_mut() else {
             return;
         };
-        tab.push_op = Some(TimedOp::new(rx, format!("{branch} → {remote}")));
+        tab.push_op = Some(
+            TimedOp::new(rx, format!("{branch} → {remote}"))
+                .with_push_retry(remote.clone(), branch.clone()),
+        );
         self.toasts
             .push(ToastSpec::info(format!("Pushing {branch} to {remote}…")));
     }
@@ -5811,4 +5858,54 @@ fn no_worktree_placeholder() -> El {
     .height(Size::Fill(1.0))
     .height(Size::Fill(1.0))
     .width(Size::Fill(1.0))
+}
+
+#[cfg(test)]
+mod tab_lookup_tests {
+    use super::*;
+
+    fn temp_repo_tab(name: &str) -> RepoTab {
+        let dir = std::env::temp_dir().join(format!(
+            "whisper-git-tablookup-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let repo = git2::Repository::init(&dir).expect("init repo");
+        std::fs::write(dir.join("a.txt"), "hello\n").expect("write file");
+        let mut index = repo.index().expect("index");
+        index.add_path(std::path::Path::new("a.txt")).expect("add");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Test", "test@example.com").expect("sig");
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("commit");
+        RepoTab::open(&dir).expect("open tab")
+    }
+
+    /// The force-push confirm targets its tab by id — the lookup must
+    /// find both outermost tabs and drilled-in nav_stack levels, and
+    /// miss ids of tabs that have been closed.
+    #[test]
+    fn tab_by_id_finds_outer_and_drilled_tabs() {
+        let mut outer = temp_repo_tab("outer");
+        let drilled = temp_repo_tab("drilled");
+        let (outer_id, drilled_id) = (outer.id, drilled.id);
+        assert_ne!(outer_id, drilled_id);
+        outer.nav_stack.push(drilled);
+        let mut tabs = vec![outer];
+
+        assert_eq!(
+            tab_by_id_mut(&mut tabs, outer_id).map(|t| t.id),
+            Some(outer_id)
+        );
+        assert_eq!(
+            tab_by_id_mut(&mut tabs, drilled_id).map(|t| t.id),
+            Some(drilled_id)
+        );
+        assert!(tab_by_id_mut(&mut tabs, u64::MAX).is_none());
+    }
 }
