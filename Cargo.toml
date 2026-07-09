@@ -13,8 +13,8 @@ categories = ["development-tools", "gui"]
 
 [dependencies]
 # UI toolkit
-damascene-core = "0.4.3"
-damascene-vulkano = "0.4.3"
+damascene-core = "0.5.0"
+damascene-vulkano = "0.5.0"
 
 # Graphics
 vulkano = "0.35"

@@ -10,8 +10,8 @@ use std::{
 };
 
 use damascene_core::{
-    App, BuildCx, El, EventCx, IconName, KeyChord, KeyModifiers, Selection, Theme, UiEvent,
-    UiEventKind, UiKey,
+    App, BuildCx, El, EventCx, IconName, KeyChord, KeyModifiers, LogicalKey, NamedKey, Selection,
+    Theme, UiEvent, UiEventKind,
     prelude::*,
     scroll::{ScrollAlignment, ScrollRequest},
     toast::ToastSpec,
@@ -68,7 +68,7 @@ fn apply_routed_text_input(
     if event.target_key() != Some(key) {
         return false;
     }
-    text_input::apply_event(value, selection, key, event)
+    text_input::apply_event(value, selection, event, key)
 }
 
 fn apply_routed_text_area(
@@ -80,7 +80,7 @@ fn apply_routed_text_area(
     if event.target_key() != Some(key) {
         return false;
     }
-    text_area::apply_event(value, selection, key, event)
+    text_area::apply_event(value, selection, event, key)
 }
 
 use crate::commit_details;
@@ -1028,7 +1028,7 @@ impl App for WhisperApp {
             (KeyChord::ctrl('/'), "toggle_shortcut_bar".to_string()),
             (KeyChord::ctrl('f'), "history:search_open".to_string()),
             (
-                KeyChord::named(UiKey::Enter).with_modifiers(KM_CTRL),
+                KeyChord::named(LogicalKey::Named(NamedKey::Enter)).with_modifiers(KM_CTRL),
                 "commit".to_string(),
             ),
         ]

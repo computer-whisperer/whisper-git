@@ -108,9 +108,9 @@ pub fn run<A: App + 'static>(
         height as f32 / scale_factor,
     );
     let cx = BuildCx::new(&theme).with_viewport(viewport.w, viewport.h);
-    let mut tree = app.build(&cx);
+    let tree = app.build(&cx);
     runner.set_theme(theme.clone());
-    runner.prepare(&mut tree, viewport, scale_factor);
+    runner.prepare(tree, viewport, scale_factor);
 
     // Record + submit
     let mut builder = AutoCommandBufferBuilder::primary(
